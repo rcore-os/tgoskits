@@ -1846,5 +1846,347 @@
       "Unified lookup/session continuation, typed proc-object links and consumers, full SimpleFs ownership, mount F1-F8 authorization/anonymous lifetime, full syscall table, performance and final independent review remain required.",
       "No final-head CI completion or merge approval is claimed; PR remains draft."
     ]
-  }
+  },
+  "writable_open_runtime": {
+    "recorded_at": "2026-11-17T00:00:28.084907+00:00",
+    "scope": "普通写打开阶段；后续 getcwd 修复单独记录明确源码和验证。",
+    "latest_source_commit": "13b4214ab21af09abd7d2329d66b5ebbe8c2cece",
+    "source_commit": "e6bd54b7f1448e5436def63ae01dd7b094833a1a",
+    "source_tree": "c38954146f164b0b5af53f1353325de65bc8eed3",
+    "rust_source_commit": "aa14e2ca777ae990365a87de23333c7c602ebe1c",
+    "comparison_base": "8613b7456145bb05eeb8c4a8704906c9547a3f1e",
+    "source_files": {
+      "fs/ax-fs-ng/src/file/access.rs": "af509203fb38d638ebbf2dde3c958553c754e7d0a93f9d1fcb9a9b0dcd295084",
+      "fs/ax-fs-ng/src/file/handle/backend.rs": "86879db86e157933b89a3ae38eba937ed715985c3efb0168f717ffe897d3c3f2",
+      "fs/ax-fs-ng/src/file/handle/mod.rs": "166731047732e67de10b1f67bc2f82ab2d440ad13dbb498f218932d05a3e506a",
+      "fs/ax-fs-ng/src/file/mod.rs": "200654ccb84b05c1b642b670af3f64c66344cd4770d0209b565e3412904fbe3c",
+      "fs/ax-fs-ng/src/file/open.rs": "dc7b6d5af71fac7d0e0e3ef364db92d3597922a22971a8944936b10f1b8bee08",
+      "fs/axfs-ng-vfs/src/file_io.rs": "d557388f85a61b423300675271f4809fde56b3350e08503de5ff0c8f38d60be2",
+      "fs/axfs-ng-vfs/src/file_open.rs": "ed82e312ac596897a2e2498aa646970290b6c92676a8c9c239736efe3414808b",
+      "fs/axfs-ng-vfs/src/lib.rs": "86b3a85c1fe2083228fe95cdbf682f379de772eefbef993f80cdfdc47eaf2fb9",
+      "fs/axfs-ng-vfs/src/namespace_operation/mod.rs": "c8c00f464f626a0995f473abe29ef04b94178f7f6ca731eb4a48796435de1203",
+      "fs/axfs-ng-vfs/src/namespace_operation/preparation.rs": "da85cda49c7aeae978ce5b823544a4967dc0a8952851689b372c9089695bba81",
+      "fs/axfs-ng-vfs/src/node/file.rs": "6f41220decdd7453b9e2ddc3852f7f2128328e00cb3efab95631b80776d668c2",
+      "os/StarryOS/kernel/src/mm/aspace/backend/cow.rs": "5c370df448e32d719fd1833c46e0f9e9abeff7c1c9cd2e749e3323afcc058519",
+      "os/StarryOS/kernel/src/pseudofs/dev/loop.rs": "470706c9abf8917d05d7460258dc8b22fb9877416977dd3f6b089f477c0f1819",
+      "os/StarryOS/kernel/src/pseudofs/overlay/copy_up.rs": "37c561af4aaea3369fe3d346405223b63604fef731e88f075758cd791e447d5d",
+      "os/StarryOS/kernel/src/pseudofs/overlay/mod.rs": "2fe39ce8bad172c243dd88a46f70dc029f2120c0c1627109407767b7140d9e87",
+      "os/StarryOS/kernel/src/pseudofs/overlay/open.rs": "c3148bb8ac8c96ad6ad98d49cfa652661528ba70b1a9522581f2033e94842097",
+      "os/StarryOS/kernel/src/pseudofs/overlay/preparation.rs": "43a6a71daa5db6767dc1265e66c114724555051fe0af467e3c8ca57c7c6a655d",
+      "os/StarryOS/kernel/src/syscall/mm/mmap.rs": "76e37c6493097fd4b59216011a3f68a0cf673ef090b7d860ffa862c1c7fb137f",
+      "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c": "745fb972fa60cb24df37510cb6bb89c8390e6baa2b5d571bc83515a95b0bf96b",
+      "test-suit/starryos/qemu/system/test-unshare-fs/src/main.c": "117afce790ccb4d0ebcfdac045a7b744d083acd40f8d7131f3eb476ea4a753f0",
+      "test-suit/starryos/qemu/system/test-vfs-ownership/src/main.c": "dfa57eb589828623b0adb9c0a9d2d3ab21eb0658600797c8d2c91e14b6e53a1e"
+    },
+    "implementation": [
+      "既存普通写打开复用描述的原 PreparedWrite，通过真实 owner gate 中的 FileOpenRequest 每轮重新观察和授权。",
+      "Overlay 复用 CopyForest 完成隐藏准备和可见安装，再发布文件描述；打开没有伪造 chmod/chown 副作用。",
+      "LayeredFile 固定接受的原生数据端点和 canonical cache；普通写描述后续 I/O 不重新以 root 打开 backing。",
+      "原 Arc<WriteAccess> 一次绑定 backing inode 写租约；fd、backend 和 writable mapping 保留同一权利。",
+      "只读截断在 fd 发布前释放临时逻辑和 backing writer；mmap、CoW、loop 取得实际原生缓存。"
+    ],
+    "x86_source_equivalence": {
+      "runtime_source": "27144a3027",
+      "later_rust_diff": "仅在 file_open.rs 追加 cfg(test) 模块，生产前缀逐字相同；其余 Rust 文件无差异。"
+    },
+    "red": {
+      "before_open_materialization": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-write-open-red.log",
+        "sha256": "6227af1a53d2b05b5d91434783d17a68eec792f907eff74357ee9f526b7372b0",
+        "bytes": 42298,
+        "required_markers": [
+          "writable open finishes data copy-up before publishing its fd",
+          "result: 0/1 case(s) passed"
+        ]
+      },
+      "mutant_commit": "da02a30e8cd63b45988d8743221900257d4f487f",
+      "mutant_patch": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-open-authority-and-endpoint-mutant.patch",
+        "sha256": "45b7389d14a664f7b71e895f37fe95a3690fd97a0d20ae7dbd48862dde32e813",
+        "bytes": 1259,
+        "required_markers": [
+          "core::hint::black_box(false)"
+        ]
+      },
+      "mutant_std": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-open-mutant-std.log",
+        "sha256": "c2d30788ec976628bb3ae614dae9a6c0b642046ffd76a4240a3bcbac1be26662",
+        "bytes": 303971,
+        "required_markers": [
+          "left: Ok(())",
+          "right: Err(PermissionDenied)",
+          "left: Ok(0)",
+          "right: Ok(8)",
+          "std tests failed for 2 package(s): ax-fs-ng, axfs-ng-vfs"
+        ]
+      },
+      "mutant_not_in_production_ancestry": true
+    },
+    "verification": {
+      "std": {
+        "selected_packages": 18,
+        "passed_packages": 18,
+        "command": "cargo xtask test --since 8613b7456145bb05eeb8c4a8704906c9547a3f1e",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-open-final-std.log",
+          "sha256": "c38ad1e713b258228b9361c0df6bf74a3017ebadae1e356d21adaa2c7091a3d0",
+          "bytes": 312727,
+          "required_markers": [
+            "all std tests passed",
+            "file_open::tests::preparation_retries_reauthorize_before_open_publication ... ok"
+          ]
+        }
+      },
+      "clippy": {
+        "packages": [
+          "axfs-ng-vfs",
+          "ax-fs-ng",
+          "starry-kernel"
+        ],
+        "checks": 81,
+        "passed_checks": 81,
+        "command": "cargo xtask clippy --package axfs-ng-vfs --package ax-fs-ng --package starry-kernel",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-open-final-clippy.log",
+          "sha256": "6966f0946b31b27ff4d9c7048822f37e27c9f7c294ac8f45e8c68cb64bc35849",
+          "bytes": 149950,
+          "required_markers": [
+            "passed checks: 81, failed checks: 0",
+            "all clippy checks passed"
+          ]
+        }
+      },
+      "ownership_qemu": {
+        "x86_64": {
+          "source_commit": "27144a3027b8d5aea83970913b24b61f82a18fe9",
+          "command": "cargo xtask starry test qemu --arch x86_64 -c qemu/system/test-vfs-ownership",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-native-writer-qemu-x86_64.log",
+            "sha256": "b53b07ac22c29c6abd3ee1b0df6ff3b45957b36132872ce59e5e0f4aeaa2eb82",
+            "bytes": 47837,
+            "required_markers": [
+              "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-vfs-ownership",
+              "result: 1/1 case(s) passed",
+              "all starry qemu tests passed"
+            ]
+          },
+          "printed_assertion_count": {
+            "passed": 103,
+            "failed": 0
+          },
+          "stdout_policy": "live",
+          "kernel": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-27144a3027.elf",
+            "sha256": "b5d0eba543cbb2aa788582ab7fa4263a25c064a226c6fc09f153942f7e064c6a"
+          }
+        },
+        "aarch64": {
+          "source_commit": "aa14e2ca777ae990365a87de23333c7c602ebe1c",
+          "command": "cargo xtask starry test qemu --arch aarch64 -c qemu/system/test-vfs-ownership",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-native-writer-qemu-aarch64.log",
+            "sha256": "60945834f979098eb3db1fe69c0e10fd5130549b332e4557ec2e6c9d638132d2",
+            "bytes": 50442,
+            "required_markers": [
+              "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-vfs-ownership",
+              "result: 1/1 case(s) passed",
+              "all starry qemu tests passed"
+            ]
+          },
+          "printed_assertion_count": {
+            "passed": 103,
+            "failed": 0
+          },
+          "stdout_policy": "live",
+          "kernel": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/aarch64-aa14e2ca77.elf",
+            "sha256": "25875a7ee5c94bce175bede66f9d066a19a678dd45620e4bcd9e707747ef356f"
+          }
+        },
+        "riscv64": {
+          "source_commit": "aa14e2ca777ae990365a87de23333c7c602ebe1c",
+          "command": "cargo xtask starry test qemu --arch riscv64 -c qemu/system/test-vfs-ownership",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-native-writer-qemu-riscv64.log",
+            "sha256": "d34deb8b0ae219ddff654b566407e31360ead00583297470fe9c453627bab634",
+            "bytes": 52247,
+            "required_markers": [
+              "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-vfs-ownership",
+              "result: 1/1 case(s) passed",
+              "all starry qemu tests passed"
+            ]
+          },
+          "printed_assertion_count": {
+            "passed": 103,
+            "failed": 0
+          },
+          "stdout_policy": "live",
+          "kernel": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/riscv64-aa14e2ca77.elf",
+            "sha256": "221e43a4220108e7395c1848b71d55ca18f126f2f940b2e95ff969f1500a61e2"
+          }
+        },
+        "loongarch64": {
+          "source_commit": "aa14e2ca777ae990365a87de23333c7c602ebe1c",
+          "command": "cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-vfs-ownership",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-native-writer-qemu-loongarch64.log",
+            "sha256": "07a43b1fb271ed78fb9f9bd9a1396b2c497bd1c862c5bf101504abfb6b17e817",
+            "bytes": 36804,
+            "required_markers": [
+              "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-vfs-ownership",
+              "result: 1/1 case(s) passed",
+              "all starry qemu tests passed"
+            ]
+          },
+          "printed_assertion_count": null,
+          "stdout_policy": "capture-failures",
+          "kernel": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/loongarch64-aa14e2ca77.elf",
+            "sha256": "531064da6c12a197890f3c6e286dfd31d7a31948ba1e97b9b0fd0607352e39b9"
+          }
+        }
+      }
+    },
+    "private_mapping_followup": {
+      "source_commit": "13b4214ab21af09abd7d2329d66b5ebbe8c2cece",
+      "test_source": "test-suit/starryos/qemu/system/test-vfs-ownership/src/main.c",
+      "test_sha256": "c417de801d386291e45129714cac9595b338ba2b6e38bf94b1b16f592b094789",
+      "implementation": "同一已有旅程补充 private mapping 先读 native cache、写时复制、共享写后的私有页隔离和显式退休；生产 Rust 与 getcwd 修复 df0536aae1 完全相同。",
+      "qemu_x86_64": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-private-cow-qemu-x86_64.log",
+        "sha256": "71c5b7428292eecef0aea955d961a7589cc584fe0086a73e9a26f3025b4d0905",
+        "bytes": 48683,
+        "required_markers": [
+          "DONE: 107 pass, 0 fail",
+          "result: 1/1 case(s) passed",
+          "all starry qemu tests passed"
+        ]
+      },
+      "linux": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-private-cow-linux.log",
+        "sha256": "9f1a39b2de791d31b42b4b403911a2b993649280f4e84fc150496e659aa22db7",
+        "bytes": 6581,
+        "required_markers": [
+          "DONE: 50 pass, 0 fail"
+        ]
+      },
+      "other_architectures": "前述四架构完成 103 项版本的实际 ownership 旅程；本次 private 追加判定本地只在 x86_64 运行，其他架构由新 head CI 继续核实。"
+    },
+    "linux": {
+      "semantic_commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "writable_open": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/file.c#L198-L234",
+      "unshare": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/unshare-linux-final.log",
+        "sha256": "1f2ef79d8e19a4f56a979f395cb93ff54811c6558d20e5ec80a28d78eb60619d",
+        "bytes": 14898,
+        "required_markers": [
+          "UNSHARE_FAILURE_ROLLBACK_PASSED",
+          "UNSHARE_DELETED_CWD_ISOLATION_PASSED",
+          "UNSHARE_FS_ALL_PASSED"
+        ]
+      },
+      "unshare_authority": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/nsproxy.c#L197-L226",
+      "getcwd": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/d_path.c#L389-L423",
+      "runtime": "Linux 6.8.0-149-generic x86_64，隔离的临时 Docker 容器，网络关闭，仅容器内授予 SYS_ADMIN。",
+      "ownership": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ownership-native-writer-linux.log",
+        "sha256": "b8aa46292d5612696df878c0fcfef5178de9cd48b74f8e0caeb1ab41ea8511cc",
+        "bytes": 6038,
+        "required_markers": [
+          "DONE: 46 pass, 0 fail"
+        ]
+      }
+    },
+    "test_corrections": {
+      "renameat2": "RISC-V 和 LoongArch 的 C sysroot 没有 SYS_renameat；改用共同的 SYS_renameat2(..., 0)，不增加回退或放宽判定。",
+      "unshare_original_oracle": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/unshare-linux-before.log",
+        "sha256": "677474ce5c53e981fe76b443af171adadfe28303bdb780e3431fb906bf97ce9a",
+        "bytes": 2315,
+        "required_markers": [
+          "combined unshare fails with ENOENT before commit"
+        ]
+      },
+      "unshare_new_oracle": "撤销有效 CAP_SYS_ADMIN、保留 permitted 后必须 EPERM，FD/FS/UTS/MNT 都不发布；恢复权限后允许复制已删除 cwd，调用者与真实兄弟线程的 FD/FS 隔离。",
+      "unshare_qemu": {
+        "x86_64": {
+          "command": "cargo xtask starry test qemu --arch x86_64 -c qemu/system/test-unshare-fs",
+          "source_commit": "df0536aae140b8f39da49a5125322b49c6ffd438",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/unshare-cwd-green-qemu-x86_64.log",
+            "sha256": "5b2f276a9b3fd68b4c5e16a900fc7f36c7359092fc5fcc2419a8e2a630c5ac57",
+            "bytes": 46571,
+            "required_markers": [
+              "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-unshare-fs",
+              "result: 1/1 case(s) passed",
+              "all starry qemu tests passed"
+            ]
+          }
+        },
+        "loongarch64": {
+          "command": "cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-unshare-fs",
+          "source_commit": "df0536aae140b8f39da49a5125322b49c6ffd438",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/unshare-cwd-green-qemu-loongarch64.log",
+            "sha256": "defa9dc027dd707b5a352caed5f6cf32a23bd244f978cb3208723e7f4ff89f90",
+            "bytes": 36798,
+            "required_markers": [
+              "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-unshare-fs",
+              "result: 1/1 case(s) passed",
+              "all starry qemu tests passed"
+            ]
+          }
+        }
+      },
+      "cwd_fix": {
+        "source_commit": "df0536aae140b8f39da49a5125322b49c6ffd438",
+        "source_file": "os/StarryOS/kernel/src/syscall/fs/ctl.rs",
+        "source_sha256": "04ea183c8902c02aa50599fb10f69b83fc60032d5db8907edfb83402750f45d7",
+        "implementation": "sys_getcwd 在生成名字前拒绝实际 cwd 的 NameState::Unlinked，包含 cwd 等于进程 root 的情形；描述/proc 的保留显示名仍归其原接口。",
+        "red": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/unshare-state-qemu-x86_64.log",
+          "sha256": "d7d6b7d06031b4186a95292384929760ce168df00eb754854256eb1af20cee67",
+          "bytes": 39347,
+          "required_markers": [
+            "successful unshare retains the nameless cwd instead of rebinding its pathname",
+            "result: 0/1 case(s) passed"
+          ]
+        },
+        "std": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/unshare-cwd-kernel-std.log",
+          "sha256": "2670485d6f3df2a08b73d3b59a077f3ff51a605df5fe14e6add1c1016830c92e",
+          "bytes": 38955,
+          "required_markers": [
+            "running std tests for 1 package(s)",
+            "all std tests passed"
+          ]
+        },
+        "clippy": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/unshare-cwd-kernel-clippy.log",
+          "sha256": "c252ae71b038ec7b57e93e0df22c6c3051d4ecb5be273996e84f2b6110f0b0c2",
+          "bytes": 145302,
+          "required_markers": [
+            "passed checks: 72, failed checks: 0",
+            "all clippy checks passed"
+          ]
+        }
+      }
+    },
+    "previous_head_ci": {
+      "head": "8613b7456145bb05eeb8c4a8704906c9547a3f1e",
+      "run": "https://github.com/rcore-os/tgoskits/actions/runs/43969744449",
+      "state": "completed",
+      "failed_jobs": 7,
+      "remaining_failures": "proc/cgroup/统一查找与 mutation 权限等系统用例；ArceOS AArch64 stack guard 诊断；Axvisor LoongArch Linux 客户机超时；Axvisor AArch64 Arm 工具链下载 HTTP 503。新 head 完整 CI 尚需终态复核。"
+    },
+    "remaining_limitations": [
+      "普通只读描述的动态原生端点、旧数据 hook 的其余消费者、raw 自动维护仍未全部迁移。",
+      "FAT merged observation holder、嵌套 xattr、工作目录碰撞与恢复、安装竞态及部分失败仍需完成。",
+      "统一 LookupSession/Continuation、symlink 总预算、CACHED、typed proc link、SimpleFs/proc 完整所有权与生命周期仍需完成。",
+      "F1–F8、其余 syscall 语义、完整逐项系统调用表、同环境性能/资源、独立领域审查与最终精确 head 完整 CI 仍按原计划推进。",
+      "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
+    ]
+  },
+  "latest_evidence_section": "writable_open_runtime"
 }

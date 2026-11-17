@@ -31,13 +31,15 @@ Linux 依据是固定源码分析，不是 Linux 7.1 实机运行证明。与 #2
 
 ### 1.3 当前生产进展
 
-Rust 生产源码 `0ade408bf7` 已消除五个旧命名方法的构建阻塞，VFS、AX、ax-net 和
-Kernel 的 90 项 Clippy 全部通过。测试源码 `0f2a1a3dd2` 使用四架构共有的 statx
-入口，其 Rust 文件与上述源码逐字相同；恢复错误候选后，18 个标准库包再次全过。
-实际系统旅程、错误候选及各架构最终状态由第 9.19、9.20 节和
-`vfs-production-owner-evidence.json` 的 `overlay_namespace_runtime` 记录。
+写打开阶段源码 `aa14e2ca77` 接通原写准备下的物化、原生数据端点和 backing inode
+执行互斥。18 包标准库及 VFS、AX、Kernel 的 81 项 Clippy 全部通过，四架构真实
+ownership 子用例均为最外层 1/1 通过；前三个架构打印 103 pass、0 fail，LoongArch
+成功 stdout 沿用 capture-failures 策略。当前阶段与错误候选见第 9.21 节，前一阶段
+的 90 项 Clippy、statx 及 namespace 证据保留在第 9.19、9.20 节。
+`df0536aae1` 随后修复已删除 cwd 的 getcwd 判定，Kernel 增量标准库、72 项
+Clippy 以及 x86_64/LoongArch 的完整 unshare 子用例通过，见第 9.22 节。
 
-普通 Overlay open/data writer、FAT 合并 holder 分类、统一查找与 proc/SimpleFs
+动态只读描述、旧数据 hook 的其余消费者、FAT 合并 holder 分类、统一查找与 proc/SimpleFs
 完整迁移、挂载授权、逐系统调用表、性能及独立审查继续按原计划实施。原交接的
 编译失败和局部批准只描述其明确版本，不能据此判断当前源码或完整计划已经完成。
 
@@ -623,3 +625,67 @@ LoongArch 沿用 --capture-failures，成功时不回放程序 stdout，日志�
 BEGIN/PASSED、total=1 passed=1 failed=0 和最外层退出 0，未据此宣称日志打印了
 内部 92 项计数。所有错误候选均已离开生产分支，Rust 字节一致性已核对；精确日志、
 摘要与支持边界保存在生产证据，最终 head 的完整 CI 仍需继续完成。
+
+### 9.21 普通写打开与原生缓存
+
+`c4b08ac1f3` 让既存普通写打开借用描述原来的 `PreparedWrite`，通过
+`FileOpenRequest` 在真实 owner gate 中每轮重新观察和授权。Overlay 的
+`OpenAttempt` 复用 `CopyForest` 准备内容和祖先，结束本轮 Scope 后准备，下一轮
+重新授权后安装，最后由 AX 发布描述。原实现已能返回 writable fd，但 upper
+尚不存在；增强后的同一 ownership 旅程在该断言稳定失败，最外层退出 1。
+
+`27144a3027` 的 `LayeredFile` 保存接受的原生端点和 canonical cache。普通写描述
+随后直接调用该 cache 或 direct backend，逻辑 fd 身份仍由原始 PathHandle 保留。
+`WriteAccess::bind_backing` 在原图内绑定中间层和原生 inode 访问租约，原
+`Arc<WriteAccess>` 随映射保留它们；关闭 fd 后仍阻止 backing 执行和 merged
+卸载。只读截断在发布前释放临时 writer。mmap、CoW、loop 通过 `cached_file`
+和 `data_path` 取得已经选定的实际端点。
+
+`aa14e2ca77` 增加确定性的重新授权证明：复制准备阶段由另一个线程撤销真实
+owner metadata 的写权限，下一轮必须在发布前拒绝。错误候选
+`da02a30e8cd63b45988d8743221900257d4f487f` 分别绕过该重新授权和原生端点选择，
+VFS 旅程得到错误的 `Ok(())`，原生 I/O 旅程得到 0 字节写入而非 8 字节，标准库
+最外层因这两个包失败退出 1，其余 16 包通过。恢复后 18 包全部通过，VFS 新旅程
+进入实际测试入口，全部 72 项通过；受影响三包的 81 项 Clippy 也全部通过。
+
+四架构通过同一 ownership 子用例，x86_64、AArch64、RISC-V 均打印 103 pass、
+0 fail，LoongArch 的 BEGIN/PASSED、total=1 passed=1 failed=0 与最外层退出 0
+确认实际执行。新增判定覆盖首次写打开、拒绝不安装 upper、跨页写入、共享映射、
+关闭 fd 后继续映射写入、mount 使用权及 lower 内容不变。宿主 Linux 对应 Overlay
+旅程为 46 pass、0 fail。x86_64 内核来自 `27144a3027`，后续 Rust 差异只在
+`file_open.rs` 末尾追加 cfg(test) 模块，生产前缀与其余 Rust 文件一致；其他架构
+使用 `aa14e2ca77`。错误候选未进入生产分支，完整 PR 范围和草稿状态保持不变。
+
+`13b4214ab2` 随后在同一旅程补充私有映射先读原生缓存、写时复制、与共享写入
+隔离和显式退休，覆盖 CoW 消费者的实际接入。该版本的 Rust 与下一节 getcwd
+修复逐字相同；x86_64 为 107 pass、0 fail、最外层 1/1，Linux Overlay 为
+50 pass、0 fail。其他架构已有上述 103 项版本的实际通过，新增私有映射判定
+本地只在 x86_64 验证，后续以新 head CI 核实。
+
+### 9.22 命名空间复制与已删除目录
+
+前一 head 的完整 CI 暴露 `test-unshare-fs` 错误期待已删除 cwd 使 unshare 返回
+ENOENT。同一原始程序在宿主 Linux 也于该断言失败。固定 Linux v7.1 的
+[`ksys_unshare`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L3001-L3125)
+保留 fs_struct 的实际路径，准备后再提交；
+[`unshare_nsproxy_namespaces`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/nsproxy.c#L197-L226)
+根据实际 user namespace 检查有效 CAP_SYS_ADMIN，没有该权限时返回 EPERM。
+
+`e6bd54b7f1` 增强同一系统旅程：先保留 permitted 集并撤销有效 CAP_SYS_ADMIN，
+以真实 EPERM 验证 fd 表、FS 上下文、UTS 和 mount namespace 均未发布；再恢复
+权限，验证已删除 cwd 允许成功复制，调用者切换 cwd、关闭 fd 后，真实兄弟线程
+仍持有原 fd 表和已删除 cwd。条件变量控制观察顺序，清理关闭兄弟线程残留 fd。
+宿主 Linux 6.8.0-149-generic 的完整程序通过，没有增加独立用例或默认启动。
+
+这一增强在 Starry x86_64 暴露实际 getcwd 错误：unshare 已正确成功，但路径生成
+使用保留的旧名字，未返回 ENOENT。`df0536aae1` 在 `sys_getcwd` 调用
+`path_from` 前检查实际 cwd 的 `NameState::Unlinked`，包含 cwd 恰好等于进程 root
+的情形。该边界与固定 Linux 的
+[`getcwd`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/d_path.c#L389-L423)
+一致；描述与 proc 显示名仍由其原有接口处理。
+
+修复前同一 x86_64 子用例在 nameless cwd 断言失败，最外层为 0/1、退出 1；
+修复后 x86_64、LoongArch 均为 1/1、退出 0，完整程序继续验证 pending PID
+namespace、clone(CLONE_FS) 隔离及无效 flags。Kernel 增量标准库选中并通过一包，
+四目标共 72 项 Clippy 全部通过；VFS 与 AX Rust 源码保持上一节通过时的内容。
+其他 getcwd 并发路径、完整 syscall 表及最终 head 完整 CI 仍按原计划核实。

@@ -3291,7 +3291,8 @@ backing writer。`cached_file` 和 `data_path` 让 mmap、CoW 和 loop 的现有
 
 现有 ownership 系统旅程增加 lower 首次写打开、拒绝不创建 upper、fd 返回前完成
 复制、跨缓存页写入和 lower 内容不变的判定，并通过共享映射在关闭 fd 后修改同一
-upper cache、阻止 merged 卸载和最终显式退休。现有组件租约旅程同时证明两层
+upper cache、阻止 merged 卸载和最终显式退休。私有映射先读实际缓存，再写时
+复制，并与后续共享写入保持隔离。现有组件租约旅程同时证明两层
 原生数据访问、DAC 改变后的已接受 I/O、映射后的 backing 执行互斥、失败清理和
 只读截断的临时 writer 释放。动态只读端点和旧的数据 hook 消费者仍需迁移，
 不能据此宣称所有 writer 已经过统一 gate。新增接口复用
