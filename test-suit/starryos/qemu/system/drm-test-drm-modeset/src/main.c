@@ -386,13 +386,15 @@ static void check_vblank_timeout(int fd)
 static long query_vblank(int fd, union drm_wait_vblank *query)
 {
     *query = (union drm_wait_vblank){0};
+    query->req.type = _DRM_VBLANK_RELATIVE;
     return syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, query);
 }
 
 static long queue_immediate_sequence(int fd, uint32_t crtc_id, uint64_t user_data)
 {
     struct drm_crtc_queue_sequence event = {
-        .crtc_id = crtc_id, .user_data = user_data, .sequence = 0,
+        .crtc_id = crtc_id, .flags = DRM_CRTC_SEQUENCE_RELATIVE,
+        .user_data = user_data, .sequence = 0,
     };
     return syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &event);
 }
@@ -400,7 +402,9 @@ static long queue_immediate_sequence(int fd, uint32_t crtc_id, uint64_t user_dat
 static int vblank_wait_child(int fd, uint32_t crtc_id, int ready_fd,
                              int expect_disable_wake)
 {
-    (void)crtc_id;
+    struct drm_crtc_get_sequence before = { .crtc_id = crtc_id };
+    if (syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &before) != 0)
+        return 1;
     union drm_wait_vblank wait = {0};
     wait.req.type = _DRM_VBLANK_RELATIVE;
     wait.req.sequence = 100000;
@@ -410,8 +414,20 @@ static int vblank_wait_child(int fd, uint32_t crtc_id, int ready_fd,
     alarm(5);
     long result = syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, &wait);
     alarm(0);
-    if (expect_disable_wake)
-        return result == 0 && wait.reply.sequence < 100000 ? 0 : 1;
+    if (expect_disable_wake) {
+        struct drm_crtc_get_sequence frozen = { .crtc_id = crtc_id };
+        if (result != 0 ||
+            syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &frozen) != 0)
+            return 1;
+        return !frozen.active &&
+               wait.reply.sequence == (uint32_t)frozen.sequence &&
+               frozen.sequence >= before.sequence &&
+               frozen.sequence - before.sequence < 100000 &&
+               (int64_t)wait.reply.tv_sec * 1000000000LL +
+               (int64_t)wait.reply.tv_usec * 1000 <= frozen.sequence_ns &&
+               frozen.sequence_ns - ((int64_t)wait.reply.tv_sec * 1000000000LL +
+               (int64_t)wait.reply.tv_usec * 1000) < 1000 ? 0 : 1;
+    }
     return result < 0 && errno == EBUSY ? 0 : 1;
 }
 
@@ -731,9 +747,8 @@ int main(void)
     char buf[64] = {0};
     CHECK_ERR(read(fd, buf, sizeof(buf)), EAGAIN, "empty read returns EAGAIN");
 
-    /* --- WAIT_VBLANK 查询不回退 ---
-     * type=0（absolute，target=0）是纯查询：真实时钟下同一周期内两次
-     * 查询返回相同序列号，跨周期则 +1，因此只要求不回退。 */
+    /* A relative zero request queries the current sequence. Absolute zero
+     * can instead name a distant target once the 32-bit counter has advanced. */
     union drm_wait_vblank wv1 = {0}, wv2 = {0};
     CHECK_RET(query_vblank(fd, &wv1), 0, "WAIT_VBLANK 1");
     CHECK_RET(query_vblank(fd, &wv2), 0, "WAIT_VBLANK 2");
@@ -860,7 +875,8 @@ int main(void)
     int other = open("/dev/dri/card0", O_RDWR | O_CLOEXEC | O_NONBLOCK);
     CHECK(other >= 0, "open independent card0 file");
     struct drm_crtc_queue_sequence immediate = {
-        .crtc_id = crtc_ids[0], .user_data = 0xace0, .sequence = 0,
+        .crtc_id = crtc_ids[0], .flags = DRM_CRTC_SEQUENCE_RELATIVE,
+        .user_data = 0xace0, .sequence = 0,
     };
     CHECK_RET(queue_immediate_sequence(other, crtc_ids[0], 0xace0), 0,
               "queue immediate event on other open");

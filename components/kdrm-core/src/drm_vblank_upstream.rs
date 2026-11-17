@@ -14,6 +14,8 @@
 //!   compiled to their default values (5000 ms, 20 us).
 //! - Debug logging (`drm_dbg_vbl`, `drm_dbg_core`) is dropped; `drm_WARN_ONCE`
 //!   reports through the kapi warning helper without the "once" throttle.
+//! - Timer-derived edges retain the published timestamp until a later edge
+//!   exists, since the task-based timer can lag the enable-time clock sample.
 
 // The Linux ports state the invariant of each C-ABI call once in the module
 // header, as the GT ports do; per-block SAFETY prose is not repeated.
@@ -2496,6 +2498,7 @@ pub unsafe extern "C" fn drm_crtc_vblank_get_vblank_timeout(
         let vblank = drm_crtc_vblank_crtc(crtc);
         let vtimer = core::ptr::addr_of_mut!((*vblank).vblank_timer);
         let mut cur_time: i64 = 0;
+        let mut interval: i64;
 
         if !core::ptr::read_volatile(core::ptr::addr_of!((*vblank).enabled)) {
             *vblank_time = drm_kapi::primitives::ktime_get();
@@ -2508,8 +2511,12 @@ pub unsafe extern "C" fn drm_crtc_vblank_get_vblank_timeout(
         // we get consistent values from both fields.
         loop {
             let cur_count = drm_crtc_vblank_count_and_time(crtc, &mut cur_time);
+            let mut flags: core::ffi::c_ulong = 0;
+            spin_lock_irqsave_raw(core::ptr::addr_of_mut!((*vtimer).interval_lock), &mut flags);
+            interval = (*vtimer).interval;
             *vblank_time =
                 drm_kapi::timer::hrtimer_get_expires(core::ptr::addr_of!((*vtimer).timer));
+            spin_unlock_irqrestore_raw(core::ptr::addr_of_mut!((*vtimer).interval_lock), flags);
             if cur_count == drm_crtc_vblank_count_and_time(crtc, &mut cur_time) {
                 break;
             }
@@ -2523,7 +2530,10 @@ pub unsafe extern "C" fn drm_crtc_vblank_get_vblank_timeout(
         // processing - this is how real hw works (the interrupt is only generated
         // after all the vblank registers are updated) and what the vblank core
         // expects. Therefore we need to always correct the timestamp by one frame.
-        *vblank_time -= (*vtimer).interval;
+        // The task-based timer can still expose the edge preceding the clock
+        // sample published by enable. Preserve that sample until a later edge
+        // exists: a negative delta would become a huge unsigned frame count.
+        *vblank_time = (*vblank_time).saturating_sub(interval).max(cur_time);
     }
 }
 
