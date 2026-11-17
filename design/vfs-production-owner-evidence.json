@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "temporary_directories_and_kernel_selection",
+  "latest_evidence_section": "executable_cache_and_mapping_retirement",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -3746,6 +3746,215 @@
       "tmp-permissions-full-system.exit": {
         "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/tmp-permissions-full-system.exit",
         "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      }
+    }
+  },
+  "executable_cache_and_mapping_retirement": {
+    "recorded_at": "2026-11-17T10:47:44.911697+00:00",
+    "cache_source": "8a9f6c485c07b8d0b4967f82d3cac30c776e03c3",
+    "mapping_retirement_source": "271ba070e149f49a076034b2e251048dcdd66df4",
+    "test": "test-suit/starryos/qemu/system/bugfix-proc-pid-exe-readlink/src/main.c",
+    "test_sha256": "2b962ce722adf0e628eaf33dda0f3c7222c289ed077789289b48165557723b49",
+    "same_test_across_red_green": true,
+    "before": {
+      "source": "5082dc693f3ba081ed3e2813e41b9688bb084222",
+      "outer_exit": 1,
+      "programs_passed": 0,
+      "programs_failed": 1,
+      "failure": "bind executable remains EBUSY after child exit; live-while-held busy assertion succeeds"
+    },
+    "incomplete_attempt": {
+      "source": "8a9f6c485c07b8d0b4967f82d3cac30c776e03c3",
+      "std_exit": 0,
+      "x86_qemu_exit": 1,
+      "clippy": "interrupted, not passed",
+      "finding": "ELF cache eviction alone leaves retired MM mapping path owners until the asynchronous worker runs"
+    },
+    "diagnostic": {
+      "production_evidence": false,
+      "temporary_instrumentation_removed": true,
+      "patch_sha256": "d51100ff08428311276b547eb8db45e3b34d532803118efa8baecf1ffe5cd5d3",
+      "finding": "mount 33 retained 2 uses after child exit; MM 256 reclaim started after the failing unmount"
+    },
+    "ownership": {
+      "header_cache": "Arc entries are loaded/mapped/destroyed outside the LRU lock; filesystem-scoped eviction before normal unmount",
+      "exit_and_exec": "wait for ownerless, unpinned retired MM contents outside process publication and MM locks",
+      "active_mm_and_kernel_pins": "retain existing deferred lifetime; do not bypass mount use counting",
+      "repair": "backend failure remains owned by repair queue and is reported",
+      "drop_fallback": "ProcessData destructor does not wait for deferred reclamation"
+    },
+    "std": {
+      "source": "271ba070e149f49a076034b2e251048dcdd66df4",
+      "packages_passed": 1,
+      "packages_failed": 0,
+      "outer_exit": 0
+    },
+    "clippy": {
+      "source": "271ba070e149f49a076034b2e251048dcdd66df4",
+      "checks_passed": 72,
+      "checks_failed": 0,
+      "outer_exit": 0
+    },
+    "qemu": {
+      "x86_64": {
+        "source": "271ba070e149f49a076034b2e251048dcdd66df4",
+        "program": "bugfix-proc-pid-exe-readlink",
+        "outer_exit": 0,
+        "programs_passed": 1,
+        "programs_failed": 0,
+        "elf_sha256": "a0761196b88ea9a7708252c2f689880310ef8d683f426bdb8ea75bd5dee71e45"
+      },
+      "aarch64": {
+        "source": "271ba070e149f49a076034b2e251048dcdd66df4",
+        "program": "bugfix-proc-pid-exe-readlink",
+        "outer_exit": 0,
+        "programs_passed": 1,
+        "programs_failed": 0,
+        "elf_sha256": "cb829bd5d481424aa20110e48c5f30b4c85223e7656ccd63f3ddd4b2d7001243"
+      },
+      "riscv64": {
+        "source": "271ba070e149f49a076034b2e251048dcdd66df4",
+        "program": "bugfix-proc-pid-exe-readlink",
+        "outer_exit": 0,
+        "programs_passed": 1,
+        "programs_failed": 0,
+        "elf_sha256": "054529260b80998b2d3fc8dd2574115d9be1699b898061dd7532358d15483b28"
+      },
+      "loongarch64": {
+        "source": "271ba070e149f49a076034b2e251048dcdd66df4",
+        "program": "bugfix-proc-pid-exe-readlink",
+        "outer_exit": 0,
+        "programs_passed": 1,
+        "programs_failed": 0,
+        "elf_sha256": "616697d532366c8251347f844512b5272d5133c72e1cb3c21c9f8d60f81b815c",
+        "stdout_policy": "capture failures; selected program exit and grouped summary verified"
+      }
+    },
+    "ktest": {
+      "source": "271ba070e149f49a076034b2e251048dcdd66df4",
+      "arch": "x86_64",
+      "outer_exit": 0,
+      "log": "executable-cache-ktest.log",
+      "passed": 263,
+      "failed": 0,
+      "skipped": 0
+    },
+    "host_linux": {
+      "kernel": "6.8.0-149-generic",
+      "outer_exit": 0,
+      "same_test_source": true,
+      "environment": "private user/PID/mount namespace; private /tmp; the program runs as namespace PID 1"
+    },
+    "limitations": [
+      "complete system batch not yet rerun after this change",
+      "ELF-header invalidation after file writes not yet verified",
+      "same-condition performance comparison not yet obtained",
+      "independent design and implementation review remains required"
+    ],
+    "source_sha256": {
+      "os/StarryOS/kernel/src/mm/loader.rs": "f33f1f377b8ea873c792a56de16d403fb9c4d777311b14fcb587659668813f6c",
+      "os/StarryOS/kernel/src/mm/aspace/lifecycle.rs": "0d7bfec8afe9f131f69be6833c041814b7fb16fe1662e577f2b3b24a36ae4d30",
+      "os/StarryOS/kernel/src/task/process_memory.rs": "10e8f26dfa136dc0765c9105be8473e7c658d082534c6b1d6bdee1ccfab01930",
+      "os/StarryOS/kernel/src/task/ops.rs": "577566650325088a4525d22ffd5e35ddb9e521b637f49b95fb4f80a986dc1be9",
+      "os/StarryOS/kernel/src/syscall/task/execve.rs": "46eb38fb7be59180dbac874c3f1309ba2f92915bc9fcd9fb44222b5d2caaf44a",
+      "os/StarryOS/kernel/src/syscall/fs/mount.rs": "b1582ab624d03df0724294a39348a12a4836fbbf710e5b4bced261c49a4e42e8"
+    },
+    "logs": {
+      "executable-cache-before-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-before-qemu.log",
+        "sha256": "571729b081c02aa2eb0fae609269029c96ba4ac57213cffb3da088a46e741362"
+      },
+      "executable-cache-before-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-before-qemu.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "executable-cache-first-x86_64-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-first-x86_64-qemu.log",
+        "sha256": "fa7a4c7e67f4ffe22754341e0ee9365e59a0a410454e43b6e12e17f202c102a3"
+      },
+      "executable-cache-first-x86_64-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-first-x86_64-qemu.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "executable-cache-first-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-first-clippy.log",
+        "sha256": "a77ec5086f7e4239cec77add0265ebc4b48c08d405f7c56f4b085fd3f7494435"
+      },
+      "executable-cache-first-attempt-interrupted.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-first-attempt-interrupted.json",
+        "sha256": "0e54e3c51d43a7c5601db75801964312645d65a7b399de824887ac679e6d1d0b"
+      },
+      "executable-cache-diagnostic-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-diagnostic-qemu.log",
+        "sha256": "d0c69d8b0c0a25932d8bd5fe8e6effa43181b196fb9882c46b7f6e3e96d7b51b"
+      },
+      "executable-cache-diagnostic-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-diagnostic-qemu.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "executable-cache-linux.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-linux.log",
+        "sha256": "d4f16176c7c65cf124854c15e67fd2f165e634c502f842f32094ac0a648c2bd8"
+      },
+      "executable-cache-linux.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-linux.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "executable-cache-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-std.log",
+        "sha256": "088e4369d3c80d28768f0688d0e28b91475300af7d40b6f6c1c2fe58acddba0a"
+      },
+      "executable-cache-std.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-std.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "executable-cache-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-clippy.log",
+        "sha256": "fee39ecbb62a4c66b133db2b8a1cf07d19e3f8bc9aa18071ebe76eddd5f93756"
+      },
+      "executable-cache-clippy.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-clippy.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "executable-cache-ktest.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-ktest.log",
+        "sha256": "fee84fdae59de6b3621f4b1d478912a822992b2c3fdb079c27faedf6493e9047"
+      },
+      "executable-cache-ktest.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-ktest.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "executable-cache-x86_64-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-x86_64-qemu.log",
+        "sha256": "c399f7e7ed79022b5611b69d990515ed05ee07eaf9100c3c25049099afb38e0c"
+      },
+      "executable-cache-x86_64-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-x86_64-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "executable-cache-aarch64-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-aarch64-qemu.log",
+        "sha256": "31edee765b462715b8db92ff3f367e1f0ec54ef1641da1bba9ca26a09b59402e"
+      },
+      "executable-cache-aarch64-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-aarch64-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "executable-cache-riscv64-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-riscv64-qemu.log",
+        "sha256": "74132543dffc361534b3f2204d54ac9a918e326c2fcd2582e764ce3e4d4f46e7"
+      },
+      "executable-cache-riscv64-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-riscv64-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "executable-cache-loongarch64-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-loongarch64-qemu.log",
+        "sha256": "65ff2a291118cd33b9f56bd5cf086f9be3e5a8c65183775422364aa4cde60b4d"
+      },
+      "executable-cache-loongarch64-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-loongarch64-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
       }
     }
   }

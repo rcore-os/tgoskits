@@ -82,7 +82,7 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| umount2；x86_64 166；其余三架构 39 | v7.1 [path_umount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2035) | 普通卸载保留目标到拆树提交，其他实际使用者导致 EBUSY；expire、lazy detach 另有顺序和寿命 | sys_umount2 → FsView.resolve → PathHandle.prepare_unmount → cache flush/busy → PathUnmount.commit；挂载树为 namespace 状态 | 部分正确 | x86 path-lookup 的 tmpfs 普通卸载通过；公开 AX 旅程证明活动查找结果 busy、释放后可卸载；bind executable 退出后仍 EBUSY，expire 与 F1-F8 授权未闭合 |
+| umount2；x86_64 166；其余三架构 39 | v7.1 [path_umount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2035) | 普通卸载保留目标到拆树提交，其他实际使用者导致 EBUSY；expire、lazy detach 另有顺序和寿命 | sys_umount2 → owned target → retire_executable_cache → PathHandle.prepare_unmount → cache flush/busy → PathUnmount.commit；挂载树为 namespace 状态 | 部分正确 | x86 path-lookup 的 tmpfs 普通卸载通过；公开 AX 旅程证明活动查找结果 busy、释放后可卸载；271ba070e1 原 executable 程序四架构证明存活 busy、退出后可卸载；expire 与 F1-F8 授权未闭合 |
 | mount；x86_64 165；其余三架构 40 | v7.1 [mount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4363) | 解析并保持来源、目标到相应 mount/bind/move 提交，按实际 namespace 解释授权 | sys_mount → FsView → owned target/source；loop Direct 与 Overlay lower/upper/work 保存原 PathHandle；MountNamespace 持拓扑 | 部分正确 | x86 私有 tmpfs 安装和跨 mount 限制通过；完整 system 中 cgroup/devpts 实例语义仍失败，F1-F8 及完整多操作数视图继续处理 |
 | pivot_root；x86_64 155；其余三架构 41 | v7.1 [pivot_root](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4759) | new_root 与 put_old 按规定顺序解析并保持到拓扑事务及 root/cwd 修订 | sys_pivot_root → one saved FsBindingSnapshot → owned directories → NamespaceChange.pivot_root → FsContextSnapshot.pivot_root | 无法确认 | 当前迁移通过类型检查；既有组件 pivot 证据不能替代本阶段直接 syscall 的并发及错误顺序证明 |
 | chdir；x86_64 80；其余三架构 49 | v7.1 [chdir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L550) | 跟随路径、检查目录及 search 后更新共享 fs 的 cwd，保留已取得目录 | sys_chdir → saved binding/FsView.resolve_checked → NamespaceChange.prepare_cwd(PathHandle) → commit；FsContextState 保存 cwd | 部分正确 | x86 path-lookup 的 cwd 切换、挂载穿越及恢复通过；共享 CLONE_FS、并发根切换与其余目标仍需直接证明 |
@@ -95,8 +95,8 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| execve；x86_64 59；其余三架构 221 | v7.1 [do_execveat_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | 选定执行文件及解释器后，以实际 file/path 保持映像身份，退出后释放活动执行引用 | sys_execve → FsView.resolve → load_user_app(PathHandle) → ExecutableFile/ElfLoader/CachedFile → AddrSpace executable 与映射 | 部分正确 | x86 proc-pid-exe 的普通、bind 与 unlinked 对象检查通过；bind 执行文件退出后卸载仍 EBUSY，内部缓存退休继续处理 |
-| execveat；x86_64 322；其余三架构 281 | v7.1 [execveat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | dirfd、AT_EMPTY_PATH 与 nofollow 决定实际执行对象及错误，保留描述和路径至装载 | sys_execveat → resolve_at 或 retained memfd path_handle → load_user_app → loader/MM | 无法确认 | 已迁移实际 PathHandle 消费；本阶段没有直接覆盖所有 fd 类型、flags 及错误优先级的系统回归 |
+| execve；x86_64 59；其余三架构 221 | v7.1 [do_execveat_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | 选定执行文件及解释器后，以实际 file/path 保持映像身份，退出后释放活动执行引用 | sys_execve → FsView.resolve → load_user_app(PathHandle) → ExecutableFile/ELF_CACHE/CachedFile → AddrSpace；exec 在 publication 外同步无活动访问的旧 MM | 部分正确 | 271ba070e1 的普通、bind、unlinked 对象检查和退出后卸载在四架构通过；解释器同一视图、缓存写后失效等仍未闭合 |
+| execveat；x86_64 322；其余三架构 281 | v7.1 [execveat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | dirfd、AT_EMPTY_PATH 与 nofollow 决定实际执行对象及错误，保留描述和路径至装载 | sys_execveat → resolve_at 或 retained memfd path_handle → load_user_app → loader/MM → publication 外退休旧 MM | 无法确认 | 已迁移实际 PathHandle 消费；本阶段没有直接覆盖所有 fd 类型、flags 及错误优先级的系统回归 |
 
 
 ## 5. 类型化末组件
@@ -148,3 +148,28 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 /dev/shm 与 /tmp 共用同一初始化规则，但本轮未单独证明共享内存的完整 syscall
 旅程。04d7860504 的两包标准库和 axbuild/Kernel 73 项 Clippy 均通过，完整
 x86_64 system 为 536/541、仍有 5 个失败；静态与部分运行结果不代表整体兼容。
+
+
+## 7. 进程映射的退出发布
+
+`complete_mm_exit` 将无用户、无内核 pin 的 MM 内容退休放在 zombie 发布之前，
+活动进程或外部内核访问继续持有其原资源。同步点在 process publication 锁外，
+复用缓存失效已有的 reclaim_done 与 Freed/NeedsRepair 状态。
+
+### 7.1 退出与等待
+
+原 executable 功能旅程用管道控制子进程存活，检查挂载占用、退出、等待和卸载。
+这证明本次映射寿命的可观察边界，不替代各入口其余 flags、rusage 和共享语义。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| exit；x86_64 60；其余三架构 93 | v7.1 [do_exit/exit_mm](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c) | 当前线程退出；最后 MM 用户结束映射寿命，其他共享用户继续运行 | sys_exit → do_exit(false) → last thread → complete_mm_exit → release user/ref → synchronize_retirement → publish_zombie | 无法确认 | 原旅程经 libc 结束子进程，不能单独证明 raw exit 的线程及共享 MM 路径；真实内核批次通过 |
+| exit_group；x86_64 231；其余三架构 94 | v7.1 [do_group_exit](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c) 与 [__mmput](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 线程组退出完成 MM 使用者清理后发布可等待状态；实际活动用户仍保留引用 | sys_exit_group → do_exit(true) → last-thread MM release → no-pin completion → zombie publication | 部分正确 | 5082dc693f 原完整程序失败；271ba070e1 同一文件四架构通过，含存活 busy 和 waitpid 后可卸载；完整 CLONE_VM 与外部 pin 系统交错仍待证明 |
+| wait4；x86_64 61；其余三架构 260 | v7.1 [kernel_wait4](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c) | 观察已发布子进程状态；正常退出的 MM 映射不应仅因后台延迟继续占用挂载 | Sysno::wait4 → sys_waitpid → zombie candidate/reap；生产者 do_exit 在 publish_zombie 前完成无 pin MM 内容 | 部分正确 | 原 executable 程序四架构的 waitpid、状态及随后卸载均通过；本阶段未证明全部 options、rusage 和并发父子语义 |
+| waitid；x86_64 247；其余三架构 95 | v7.1 [kernel_waitid](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c) | 按 idtype/options 观察或保留退出事件；MM 清理通过同一 zombie 发布边界可见 | sys_waitid → wait candidate/reap；退出生产者 complete_mm_exit → publish_zombie | 无法确认 | 本轮定向 executable 旅程不直接调用 waitid；不能从 wait4 结果推断其全部选择与输出语义 |
+
+### 7.2 回收边界
+
+仍有内核 pin 的 MM 不进入同步等待，完成后由原 worker 回收；NeedsRepair 保留
+实际资源并报告问题。内核测试、四架构定向程序与静态检查的精确源码均为
+271ba070e1，完整 system、ELF 写后缓存一致性、性能和独立审查尚未闭合。

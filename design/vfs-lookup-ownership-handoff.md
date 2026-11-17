@@ -1069,3 +1069,28 @@ socket 的类型及 uid/gid。Linux 6.8 在私有 01777 tmpfs 上同一程序 7 
 实现和测试。该临时目录修正还没有其余三架构的运行证据，不能据此声明完整批次
 或所有目标通过。精确源码、修前修后日志和摘要保存于生产证据的
 `temporary_directories_and_kernel_selection`。
+
+
+### 9.36 执行映像与映射退休
+
+原 executable 旅程增加存活时普通卸载必须 EBUSY 的判据，源码 `5082dc693f`
+仍在子进程退出后失败。`8a9f6c485c` 将 ELF 缓存改为拥有型条目：锁只保护 LRU
+查找与发布，文件读取、映射及最后引用销毁在锁外；普通卸载前退休目标
+FilesystemId 的缓存。该版仍失败，静态检查轮次中止，不记通过。
+
+临时诊断显示挂载在退出后还保留两份实际使用权，旧 MM 的后台回收晚于失败的
+卸载。`271ba070e1` 让退出发布 zombie、以及 exec 退出 process publication 后，
+同步无用户且无内核 pin 的旧 MM 内容退休。缓存失效与退出使用同一等待条件，
+只由 Freed 证明完成；仍有用户或内核访问的 MM 继续异步持有资源，失败的 backend
+保留修复所有者。ProcessData 兜底 Drop 不等待。临时日志代码已全部移除。
+
+同一 C 文件在 x86_64、AArch64、RISC-V 和 LoongArch64 均为 xtask 1/1、最外层
+0，覆盖存活 busy、退出后普通卸载、实际 proc executable 身份及 unlinked 对象。
+相同程序在 Linux 6.8 的私有 PID、用户和挂载命名空间通过。该版一包标准库、
+Kernel 四目标 72 项 Clippy 及 x86_64 真实内核测试均通过；各自精确汇总、ELF、
+源码和日志摘要记录于 `executable_cache_and_mapping_retirement`。
+
+完整 system 尚未在此版本重跑，不能把前版 536/541 的五项失败直接改写为四项。
+另已在远端 b8a1ecdf0b 的 LoongArch64 完整批次观察到 readonly remount 的 EBUSY，
+需在后续完整批次继续确认。ELF 头缓存的写后失效、同条件性能以及原独立审查与
+验收范围继续保留。
