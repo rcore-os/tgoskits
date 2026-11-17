@@ -106,7 +106,9 @@ impl UnmountPlan {
     }
 
     fn revalidate_locked(&self) -> Result<(), UnmountCommitError> {
-        if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != self.topology_version {
+        if self.topology_version == u64::MAX
+            || MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != self.topology_version
+        {
             return Err(UnmountCommitError::TopologyChanged);
         }
         self.revalidate_targets_locked()
@@ -164,7 +166,7 @@ impl UnmountPlan {
                 retired.attachments.push(guard);
             }
         }
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        advance_mount_topology();
         Ok(retired)
     }
 
@@ -223,6 +225,9 @@ impl Mountpoint {
         kind: UnmountKind,
         owned: Option<&MountUseGuard>,
     ) -> VfsResult<UnmountPlan> {
+        if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) == u64::MAX {
+            return Err(VfsError::ValueOverflow);
+        }
         if self.is_root() {
             return Err(VfsError::InvalidInput);
         }

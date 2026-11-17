@@ -75,6 +75,14 @@ pub trait NodeOps: Send + Sync + 'static {
     /// Gets the metadata of the node.
     fn metadata(&self) -> VfsResult<Metadata>;
 
+    /// Reads current inode metadata without I/O or waiting for exclusion.
+    ///
+    /// Implementations must only try synchronization and must not fall back to
+    /// `metadata`. An unavailable or unaudited producer returns `WouldBlock`.
+    fn cached_metadata(&self) -> VfsResult<Metadata> {
+        Err(VfsError::WouldBlock)
+    }
+
     /// Updates the metadata of the node.
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
@@ -338,6 +346,29 @@ impl DirEntry {
             metadata.node_type = self.0.node_type;
             metadata
         })
+    }
+
+    pub(crate) fn cached_metadata(&self) -> VfsResult<Metadata> {
+        self.0.node.cached_metadata().map(|mut metadata| {
+            metadata.node_type = self.0.node_type;
+            metadata
+        })
+    }
+
+    pub(crate) fn cached_parent(&self) -> VfsResult<Option<DirEntry>> {
+        let reference = self.0.reference.try_lock().ok_or(VfsError::WouldBlock)?;
+        match reference.state {
+            NameState::Root | NameState::Linked => Ok(reference.parent.clone()),
+            NameState::Unlinked | NameState::Untrusted => Err(VfsError::WouldBlock),
+        }
+    }
+
+    pub(crate) fn cached_name_state(&self) -> VfsResult<NameState> {
+        self.0
+            .reference
+            .try_lock()
+            .map(|reference| reference.state)
+            .ok_or(VfsError::WouldBlock)
     }
 
     pub fn downcast<T: NodeOps>(&self) -> VfsResult<Arc<T>> {

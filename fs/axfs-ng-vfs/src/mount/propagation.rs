@@ -418,7 +418,7 @@ impl Mountpoint {
         } else {
             self.set_propagation_locked(propagation, &mut retirement);
         }
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        advance_mount_topology();
     }
 
     pub fn set_shared(self: &Arc<Self>) {
@@ -488,7 +488,7 @@ impl Mountpoint {
         let mut retirement = RelationRetirement::default();
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         self.join_shared_group_locked(source, &mut retirement);
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        advance_mount_topology();
     }
 
     fn attach_child(

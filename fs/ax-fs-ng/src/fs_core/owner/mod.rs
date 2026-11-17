@@ -95,6 +95,17 @@ impl FsContextOwner {
     /// backend call, topology acquisition, registry access, or owner increment.
     pub fn snapshot(&self) -> FsContextSnapshot {
         let state = self.state.lock_irqsave();
+        self.snapshot_state(&state)
+    }
+
+    /// Copies the same owned paths, returning `WouldBlock` on lock contention.
+    /// No initialization, backend call or additional admission is performed.
+    pub fn try_snapshot(&self) -> VfsResult<FsContextSnapshot> {
+        let state = self.state.try_lock_irqsave().ok_or(VfsError::WouldBlock)?;
+        Ok(self.snapshot_state(&state))
+    }
+
+    fn snapshot_state(&self, state: &FsState) -> FsContextSnapshot {
         FsContextSnapshot {
             view: FsContext::from_paths(
                 self.namespace.clone(),

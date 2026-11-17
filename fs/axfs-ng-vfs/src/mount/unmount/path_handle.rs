@@ -43,6 +43,18 @@ impl PathHandle {
         Ok(Self { location, guard })
     }
 
+    pub(crate) fn acquire_cached(location: Location) -> VfsResult<Self> {
+        Self::check_filesystem(&location)?;
+        // The real admission ends before allocating the shared guard. The use
+        // remains counted throughout; final observation checks follow in the
+        // closed cache-only walker.
+        let guard = location.mountpoint.try_acquire_use()?;
+        Ok(Self {
+            location,
+            guard: Arc::new(guard),
+        })
+    }
+
     /// Shares this use with another entry on the exact same mount.
     ///
     /// A different mount (including a bind of the same filesystem), or a

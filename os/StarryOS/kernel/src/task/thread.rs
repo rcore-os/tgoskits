@@ -73,6 +73,14 @@ impl ThreadScope {
         operation(unsafe { &*self.scope.get() })
     }
 
+    pub(super) fn try_read<R>(&self, operation: impl FnOnce(&Scope) -> R) -> Option<R> {
+        let _access = self.access.try_lock()?;
+        // SAFETY: the acquired access mutex excludes the only mutable path,
+        // exactly as in `read`. The eagerly initialized Scope remains owned
+        // by this ThreadScope; no reference can escape the closure's borrow.
+        Some(operation(unsafe { &*self.scope.get() }))
+    }
+
     fn new(scope: Scope) -> Self {
         Self {
             scope: UnsafeCell::new(scope),
@@ -978,6 +986,10 @@ impl Thread {
     /// Returns a credential snapshot.
     pub fn cred(&self) -> Arc<Cred> {
         self.security.cred.lock().clone()
+    }
+
+    pub(super) fn try_cred(&self) -> Option<Arc<Cred>> {
+        self.security.cred.try_lock().map(|cred| cred.clone())
     }
 
     fn set_cred_single(&self, update: &ProcessNamespaceUpdate<'_>, new_cred: Arc<Cred>) {

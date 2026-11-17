@@ -112,7 +112,7 @@ impl MountNamespace {
             let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
             let (root, mounts) = self.root_mount.clone_tree_locked(false, &mut relations);
             *root.root_role.lock() = MountRootRole::NamespaceAnchor;
-            MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+            advance_mount_topology();
             (root, mounts)
         };
         NamespaceClone {

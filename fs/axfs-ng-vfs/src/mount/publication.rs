@@ -178,7 +178,7 @@ impl Location {
                     &mut retirement.propagation,
                 )?;
             }
-            MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+            advance_mount_topology();
             Ok(mount.clone())
         })();
         #[cfg(test)]
@@ -260,7 +260,7 @@ impl Mountpoint {
                     &mut retirement.propagation,
                 )?;
             }
-            MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+            advance_mount_topology();
             Ok(())
         })();
         #[cfg(test)]

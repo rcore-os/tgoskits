@@ -10,7 +10,11 @@ impl MountObservation {
         let _topology = MOUNT_TOPOLOGY_MUTATION
             .try_lock()
             .ok_or(VfsError::WouldBlock)?;
-        Ok(Self(MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire)))
+        let version = MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire);
+        if version == u64::MAX {
+            return Err(VfsError::WouldBlock);
+        }
+        Ok(Self(version))
     }
 
     pub fn validate(self) -> VfsResult<()> {

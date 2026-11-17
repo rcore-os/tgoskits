@@ -203,7 +203,7 @@ impl MountPivotRetirement {
             self.traversal.push(previous);
         }
         self.publish_slot(2, put_slot);
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        advance_mount_topology();
         Ok(())
     }
 

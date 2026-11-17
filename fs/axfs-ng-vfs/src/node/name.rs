@@ -29,16 +29,16 @@ pub struct NameObservation(u64);
 
 impl NameObservation {
     pub fn capture() -> VfsResult<Self> {
-        let topology = NAMING_TOPOLOGY.lock();
-        if topology.writers != 0 {
+        let topology = NAMING_TOPOLOGY.try_lock().ok_or(VfsError::WouldBlock)?;
+        if topology.writers != 0 || topology.version == u64::MAX {
             return Err(VfsError::WouldBlock);
         }
         Ok(Self(topology.version))
     }
 
     pub fn validate(self) -> VfsResult<()> {
-        let topology = NAMING_TOPOLOGY.lock();
-        if topology.writers == 0 && topology.version == self.0 {
+        let topology = NAMING_TOPOLOGY.try_lock().ok_or(VfsError::WouldBlock)?;
+        if topology.writers == 0 && topology.version != u64::MAX && topology.version == self.0 {
             Ok(())
         } else {
             Err(VfsError::WouldBlock)
@@ -95,7 +95,9 @@ impl NamePublication {
         let start_version = {
             let mut topology = NAMING_TOPOLOGY.lock();
             if observation.is_some_and(|observation| {
-                topology.writers != 0 || topology.version != observation.0
+                topology.writers != 0
+                    || topology.version == u64::MAX
+                    || topology.version != observation.0
             }) {
                 return Err(VfsError::WouldBlock);
             }
@@ -125,7 +127,7 @@ impl NamePublication {
             .domains
             .get_mut(&self.domain)
             .expect("live namespace publication domain");
-        if domain.version != self.start_version {
+        if domain.version == u64::MAX || domain.version != self.start_version {
             // The backend completed while another publication overtook it.
             // Pinned owners are gathered outside this lock; only pure state
             // writes occur here, and all final drops follow unlock.
@@ -133,12 +135,12 @@ impl NamePublication {
                 entry.set_name_state(NameState::Untrusted);
             }
         }
-        domain.version = domain.version.wrapping_add(1);
+        domain.version = domain.version.saturating_add(1);
         domain.writers -= 1;
         if domain.writers == 0 {
             topology.domains.remove(&self.domain);
         }
-        topology.version = topology.version.wrapping_add(1);
+        topology.version = topology.version.saturating_add(1);
         topology.writers -= 1;
     }
 }

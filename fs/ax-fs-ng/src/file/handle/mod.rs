@@ -32,6 +32,21 @@ pub struct File {
 }
 
 impl File {
+    /// Owns a resolved path without ordinary open or backend flag callbacks.
+    ///
+    /// This description permits path operations only. Its subsequent metadata
+    /// operations still consult the original inode rather than a saved copy.
+    pub fn path_only(path: PathHandle) -> Self {
+        Self {
+            inner: FileBackend::Direct(path.clone()),
+            flags: AtomicU8::new(FileFlags::PATH.bits()),
+            position: None,
+            access_flags: AtomicU8::new(0),
+            write_access: None,
+            path,
+        }
+    }
+
     /// Creates a low-level file without registering inode write access.
     ///
     /// Use [`OpenOptions`] for ordinary opens. Anonymous pseudo files such as

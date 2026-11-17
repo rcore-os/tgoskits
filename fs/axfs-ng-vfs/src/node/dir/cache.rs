@@ -5,7 +5,7 @@ use alloc::{borrow::ToOwned, collections::VecDeque, string::String, sync::Arc, v
 use hashbrown::{HashMap, HashSet};
 
 use super::{DirEntry, DirNode, LookupConflict, LookupStep, VfsError};
-use crate::{MutationRetire, NameState, RawSpinLock, WeakDirEntry};
+use crate::{MutationRetire, NameState, RawSpinLock, VfsResult, WeakDirEntry};
 
 const MAX_NEGATIVE_ENTRIES: usize = 128;
 const MAX_RETAINED_ENTRIES: usize = 256;
@@ -460,6 +460,44 @@ impl DirNode {
             retain(&winner);
         }
         LookupStep::Found(winner)
+    }
+
+    /// Observes the existing cache only; never invokes the backend lookup.
+    pub(crate) fn cached_child(&self, name: &str) -> VfsResult<DirEntry> {
+        if !self.ops.is_cacheable_child(name) {
+            return Err(VfsError::WouldBlock);
+        }
+        let (candidate, missing_version) = {
+            let cache = self.cache.try_lock().ok_or(VfsError::WouldBlock)?;
+            if cache.writers != 0 {
+                return Err(VfsError::WouldBlock);
+            }
+            let candidate = cache
+                .valid
+                .contains(name)
+                .then(|| cache.entries.get(name).and_then(WeakDirEntry::upgrade))
+                .flatten();
+            let missing_version = cache
+                .missing
+                .contains(name)
+                .then_some(cache.missing_version)
+                .flatten();
+            (candidate, missing_version)
+        };
+        if let Some(candidate) = candidate {
+            return match candidate.cached_name_state()? {
+                NameState::Root | NameState::Linked => Ok(candidate),
+                NameState::Unlinked | NameState::Untrusted => Err(VfsError::WouldBlock),
+            };
+        }
+        if let Some(version) = missing_version
+            && self.ops.negative_cache_generation()? == Some(version)
+        {
+            // The surrounding PathObservation rejects namespace publication
+            // overlapping this observation, including another inode alias.
+            return Err(VfsError::NotFound);
+        }
+        Err(VfsError::WouldBlock)
     }
 
     pub fn lookup_cache(&self, name: &str) -> Option<DirEntry> {

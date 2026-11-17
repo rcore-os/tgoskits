@@ -7,7 +7,7 @@ impl Drop for MountNamespace {
             let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
             let mut retirement = NamespaceRetirement::collect_locked(&self.root_mount);
             retirement.disconnect_locked();
-            MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+            advance_mount_topology();
             retirement
         };
         // This includes every scan Arc, removed connection, attachment guard,

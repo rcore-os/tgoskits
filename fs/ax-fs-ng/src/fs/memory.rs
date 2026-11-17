@@ -625,6 +625,24 @@ impl NodeOps for MemoryNode {
         Ok(metadata)
     }
 
+    fn cached_metadata(&self) -> VfsResult<Metadata> {
+        let mut metadata = self
+            .inode
+            .metadata
+            .try_lock_irqsave()
+            .ok_or(VfsError::WouldBlock)?
+            .clone();
+        metadata.size = match &self.inode.content {
+            NodeContent::File(content) => content.length.load(AtomicOrdering::Acquire),
+            NodeContent::Dir(dir) => dir
+                .entries
+                .try_lock_irqsave()
+                .ok_or(VfsError::WouldBlock)?
+                .len() as u64,
+        };
+        Ok(metadata)
+    }
+
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
         let _mutation = if update.mode.is_some() || update.owner.is_some() {
             Some(self.fs.mutation.lock())

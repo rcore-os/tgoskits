@@ -330,6 +330,14 @@ impl ProcessData {
         }
     }
 
+    pub(super) fn try_namespace_update(&self) -> Option<ProcessNamespaceUpdate<'_>> {
+        Some(ProcessNamespaceUpdate {
+            owner: self,
+            publication: &self.nsproxy,
+            _guard: self.namespace_update.try_lock()?,
+        })
+    }
+
     /// Releases the process-owned cgroup namespace after final exit.
     pub(crate) fn release_cgroup_namespace(&self) {
         let update = self.namespace_update();
@@ -373,6 +381,12 @@ impl ProcessNamespaceUpdate<'_> {
 
     pub(crate) fn snapshot(&self) -> Arc<NsProxy> {
         self.publication.lock_irqsave().clone()
+    }
+
+    pub(super) fn try_snapshot(&self) -> Option<Arc<NsProxy>> {
+        self.publication
+            .try_lock_irqsave()
+            .map(|proxy| proxy.clone())
     }
 
     pub(crate) fn prepare_publication(&self, replacement: NsProxy) -> PreparedNamespacePublication {

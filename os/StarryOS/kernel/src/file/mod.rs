@@ -1,4 +1,6 @@
 // Shared contiguous dma-buf primitive for GPUs and other DMA devices.
+mod cached;
+pub(crate) use cached::CachedFileTable;
 pub mod dmabuf;
 pub mod epoll;
 #[cfg(test)]

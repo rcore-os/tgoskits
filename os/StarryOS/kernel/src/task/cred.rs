@@ -112,6 +112,20 @@ impl FsCredentialsSnapshot {
         }
     }
 
+    pub(super) fn try_capture_under(
+        thread: &Thread,
+        update: &ProcessNamespaceUpdate<'_>,
+    ) -> crate::StarryResult<Self> {
+        assert!(update.owns(&thread.proc_data));
+        let user_ns = update
+            .try_snapshot()
+            .ok_or(crate::StarryError::WouldBlock)?
+            .user_ns
+            .clone();
+        let cred = thread.try_cred().ok_or(crate::StarryError::WouldBlock)?;
+        Ok(Self { cred, user_ns })
+    }
+
     /// Borrows the immutable credential, including its supplementary groups.
     pub(crate) fn credentials(&self) -> &Cred {
         &self.cred

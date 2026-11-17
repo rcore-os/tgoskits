@@ -476,13 +476,10 @@ pub fn sys_openat2(
         return Err(StarryError::InvalidInput);
     }
 
-    if how_value.resolve & RESOLVE_CACHED as u64 != 0 {
-        if uflags & (O_CREAT | O_TRUNC | (O_TMPFILE & !O_DIRECTORY)) != 0 {
-            return Err(StarryError::WouldBlock);
-        }
-        // Cache-only traversal needs its own nonblocking snapshot and final
-        // handoff. Never construct a blocking ordinary FsView for this path.
-        return Err(StarryError::OperationNotSupported);
+    if how_value.resolve & RESOLVE_CACHED as u64 != 0
+        && uflags & (O_CREAT | O_TRUNC | (O_TMPFILE & !O_DIRECTORY)) != 0
+    {
+        return Err(StarryError::WouldBlock);
     }
     if how_value.resolve == 0 {
         return sys_openat(current, dirfd, path, flags, mode);
@@ -522,6 +519,9 @@ pub fn sys_openat2(
     } else {
         dirfd
     };
+    if how_value.resolve & RESOLVE_CACHED as u64 != 0 {
+        return open_cached_path(current, dirfd, &path, uflags, policy);
+    }
     let thread = current.as_thread();
     let mode = mode & !thread.proc_data.umask();
     let caller = crate::task::ProcLinkCaller::capture(thread);
@@ -534,6 +534,50 @@ pub fn sys_openat2(
         add_to_fd(current, &view, result, flags as u32, mount_table_namespace)
     })
     .map(|fd| fd as isize)
+}
+
+fn open_cached_path(
+    current: &crate::task::UserTaskRef,
+    dirfd: c_int,
+    path: &str,
+    flags: u32,
+    policy: ax_fs_ng::LookupPolicy,
+) -> StarryResult<isize> {
+    use axfs_ng_vfs::{CachedLookup, CachedLookupContext, CachedLookupOptions};
+
+    if flags & O_PATH == 0 {
+        // Ordinary open capabilities (including writer and endpoint admission)
+        // are distinct from path ownership and must not invoke a slow fallback.
+        return Err(StarryError::WouldBlock);
+    }
+    let binding = current.as_thread().try_cached_fs_binding()?;
+    let start = if dirfd == AT_FDCWD {
+        binding.fs.cwd().clone()
+    } else {
+        binding.files.directory(dirfd)?
+    };
+    let lookup = CachedLookup::new(CachedLookupContext {
+        root: binding.fs.root(),
+        start: &start,
+        credentials: binding.credentials.as_mutation_credentials(),
+        policy,
+    })?;
+    let path = lookup.resolve(
+        path,
+        CachedLookupOptions {
+            follow_final_link: flags & O_NOFOLLOW == 0,
+            require_directory: flags & O_DIRECTORY != 0,
+        },
+    )?;
+    let file: Arc<dyn FileLike> = if path.location().is_dir() {
+        Arc::new(Directory::new(path, flags))
+    } else {
+        Arc::new(File::new(ax_fs_ng::File::path_only(path), flags))
+    };
+    binding
+        .files
+        .install(file, flags & O_CLOEXEC != 0)
+        .map(|fd| fd as isize)
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.

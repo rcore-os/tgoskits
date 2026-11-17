@@ -1,6 +1,9 @@
-//! Typed ordinary lookup policy; cache-only lookup needs a separate capability.
+//! Path policy shared by ordinary and cache-only resolution.
+
+mod cached;
 
 use bitflags::bitflags;
+pub use cached::{CachedLookup, CachedLookupContext, CachedLookupOptions};
 
 /// Root selection for one operation, independent of its relative start path.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -12,7 +15,7 @@ pub enum LookupScope {
 }
 
 bitflags! {
-    /// Restrictions enforced at each transition of an ordinary path session.
+    /// Restrictions enforced at every path transition.
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub struct LookupRestrictions: u8 {
         const NO_XDEV = 1;

@@ -248,6 +248,7 @@ pub trait DirNodeOps: NodeOps {
 
     /// Returns whether a child may be cached. Mixed directories can keep
     /// stable mount points cached while resolving changing entries on demand.
+    /// This policy query must not perform I/O or wait for filesystem locks.
     fn is_cacheable_child(&self, _name: &str) -> bool {
         self.is_cacheable()
     }

@@ -49,6 +49,13 @@ static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
 
 static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 
+// All callers own MOUNT_TOPOLOGY_MUTATION. Exhaustion permanently disables
+// optimistic observations rather than making a previously issued token valid.
+fn advance_mount_topology() {
+    let version = MOUNT_TOPOLOGY_VERSION.load(Ordering::Relaxed);
+    MOUNT_TOPOLOGY_VERSION.store(version.saturating_add(1), Ordering::Release);
+}
+
 /// A completed mount topology, invalidated by a later or in-flight mutation.
 ///
 /// Capture and validation only try the real topology gate, excluding partial
@@ -374,6 +381,20 @@ impl Mountpoint {
         self.acquire_use_locked()
     }
 
+    fn try_acquire_use(self: &Arc<Self>) -> VfsResult<MountUseGuard> {
+        let _topology = MOUNT_TOPOLOGY_MUTATION
+            .try_lock()
+            .ok_or(VfsError::WouldBlock)?;
+        let mut state = self.active_uses.try_lock().ok_or(VfsError::WouldBlock)?;
+        if state.normally_unmounted {
+            return Err(VfsError::WouldBlock);
+        }
+        state.users = state.users.checked_add(1).ok_or(VfsError::ValueOverflow)?;
+        Ok(MountUseGuard {
+            mountpoint: self.clone(),
+        })
+    }
+
     fn acquire_use_locked(self: &Arc<Self>) -> VfsResult<MountUseGuard> {
         let mut state = self.active_uses.lock();
         if state.normally_unmounted {
@@ -663,7 +684,7 @@ impl Mountpoint {
         let mut retirement = propagation::RelationRetirement::default();
         let topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let (result, clones) = self.clone_tree_locked(false, &mut retirement);
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        advance_mount_topology();
         drop(topology);
         drop(clones);
         result
@@ -921,7 +942,7 @@ impl Mountpoint {
             let mut location = self.location.lock();
             location.replace(new_location.clone())
         };
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        advance_mount_topology();
         drop(topology);
         drop((
             removed_child,
@@ -1013,6 +1034,29 @@ impl Location {
 
     pub fn entry(&self) -> &DirEntry {
         &self.entry
+    }
+
+    pub(crate) fn cached_cover(&self) -> VfsResult<Option<Self>> {
+        let mount = self
+            .mountpoint
+            .children
+            .try_lock()
+            .ok_or(VfsError::WouldBlock)?
+            .get(&self.entry.key())
+            .cloned();
+        Ok(mount.map(|mount| {
+            let entry = mount.root.clone();
+            Self::new(mount, entry)
+        }))
+    }
+
+    pub(crate) fn cached_covered_location(&self) -> VfsResult<Option<Self>> {
+        Ok(self
+            .mountpoint
+            .location
+            .try_lock()
+            .ok_or(VfsError::WouldBlock)?
+            .clone())
     }
 
     pub fn is_root_of_mount(&self) -> bool {
@@ -1844,7 +1888,7 @@ impl Location {
             .children
             .lock()
             .insert(self.entry.key(), result.clone());
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        advance_mount_topology();
         Ok(result)
     }
 

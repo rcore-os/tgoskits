@@ -33,6 +33,70 @@ fn missing_names_are_cached_without_evicting_positive_owners() {
 }
 
 #[test]
+fn cache_only_observation_never_falls_back_and_rejects_expired_negatives() {
+    let (directory, backend) = fixture();
+    let child = create_directory(&directory, "present");
+    let root = crate::PathHandle::acquire(directory.0.clone()).unwrap();
+    let metadata_reads = backend.metadata_reads.load(Ordering::Relaxed);
+    let lookup = crate::CachedLookup::new(crate::CachedLookupContext {
+        root: &root,
+        start: &root,
+        credentials: crate::MutationCredentials::root(),
+        policy: crate::LookupPolicy::default(),
+    })
+    .unwrap();
+    assert!(matches!(
+        lookup.resolve(
+            "present",
+            crate::CachedLookupOptions {
+                follow_final_link: true,
+                require_directory: false,
+            },
+        ),
+        Err(VfsError::WouldBlock)
+    ));
+    assert_eq!(
+        backend.metadata_reads.load(Ordering::Relaxed),
+        metadata_reads
+    );
+    assert!(matches!(
+        directory.cached_child("cold"),
+        Err(VfsError::WouldBlock)
+    ));
+    let before = backend.lookups.load(Ordering::Relaxed);
+    assert!(directory.cached_child("present").unwrap().ptr_eq(&child));
+    assert_eq!(backend.lookups.load(Ordering::Relaxed), before);
+
+    assert_missing(&directory, "missing");
+    let before = backend.lookups.load(Ordering::Relaxed);
+    assert!(matches!(
+        directory.cached_child("missing"),
+        Err(VfsError::NotFound)
+    ));
+    *backend.generation.lock() = Ok(Some(1));
+    assert!(matches!(
+        directory.cached_child("missing"),
+        Err(VfsError::WouldBlock)
+    ));
+    assert_eq!(backend.lookups.load(Ordering::Relaxed), before);
+
+    {
+        let _writer = directory.cache.lock();
+        assert!(matches!(
+            directory.cached_child("present"),
+            Err(VfsError::WouldBlock)
+        ));
+    }
+    assert!(directory.cached_child("present").unwrap().ptr_eq(&child));
+    directory.clear_cached_entries();
+    assert!(matches!(
+        directory.cached_child("present"),
+        Err(VfsError::WouldBlock)
+    ));
+    assert_eq!(backend.lookups.load(Ordering::Relaxed), before);
+}
+
+#[test]
 fn non_not_found_errors_are_never_cached() {
     let (directory, backend) = fixture();
     for error in [
@@ -536,6 +600,7 @@ struct ScriptedDirectory {
     mutation: std::sync::Mutex<()>,
     entries: RawSpinLock<HashMap<String, DirEntry>>,
     lookups: AtomicUsize,
+    metadata_reads: AtomicUsize,
     lookup_error: RawSpinLock<VfsError>,
     after_lookup: RawSpinLock<Option<Box<dyn FnOnce() + Send>>>,
     fail_after_create: AtomicBool,
@@ -552,6 +617,7 @@ impl Default for ScriptedDirectory {
             mutation: std::sync::Mutex::new(()),
             entries: RawSpinLock::new(HashMap::new()),
             lookups: AtomicUsize::new(0),
+            metadata_reads: AtomicUsize::new(0),
             lookup_error: RawSpinLock::new(VfsError::NotFound),
             after_lookup: RawSpinLock::new(None),
             fail_after_create: AtomicBool::new(false),
@@ -569,6 +635,7 @@ impl NodeOps for ScriptedDirectory {
         1
     }
     fn metadata(&self) -> VfsResult<Metadata> {
+        self.metadata_reads.fetch_add(1, Ordering::Relaxed);
         if let Some(parent) = &self.creation_parent {
             return Ok(parent.clone());
         }
@@ -615,7 +682,7 @@ impl DirNodeOps for ScriptedDirectory {
         if matches!(self.policy, CachePolicy::PositiveOnly) {
             Ok(None)
         } else {
-            *self.generation.lock()
+            *self.generation.try_lock().ok_or(VfsError::WouldBlock)?
         }
     }
 
