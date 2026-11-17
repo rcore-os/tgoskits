@@ -2831,6 +2831,52 @@ mod tests {
     }
 
     #[test]
+    fn timer_vblank_preserves_the_published_edge_until_the_next_frame() {
+        let mut fx = Fixture::new(1);
+        let dev = fx.dev();
+        const FRAME_NS: i64 = 4_000_000;
+        // SAFETY: The fixture owns the CRTC, locks and vblank state. The
+        // hrtimer has no callback and is synchronously cancelled before each
+        // observation, retaining its deadline without asynchronous mutation.
+        unsafe {
+            let crtc = fx.crtc(0);
+            let v = fx.vblank(0);
+            (*v).enabled = true;
+            (*v).refcount.counter.store(1, Ordering::SeqCst);
+            (*v).framedur_ns = FRAME_NS as i32;
+            (*(*crtc).funcs).get_vblank_timestamp = Some(
+                crate::drm_vblank_helper_upstream::drm_crtc_vblank_helper_get_vblank_timestamp_from_timer,
+            );
+            let vtimer = core::ptr::addr_of_mut!((*v).vblank_timer);
+            (*vtimer).crtc = crtc;
+            (*vtimer).interval = FRAME_NS;
+            spin_lock_init_ptr(core::ptr::addr_of_mut!((*vtimer).interval_lock));
+            let timer = core::ptr::addr_of_mut!((*vtimer).timer);
+            drm_kapi::timer::hrtimer_setup(timer, None, CLOCK_MONOTONIC, 0);
+            drm_kapi::timer::hrtimer_start_range_ns(timer, FRAME_NS, 0, 0);
+            drm_kapi::timer::hrtimer_cancel(timer);
+
+            // Enabling publishes a clock sample after the timer was armed.
+            // Until its first expiry, expiry - interval precedes that sample.
+            store_vblank(dev, 0, 0, FRAME_NS / 4, 0);
+            assert!(drm_handle_vblank(dev, 0));
+            let mut timestamp = 0;
+            assert_eq!(drm_crtc_vblank_count_and_time(crtc, &mut timestamp), 0);
+            assert_eq!(timestamp, FRAME_NS / 4);
+
+            // A forwarded deadline contributes its real completed edge once.
+            drm_kapi::timer::hrtimer_start_range_ns(timer, 2 * FRAME_NS, 0, 0);
+            drm_kapi::timer::hrtimer_cancel(timer);
+            assert!(drm_handle_vblank(dev, 0));
+            assert_eq!(drm_crtc_vblank_count_and_time(crtc, &mut timestamp), 1);
+            assert_eq!(timestamp, FRAME_NS);
+            assert!(drm_handle_vblank(dev, 0));
+            assert_eq!(drm_crtc_vblank_count_and_time(crtc, &mut timestamp), 1);
+            assert_eq!(timestamp, FRAME_NS);
+        }
+    }
+
+    #[test]
     fn zero_offdelay_never_disables() {
         let mut fx = Fixture::new(1);
         let dev = fx.dev();
