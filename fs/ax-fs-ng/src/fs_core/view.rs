@@ -1,6 +1,6 @@
 //! Operation-local path selection and its one immutable calling identity.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 
 use ax_io::{Read, Write};
 use axfs_ng_vfs::{
