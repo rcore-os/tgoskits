@@ -1,6 +1,6 @@
 # AxVisor 测试
 
-`normal` 保留自动化功能测试，`manual` 保留交互式测试和手动启动配置。目录整理和共享启动不改变原测试步骤、断言、压力参数及未登记项目的状态。
+`normal` 保留自动化功能测试；交互演示与手动启动配置位于 `apps/suite/axvisor`。目录整理和共享启动不改变原测试步骤、断言、压力参数及未登记项目的状态。
 
 ## 目录与启动边界
 
@@ -48,7 +48,7 @@ checks = ["tests/robot-virtual.toml", "tests/network.toml"]
 
 axbuild先展开引用。纯串口组沿用ostool，混合组由上层串口适配器顺序执行原步骤，ostool继续负责QEMU进程与整组超时；不修改ostool。不得同时维护内联检查和外部引用，空清单、缺失/重复引用及无可执行检查明确失败。全部检查完成才能通过；任一失败、超时或未完成均向外返回失败。HTTP探针每项保留预算，整批结束或失败后才关闭QEMU。
 
-串口、HTTP混合组在Unix宿主上共用一个QEMU生命周期，严格按checks及requires展开顺序执行。串口socket以wait=on从开机捕获，全部步骤与探针成功且QEMU正常退出后才通过；退出时仍检查剩余串口失败。纯HTTP及原有前置启动日志检查保留原流程。自动检查使用`axvisor test`；手动Web启动使用`manual/common`的原hostfwd配置，不把只启动QEMU当作测试通过。
+串口、HTTP混合组在Unix宿主上共用一个QEMU生命周期，严格按checks及requires展开顺序执行。串口socket以wait=on从开机捕获，全部步骤与探针成功且QEMU正常退出后才通过；退出时仍检查剩余串口失败。纯HTTP及原有前置启动日志检查保留原流程。自动检查使用`axvisor test`；手动Web启动使用`apps/suite/axvisor/qemu/aarch64`内的hostfwd配置，不把只启动QEMU当作测试通过。
 
 ## 如何看已登记测试
 
@@ -56,7 +56,7 @@ axbuild先展开引用。纯串口组沿用ostool，混合组由上层串口适�
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal --list
 cargo xtask axvisor test qemu --arch x86_64 --test-group normal --list
 cargo xtask axvisor test board --test-group normal --list
-cargo xtask axvisor test qemu --arch aarch64 --test-group manual --list
+cargo xtask axvisor app qemu --app-root apps/suite/axvisor --group qemu --arch aarch64 --list
 ```
 
 `--list`表示可以发现的启动组，不表示进入CI或已经通过。自动范围以`.github/ci/checks/axvisor.toml`为准；夜间仍由`axvisor-nightly.toml`选择`apps/axvisor`，性能仍由`benchmarks.toml`选择原入口。
@@ -95,9 +95,9 @@ axbuild是独立宿主库，测试成员、目录策略和完成条件属于这�
 
 ## 公共资源归属
 
-QEMU专用共享资源放`normal/qemu/common`；跨板型共享放`normal/board/common`；仅在QEMU与板卡实际共同使用时建立`normal/common`。没有消费者就不创建空common。架构/板型专用入口留在对应功能目录，手动配置留manual。
+QEMU专用共享资源放`normal/qemu/common`；跨板型共享放`normal/board/common`；仅在QEMU与板卡实际共同使用时建立`normal/common`。没有消费者就不创建空common。架构/板型专用入口留在对应功能目录，手动配置留`apps/suite/axvisor`。
 
-当前`qemu/common/web-ui/http_probe.py`由ARM web-ui直接执行，并被VMX web-ui-vmx入口导入。VMX入口位于`qemu/x86_64/vmx/web-ui/dashboard/default_guest_probe.py`，其asset_dir显式声明公共辅助目录，同时用于运行时导入和CI共享变更路由。手动demo配方与hostfwd一起位于`manual/common/web-ui`；它们不会被注册为自动启动组。
+当前`qemu/common/web-ui/http_probe.py`由ARM web-ui直接执行，并被VMX web-ui-vmx入口导入。VMX入口位于`qemu/x86_64/vmx/web-ui/dashboard/default_guest_probe.py`，其asset_dir显式声明公共辅助目录，同时用于运行时导入和CI共享变更路由。手动demo配方与hostfwd位于`apps/suite/axvisor/qemu/aarch64/web-ui-demo`；API与三客机演示同属apps/suite，使用直接QEMU命令交互，不作为自动测试通过。详见[手动QEMU场景](../../apps/suite/axvisor/qemu/aarch64/README.md)。
 
 ### 仅声明文件的检查命名
 

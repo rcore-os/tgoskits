@@ -132,12 +132,12 @@ QEMU 或板卡命令行加入 `axvisor.vm_start=<id>[,<id>...]` 才会开机创�
 
 ```bash
 cargo xtask axvisor qemu \
-  -c test-suit/axvisor/normal/qemu/aarch64/web-ui/build-aarch64-unknown-none-softfloat.toml \
-  --qemu-config test-suit/axvisor/manual/common/web-ui/qemu-aarch64-hostfwd.toml \
+  -c apps/suite/axvisor/qemu/aarch64/web-ui-demo/demo-fs-build.toml \
+  --qemu-config apps/suite/axvisor/qemu/aarch64/web-ui-demo/qemu-aarch64-hostfwd.toml \
   --arch aarch64
 ```
 
-转发参数由用例目录里的 `web-ui/qemu-aarch64.toml` 派生：把它 `args` 中的网络项换成下面这一对，另存为 `qemu-aarch64-hostfwd.toml`，其余字段保持不变。
+演示目录已提供 `qemu-aarch64-hostfwd.toml`，其中的网络参数把本机8080转发到客户机内管理服务；需要其他端口时修改该文件的 `hostfwd`。
 
 ```text
 -netdev user,id=net0,hostfwd=tcp::8080-:8080 -device virtio-net-pci,netdev=net0
@@ -151,7 +151,7 @@ management HTTP server (axum) listening on 127.0.0.1:8080
 
 设置 `AXVM_HTTP_BIND = "0.0.0.0:8080"` 的受信任演示或板卡构建会把日志中的地址替换为该显式值。
 
-手工检查覆盖自动化用例之外的部分：根路径返回页面外壳，`/assets/` 下的资源带不可变缓存策略，未知路径返回 404；`GET /api/vms/pool` 的不可用条目带原因；同一终端通道的第二个订阅者收到 409；`/ws/events` 先发全量快照再发增量帧，而登记表仍以 `GET /api/vms` 为准。无盘（不接宿主根盘）与有盘（NVMe 根）两种托管路径分别由 `web-ui-diskless` 与 `web-ui` 两条 QEMU 用例覆盖。
+手工检查覆盖自动化用例之外的部分：根路径返回页面外壳，`/assets/` 下的资源带不可变缓存策略，未知路径返回 404；`GET /api/vms/pool` 的不可用条目带原因；同一终端通道的第二个订阅者收到 409；`/ws/events` 先发全量快照再发增量帧，而登记表仍以 `GET /api/vms` 为准。无盘（不接宿主根盘）与有盘（NVMe 根）两种托管路径分别由 `qemu/aarch64/memory-web` 与 `qemu/aarch64/general` 中的 dashboard 检查覆盖。
 
 | 现象 | 原因 | 处理 |
 | :-- | :-- | :-- |
@@ -162,13 +162,13 @@ management HTTP server (axum) listening on 127.0.0.1:8080
 | 浏览器无法连接 | QEMU 配置没有 `hostfwd` | 加入端口转发参数 |
 | 界面看不到终端面板 | 该构建没有启用 `web` | 启用该特性 |
 | 构建进程被杀、失败信息与代码无关 | 内存不足时 OOM killer 静默终止 cargo | 用 `CARGO_BUILD_JOBS=2` 限制并行度 |
-| `--qemu-config` 报No such file | 该参数相对**仓库根**，而用例注释里写的是相对用例目录 | 用 `test-suit/axvisor/manual/common/web-ui/qemu-<arch>-hostfwd.toml` |
+| `--qemu-config` 报No such file | 该参数相对**仓库根**，而用例注释里写的是相对用例目录 | 用 `apps/suite/axvisor/qemu/aarch64/web-ui-demo/qemu-aarch64-hostfwd.toml` |
 
 这些现象分别落在工具链、端口、特性配置和构建环境四类，按处理栏逐项排查即可。
 
 ### 1.5 本地演示配置
 
-自动测试的构建和启动配置位于`normal/qemu/<arch>/<启动组>`；公共Web实现位于`normal/qemu/common/web-ui`。手动演示配方`demo-fs-build.toml`与hostfwd配置一起放在`test-suit/axvisor/manual/common/web-ui/`，不匹配自动测试构建入口命名，因此不会增加测试启动。
+自动测试的构建和启动配置位于`normal/qemu/<arch>/<启动组>`；公共Web实现位于`normal/qemu/common/web-ui`。手动演示配方`demo-fs-build.toml`与hostfwd配置一起放在`apps/suite/axvisor/qemu/aarch64/web-ui-demo/`，不匹配自动测试构建入口命名，因此不会增加测试启动。
 
 当前演示配置启用 `web-ui` + `web` + `ax-driver/nvme`，并且**故意不带
 `vm_configs`**：启动时不建立 builtin 客户机，页面上的每一个客户机都来自操作者
@@ -180,8 +180,8 @@ management HTTP server (axum) listening on 127.0.0.1:8080
 ```bash
 # aarch64
 cargo xtask axvisor qemu \
-  -c test-suit/axvisor/manual/common/web-ui/demo-fs-build.toml \
-  --qemu-config test-suit/axvisor/manual/common/web-ui/qemu-aarch64-hostfwd.toml \
+  -c apps/suite/axvisor/qemu/aarch64/web-ui-demo/demo-fs-build.toml \
+  --qemu-config apps/suite/axvisor/qemu/aarch64/web-ui-demo/qemu-aarch64-hostfwd.toml \
   --arch aarch64
 
 ```

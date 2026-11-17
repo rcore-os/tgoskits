@@ -6,7 +6,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 add_executable(test-msgget-capacity src/main.c)
 target_include_directories(
     test-msgget-capacity
-    PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../common
+    PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../common/include
 )
 target_compile_options(test-msgget-capacity PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(test-msgget-capacity PRIVATE pthread)

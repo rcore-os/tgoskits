@@ -2,7 +2,7 @@
 #
 # Not a test case: the file name does not match the `build-<target>.toml` shape
 # the suite discovers, so it cannot show up in a test run. Drive it with
-#   cargo xtask axvisor qemu -c <this file> --qemu-config test-suit/axvisor/manual/common/web-ui/qemu-aarch64-hostfwd.toml --arch aarch64
+#   cargo xtask axvisor qemu -c <this file> --qemu-config apps/suite/axvisor/qemu/aarch64/web-ui-demo/qemu-aarch64-hostfwd.toml --arch aarch64
 # and open http://localhost:8080/.
 #
 # `vm_configs` is deliberately absent: no guest is registered or indexed as a
