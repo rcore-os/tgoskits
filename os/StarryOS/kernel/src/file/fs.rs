@@ -91,7 +91,7 @@ pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
         ResolveAtResult::File(file.inner().path_handle().clone())
     } else if let Some(file) = f
         .downcast_ref::<super::Pipe>()
-        .and_then(super::Pipe::named_file)
+        .and_then(super::Pipe::backing_file)
     {
         ResolveAtResult::File(file.inner().path_handle().clone())
     } else if let Some(dir) = f.downcast_ref::<Directory>() {

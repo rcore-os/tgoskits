@@ -353,7 +353,7 @@ pub fn sys_fstatfs(
         file.inner().location()
     } else if let Some(file) = file_like
         .downcast_ref::<crate::file::Pipe>()
-        .and_then(crate::file::Pipe::named_file)
+        .and_then(crate::file::Pipe::backing_file)
     {
         file.inner().location()
     } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {

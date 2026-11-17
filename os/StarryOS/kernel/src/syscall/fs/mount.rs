@@ -157,7 +157,7 @@ fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> b
         .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
         || fd
             .downcast_ref::<crate::file::Pipe>()
-            .and_then(crate::file::Pipe::named_file)
+            .and_then(crate::file::Pipe::backing_file)
             .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
         || fd
             .downcast_ref::<Directory>()

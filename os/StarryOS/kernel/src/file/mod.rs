@@ -944,7 +944,7 @@ fn notify_close_write(fd: &FileDescriptor) {
         || fd
             .inner
             .downcast_ref::<Pipe>()
-            .and_then(Pipe::named_file)
+            .and_then(Pipe::backing_file)
             .is_some();
     if (access == O_WRONLY || access == O_RDWR) && filesystem_backed {
         let path = fd.inner.path();

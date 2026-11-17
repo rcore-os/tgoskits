@@ -560,7 +560,7 @@ fn resolve_l_start(file: &Arc<dyn FileLike>, l_whence: i16, l_start: i64) -> Sta
     if whence != SEEK_CUR && whence != SEEK_END {
         return Err(StarryError::InvalidInput);
     }
-    let fifo = file.downcast_ref::<Pipe>().and_then(Pipe::named_file);
+    let fifo = file.downcast_ref::<Pipe>().and_then(Pipe::backing_file);
     let backing = fifo
         .map(Arc::as_ref)
         .or_else(|| file.downcast_ref::<File>())
