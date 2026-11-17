@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "scoped_lookup_policy",
+  "latest_evidence_section": "proc_self_and_held_link_read",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -3012,5 +3012,133 @@
         "sha256": "5e621497a7b75f49585f13337ced0b88dc249289fe98f69527a8fc63ca2c9008"
       }
     }
+  },
+  "proc_self_and_held_link_read": {
+    "implementation_commits": [
+      "c5ae587338",
+      "ac8e8bdd61"
+    ],
+    "test_sha256": "bd87f46c1183f12000cf0053c08b52d6ce0235fb4a000111d6e5f4e4fa2d3d89",
+    "before": {
+      "source": "ca468249a1b7a6d2af7226666c4d9a8a185a0d19",
+      "outer_exit": 1,
+      "failure": "O_PATH nofollow holds self link: /proc/self is still a directory",
+      "elf_sha256": "e1e59b42eef4244cb3475b53a44ff7b666fa01a87cf8f26ea928ce3692b17ec4"
+    },
+    "intermediate": {
+      "source": "c5ae587338e366d759061b387331a1eb0489e3b3",
+      "outer_exit": 1,
+      "failure": "readlinkat on held self link with empty pathname returns ENOTDIR",
+      "elf_sha256": "11c9b6a57f0bf0de76a2aa8f96db772edf4a2cef34a214fd0347763c488e7ffb"
+    },
+    "linux": {
+      "kernel": "6.8.0-149-generic",
+      "private_namespace_command": "unshare -Urmpf --mount-proc timeout 45s <artifact>/proc-self-linux",
+      "private_namespace_exit": 0,
+      "unprivileged_initial_mount_exit": 1,
+      "unprivileged_limitation": "existing nondumpable target fd-directory nofollow assertion requires privileged DAC in the proc mount user namespace; the self-link assertions passed",
+      "source_baseline": "Linux v7.1 8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "source_paths": [
+        "fs/proc/self.c",
+        "fs/proc/thread_self.c",
+        "fs/stat.c"
+      ]
+    },
+    "after": {
+      "state": "passed",
+      "source": "ac8e8bdd613b22d9c3ec5e7484b25ed03325e6ab",
+      "arch": "x86_64",
+      "outer_exit": 0,
+      "project_passed": 1,
+      "project_failed": 0,
+      "elf_sha256": "259792fae363004ff4e03a7f62fa3e1a0a96cad9423ade42cf043eec6dbfbcea",
+      "log_sha256": "48a762bd104e07641b14268a771afab5c716ab8cf9312abc3ce8279dea5489d4"
+    },
+    "same_program_across_red_green": true,
+    "path_regression": {
+      "source": "ac8e8bdd613b22d9c3ec5e7484b25ed03325e6ab",
+      "arch": "x86_64",
+      "assertions_passed": 45,
+      "assertions_failed": 0,
+      "outer_exit": 0,
+      "elf_sha256": "259792fae363004ff4e03a7f62fa3e1a0a96cad9423ade42cf043eec6dbfbcea",
+      "log_sha256": "c931bf1b3adab1c27800d3e87362caf68227a859592854930c9b97023340adce"
+    },
+    "recorded_at": "2026-11-17T07:54:10.373711+00:00",
+    "final_clippy": {
+      "state": "passed",
+      "expected_checks": 78,
+      "ax_fs_ng_checks": 6,
+      "kernel_checks": 72,
+      "source": "ac8e8bdd613b22d9c3ec5e7484b25ed03325e6ab",
+      "passed": 78,
+      "failed": 0,
+      "skipped": 0,
+      "outer_exit": 0
+    },
+    "aarch64_qemu": {
+      "state": "passed",
+      "source": "ac8e8bdd613b22d9c3ec5e7484b25ed03325e6ab",
+      "arch": "aarch64",
+      "project_passed": 1,
+      "project_failed": 0,
+      "outer_exit": 0,
+      "elf_sha256": "5c51183fa2312ba064bf2d024dd869c82a7e9ee9bc3d32de09aaa06f5df99642"
+    },
+    "interim_clippy_counted_as_pass": false,
+    "source_sha256": {
+      "fs/ax-fs-ng/src/fs_core/lookup.rs": "7e01ae1a8651263fe3eefc45c039bfdca3d901f5ec0af639c4581df371479b41",
+      "fs/ax-fs-ng/src/fs_core/view.rs": "d625e43e77255723c2645de64ad064432c61271e8a6848594a641f846a97ea2c",
+      "os/StarryOS/kernel/src/task/proc_access.rs": "11ad7ba863bf93bfe812e6e7d902983c528ca9af2cf69dc8bb5ad26fbb425c3c",
+      "os/StarryOS/kernel/src/pseudofs/proc.rs": "43436f5f6d71322c077b299f35164b88184fcfbde9ac1a38e921d466b643fb49",
+      "os/StarryOS/kernel/src/pseudofs/proc/self_link.rs": "2af7ff56bf794d5c9eba9602dc4812591d62ae7af6bb5162b746fe5e92cbdb60",
+      "os/StarryOS/kernel/src/syscall/fs/ctl.rs": "32108d03afcb6dc26640108fde000d788701d6a89a9131097e66f13dd6ee1aec",
+      "test-suit/starryos/qemu/system/test-proc-link-access/src/main.c": "bd87f46c1183f12000cf0053c08b52d6ce0235fb4a000111d6e5f4e4fa2d3d89"
+    },
+    "logs": {
+      "proc-self-before-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-before-qemu.log",
+        "sha256": "014bc47b33efa1c5bf7a610bc59bec575d6db872fc36f9112b2e4d7e04b5cb14"
+      },
+      "proc-self-after-qemu-before-held-fd-fix.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-after-qemu-before-held-fd-fix.log",
+        "sha256": "742647af3ad2cd18b7ccdc7833fb0f1003d24117d61ce2d6ca708012186e4332"
+      },
+      "proc-self-after-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-after-qemu.log",
+        "sha256": "48a762bd104e07641b14268a771afab5c716ab8cf9312abc3ce8279dea5489d4"
+      },
+      "proc-self-path-regression.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-path-regression.log",
+        "sha256": "c931bf1b3adab1c27800d3e87362caf68227a859592854930c9b97023340adce"
+      },
+      "proc-self-linux.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-linux.log",
+        "sha256": "fbac4b6e79194ed6005ca11b17a6d76d5d3acf525470467f6020db8b2ca26da7"
+      },
+      "proc-self-linux-private-ns.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-linux-private-ns.log",
+        "sha256": "9d351596ac129ac4d712560877c2ad20ca0c6162689fb8579d258f530fa6af90"
+      },
+      "proc-self-final-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-final-clippy.log",
+        "sha256": "475f1958d254b4b8cdbdfaa0fcf194d67ba08c0a0de1982142abb01feac2483b"
+      },
+      "proc-self-final-clippy.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-final-clippy.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "proc-self-aarch64-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-aarch64-qemu.log",
+        "sha256": "2c6e922d2f4c77d2773a12f3f94935bd14724b78242ba89ce82a6b871f46d4d5"
+      },
+      "proc-self-aarch64-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-self-aarch64-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      }
+    },
+    "remaining_scope_unchanged": true,
+    "compatibility_table": "design/vfs-syscall-compatibility.md",
+    "compatibility_table_rows": 20
   }
 }

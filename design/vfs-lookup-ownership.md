@@ -3590,6 +3590,31 @@ ProcessData 修改任务状态或查询 Scope。适配器及其最后领域引�
 凭据、fd 关闭复用与目标引用仍按实际拥有者观察。组件证明不能外推为系统
 调用通过；重新打开匿名对象的 I/O 能力仍由正式打开契约落实。
 
+### 5.5 进程自指链接
+
+`/proc/self` 与 `/proc/thread-self` 是普通文本链接，目标分别为此 proc 挂载 PID
+视图中的 `tgid` 与 `tgid/task/tid`。依据固定 Linux v7.1 的
+[`proc_self_get_link`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/proc/self.c#L10)
+及 [`proc_thread_self_get_link`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/proc/thread_self.c#L10)，
+它们不能绑定物化条目的任务，也不能被表示成进程目录或 magic object jump。
+不可见的 PID 返回 ENOENT；NO_MAGICLINKS 允许这类文本链接，NO_SYMLINKS 的跟随
+限制和总链接预算仍生效。
+
+`ProcLinkCaller` 在入口保留稳定的线程 `PidIdentity` Arc，并从已有 ProcessData
+取得进程身份。它只向 self 链接提供此 proc `PidView` 中的类型化编号投影，
+不保存 UserTaskRef、Scope 或 MM owner，不允许回调重新抓取 current。
+`SelfLink` 的长期配方只保留固定 PID view 与 Process/Thread 类型；其 NodeIdentity
+属于 proc 实例与链接种类，既不缓存调用者也不缓存数字目标。通过其他线程打开的
+O_PATH 链接 fd 读取时，仍由本次读取入口的调用者选择目标。
+
+`readlinkat` 的空路径直接选已持有的符号链接文件描述，并保持描述及其挂载使用权
+直到目标文本取得完成。有效的非链接 fd 按固定
+[`do_readlinkat`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L524)
+返回 ENOENT，具名非链接返回 EINVAL；无效 fd 为 EBADF。长度按 ABI 的 int 解释，
+非正值在路径读取前返回 EINVAL。普通具名入口忽略绝对路径的 dirfd，使用
+`FsView::read_link` 在同一会话取得拥有型路径并保留到显示回调结束，不先释放
+PathHandle 再以 Location 重新取得使用权。
+
 ## 6. 元数据变更
 
 `Metadata` 是读取结果，不是可以稍后整体写回的授权凭证。

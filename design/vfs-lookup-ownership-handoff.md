@@ -936,3 +936,36 @@ mount。native 与 composite 使用相同命令边界，失效候选交给原退
 `build_open_flags` 排序；普通 cache-only 请求仍未实现，明确不把这一分支计为
 CACHED 完成。特殊末组件、拥有型结果、整体 proc/SimpleFs、其余第 4、5 节范围
 继续保留。本次仅有 x86_64 scoped 系统运行证据，其他目标的静态检查不能代替运行。
+
+
+### 9.32 进程自指链接与持有描述读取
+
+`c5ae587338` 将 proc/self 的目录特例替换为普通文本链接，并提供 thread-self。
+`ProcLinkCaller` 保存原线程 PidIdentity，SelfLink 配方只保留固定 PID view 和种类，
+通过另一个线程持有的链接 fd 读取时使用本次读取者的编号。目标不可见时 ENOENT，
+NO_MAGICLINKS 允许这类普通链接；完整 SimpleFs/raw 属性迁移仍另行实施。
+
+既有 proc-link-access 程序并入自指链接旅程，保持一次默认启动。错误源码
+`ca468249a1` 先因 self 仍是目录而失败，外层 1；`c5ae587338` 的类型修复通过后，
+同一程序进一步发现 `readlinkat(fd, "")` 把链接 fd 当目录并返回 ENOTDIR，外层 1。
+`ac8e8bdd61` 保留原打开描述完成空路径读取，并由 `FsView::read_link` 在普通
+路径显示回调结束前保留实际路径使用权；空路径非链接和长度采用固定 Linux 规则。
+最终 x86_64 的同一完整程序外层 1/1 通过，观察了主线程、兄弟线程的目标编号及
+原有 allow → EACCES → allow、nofollow 类型和对象身份判定；三次程序摘要相同。
+
+相同程序在 Linux 6.8.0-149-generic 的私有用户、PID 和挂载命名空间通过。直接用
+宿主普通用户运行时，自指断言通过，但既有 nondumpable fd 目录的 nofollow 断言因
+DAC 失败；成功对照使用与 Starry 用例相同的命名空间内 root，并显式移除
+CAP_SYS_PTRACE。此环境区别已记录，没有把普通用户运行的失败隐藏为通过。
+最终内核 SHA-256 为
+`259792fae363004ff4e03a7f62fa3e1a0a96cad9423ade42cf043eec6dbfbcea`。
+
+最终 `ac8e8bdd61` 的 AX/Kernel 78 项 Clippy 全部通过，外层 0；同一完整 proc
+程序也在 AArch64 为 1/1 通过，内核 SHA-256 为
+`5c51183fa2312ba064bf2d024dd869c82a7e9ee9bc3d32de09aaa06f5df99642`。
+x86_64 的原完整路径程序再次为 45 pass、0 fail、外层 0，与本节 proc 程序使用
+同一内核。中间 Clippy 因完整操作尚需修复而终止，没有作为通过。
+
+[系统调用兼容性记录](vfs-syscall-compatibility.md) 已按本轮入口、flag 和目标记录
+20 行六列对照；其余完整 PR 范围继续补齐。精确源码与独立状态文件记录在生产证据，
+PR 仍是草稿，完整 CACHED、拥有型出口、其余 proc/SimpleFs、F1-F8 及原交付范围不变。
