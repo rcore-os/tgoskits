@@ -46,6 +46,11 @@ ensure_host_packages() {
         return
     fi
 
+    if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+        echo "error: missing host dependencies in prepared container: ${missing[*]}" >&2
+        exit 1
+    fi
+
     if ! command -v apt-get >/dev/null 2>&1; then
         echo "ERROR: missing required host packages and apt-get is unavailable: ${missing[*]}" >&2
         exit 1

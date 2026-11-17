@@ -45,7 +45,13 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
     fi
     git ls-files --error-unmatch rust/Cargo.lock >/dev/null
     test -s rust/Cargo.lock
-    rustup target add "$TARGET"
+    if ! rustup target list --installed | grep -Fx "$TARGET" >/dev/null; then
+        if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+            echo "error: prepared container is missing Rust target $TARGET" >&2
+            exit 1
+        fi
+        rustup target add "$TARGET"
+    fi
     cd rust
     cargo build --workspace --release --locked --target "$TARGET" --target-dir "$BUILD_DIR/target"
 ) >&2

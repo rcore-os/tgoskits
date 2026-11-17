@@ -43,6 +43,11 @@ find_qemu_runner() {
         fi
     done < <(qemu_user_binary_names)
 
+    if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+        echo "error: missing host dependencies in prepared container: qemu-user for ${STARRY_ARCH:-x86_64}" >&2
+        exit 1
+    fi
+
     if command -v apt-get >/dev/null 2>&1; then
         echo "installing missing host package: qemu-user-static"
         apt-get update
@@ -73,6 +78,11 @@ ensure_host_packages() {
 
     if [[ ${#missing[@]} -eq 0 ]]; then
         return
+    fi
+
+    if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+        echo "error: missing host dependencies in prepared container: ${missing[*]}" >&2
+        exit 1
     fi
 
     if ! command -v apt-get >/dev/null 2>&1; then
