@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "lookup_component_runtime",
+  "latest_evidence_section": "ordinary_lookup_session_runtime",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -2368,6 +2368,135 @@
       "尚未构造 LookupSession/Continuation；scoped 约束、统一 40 次链接预算、真正非阻塞的 CACHED 和末组件副作用仍待迁移。",
       "typed proc link、proc/SimpleFs、动态只读端点、旧 raw hook、FAT merged holder 及其余既定迁移保持完整范围。",
       "完整逐系统调用表、性能与资源比较、独立领域审查以及最终精确 head 的全部要求 CI 仍待完成；PR 保持草稿。"
+    ]
+  },
+  "ordinary_lookup_session_runtime": {
+    "recorded_at": "2026-11-17T02:39:41.438999+00:00",
+    "source_commit": "88bed9cdf71825f6a694dbb9a73be224e931ed7c",
+    "source_tree": "469bc14a8a7b862ae421097e5e8a98af45ddff50",
+    "source_files": {
+      "fs/ax-fs-ng/src/file/access.rs": "7f79c9e754a3285fcc531998a5effef1259dc462cbd2771bb65e659eb5d6c616",
+      "fs/ax-fs-ng/src/file/open.rs": "4e8a7f074d4a44512cc866cb5e01d01925423f506adaa0bf32922d8dbc8b118a",
+      "fs/ax-fs-ng/src/fs_core/context.rs": "826a96ad81be8290e022e6466e12ffa5d770fc4eefed760f1bccede79e1a00f2",
+      "fs/ax-fs-ng/src/fs_core/lookup.rs": "171dc1c6c46d8ff7f7913618ff0b6ae32155c0800d1523f46533582624a04d4c",
+      "fs/ax-fs-ng/src/fs_core/mod.rs": "dcf408ce7d43eeb1ad31bd50b4919ff8dce448bcfb7d041ceef9989079c0a0c4",
+      "fs/ax-fs-ng/tests/lookup.rs": "6e9949aac88d65e457b9556f185f9f0655a3b9a6952d10d7b9404c09a50edcdf",
+      "fs/axfs-ng-vfs/src/node/link.rs": "e3dfdff312bbaf79888870e15a63c61f3c0b2ebb2045f7031c8a72c4e26c6b14",
+      "os/StarryOS/kernel/src/pseudofs/proc/link.rs": "9d9ea87d25741715123442fedb736024231edd50050cca0e7dff7b13ceba7e2f"
+    },
+    "implemented": [
+      "Ordinary unchecked resolve/no-follow and file open share one non-cloneable LookupSession/Continuation, accepted PathHandles and a private 40-link budget across parent and final links.",
+      "Final create consumes the real directory open command; missing lookup alone never authorizes creation. Text-link trailing-directory suffixes remain part of the same continuation.",
+      "Object-valued LinkTarget and proc target snapshots retain actual PathHandle uses; executable/fd/cwd/root consumers do not downgrade them to bare Location."
+    ],
+    "red": {
+      "source_commit": "b9d63887d0ee8168fd3bc73eb5019321c69549fc",
+      "production_base": "e22f9f1da7a7454954d7740260fb6506b463a5cd",
+      "same_test_blob": "7517b7f9da9bccb6d9e1094f7b8784da3794fd17",
+      "result": "ax-fs-ng fails in all five profiles: old code returns Ok(3) for 40 parent links plus one final link; 17 other packages pass",
+      "exit_code": 1
+    },
+    "green": {
+      "std_packages": 18,
+      "ax_profiles": 5,
+      "vfs_ax_clippy_checks": 9,
+      "kernel_clippy_checks": 72,
+      "std_exit_code": 0,
+      "clippy_exit_code": 0
+    },
+    "runtime": {
+      "arch": "x86_64",
+      "kernel_sha256": "2696de51c463244d194cbb9526827f31327c01745caa9d442d4f370a42905b97",
+      "ownership": {
+        "passed": 107,
+        "failed": 0,
+        "xtask_exit_code": 0
+      },
+      "path_lookup": {
+        "failed": 17,
+        "xtask_exit_code": 1,
+        "result": "Link-budget and create trailing-slash assertions pass; complete case still fails scoped openat2 flags with EOPNOTSUPP."
+      },
+      "linux_comparison": {
+        "release": "6.8.0-149-generic",
+        "complete_path_case_exit_code": 0
+      }
+    },
+    "logs": {
+      "lookup-session-final-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-session-final-std.log",
+        "sha256": "7484c0e18174d1e64694d070fab3f0a76b472468184902f4927e6b290b1ac78d"
+      },
+      "lookup-session-before-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-session-before-std.log",
+        "sha256": "dfebc210e864d654217b477503cc33aeead39d81b56100ec644236089cb913b4"
+      },
+      "lookup-session-final-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-session-final-clippy.log",
+        "sha256": "d1199a335d2ff14a450e3ae72a0c73c4ee1d9f310c8cb8bc01bd57a68ed67896"
+      },
+      "lookup-session-kernel-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-session-kernel-clippy.log",
+        "sha256": "f8036fb02936e6ac80f48e71489d6fab0bad3966d000c546301d988ffd78e9ea"
+      },
+      "lookup-session-path-qemu-x86_64.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-session-path-qemu-x86_64.log",
+        "sha256": "37fee49d19b477a256f2654651213526c3678d0280d634ce866d09d5245a8266"
+      },
+      "lookup-session-ownership-qemu-x86_64.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-session-ownership-qemu-x86_64.log",
+        "sha256": "fc2d2127423338f2ea78efbd9721d2af615396e3f48a38f787558aabf12c461f"
+      },
+      "lookup-session-path-linux.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-session-path-linux.log",
+        "sha256": "672d684e0ccb4e3cfff271ba539b8e607d91c5e15b7a49e0c51de08f80b95aca"
+      }
+    },
+    "remote_ci_snapshot": {
+      "head": "e22f9f1da7a7454954d7740260fb6506b463a5cd",
+      "run_id": 43994127808,
+      "success": 38,
+      "failure": 6,
+      "skipped": 5,
+      "pending": 0,
+      "scope": "Historical remote head; not CI evidence for the new ordinary session."
+    },
+    "limitations": [
+      "Checked/trace/parent legacy walkers remain to be migrated; this is not the complete shared walker.",
+      "Saved LinkCaller/FsView, scoped root/mount constraints, parent/topology revalidation and truly nonblocking CACHED are not implemented by this phase.",
+      "The complete path-lookup case and full PR remain failing/incomplete. Draft status and the full approved scope remain unchanged."
+    ]
+  },
+  "arm_guest_toolchain_download": {
+    "recorded_at": "2026-11-17T02:41:13.366257+00:00",
+    "source_commit": "b3774ce7bc05420b2ec9c204dda640933add22f2",
+    "source_files": {
+      "virtualization/axvm/tests/guests/virq/prepare.py": "6d58d30787b1bbb0e794c514369b50a040873a91d9d538d835ce8ef99d0b5b2f",
+      "virtualization/axvm/tests/guests/virq/README.md": "03f24a1503fbc24b06f5b882507c8170fb7e6162b6d25f5e39f0215d4781c04b"
+    },
+    "archive_sha256": "6f74b1ee370caeb716688d2e467e5b44727fdc0ed56023fe5c72c0620019ecef",
+    "archive_md5_matches_official_manifest": "0b3df9b763899d66a00b21a51a5b27b1",
+    "url": "https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu-a/10.3-2021.07/binrel/gcc-arm-10.3-2021.07-x86_64-aarch64-none-elf.tar.xz",
+    "command": "CARGO_INCREMENTAL=0 VIRQ_CACHE_DIR=<task-artifacts>/arm-toolchain-cold-cache cargo xtask ktest qemu -p axvm --test vcpu_runtime --arch aarch64 --config virtualization/axvm/tests/vcpu-runtime/build-aarch64-unknown-none-softfloat.toml --qemu-config virtualization/axvm/tests/vcpu-runtime/qemu-aarch64.toml",
+    "execution": "Cold cache: pinned Python environment, Zephyr clone, SDK download/hash verification, guest compilation and actual Axvisor QEMU execution.",
+    "result": {
+      "exit_code": 0,
+      "pass": 1,
+      "fail": 0,
+      "skip": 0,
+      "interrupt_samples_per_policy": 300,
+      "policies": [
+        "Fair",
+        "Fifo"
+      ],
+      "idle_vcpu_returns": 0
+    },
+    "log": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/arm-toolchain-cold-vcpu-runtime.log",
+      "sha256": "66ebe2f624c4a63c8b7042a0a24f5d06cecb447dba980b4628b2636931ffdded"
+    },
+    "limitations": [
+      "Does not prove the final PR CI or the independent ASUS NUC Linux boot failure."
     ]
   }
 }

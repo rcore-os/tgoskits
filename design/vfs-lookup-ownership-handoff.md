@@ -42,7 +42,8 @@ Clippy 以及 x86_64/LoongArch 的完整 unshare 子用例通过，见第 9.22 �
 组件查询阶段 `e828831525` 区分候选发布冲突、父命名冲突与真实后端错误，普通
 FsContext helper 只对前两种结果合作重查。18 包标准库通过，初始四包的 43 项
 Clippy 及最终 AX 的 6 项检查通过。缓存退休与夹具修复见第 9.23、9.24 节；
-统一查找会话、末组件续走和 scoped/CACHED 仍待迁移。
+普通解析与打开的统一会话及总链接预算已在 `88bed9cdf7` 接通，见第 9.25 节；
+checked/trace/parent 其余消费者及 scoped/CACHED 仍待迁移。
 
 动态只读描述、旧数据 hook 的其余消费者、FAT 合并 holder 分类、统一查找与 proc/SimpleFs
 完整迁移、挂载授权、逐系统调用表、性能及独立审查继续按原计划实施。原交接的
@@ -745,3 +746,45 @@ try-lock，不借用命名操作的可等待策略。
 `5e04fc35fb` 的 PR 检查汇总已终态：37 项成功、6 项失败、1 项取消及 5 项跳过；
 失败包含 std、四架构 Starry suite 及 Axvisor AArch64 的 Arm 下载 HTTP 503。
 后续 head 仍须逐项取得要求检查的终态，完整系统调用表及其余计划保持原范围。
+
+
+### 9.25 普通路径会话与末组件
+
+`88bed9cdf7` 将普通 `resolve`、`resolve_no_follow` 与文件打开接入同一个不可复制的
+`LookupSession/Continuation`。会话保留冻结 root/cwd、当前及已接受的 `PathHandle`、
+未消费组件、原调用凭据和私有总链接预算。父路径与末链接共用 40 次上限，链接目标
+的尾斜杠和原后缀继续由同一会话处理。末组件创建交给真实目录的打开命令，不能把
+查询缺失当作创建授权；普通最终名称带尾斜杠且请求创建时按 Linux 返回 EISDIR。
+
+`LinkTarget::Object` 以及 proc 的对象快照持有实际 `PathHandle`。exe、cwd/root、
+fd 和 namespace 目标在原所有者仍存活时取得使用权，目标消费不再先降级为裸
+`Location`。这还没有实现保存的 `LinkCaller`：proc 当前的授权调用身份仍待统一迁移。
+
+同一公开 AX 集成测试在错误源码 `b9d63887d0` 的五个 profile 全部失败，旧实现把
+40 个父链接再加一个末链接错误接受为 `Ok(3)`，预期 ELOOP。该候选仅在原生产源码
+上增加与正确提交逐字相同的测试文件。恢复 `88bed9cdf7` 后，18 包 std、VFS/AX
+9 项和 Kernel 四目标 72 项 Clippy 均通过；错误候选没有推送到生产分支。
+
+x86_64 真实内核的 ownership 程序保持 107 pass、0 fail、最外层 1/1 通过。
+完整 path-lookup 程序的链接预算和创建尾斜杠判定通过，但仍有 17 项 scoped
+openat2 断言以 EOPNOTSUPP 失败，最外层退出 1。同一完整 C 程序在 Linux
+6.8.0-149-generic 通过；该运行不能替代固定 Linux v7.1 源码的语义核对。
+两次 QEMU 内核 SHA-256 都是
+`2696de51c463244d194cbb9526827f31327c01745caa9d442d4f370a42905b97`。
+
+checked/trace/parent 旧循环、scoped 根与挂载约束、父命名及拓扑重验证、保存的
+调用身份和真正非阻塞的 CACHED 仍在原交付范围。远端旧 head `e22f9f1da7` 的
+完整 CI 为 38 成功、6 失败、5 跳过且无运行中项目，不能记作本节源码的 CI。
+
+
+### 9.26 Arm 客户机准备资源
+
+远端 Axvisor AArch64 在 `vcpu_runtime` 的 host_prepare 阶段连续遇到 Arm 原下载
+地址 HTTP 503。`b3774ce7bc` 保留 GNU Arm 10.3-2021.07，改从 Arm 官方存储
+端点下载同一归档，固定 SHA-256 并在校验后发布缓存；原 CLI 与 CROSS_COMPILE
+覆盖仍有效。归档 MD5 与官方相邻清单相同，准备脚本和 README 同步说明校验。
+
+独占冷缓存的项目 ktest 入口实际完成 venv、固定 Zephyr 检出、工具链下载、
+客户机编译和 Axvisor QEMU 运行。Fair 与 FIFO 两个策略各确认 300 次定向投递，
+非目标 vCPU 返回为 0；AXTEST 为 1 pass、0 fail、0 skip，最外层退出 0。
+这项结果只证明资源准备与该运行旅程，NUC Linux 客户机启动失败仍需独立定位。
