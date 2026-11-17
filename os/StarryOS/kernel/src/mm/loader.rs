@@ -664,7 +664,7 @@ struct ElfImage {
 }
 
 impl ElfImage {
-    fn load(loc: PathHandle) -> StarryResult<Result<Self, Vec<u8>>> {
+    fn load(loc: PathHandle, minimum_header_size: usize) -> StarryResult<Result<Self, Vec<u8>>> {
         // A retained inode can have new bytes after its previous execution.
         // Read its headers anew rather than treating path identity as content.
         let cache = CachedFile::get_or_create(loc)?;
@@ -672,6 +672,9 @@ impl ElfImage {
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;
         data.truncate(read);
+        if read < minimum_header_size {
+            return Err(StarryError::UnexpectedEof);
+        }
         match ElfImage::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
             let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
             let range = builder.ph_range();
@@ -697,7 +700,8 @@ fn load_elf(
     loc: PathHandle,
     view: &FsView<'_>,
 ) -> StarryResult<LoadResult> {
-    let elf = match ElfImage::load(loc)? {
+    // A main input can be a short shebang script rather than an ELF image.
+    let elf = match ElfImage::load(loc, 0)? {
         Ok(elf) => elf,
         Err(data) => return Ok(Err(data)),
     };
@@ -744,7 +748,10 @@ fn load_elf(
         let loc = view.resolve(ldso)?;
         check_executable_access(&loc, view.credentials())?;
         _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
-        Some(ElfImage::load(loc)?.map_err(|_| StarryError::InvalidElfInterpreter)?)
+        // Linux reads a complete native ELF header before checking its format.
+        let header_size = size_of::<xmas_elf::header::HeaderPt1>()
+            + size_of::<xmas_elf::header::HeaderPt2_<xmas_elf::P64>>();
+        Some(ElfImage::load(loc, header_size)?.map_err(|_| StarryError::InvalidElfInterpreter)?)
     } else {
         None
     };
