@@ -8516,5 +8516,376 @@
     },
     "scope": "Complete terminal evidence for the published current-header-read phase. All four architectures ran the same-inode header-write regression and native suite. This does not cover the later interpreter error changes.",
     "skipped_scope": "Five existing duplicate pull_request wrappers intentionally skip; push jobs supply the real matrix."
+  },
+  "cached_path_only": {
+    "recorded_at": "2026-11-17T22:42:55.487945+00:00",
+    "before_source": "6a4a9f23f19316a605efdae911a085117f2c2504",
+    "after_source": "46138dd2727b691005165a1e48761cbce59e0bf2",
+    "test_source": {
+      "path": "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c",
+      "sha256": "26784ebb83ade9faaa0353d4435485105855f426ba678a43441cd88a393ca0b8"
+    },
+    "source_files": [
+      {
+        "path": "fs/ax-fs-ng/src/file/handle/mod.rs",
+        "sha256": "c13a7d2517b8a11447329d67cd4c299b998be1f58fc078622a44a83811eef690"
+      },
+      {
+        "path": "fs/ax-fs-ng/src/fs/memory.rs",
+        "sha256": "4adf5421631e1f16332d8d90553dcfef42a1026b20a4adce88d6f0bba78021e7"
+      },
+      {
+        "path": "fs/ax-fs-ng/src/fs_core/mod.rs",
+        "sha256": "8b6f8678b2c88c989b45e01d5cdbf2ec2008b98e4e235eb64940c4f732b0362d"
+      },
+      {
+        "path": "fs/ax-fs-ng/src/fs_core/owner/mod.rs",
+        "sha256": "1fbda780bda9db6f282677526822e5d40fa682160f87d27e3ccdf06c4af59534"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/lib.rs",
+        "sha256": "d69ffe5c05daa8de983b8427b67e36c616917f8f31d19ab0f05dc57dc3c970a8"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/lookup/cached.rs",
+        "sha256": "fa43bb77398f68b66d801c86b224a87813727b8a2240fc92b125186ad1478bb3"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/lookup/mod.rs",
+        "sha256": "895bb47494faec31805f71d710901a36e278c161c59526561e3b3ea351b897f8"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/mod.rs",
+        "sha256": "74eb7fd3225f15a70a97cd30310774f49e4f97ccac0ea5faf746eab86c7fd7cf"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/namespace.rs",
+        "sha256": "acebf9ae18167a898330d9cd34ceb91f18a3dd52308f8a3be9d0fba2875748a6"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/namespace/retirement.rs",
+        "sha256": "9014dfa2f08a23bd71b45b78e4a9f16b467cef8e97d2f2bbfb8d54b4b339ab3d"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/observation.rs",
+        "sha256": "fa361340451bae62eb4aa05c3b2aa2e2431cebd144f49b013d80569bf8845a8d"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/pivot.rs",
+        "sha256": "01476e7e8a0bae4dc548fa8c0a76d10f4c5dd41cae1a2d95292eff3d7ce40c36"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/propagation.rs",
+        "sha256": "dd92dd8c9c3615329776b72e49236b87f6e348ad067635f021b298e99e6e5033"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/publication.rs",
+        "sha256": "858bc9b16eee8281ec76b36ff6c5bd4520bce92fb9ac58c379b2b2a7acd472df"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/unmount.rs",
+        "sha256": "79e80da339f0f5eec3ec8b480cf38361ea4a48207ec777130e9c2030bc24930c"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/unmount/path_handle.rs",
+        "sha256": "1ce990a9cb827128967a8bab037e3732c864df413804a8f28b4fe6bb69a49374"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/node/dir/cache.rs",
+        "sha256": "2ad48072e1560606a4b091bedcd9f1e8ed8d8e78b71b08e6fd99ea9409cbb030"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/node/dir/mod.rs",
+        "sha256": "73490d189ec679809558ada57fd364c87cdbb8eca46e17d3b975d65a59af0a28"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/node/dir/tests.rs",
+        "sha256": "fbf2a21bad36db81b4240c77816e9db5abb490e6a109ce37934efee3319149ed"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/node/mod.rs",
+        "sha256": "9ded2b241c0ec60fc7025262361aa0fd0a89468ff2ae11b4668e6197f462bf8f"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/node/name.rs",
+        "sha256": "1acb1b1637fce234b83de59f82c1590f256254cd432ab68245335da5f075e7bb"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/cached.rs",
+        "sha256": "f4d194410c5082e07a13f63aa874cfce1aaba01eb6fff8c15949c0c6a9cc4520"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/mod.rs",
+        "sha256": "5c2f983726d1babe02730c7ba7cf6f31e7eb750c606329e5f546e8dcc0b1eed3"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs",
+        "sha256": "c0c640e01ba0555dfcda3ff3bc4e8f6444697fdb05147b1917609464e27ae585"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/task/cred.rs",
+        "sha256": "f004f347a38d1032b8f902644b10905de7e19bcc2086b9218350a2dbc2262cc0"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/task/fs_binding.rs",
+        "sha256": "a06806b59fa7ec4eed1e29fd1fabbfe40f264e3370ba306cabe6b4593563c4c7"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/task/mod.rs",
+        "sha256": "f9542547feeb6ef8010b19b0bc66a968c2e6d1cea3b6821494ec444e08a23334"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/task/thread.rs",
+        "sha256": "08e6a781fbc410635c57fef25e8a0c71926b7ef1e2c906e8400954c902d80aae"
+      }
+    ],
+    "toolchain": "rustc 1.102.0-nightly (8eb778d04 2026-11-12)\nbinary: rustc\ncommit-hash: 8eb778d04094d3af4b26580cab327e0413eb1e02\ncommit-date: 2026-11-12\nhost: x86_64-unknown-linux-gnu\nrelease: 1.102.0-nightly\nLLVM version: 23.1.5\n",
+    "checks": {
+      "cached-path-linux": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-linux.log",
+          "sha256": "d070bde4ca721d8214ad57be48b123ee95ab7cd490aa517c39a85bb6ea9b326c",
+          "bytes": 3926
+        }
+      },
+      "cached-path-before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-before.log",
+          "sha256": "6bebf8fa5bfaff95dad8271a7fa854efd3f773f6755d1d5f88b98e85e25704eb",
+          "bytes": 33026
+        },
+        "source": "6a4a9f23f19316a605efdae911a085117f2c2504"
+      },
+      "cached-path-after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-after.log",
+          "sha256": "dfd2c9d772520dd27040e7ede318fc25b9e6a38c980cab99f3b6cd8d2220c892",
+          "bytes": 33940
+        },
+        "source": "46138dd2727b691005165a1e48761cbce59e0bf2"
+      },
+      "cached-path-std": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-std.log",
+          "sha256": "12318b3de01060fc909afc0d15fa4cd140cfc6f56a7b44edfd737be398ef3be0",
+          "bytes": 311612
+        },
+        "source": "46138dd2727b691005165a1e48761cbce59e0bf2"
+      },
+      "cached-path-clippy": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-clippy.log",
+          "sha256": "780a441596864838943a8b6202dcf5bb1d2dd6f96c5830af30306463ba81fbd0",
+          "bytes": 91060
+        },
+        "source": "46138dd2727b691005165a1e48761cbce59e0bf2"
+      },
+      "cached-path-format-check": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-format-check.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      },
+      "cached-path-kernel-format-check": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-kernel-format-check.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      }
+    },
+    "elf_section_sizes": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-elf-size.txt",
+      "sha256": "5ac8ab68dfd788b466bf521e824f9b37248ea1e97a084b1dca491f765dbe0d51",
+      "bytes": 211
+    },
+    "format_source": "46138dd2727b691005165a1e48761cbce59e0bf2",
+    "before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-6a4a9f23f1.elf",
+      "sha256": "540dceed6def969f3737098c7a6a05fb5d3b1b8d5c60e99632c24c764d09cb30",
+      "bytes": 217712952
+    },
+    "after_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-46138dd272.elf",
+      "sha256": "475f668121c9028c18cdb641c194a4ef2cad39b5f74c538818538ca7b412a94c",
+      "bytes": 217867232
+    },
+    "linux_baseline": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "sources": [
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2678",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/mm/shmem.c#L5248",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/libfs.c#L69"
+      ],
+      "scope": "The identical C program runs on host Linux in private user/mount/pid namespaces. Linux tmpfs discards negatives; the cold name remains EAGAIN after ordinary ENOENT. This is not a native ext4 negative-cache proof."
+    },
+    "component_scope": "An isolated host test process excludes unrelated global publication writers without accepting early EAGAIN. It verifies no normal metadata/lookup fallback, valid negative reuse, actual create through another directory alias invalidating the negative, cache-lock contention, and cache clearing. The real syscall and fd/mount lifetime proof is the separate QEMU test.",
+    "invalid_fixture_attempts": {
+      "linux_tmpfs_negative": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-linux-invalid-tmpfs-negative.log",
+          "sha256": "8b357a522840d3938785130768a372525aaefa82513c6d1f5d4bc9236d9ec4f6",
+          "bytes": 3936
+        }
+      },
+      "parallel_publications": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-std-initial.log",
+          "sha256": "f7ecb0ca8d3a56fc687599fe685e6e8d80379718d3220a3ce06161c283c2de34",
+          "bytes": 312241
+        },
+        "source": "e64b8d2b319de6c4537afb7c1d8579e7544de26c"
+      },
+      "unchanged_version": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-path-std-isolation-attempt.log",
+          "sha256": "46f3ea2c9c394121bcdb47c531cc2c49f2545121a84e06e57e33a178f65cfe97",
+          "bytes": 310566
+        },
+        "source": "bec9f4a7403b39d8edaabc64ffd8d310bb8cacc4"
+      },
+      "scope": "These are fixture errors, not product reds. The tmpfs expectation was corrected from ENOENT to EAGAIN; the component observation was isolated; the hardcoded unchanged version was replaced by a real alias create. Original evidence is retained and no functional assertion was relaxed."
+    },
+    "scope": "First end-to-end cache-only O_PATH slice, validated on x86_64 with MemoryFs/tmpfs search directories. It proves pinned positive identity, CLOEXEC, fresh nlink after unlink, cached fd alone preventing normal unmount, and successful unmount after final close. Ordinary opens, followed text/object links, other metadata producers, controlled task/fd publication contention and the complete PR remain unfinished. No latency or heap claim is made."
+  },
+  "ci_6a651d64f5_terminal": {
+    "source": "6a651d64f56ef34eddb065026ba909e93aa530cd",
+    "snapshot": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-6a651d64f5-terminal.json",
+      "sha256": "4f69647a71833a3b4d83845cc0b631ce757748ace4528c13dac20f6974a317c6",
+      "bytes": 15291
+    },
+    "status_counts": {
+      "SUCCESS": 44,
+      "SKIPPED": 5
+    },
+    "architectures": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-6a651d64f5-starry-x86_64.log",
+          "sha256": "d0c0c4592085676639f66297ef78d4d7bd2e3d1a36251af49dcfc4f1714d3d4e",
+          "bytes": 2269476
+        },
+        "system_summaries": [
+          [
+            "1",
+            "1",
+            "0"
+          ],
+          [
+            "541",
+            "541",
+            "0"
+          ]
+        ],
+        "native": [
+          "265",
+          "0",
+          "0",
+          "265"
+        ],
+        "execve_program_pass": [
+          "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-execve elapsed_s=4.375"
+        ]
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-6a651d64f5-starry-aarch64.log",
+          "sha256": "25831f406519c1b1fbf74fe5f63f4e0f2c16457b9e902ea2744e91b6600307b2",
+          "bytes": 2164845
+        },
+        "system_summaries": [
+          [
+            "513",
+            "513",
+            "0"
+          ],
+          [
+            "23",
+            "23",
+            "0"
+          ],
+          [
+            "1",
+            "1",
+            "0"
+          ],
+          [
+            "1",
+            "1",
+            "0"
+          ]
+        ],
+        "native": [
+          "275",
+          "0",
+          "0",
+          "275"
+        ],
+        "execve_program_pass": [
+          "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-execve elapsed_s=2.800"
+        ]
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-6a651d64f5-starry-riscv64.log",
+          "sha256": "e0cf9b99fd0b1adb2b30242c3aefc2a4d12f464cbba52044bea815d1d062aff4",
+          "bytes": 2131485
+        },
+        "system_summaries": [
+          [
+            "538",
+            "538",
+            "0"
+          ]
+        ],
+        "native": [
+          "264",
+          "0",
+          "0",
+          "264"
+        ],
+        "execve_program_pass": [
+          "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-execve elapsed_s=4.954"
+        ]
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-6a651d64f5-starry-loongarch64.log",
+          "sha256": "113aea9b409787a104a3b34a02b54189d1c4bce404dbe775222107b667a520b1",
+          "bytes": 875854
+        },
+        "system_summaries": [
+          [
+            "538",
+            "538",
+            "0"
+          ]
+        ],
+        "native": [
+          "265",
+          "0",
+          "0",
+          "265"
+        ],
+        "execve_program_pass": [
+          "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-execve elapsed_s=2.796"
+        ]
+      }
+    },
+    "scope": "Terminal published interpreter-error phase, before cache-only changes. All four architectures ran the real execve program and native suite. LoongArch intentionally captures successful output; absence of individual success prints does not imply a skipped case. This CI does not cover the later CACHED implementation.",
+    "skipped_scope": "Five duplicate pull_request wrappers intentionally skip; push jobs supply the actual matrix."
   }
 }

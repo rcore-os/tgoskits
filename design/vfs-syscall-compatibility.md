@@ -31,7 +31,10 @@ Linux 基准为 v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。编号�
 | openat2/NO_XDEV；四架构 437 | v7.1 [nd_jump_root](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L1127) | 按实际 mount 身份拒绝向下、向上及对象跳转，EXDEV；初始绝对输入本身允许选择根 | sys_openat2 → LookupRestrictions → LookupSession.bind/ascend/jump_root/follow | 部分正确 | x86 same mount、向下 tmpfs 与向上 mount crossing 通过；复杂覆盖层及其他目标运行待补 |
 | openat2/NO_SYMLINKS；四架构 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 跟随任意 symlink 为 ELOOP；末链接不跟随且 O_PATH 时保留链接 | sys_openat2 → LookupSession.follow；Continuation.finish_open 保留不跟随的末项 | 部分正确 | x86 普通路径、跟随拒绝和末链接 O_PATH nofollow 通过；其他目标运行待补 |
 | openat2/NO_MAGICLINKS；四架构 437 | v7.1 [nd_jump_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L1163) | 普通文本链接允许；对象回调保留自身错误，成功对象跳转为 ELOOP；nofollow 末链接可持有 | sys_openat2 → LookupSession.follow → LinkOps.target(saved caller) → Text/Object 分派 | 部分正确 | x86 普通链接、proc fd 对象拒绝、末项 nofollow、self/thread-self 文本跟随通过；其他目标及完整错误顺序待补 |
-| openat2/CACHED；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293) | create/truncate/tmpfile 组合先返回 EAGAIN；其他请求只用有效缓存，需慢路径时 EAGAIN，有效负项可为 ENOENT | sys_openat2 校验变更类组合后，普通 CACHED 仍返回 OperationNotSupported；未进入阻塞 FsView | 不正确 | 完整非阻塞凭据、scope、fd、缓存、元数据、拓扑和最终转交尚未实现；不将拒绝所有请求算作完成 |
+| openat2/CACHED O_PATH；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293)、[缓存遍历](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2678) | 只使用有效缓存；需慢路径或观察失效时 EAGAIN，不能由缓存中没有名字推断 ENOENT | sys_openat2 → try_cached_fs_binding → CachedLookup/PathObservation → path_only 或 Directory → captured CachedFileTable.install | 部分正确 | 同一 C 的 Linux 通过、6a4a9f23f1 三项 EOPNOTSUPP 失败、46138dd272 x86 QEMU 1/1 通过；缓存正项、tmpfs 未命中、实际 inode、CLOEXEC 与挂载引用见 15.1；其他目标运行、受控任务发布竞争及全部组合仍待补 |
+| openat2/CACHED 普通打开；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293) | create/truncate/tmpfile 组合先为 EAGAIN；已有文件的普通打开在缓存条件满足时可以完成 | sys_openat2 先拒绝变更类组合；open_cached_path 对非 O_PATH 仍直接 WouldBlock | 不正确 | 变更类参数检查保留；普通缓存打开尚未实现，不以一律 EAGAIN 声称完成 |
+| openat2/CACHED 文本链接；四架构 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 可用的缓存链接参与同一次预算和 root/mount 策略，不能调用需要慢路径的链接 producer | sys_openat2 → CachedLookup.walk；需要跟随时目前仍为 WouldBlock，NO_SYMLINKS 拒绝与最终 nofollow 另有分支 | 不正确 | 缓存链接内容能力和直接系统旅程尚未实现；不使用普通 LinkOps.target 回退 |
+| openat2/CACHED 原生后端元数据；四架构 437 | v7.1 [inode_permission](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 每个搜索目录检查实际有效属性；需要 I/O 或重验证则为 EAGAIN | CachedLookup.check_search → NodeOps.cached_metadata；目前仅 MemoryNode 实现，其余默认 WouldBlock | 不正确 | 实际 tmpfs 属性已接入；原生 Ext4、FAT 和动态 producer 的缓存属性能力尚未实现，既有负项版本证明不能替代此门禁 |
 
 ### 2.2 普通打开与链接句柄
 
@@ -453,3 +456,43 @@ ELIBBAD，路径、权限和实际 I/O 错误保留原传播。以下范围有�
 本轮没有增加默认用例或启动。最终 Kernel 标准库和四目标 Clippy 72/72 通过。测试程序自己的旧头文件 x86_64 后备编号另修正为 322：强制启用
 后备分支时，原值在 Linux 为 98/14，修后 112/0；常规头文件下两版预处理逐字
 相同。该项属于测试用例的 ABI 修正，没有作为 Starry 内核的产品失败证据。
+
+6a651d64f5 的最终持续集成另已验证四架构真实 test-execve 程序和 Native suite，
+44 项成功、5 个重复 PR 包装跳过。完整任务日志为 `ci_6a651d64f5_terminal`；
+LoongArch 按配置仅重放失败输出，没有跳过该程序。这个终态早于缓存路径改动。
+
+## 15. 缓存路径的打开描述
+
+缓存遍历完成后输出真实 PathHandle，内核从原调用者快照选择的 fd 表安装描述。
+本轮没有复制一份供后续 stat 使用的持久属性，也没有在最终安装阶段调用普通
+设备打开工厂。生产证据键为 `cached_path_only`，设计第 7.3 节说明边界。
+
+### 15.1 正项与负项观察
+
+原 test-path-lookup-ownership 增强其私有 tmpfs 挂载旅程。相同 C 在 Linux
+通过，6a4a9f23f1 的旧实现失败三项，均为 EOPNOTSUPP；46138dd272 的真实
+x86 QEMU 为 1/1，成功后还验证原 inode、CLOEXEC、unlink 后属性和挂载 use。
+测试源码逐字相同，默认用例和启动数不增加。普通打开、链接跟随、其他元数据
+后端及受控任务发布竞争仍由前表各行明确列出，不能从一个正项外推完整支持。
+
+Linux v7.1 的 [shmem_dir_inode_operations](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/mm/shmem.c#L5248)
+使用 [simple_lookup](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/libfs.c#L69)，
+丢弃缺失名字的负目录项；因此普通查询已经返回 ENOENT 后，缓存查询仍可为
+EAGAIN。MemoryFs 保留没有负项版本能力的语义。有效负项的组件证明使用实际
+DirNode 缓存，并通过另一个目录别名真实创建使其失效，不伪造 tmpfs 负缓存。
+
+### 15.2 描述的使用与退休
+
+缓存 fd 的后续操作仍访问实际描述。以下判据来自同一 x86 客机旅程，其他
+体系结构尚无本轮缓存 fd 的运行证据；没有把先前提交的完整 CI 当作本轮结果。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| fstat/CACHED fd；x86_64 5；其余三架构 80 | v7.1 [vfs_fstat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c) | 描述保留被打开的 inode，unlink 后仍可读取更新的 nlink | sys_fstat → get_file_like → File.stat → original PathHandle/Location.metadata → MemoryNode.inode | 部分正确 | 相同 C 的 fstat 消费者比较实际 dev/ino，并在 unlink 后读到 nlink=0；Linux 和 x86 QEMU 通过，其他目标及完整 stat 参数边界未由此证明 |
+| fcntl/F_GETFD 缓存 fd；x86_64 72；其余三架构 25 | v7.1 [do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | O_CLOEXEC 安装到返回 fd 的表项，F_GETFD 返回 FD_CLOEXEC | sys_fcntl → original FileTable descriptor.cloexec；CachedFileTable.install 在同一短写锁内安装 | 部分正确 | 同一 x86 客机旅程要求 F_GETFD 非负且包含 FD_CLOEXEC；Linux 对照通过，其他目标与其余 fcntl 命令不由此证明 |
+| close/缓存 fd；x86_64 3；其余三架构 57 | v7.1 [close_fd](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 关闭最后的路径描述后释放它持有的挂载 use，仍存活的其他描述继续保活 | sys_close → close_file_like → table.remove → release_locks_on_close/File drop → PathHandle/MountUseGuard | 部分正确 | 同一 Linux/x86 旅程先关闭原 File 和 dirfd，缓存 fd 仍使卸载 busy，最后关闭缓存 fd 后卸载成功；其他目标、dup 和 close_range 的缓存 fd 旅程待补 |
+| umount2/唯一缓存 fd；x86_64 166；其余三架构 39 | v7.1 [path_umount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2035) | 打开的路径引用使普通卸载为 EBUSY，最后引用释放后允许卸载 | sys_umount2 → PathUnmount → actual MountUseState；缓存 File 保留 PathHandle，原 File 与 dirfd 已关闭 | 部分正确 | Linux 与 x86 客机在只剩缓存 fd 时实际得到 EBUSY，关闭后卸载成功；没有混用其他打开引用，其他目标和 detach/expire 不由此证明 |
+
+组件测试还证明缓存查询不调用普通 lookup 或 metadata、锁竞争直接拒绝，以及
+清除缓存后不能继续将未验证项作为命中。全局发布观察在隔离进程中真实进入
+目标阶段，最外层拒绝零测试。18 包标准库及三包 81/81 项 Clippy 均通过。
