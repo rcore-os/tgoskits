@@ -5,7 +5,7 @@ use core::{any::Any, ops::Deref};
 
 use super::{DirEntry, FileExtentMap, FileExtentTarget};
 use crate::{
-    Mountpoint, NodeOps, NodePermission, NodeType, RawSpinLock, VfsError, VfsResult,
+    NodeOps, NodePermission, NodeType, RawSpinLock, VfsError, VfsResult,
     path::{DOT, DOTDOT, verify_entry_name},
 };
 
@@ -330,7 +330,6 @@ impl Default for OpenOptions {
 pub struct DirNode {
     ops: Arc<dyn DirNodeOps>,
     cache: RawSpinLock<Box<DirectoryCache>>,
-    pub(crate) mountpoint: RawSpinLock<Option<Arc<Mountpoint>>>,
     owner: Option<crate::WeakDirEntry>,
 }
 
@@ -353,7 +352,6 @@ impl DirNode {
         Self {
             ops,
             cache: RawSpinLock::new(Box::new(DirectoryCache::default())),
-            mountpoint: RawSpinLock::new(None),
             owner: None,
         }
     }
@@ -550,14 +548,6 @@ impl DirNode {
             retired,
         );
         Ok(())
-    }
-
-    pub fn mountpoint(&self) -> Option<Arc<Mountpoint>> {
-        self.mountpoint.lock().clone()
-    }
-
-    pub fn is_mountpoint(&self) -> bool {
-        self.mountpoint.lock().is_some()
     }
 }
 

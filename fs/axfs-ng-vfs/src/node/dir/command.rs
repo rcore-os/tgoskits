@@ -661,7 +661,9 @@ impl<'slot, 'attempt, 'request> CommandSlot<'slot, 'attempt, 'request> {
                     (false, true) => return Err(VfsError::NotADirectory),
                     _ => {}
                 }
-                if target.entry.as_dir().is_ok_and(|dir| dir.is_mountpoint()) {
+                let target_location =
+                    Location::new(parent.mountpoint().clone(), target.entry.clone());
+                if target_location.is_mountpoint() {
                     return Err(VfsError::ResourceBusy);
                 }
                 if request.directory && !target.empty {
