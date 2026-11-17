@@ -148,6 +148,9 @@ pub fn sys_readv(
     let f = get_file_like(fd)?;
     if let Some(queue) = f.downcast_ref::<MqDescriptor>() {
         queue.validate_read_access()?;
+        return queue
+            .read_vectored(IoVectorBuf::new(current, iov, iovcnt)?, None)
+            .map(|n| n as _);
     }
     f.read(&mut IoVectorBuf::new(current, iov, iovcnt)?.into_io())
         .map(|n| n as _)
@@ -658,13 +661,12 @@ pub fn sys_preadv2(
     let file_like = get_file_like(fd)?;
     if let Some(queue) = file_like.downcast_ref::<MqDescriptor>() {
         queue.validate_read_access()?;
-        let mut io_buf = IoVectorBuf::new(current, iov, iovcnt)?.into_io();
-        return if offset == -1 {
-            queue.read(&mut io_buf)
-        } else {
-            queue.read_at(&mut io_buf, offset as u64)
-        }
-        .map(|n| n as _);
+        return queue
+            .read_vectored(
+                IoVectorBuf::new(current, iov, iovcnt)?,
+                (offset != -1).then_some(offset as u64),
+            )
+            .map(|n| n as _);
     }
     let mut io_buf = IoVectorBuf::new(current, iov, iovcnt)?.into_io();
     if offset == -1 {

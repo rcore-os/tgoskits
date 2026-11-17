@@ -35,6 +35,7 @@ use starry_signal::{SignalInfo, Signo};
 use crate::{
     Errno, StarryError, StarryResult,
     file::{File, FileLike, InodeKey, IoDst, IoSrc, Kstat},
+    mm::IoVectorBuf,
     sync::{Mutex, RawSpinLock},
     task::{
         PidIdentity, PidIdentityId, PidNumber, current_pid_view, current_user_task,
@@ -1112,6 +1113,23 @@ impl MqDescriptor {
     /// Reads a status snapshot without changing this description's cursor.
     pub(crate) fn read_at(&self, dst: &mut IoDst, mut offset: u64) -> StarryResult<usize> {
         self.read_status(dst, &mut offset)
+    }
+
+    /// Reads each segment through the queue's legacy scalar file operation.
+    /// Sequential vectors retain one cursor lock across all segments; a
+    /// positioned vector changes only its local offset.
+    pub(crate) fn read_vectored(
+        &self,
+        destination: IoVectorBuf<'_>,
+        offset: Option<u64>,
+    ) -> StarryResult<usize> {
+        self.validate_read_access()?;
+        if let Some(mut offset) = offset {
+            destination.read_segments(|dst| self.read_status(dst, &mut offset))
+        } else {
+            let mut offset = self.read_offset.lock();
+            destination.read_segments(|dst| self.read_status(dst, &mut offset))
+        }
     }
 
     fn read_status(&self, dst: &mut IoDst, offset: &mut u64) -> StarryResult<usize> {
