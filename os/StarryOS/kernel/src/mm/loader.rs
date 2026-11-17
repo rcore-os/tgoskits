@@ -6,7 +6,7 @@ use core::{ffi::CStr, iter, mem::size_of};
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
-use axfs_ng_vfs::{NodeType, PathHandle};
+use axfs_ng_vfs::{FilesystemId, NodeType, PathHandle};
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
 use uluru::LRUCache;
@@ -687,142 +687,167 @@ impl ElfCacheEntry {
     }
 }
 
-struct ElfLoader(LRUCache<ElfCacheEntry, 32>);
-
 type LoadResult = Result<(VirtAddr, Vec<AuxEntry>), Vec<u8>>;
 
-impl ElfLoader {
-    const fn new() -> Self {
-        Self(LRUCache::new())
-    }
+fn load_elf(
+    uspace: &mut AddrSpace,
+    loc: PathHandle,
+    caller: &dyn axfs_ng_vfs::LinkCaller,
+) -> StarryResult<LoadResult> {
+    let elf = match cached_elf(loc)? {
+        Ok(elf) => elf,
+        Err(data) => return Ok(Err(data)),
+    };
 
-    fn load(
-        &mut self,
-        uspace: &mut AddrSpace,
-        loc: PathHandle,
-        caller: &dyn axfs_ng_vfs::LinkCaller,
-    ) -> StarryResult<LoadResult> {
-        if !self
-            .0
-            .touch(|e| e.borrow_cache().location().ptr_eq(loc.location()))
-        {
-            match ElfCacheEntry::load(loc)? {
-                Ok(e) => {
-                    self.0.insert(e);
-                }
-                Err(data) => {
-                    return Ok(Err(data));
-                }
-            }
+    uspace.reset_uninstalled_for_loader()?;
+    map_trampoline(uspace)?;
+
+    let entry = &elf;
+    let ldso = if let Some(header) = entry
+        .borrow_elf()
+        .ph
+        .iter()
+        .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
+    {
+        let cache = entry.borrow_cache();
+        let interp_len = header.file_size;
+        let interp_end = header
+            .offset
+            .checked_add(interp_len)
+            .ok_or(StarryError::MalformedExecutable)?;
+        if !(2..=MAX_INTERPRETER_PATH_LEN).contains(&interp_len) || interp_end > cache.len() {
+            return Err(StarryError::MalformedExecutable);
         }
 
-        uspace.reset_uninstalled_for_loader()?;
-        map_trampoline(uspace)?;
+        let mut data = vec![0; interp_len as usize];
+        let read = cache.read_at(&mut data[..], header.offset)?;
+        if read != data.len() {
+            return Err(StarryError::MalformedExecutable);
+        }
 
-        let entry = self.0.front().unwrap();
-        let ldso = if let Some(header) = entry
-            .borrow_elf()
-            .ph
-            .iter()
-            .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
-        {
-            let cache = entry.borrow_cache();
-            let interp_len = header.file_size;
-            let interp_end = header
-                .offset
-                .checked_add(interp_len)
-                .ok_or(StarryError::MalformedExecutable)?;
-            if !(2..=MAX_INTERPRETER_PATH_LEN).contains(&interp_len) || interp_end > cache.len() {
-                return Err(StarryError::MalformedExecutable);
-            }
+        let ldso = CStr::from_bytes_with_nul(&data)
+            .ok()
+            .and_then(|cstr| cstr.to_str().ok())
+            .ok_or(StarryError::MalformedExecutable)?;
+        debug!("Loading dynamic linker: {ldso}");
+        Some(ldso.to_owned())
+    } else {
+        None
+    };
 
-            let mut data = vec![0; interp_len as usize];
-            let read = cache.read_at(&mut data[..], header.offset)?;
-            if read != data.len() {
-                return Err(StarryError::MalformedExecutable);
-            }
+    // PT_INTERP is protected while loading, but is not mm->exe_file.
+    let _interpreter_access;
+    let ldso = if let Some(ldso) = ldso {
+        let fs = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), caller);
+        let loc = fs.resolve(ldso)?;
+        check_executable_access(&loc, caller)?;
+        _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
+        Some(cached_elf(loc)?.map_err(|_| StarryError::InvalidInput)?)
+    } else {
+        None
+    };
 
-            let ldso = CStr::from_bytes_with_nul(&data)
-                .ok()
-                .and_then(|cstr| cstr.to_str().ok())
-                .ok_or(StarryError::MalformedExecutable)?;
-            debug!("Loading dynamic linker: {ldso}");
-            Some(ldso.to_owned())
-        } else {
-            None
-        };
+    let elf = map_elf(uspace, uspace.base().as_usize(), &elf)?;
+    let (start_data, end_data) = executable_data_layout(&elf)?;
+    uspace.set_executable_data_layout(start_data, end_data)?;
+    let ldso = if ldso.is_some() {
+        let max_end = uspace
+            .max_mapped_end()
+            .map(VirtAddr::as_usize)
+            .unwrap_or_else(|| uspace.base().as_usize());
+        let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
+        ldso.as_ref()
+            .map(|elf| map_elf(uspace, interp_base, elf))
+            .transpose()?
+    } else {
+        None
+    };
 
-        // PT_INTERP is protected while loading, but is not mm->exe_file.
-        let _interpreter_access;
-        let (elf, ldso) = if let Some(ldso) = ldso {
-            let fs = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), caller);
-            let loc = fs.resolve(ldso)?;
-            check_executable_access(&loc, caller)?;
-            _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
-            if !self
-                .0
-                .touch(|e| e.borrow_cache().location().ptr_eq(loc.location()))
-            {
-                let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
-                self.0.insert(e);
-            }
+    let entry = VirtAddr::from_usize(
+        ldso.as_ref()
+            .map_or_else(|| elf.entry(), |ldso| ldso.entry()),
+    );
+    let has_ldso = ldso.is_some();
+    let mut auxv = elf
+        .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
+        .collect::<Vec<_>>();
+    auxv.push(AuxEntry::new(
+        AuxType::HWCAP,
+        crate::cpu_capabilities::elf_hwcap(),
+    ));
+    auxv.push(AuxEntry::new(AuxType::UID, 0));
+    auxv.push(AuxEntry::new(AuxType::EUID, 0));
+    auxv.push(AuxEntry::new(AuxType::GID, 0));
+    auxv.push(AuxEntry::new(AuxType::EGID, 0));
+    auxv.push(AuxEntry::new(AuxType::SECURE, 0));
 
-            let mut iter = self.0.iter();
-            let ldso = iter.next().unwrap();
-            let elf = iter.next().unwrap();
-            (elf, Some(ldso))
-        } else {
-            (entry, None)
-        };
+    debug!(
+        "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
+        entry.as_usize(),
+        auxv.len(),
+        has_ldso,
+        auxv.last()
+            .map(|e| e.get_type() as usize)
+            .unwrap_or(usize::MAX),
+    );
 
-        let elf = map_elf(uspace, uspace.base().as_usize(), elf)?;
-        let (start_data, end_data) = executable_data_layout(&elf)?;
-        uspace.set_executable_data_layout(start_data, end_data)?;
-        let ldso = if ldso.is_some() {
-            let max_end = uspace
-                .max_mapped_end()
-                .map(VirtAddr::as_usize)
-                .unwrap_or_else(|| uspace.base().as_usize());
-            let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
-            ldso.map(|elf| map_elf(uspace, interp_base, elf))
-                .transpose()?
-        } else {
-            None
-        };
-
-        let entry = VirtAddr::from_usize(
-            ldso.as_ref()
-                .map_or_else(|| elf.entry(), |ldso| ldso.entry()),
-        );
-        let has_ldso = ldso.is_some();
-        let mut auxv = elf
-            .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
-            .collect::<Vec<_>>();
-        auxv.push(AuxEntry::new(
-            AuxType::HWCAP,
-            crate::cpu_capabilities::elf_hwcap(),
-        ));
-        auxv.push(AuxEntry::new(AuxType::UID, 0));
-        auxv.push(AuxEntry::new(AuxType::EUID, 0));
-        auxv.push(AuxEntry::new(AuxType::GID, 0));
-        auxv.push(AuxEntry::new(AuxType::EGID, 0));
-        auxv.push(AuxEntry::new(AuxType::SECURE, 0));
-
-        debug!(
-            "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
-            entry.as_usize(),
-            auxv.len(),
-            has_ldso,
-            auxv.last()
-                .map(|e| e.get_type() as usize)
-                .unwrap_or(usize::MAX),
-        );
-
-        Ok(Ok((entry, auxv)))
-    }
+    Ok(Ok((entry, auxv)))
 }
 
-static ELF_LOADER: Mutex<ElfLoader> = Mutex::new(ElfLoader::new());
+static ELF_CACHE: Mutex<LRUCache<Arc<ElfCacheEntry>, 32>> = Mutex::new(LRUCache::new());
+
+fn cached_elf(loc: PathHandle) -> StarryResult<Result<Arc<ElfCacheEntry>, Vec<u8>>> {
+    let cached = {
+        let mut cache = ELF_CACHE.lock();
+        cache
+            .find(|entry| entry.borrow_cache().location().ptr_eq(loc.location()))
+            .cloned()
+    };
+    if let Some(entry) = cached {
+        return Ok(Ok(entry));
+    }
+
+    // Filesystem I/O and the last path owner must stay outside the cache lock.
+    let entry = match ElfCacheEntry::load(loc)? {
+        Ok(entry) => Arc::new(entry),
+        Err(data) => return Ok(Err(data)),
+    };
+    let (selected, retired) = {
+        let mut cache = ELF_CACHE.lock();
+        if let Some(existing) = cache.find(|existing| {
+            existing
+                .borrow_cache()
+                .location()
+                .ptr_eq(entry.borrow_cache().location())
+        }) {
+            (existing.clone(), None)
+        } else {
+            (entry.clone(), cache.insert(entry.clone()))
+        }
+    };
+    drop(retired);
+    Ok(Ok(selected))
+}
+
+/// Retires discardable ELF headers before checking this filesystem's live uses.
+/// Active address spaces keep their own executable and mapping path owners.
+/// The caller must hold no namespace, topology, backend or FD-table lock.
+pub(crate) fn retire_executable_cache(filesystem: FilesystemId) {
+    let retired = {
+        let mut cache = ELF_CACHE.lock();
+        let mut retained = LRUCache::new();
+        // Reinsert from LRU to MRU, preserving all unrelated entries' order.
+        for index in (0..cache.len()).rev() {
+            let entry = cache.get(index).unwrap();
+            if entry.borrow_cache().location().mountpoint().filesystem_id() != filesystem {
+                let previous = retained.insert(entry.clone());
+                debug_assert!(previous.is_none());
+            }
+        }
+        core::mem::replace(&mut *cache, retained)
+    };
+    drop(retired);
+}
 
 // Linux's exec path bounds chained binary-format rewrites and returns ELOOP
 // for a too-deep interpreter chain. Give StarryOS's recursive script loader
@@ -834,7 +859,8 @@ const MAX_INTERPRETER_RECURSION: usize = 5;
 /// Useful for removing noises during memory leak detect.
 #[cfg(feature = "memtrack")]
 pub fn clear_elf_cache() {
-    ELF_LOADER.lock().0.clear();
+    let retired = core::mem::replace(&mut *ELF_CACHE.lock(), LRUCache::new());
+    drop(retired);
 }
 
 /// Load the user app to the user address space.
@@ -935,7 +961,7 @@ fn load_user_app_with_depth(
     check_executable_access(&loc, caller)?;
     let executable_file = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
 
-    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc, caller)? } {
+    let (entry, auxv) = match load_elf(uspace, loc, caller)? {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
