@@ -2,7 +2,7 @@
 
 ## 1. 基准与证据
 
-本记录随所有权迁移逐入口补齐。当前范围是接续记录第 9.31 至 9.33 节的 scoped 查找、proc 自指链接和拥有型结果，其他元数据、命名、挂载、凭据、映射与套接字入口继续按主计划核对。每行结论仅覆盖注明的参数与对象范围。
+本记录随所有权迁移逐入口补齐。当前范围是接续记录第 9.31 至 9.37 节的 scoped 查找、proc 自指链接、拥有型结果及文件系统实例，其他元数据、命名、挂载、凭据、映射与套接字入口继续按主计划核对。每行结论仅覆盖注明的参数与对象范围。
 
 ### 1.1 固定源码
 
@@ -78,12 +78,12 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 
 ### 4.1 根目录与挂载
 
-普通卸载把本次目标消费为 `PathUnmount`，只排除该操作实际持有的使用权。完整 system 批次仍观察到 bind-mounted executable 退出后卸载返回 EBUSY，须继续区分活动消费者与内部缓存；不能通过放宽 busy 判定规避。
+普通卸载把本次目标消费为 `PathUnmount`，只排除该操作实际持有的使用权。执行缓存与旧 MM 退休修正已由四架构定向旅程证明；第 8 节记录后续完整批次和共享实例的证据。活动消费者仍按原使用权决定 busy。
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
 | umount2；x86_64 166；其余三架构 39 | v7.1 [path_umount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2035) | 普通卸载保留目标到拆树提交，其他实际使用者导致 EBUSY；expire、lazy detach 另有顺序和寿命 | sys_umount2 → owned target → retire_executable_cache → PathHandle.prepare_unmount → cache flush/busy → PathUnmount.commit；挂载树为 namespace 状态 | 部分正确 | x86 path-lookup 的 tmpfs 普通卸载通过；公开 AX 旅程证明活动查找结果 busy、释放后可卸载；271ba070e1 原 executable 程序四架构证明存活 busy、退出后可卸载；expire 与 F1-F8 授权未闭合 |
-| mount；x86_64 165；其余三架构 40 | v7.1 [mount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4363) | 解析并保持来源、目标到相应 mount/bind/move 提交，按实际 namespace 解释授权 | sys_mount → FsView → owned target/source；loop Direct 与 Overlay lower/upper/work 保存原 PathHandle；MountNamespace 持拓扑 | 部分正确 | x86 私有 tmpfs 安装和跨 mount 限制通过；完整 system 中 cgroup/devpts 实例语义仍失败，F1-F8 及完整多操作数视图继续处理 |
+| mount；x86_64 165；其余三架构 40 | v7.1 [mount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4363) | 解析并保持来源、目标到相应 mount/bind/move 提交，按实际 namespace 解释授权 | sys_mount → FsView → owned target/source；loop Direct 与 Overlay lower/upper/work 保存原 PathHandle；MountNamespace 持拓扑 | 部分正确 | x86 私有 tmpfs 安装和跨 mount 限制通过；cgroup/devpts 与 readonly 重配置的独立语义见第 8 节；F1-F8 及完整多操作数视图继续处理 |
 | pivot_root；x86_64 155；其余三架构 41 | v7.1 [pivot_root](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4759) | new_root 与 put_old 按规定顺序解析并保持到拓扑事务及 root/cwd 修订 | sys_pivot_root → one saved FsBindingSnapshot → owned directories → NamespaceChange.pivot_root → FsContextSnapshot.pivot_root | 无法确认 | 当前迁移通过类型检查；既有组件 pivot 证据不能替代本阶段直接 syscall 的并发及错误顺序证明 |
 | chdir；x86_64 80；其余三架构 49 | v7.1 [chdir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L550) | 跟随路径、检查目录及 search 后更新共享 fs 的 cwd，保留已取得目录 | sys_chdir → saved binding/FsView.resolve_checked → NamespaceChange.prepare_cwd(PathHandle) → commit；FsContextState 保存 cwd | 部分正确 | x86 path-lookup 的 cwd 切换、挂载穿越及恢复通过；共享 CLONE_FS、并发根切换与其余目标仍需直接证明 |
 | fchdir；x86_64 81；其余三架构 50 | v7.1 [fchdir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L571) | 目录 fd 的实际对象经 search 检查后成为 cwd，目录改名不改其身份 | sys_fchdir → retained Directory.path_handle.clone → NamespaceChange.prepare_cwd → commit | 无法确认 | 本阶段未新增或选择直接 fchdir 的完整旅程；拥有型迁移不能单独作为系统兼容证明 |
@@ -111,9 +111,9 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 | --- | --- | --- | --- | --- | --- |
 | mkdir；x86_64 83 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 路径父遍历成功后，根、点和点点均为 EEXIST；正常目录允许尾斜杠 | sys_mkdir → sys_mkdirat → FsView.create_dir → ParentLookup → native create | 部分正确 | 原目录权限程序包含创建存在性、dirfd 与 DAC 判定 |
 | mkdirat；x86_64 258；其余三架构 34 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 绝对路径忽略 dirfd；特殊末项不转为其物理目录名称，正常创建在真实父槽位授权 | sys_mkdirat → with_fs → FsView.create_dir → typed component → Location.create | 部分正确 | 原完整目录权限程序直接覆盖 mkdirat；跨目标结果在本阶段终态记录 |
-| rmdir；x86_64 84 | v7.1 [filename_rmdir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5392) | 父遍历后，点为 EINVAL、点点为 ENOTEMPTY、根为 EBUSY；最终链接不作为目录目标跟随 | sys_rmdir → sys_unlinkat(AT_REMOVEDIR) → FsView.remove_dir → ParentLookup | 部分正确 | 原完整权限程序覆盖点、点点、只读父权限和目录删除 |
-| unlink；x86_64 87 | v7.1 [filename_unlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5534) | 特殊末项为 EISDIR；带尾斜杠的非目录为 ENOTDIR；最终链接自身参与删除 | sys_unlink → sys_unlinkat → FsView.remove_file → original parent slot | 部分正确 | 原权限及 ownership 程序覆盖 unlink 和目录拒绝；完整尾斜杠矩阵仍待补 |
-| unlinkat；x86_64 263；其余三架构 35 | v7.1 [filename_unlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5534) | flags 决定 unlink 或 rmdir；父目录和末项保持原意图，实际提交仍重验当前名称对象 | sys_unlinkat → with_fs → remove_file/remove_dir → ParentLookup → namespace command | 部分正确 | 原完整权限程序覆盖 dirfd 点、点点与 DAC；本阶段不声明完整并发覆盖 |
+| rmdir；x86_64 84 | v7.1 [filename_rmdir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5392) | 父遍历后，点为 EINVAL、点点为 ENOTEMPTY、根为 EBUSY；最终链接不作为目录目标跟随 | sys_rmdir → sys_unlinkat(AT_REMOVEDIR) → FsView.remove_dir → ParentLookup | 部分正确 | 原完整权限程序覆盖点、点点和目录删除；本轮 LoongArch 增强断言与 LTP rmdir02 通过，父 EACCES 先于 ENOTDIR，挂载点仍 EBUSY |
+| unlink；x86_64 87 | v7.1 [filename_unlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5534) | 特殊末项为 EISDIR；带尾斜杠的非目录为 ENOTDIR；最终链接自身参与删除 | sys_unlink → sys_unlinkat → FsView.remove_file → original parent slot | 部分正确 | 增强权限程序先在错误 EISDIR 失败，77d42086c9 证明父 EACCES 优先，同时保留尾斜杠 EISDIR/ENOTDIR；完整并发范围待补 |
+| unlinkat；x86_64 263；其余三架构 35 | v7.1 [filename_unlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5534) | flags 决定 unlink 或 rmdir；父目录和末项保持原意图，实际提交仍重验当前名称对象 | sys_unlinkat → with_fs → remove_file/remove_dir → ParentLookup → namespace command | 部分正确 | 3dd3c3e138 同一增强程序失败；77d42086c9 的权限及 cgroup 完整程序通过，实际命名槽在父 DAC 后检查类型和当前 namespace 挂载点；完整并发范围待补 |
 | rename；x86_64 82 | v7.1 [do_renameat2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L6110) | 按普通替换解释两端；特殊末项保留 EBUSY，mount 身份检查先于末项拒绝 | sys_rename → sys_renameat → sys_renameat2 → one FsView → rename_resolved | 部分正确 | 原完整 ownership 程序包含替换、同对象和跨 mount 行为 |
 | renameat；x86_64 264；AArch64/LoongArch64 38；RISC-V 无此入口 | v7.1 [do_renameat2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L6110) | 两端 dirfd 使用同一原始 root/cwd；绝对路径各自忽略 dirfd | sys_renameat → sys_renameat2 → view_at for each operand → ParentLookup | 部分正确 | 原权限程序及路径程序包含 renameat/renameat2；RISC-V 由 renameat2 承担 |
 | renameat2；x86_64 316；其余三架构 276 | v7.1 [do_renameat2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L6110) | 未知或冲突 flags 为 EINVAL；不同 mount 为 EXDEV；源特殊项 EBUSY，NOREPLACE 的特殊目标 EEXIST | sys_renameat2 → one saved FsView → two ParentLookup → rename_resolved → native attempt | 部分正确 | 原权限、ownership 和路径程序覆盖 flags、存在性、改名后身份；并发共享 FS 的 syscall 证明仍待补 |
@@ -172,4 +172,44 @@ x86_64 system 为 536/541、仍有 5 个失败；静态与部分运行结果不�
 
 仍有内核 pin 的 MM 不进入同步等待，完成后由原 worker 回收；NeedsRepair 保留
 实际资源并报告问题。内核测试、四架构定向程序与静态检查的精确源码均为
-271ba070e1，完整 system、ELF 写后缓存一致性、性能和独立审查尚未闭合。
+271ba070e1；77d42086c9 的 LoongArch 完整 system 见第 8 节。ELF 写后缓存一致性、性能和独立审查尚未闭合。
+
+## 8. 文件系统实例
+
+`77d42086c9` 将同一 cgroup 层级与独立 devpts 挂载分别连接到实际 Filesystem
+所有者；`st_dev` 由该实例的共享挂载状态提供。下表单独记录实例、属性和伪终端
+路径，不以原先 self-link 或普通挂载的结果替代这些语义。
+
+### 8.1 入口与对象
+
+LoongArch64 的完整 system 为 538/538，包含 cgroup-basic、cgroup-ns、devpts、
+目录权限、readonly remount 与 LTP rmdir02。Linux 6.8 提供同条件可观察对照，
+固定 v7.1 源码决定实例边界和错误顺序。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| mount/cgroup2；x86_64 165；其余三架构 40 | v7.1 [cgroup_do_get_tree](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/cgroup/cgroup.c#L2219) | 同一层级共享 superblock，cgroup namespace 选择该层级中的根目录 | sys_mount → cgroup namespace root/pin → CGROUP2_FILESYSTEM → select_mount_root → mount_root_with_source；Fs state 全局属层级，root 属挂载 | 部分正确 | 2d98a3119d 跨 namespace device 断言先失败；77d42086c9 两个完整 cgroup 程序通过；Linux 不同 namespace 共享 device；完整授权及并发发布仍待补 |
+| mount/devpts；x86_64 165；其余三架构 40 | v7.1 [devpts_get_tree](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/devpts/inode.c#L399) | 每次挂载创建私有实例，历史 newinstance flag 不改变该选择 | sys_mount → parse_devpts_options → new_devptsfs(DevPtsOptions) → fresh SimpleFs/PtsInstance；启动 devfs 的实例只在自身共享 | 部分正确 | 628a87d496 的默认实例隔离断言失败；77d42086c9 完整 devpts 程序通过；Linux 默认挂载均从 0 分配且 device 独立；创建者 fsuid 和完整 remount 未闭合 |
+| mount/MS_REMOUNT readonly；x86_64 165；其余三架构 40 | v7.1 [mount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4363) | 真实活动写入者可使只读转换 EBUSY；单个挂载与共享文件系统保护分开 | sys_mount → Mountpoint.set_filesystem_readonly 或 set_readonly → FilesystemMountState/本挂载 writer 状态 | 部分正确 | 原捕获运行器在 Linux 和 LoongArch 均因自己的 /tmp 输出写入者失败；匿名捕获下同一 remount 程序通过；不据此推断所有重配置 flag 与并发行为 |
+| fsopen；四架构 430 | v7.1 [fsopen](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fsopen.c#L120) | 创建调用者授权的 fs_context，能力与 flags 按入口顺序检查 | sys_fsopen → MountContextKind → MountContext/FD table | 部分正确 | 本轮直接 mount 旅程不证明完整 fsopen；当前 flags 检查早于 capability，固定 Linux 顺序相反，授权研究范围保留 |
+| fsconfig/devpts create；四架构 431 | v7.1 [fsconfig](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fsopen.c#L350) | 参数属于指定 context，创建或重配置消费该 context 的阶段状态 | sys_fsconfig → MountContextState.devpts_options → new_devptsfs → state.filesystem | 无法确认 | 已同步私有实例构造调用；缺少同 context 多次创建、错误阶段及重配置的完整定向判据 |
+| fsmount；四架构 432 | v7.1 [fsmount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4431) | 从已创建 context 构造独立挂载，同一实例保留相同 superblock 身份 | sys_fsmount → context.filesystem.clone → Mountpoint.new_root_with_source → detached Directory fd；共享 Fs state、独立 mount_id | 部分正确 | 构造使用同一默认 device；多 fsmount 的直接系统身份判据待补；当前不接受 Linux 的 FSMOUNT_NAMESPACE 等完整 flag 范围 |
+| open/devpts；x86_64 2 | v7.1 [ptmx_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/tty/pty.c#L767) | 打开目标实例的 ptmx/slave；独立实例中的相同编号不指向同一终端 | sys_open → sys_openat → FsView/OpenOptions → Ptmx/PtsDir → PtsInstance | 无法确认 | libc 的 open 结果不能单独证明 x86 legacy open 入口；本轮主要运行于 LoongArch64 |
+| openat/devpts；x86_64 257；其余三架构 56 | v7.1 [ptmx_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/tty/pty.c#L767) | 已解析的实际 devpts 实例决定分配表、slave 可见性和打开目标 | sys_openat → owned path → Device/Ptmx → PtyLink/PtsInstance；每个新挂载独立 | 部分正确 | 完整 devpts 程序验证重复默认挂载、相同编号隔离、slave 打开及控制终端；完整权限、锁状态与 flags 仍待核对 |
+| ioctl/PTY；x86_64 16；其余三架构 29 | v7.1 [pty_unix98_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/tty/pty.c#L625) | PTY 编号与锁作用于实际终端对象；控制终端和前台组使用会话状态 | sys_ioctl → retained FileLike → Device/Tty/Ptmx → PtsInstance 与会话 terminal 状态 | 部分正确 | devpts 程序实际执行 TIOCGPTN、TIOCSPTLCK、TIOCSCTTY、TIOCGPGRP；未将成功接受解锁命令解释为完整锁状态实现 |
+| read/PTY；x86_64 0；其余三架构 63 | v7.1 [PTY driver](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/tty/pty.c) | master 从其实际 slave 端接收数据，打开描述保持终端寿命 | sys_read → retained FileLike.read → Tty/PtyReader → 该 PtyLink 的共享通道 | 部分正确 | 控制终端写入后，父进程 poll/read master 实际得到 T；跨实例双向并发与完整短读语义未由此证明 |
+| write/PTY；x86_64 1；其余三架构 64 | v7.1 [PTY driver](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/tty/pty.c) | 对所选终端写入的数据到达配对端，返回实际完成量 | sys_write → write access/length checks → retained FileLike.write → Tty/PtyWriter | 部分正确 | 同一完整 devpts 旅程验证 /dev/tty 写入与 master 收到的字节；完整错误、阻塞和跨实例竞争仍待补 |
+| getdents64/devpts；x86_64 217；其余三架构 61 | v7.1 [devpts instance](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/devpts/inode.c) | 枚举该挂载实例的 slave 名称，不能混入另一实例的分配表 | sys_getdents64 → Directory open state → PtsDir/PtsInstance | 无法确认 | 新旅程通过 stat/open 核对可见性，尚无直接 getdents64 的跨实例枚举判据 |
+| stat/实例身份；x86_64 4 | v7.1 [newstat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L472) | st_dev 属于实际文件系统实例，命名空间根选择不拆分 cgroup 层级实例 | sys_stat → sys_fstatat → location.metadata → mountpoint.device → shared FilesystemMountState | 无法确认 | 本轮 LoongArch 程序没有 x86 legacy stat 入口的直接证据 |
+| newfstatat/fstatat/实例身份；x86_64 262；其余三架构 79 | v7.1 [newfstatat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L498) | cgroup 别名、跨 namespace 根共享 st_dev；不同 devpts 实例具有独立 st_dev | sys_fstatat → resolve_at → PathHandle.location.metadata → mount device | 部分正确 | cgroup-basic、cgroup-ns 和 devpts 经 libc 核对 device/inode 及父目录关系；各原始 stat 入口与 flags 的完整覆盖仍待确认 |
+| fstat/实例身份；x86_64 5；其余三架构 80 | v7.1 [vfs_fstat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L257) | 已打开描述观察原实例的属性，路径别名不改变底层文件系统身份 | sys_fstat → resolve_fd → retained file/directory path → metadata_to_kstat | 部分正确 | cgroup-basic 比较目录、控制文件 fd 与重复挂载路径的实际 device/inode；其他 fd 类和完整属性仍待补 |
+| statx/实例身份；x86_64 332；其余三架构 291 | v7.1 [statx](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L757) | dev major/minor 来自同一实际实例，mount 身份与 device 身份独立 | sys_statx → resolve_at → metadata_to_kstat → statx layout | 无法确认 | 本阶段没有对新实例 device 字段和 mount_id 的直接 statx 判据 |
+
+### 8.2 证据边界
+
+该版 18 包标准库与 VFS/AX/Kernel 81 项 Clippy 全部通过。LoongArch64 使用
+匿名捕获完成 538 个程序；原生成功断言输出按既有策略抑制，程序与最外层汇总
+均为零失败。其余三架构的最终 head 运行证据继续由后续 CI 核实，不能用旧 ELF
+改写为本版结果。Linux devpts 对照因宿主单 GID 映射使用 gid=0，Starry 仍验证
+gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条件，不能替代
+完整 root 到 uid/gid 1000 的凭据转换证明。

@@ -4305,6 +4305,44 @@ devpts 与 cgroup2 的实例规则不同。固定 Linux 的 `devpts_get_tree` �
 验证 gid=5。PTY 锁状态、创建者 fsuid、完整 remount 和其余终端语义不由本次
 实例修正推断为兼容。
 
+### 6.21 命名删除的检查顺序
+
+`FsView::remove_file` 和 `remove_dir` 保留类型化父解析的末组件规则，把普通名称
+交给原后端的同一次 `NamespaceMutation::Unlink`。`CommandSlot::authorize` 在
+实际父目录和目标槽位的观察上，先核对父目录写入与搜索权限及 sticky 属主，再
+判断目标类型、当前挂载点和目录是否为空。不能在外部提前返回 ENOTDIR 或 EISDIR，
+使普通用户绕过 Linux 的 EACCES 优先级。unlink 的尾随斜杠由
+`filename_unlinkat` 的独立顺序决定，仍在普通删除授权前拒绝；根、点和点点的
+既有末组件语义不变。
+
+挂载保护读取 `Location::is_mountpoint` 的实际 `Mountpoint::children` 索引。
+`DirNode` 原有的单个 mountpoint 字段没有发布者，也无法表达不同命名空间的挂载；
+该字段及访问器一并删除。授权使用本次 parent 的挂载和已规范化目标目录项组合
+查询，不从显示路径回查，也不把别的命名空间中的挂载当作本次状态。
+
+现有目录权限程序、cgroup 控制文件程序和 LTP rmdir02 共同验证父权限、目标类型、
+尾随分隔符与挂载点拒绝。它们分别暴露外部类型预检过早，以及旧空字段无法保护
+实际挂载点的问题。挂载并发发布与命名提交之间的完整重验仍在原验收范围内，
+不能由这些顺序执行的拒绝测试推断为已证明。
+
+### 6.22 验证输出的持有者
+
+`starry_system_test_runner.c` 的捕获模式通过匿名 memfd 保存输出。
+`run_isolated_case` 在创建命名空间前清空内容并回绕偏移，`redirect_output` 为
+子进程复制 stdout/stderr，`replay_output` 从同一打开描述读取失败日志及 LTP
+成功证据。原生成功程序的输出策略和失败状态传播保留。
+
+命名的 `/tmp` 输出文件会让测试自身一直持有该文件系统的写入权；在正确的共享
+Filesystem 状态和 writer 检查下，readonly remount 因此返回 EBUSY。匿名输出
+解除运行器与被测挂载的这项耦合，不改变内核对真实写入者的保护，也不通过关闭
+捕获模式跳过原有运行条件。创建、重置或回放失败按运行器错误处理；输出在每次
+尝试前重置，命名空间启动失败也不会回放上一程序的内容。
+
+捕获描述只在启用该模式时创建，由运行器保留到整批结束；子进程经 dup2 得到的
+标准描述可跨 exec，原始描述带 CLOEXEC。该改动无持久数据迁移，尚无同条件性能
+比较。Linux 上同一 remount 程序在原运行器失败、匿名捕获运行器通过，另外通过
+真实 clone、PID/mount namespace 和 exec 检查失败回放、LTP 成功回放与状态汇总。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。

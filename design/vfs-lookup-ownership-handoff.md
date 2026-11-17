@@ -1094,3 +1094,52 @@ Kernel 四目标 72 项 Clippy 及 x86_64 真实内核测试均通过；各自�
 另已在远端 b8a1ecdf0b 的 LoongArch64 完整批次观察到 readonly remount 的 EBUSY，
 需在后续完整批次继续确认。ELF 头缓存的写后失效、同条件性能以及原独立审查与
 验收范围继续保留。
+
+### 9.37 文件系统实例与命名删除
+
+`628a87d496` 先按固定 Linux 与实际 Linux 对照修正既有旅程：普通重复挂载共享
+Filesystem device，不同 devpts 默认挂载独立；cgroup 根的点点指向实际挂载点父
+目录，旧 openat2 的一律不支持断言改由既有完整路径旅程承担。该版标准库仅 VFS
+身份断言失败，x86 完整 system 为 539/541。另一个保留的标准库准备失败使用了
+宿主旧 mkfs，不能混入采用任务内 e2fsprogs 1.47.3 的有效结果。
+
+`2d98a3119d` 加入跨 cgroup namespace 的实际 device 比较，错误实现稳定失败。
+`fd998f7796` 用唯一层级 Filesystem 和经过 backend owner 验证的 MountRoot 保留
+实际共享状态，namespace 只选择根目录；`42a4f79ba5` 删除 devpts 全局默认实例与
+Legacy/NewInstance 选择层，每次 mount 创建独立 producer。前一候选把 cgroup
+namespace 当成 superblock 的划分依据，经固定 Linux 的 cgroup_do_get_tree 核对
+后弃用，没有进入分支。
+
+首次 x86 完整批次已到 540/541，仅 cgroup 删除权限失败；静态检查同时发现移除
+PTY 全局实例时误删了 SG2002 ION 的 OnceLock 导入，`ca2b9eefb5` 补回相同 feature
+条件。诊断确认普通用户 rmdir 控制文件时过早 ENOTDIR。原权限程序加入通用删除
+顺序后，在 `3dd3c3e138` 的普通 unlink 与 rmdir 上分别错误返回 EISDIR、ENOTDIR；
+尾斜杠的两个判据已经通过。`156c1943e5` 把普通目标类型判定移入同次后端授权，
+该版 18 包标准库及 81 项 Clippy 通过，LoongArch 完整批次为 536/538。
+
+两个剩余失败分别是 readonly remount 与 LTP rmdir02。后者暴露移走外部预检后，
+后端仍依赖无发布者的旧 DirNode mountpoint 字段；`283b85a46b` 改查当前 Location
+的实际 namespace 挂载索引并删除旧字段及访问器。带临时日志的完整批次恢复 LTP
+拒绝，只剩 remount，537/538；该诊断运行不作为干净生产源码的通过记录。
+
+写入租约诊断定位到运行器的 `/tmp/starry-system-test-output.*`。Linux 用同一
+运行器和未修改的完整 remount 程序也复现 EBUSY，证明该输出本身是活动写入者。
+`77d42086c9` 改为匿名 memfd 捕获，保留失败输出、LTP 成功证据及非零失败传播；
+创建 namespace 前重置内容和偏移。Linux 相同程序由失败变为通过，三个实际 exec
+程序另外证明两个成功与一个预期失败的回放及汇总。最初 Linux 准备因锁定的继承
+procfs 失败，重跑使用新的外层 PID/proc namespace，保留该准备失败的独立记录。
+
+两处临时 Rust 日志文件都已按备份与 Git 字节核对恢复。干净 `77d42086c9` 的
+18 包标准库、VFS/AX/Kernel 81 项 Clippy 和 LoongArch 完整 538/538 全部通过，
+最外层均为 0，ELF 摘要为
+`3e9e349310efcbb37beda7f487f07904766465da77157e91923e262de2655677`。
+权限、实例、根 pin 和完整程序的源码、原始日志与断言一致性记录于生产证据的
+`filesystem_instances_and_unlink_authorization`。其余三架构的本版完整结果尚未取得，
+继续核对精确 head 的 CI，不能把旧 ELF 记录为本版通过。
+
+Linux devpts 完整程序因宿主单 GID 映射使用 gid=0，Starry 仍验证 gid=5；Linux
+unlink 顺序对照通过移除 capability 形成父写入拒绝，不等同于 Starry 完整的
+root 到 uid/gid 1000 转换。pilot 的 Linux 候选仍有原 mmap 未知保护位预期差异，
+不将 openat2 断言迁移描述为整个 Linux 程序通过。系统调用表扩展为 63 行，保留
+fs_context 授权顺序、PTY 锁状态、statx 与其余未证实入口的实际缺口。同条件性能、
+非阻塞 CACHED、剩余消费者与拓扑重验及独立审查继续受原验收范围约束。

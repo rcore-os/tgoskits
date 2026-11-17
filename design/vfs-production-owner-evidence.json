@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "executable_cache_and_mapping_retirement",
+  "latest_evidence_section": "filesystem_instances_and_unlink_authorization",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -3955,6 +3955,252 @@
       "executable-cache-loongarch64-qemu.exit": {
         "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/executable-cache-loongarch64-qemu.exit",
         "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      }
+    }
+  },
+  "filesystem_instances_and_unlink_authorization": {
+    "recorded_at": "2026-11-17T12:13:00.477231+00:00",
+    "source": "77d42086c94deda8959f136ee105d75c05407d19",
+    "merged_dev": "93ad9be84f071b043a2a3270599b12fe0ab93dea",
+    "commits": {
+      "test_alignment": "628a87d49694f5c70954683b1b7efb5f2412c37b",
+      "cross_namespace_test": "2d98a3119dccb05c5b058f4660441ac15c487f43",
+      "shared_cgroup_filesystem": "fd998f7796831124975be50f3fa01d088b93113a",
+      "private_devpts": "42a4f79ba568a4c5231ef37846c922468bd462a5",
+      "conditional_ion_import": "ca2b9eefb54880ad7e45f38cc56b1a932dfb889b",
+      "unlink_order_test": "3dd3c3e13817a8a72bfa392af824212bdcc32fed",
+      "unlink_authorization": "156c1943e5919ccf1b6e2cbc706295e8045a9c45",
+      "namespace_mount_guard": "283b85a46bd6c296d283c6634106bc3a56337e40",
+      "anonymous_capture": "77d42086c94deda8959f136ee105d75c05407d19"
+    },
+    "same_tests": {
+      "fs/axfs-ng-vfs/tests/std.rs": {
+        "before": "628a87d49694f5c70954683b1b7efb5f2412c37b",
+        "after": "77d42086c94deda8959f136ee105d75c05407d19",
+        "sha256": "ba13d83ea90d28615d46a4fef71a4c66efa87a26712e7d4fd0d95a4276f47271"
+      },
+      "test-suit/starryos/qemu/system/cgroup-basic/src/main.c": {
+        "before": "ca2b9eefb54880ad7e45f38cc56b1a932dfb889b",
+        "after": "77d42086c94deda8959f136ee105d75c05407d19",
+        "sha256": "cde5d965e6c9f6a367de06b049e6a7d4a52bedcf8f837b3d401bdb77b9ca4acd"
+      },
+      "test-suit/starryos/qemu/system/test-cgroup-ns/src/main.c": {
+        "before": "2d98a3119dccb05c5b058f4660441ac15c487f43",
+        "after": "77d42086c94deda8959f136ee105d75c05407d19",
+        "sha256": "62543db88f53317297b33c1c9bcb45f718bbe97102f72fb54586a5d4f57641f1"
+      },
+      "test-suit/starryos/qemu/system/test-devpts-newinstance/src/main.c": {
+        "before": "628a87d49694f5c70954683b1b7efb5f2412c37b",
+        "after": "77d42086c94deda8959f136ee105d75c05407d19",
+        "sha256": "b77acc0bdb24e094ce29ddcc2184d8da4d71748f2fb4761adf18cb39227a742c"
+      },
+      "test-suit/starryos/qemu/system/bugfix-bug-dir-mutation-permissions/src/main.c": {
+        "before": "3dd3c3e13817a8a72bfa392af824212bdcc32fed",
+        "after": "77d42086c94deda8959f136ee105d75c05407d19",
+        "sha256": "c18510e1d227ba4676a8975f204b3dc2554659318bf137c26154c8ee73c6b816"
+      },
+      "test-suit/starryos/qemu/system/test-remount-flags/src/main.c": {
+        "before": "5b5bc347280d1c1f83059e128f1b5a4b0989b473",
+        "after": "77d42086c94deda8959f136ee105d75c05407d19",
+        "sha256": "e1ab12439ab91d757b2a180d3add966cc7ca7084011ad0433a55fea24a2e2ccd"
+      }
+    },
+    "source_sha256": {
+      "fs/axfs-ng-vfs/src/fs.rs": "9f9d456883c3352a31d75aa748b5e794713d522f01dca91bcc22799320d85fc4",
+      "fs/axfs-ng-vfs/src/mount/mod.rs": "b5691af7825ebf795b2b14d9fb957ff8f4f0eb3a40c59465b7dd23d58dc8675c",
+      "fs/axfs-ng-vfs/src/mount/publication.rs": "6e97d0a846c968a24009b2c2f5da73463a767c8585e9293ad22a30f2c0116d9a",
+      "fs/axfs-ng-vfs/src/node/dir/mod.rs": "211b8ba1cf2d00c3815630b43b9c5e1f1638f24d2b34b214e89cb127a5011891",
+      "fs/axfs-ng-vfs/src/node/dir/command.rs": "5e42df1044f55a0f50f0d381fe35790d1b2c8ae9686f91d4439a520ae5604bd2",
+      "fs/ax-fs-ng/src/fs_core/view.rs": "66b984d75c8f56c175d873c5480554e4a3ee800eff253f470e8076df29557d39",
+      "os/StarryOS/kernel/src/pseudofs/fs.rs": "d6efc616f5e9a8ffb6c5d7c95136bf1d9e7db695fd99aed0e51da1dbed6a818d",
+      "os/StarryOS/kernel/src/pseudofs/cgroup/mod.rs": "76c954d02c77c46949ff395d70954971545418c78437ac1ca6c96e5913a6261b",
+      "os/StarryOS/kernel/src/pseudofs/dev/mod.rs": "85f1ac42a8fb8ae0be9fc51206000a80b01ef8c740e66059692df38cb8898e5d",
+      "os/StarryOS/kernel/src/pseudofs/dev/tty/mod.rs": "874296984d535da79e7e9b58b5c842231c76fd446801d79cc30761bc49285c12",
+      "os/StarryOS/kernel/src/syscall/fs/mount.rs": "8ce99cee7e4e71a7100ab42ae817010d20d286877ecf8bb9416e3c27b9f83343",
+      "test-suit/starryos/qemu/system/common/starry_system_test_runner.c": "bb965dc5f012a4a45e9889760622b8d687087c4f1139e6ffd7137059e5dc060b"
+    },
+    "before": {
+      "source": "628a87d49694f5c70954683b1b7efb5f2412c37b",
+      "std_outer_exit": 1,
+      "std_failure": "same Filesystem instance received a different default st_dev on a second ordinary mount",
+      "x86_system": {
+        "total": 541,
+        "passed": 539,
+        "failed": 2
+      },
+      "x86_outer_exit": 1
+    },
+    "cross_namespace_before": {
+      "source": "2d98a3119dccb05c5b058f4660441ac15c487f43",
+      "outer_exit": 1,
+      "summary": {
+        "total": 1,
+        "passed": 0,
+        "failed": 1
+      },
+      "failure": "different cgroup namespace roots must share the hierarchy filesystem device"
+    },
+    "incomplete_attempts": [
+      {
+        "source": "42a4f79ba568a4c5231ef37846c922468bd462a5",
+        "x86_system": {
+          "total": 541,
+          "passed": 540,
+          "failed": 1
+        },
+        "std_exit": 0,
+        "clippy_exit": 1,
+        "clippy_failure": "SG2002 ION still requires its cfg-gated OnceLock import"
+      },
+      {
+        "source": "ca2b9eefb54880ad7e45f38cc56b1a932dfb889b",
+        "test": "cgroup-basic",
+        "outer_exit": 1,
+        "failure": "unprivileged unlinkat AT_REMOVEDIR returns ENOTDIR before parent EACCES"
+      },
+      {
+        "source": "3dd3c3e13817a8a72bfa392af824212bdcc32fed",
+        "test": "bug-dir-mutation-permissions",
+        "outer_exit": 1,
+        "failure": "unlink and rmdir report target types before parent EACCES; suffix cases already pass"
+      },
+      {
+        "source": "156c1943e5919ccf1b6e2cbc706295e8045a9c45",
+        "std_exit": 0,
+        "clippy_exit": 0,
+        "loongarch64_system": {
+          "total": 538,
+          "passed": 536,
+          "failed": 2
+        },
+        "loongarch64_exit": 1,
+        "failures": [
+          "readonly remount conflicts with the runner output writer",
+          "LTP rmdir02 finds the ineffective legacy DirNode mountpoint guard"
+        ]
+      }
+    ],
+    "diagnostic": {
+      "base": "283b85a46bd6c296d283c6634106bc3a56337e40",
+      "production_evidence": false,
+      "removed_byte_for_byte": true,
+      "system": {
+        "total": 538,
+        "passed": 537,
+        "failed": 1
+      },
+      "outer_exit": 1,
+      "finding": "capture-failures holds a writable named output file on the same /tmp filesystem that the remount test protects; LTP mountpoint rejection succeeds after moving the guard to the namespace index",
+      "acquire_logging_limit": "start events precede inode access admission, so rejected acquisitions can lack a Drop; unmatched starts alone are not proof of live leases",
+      "patch": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/readonly-debug-instrumentation.patch",
+        "sha256": "860c0b29d0bd7d24f107c3bd50780fc3b3a4d1a664ec472c177331af0738c50d"
+      }
+    },
+    "std": {
+      "source": "77d42086c94deda8959f136ee105d75c05407d19",
+      "packages_passed": 18,
+      "packages_failed": 0,
+      "outer_exit": 0
+    },
+    "clippy": {
+      "source": "77d42086c94deda8959f136ee105d75c05407d19",
+      "checks_passed": 81,
+      "checks_failed": 0,
+      "outer_exit": 0
+    },
+    "loongarch64_system": {
+      "source": "77d42086c94deda8959f136ee105d75c05407d19",
+      "total": 538,
+      "passed": 538,
+      "failed": 0,
+      "outer_exit": 0,
+      "capture_mode": "failure output plus successful LTP evidence; native C success stdout is suppressed",
+      "elf_sha256": "3e9e349310efcbb37beda7f487f07904766465da77157e91923e262de2655677"
+    },
+    "linux": {
+      "kernel": "6.8.0-149-generic",
+      "cgroup_identity": "same hierarchy device across repeated mounts and cgroup namespaces; read-only observations only",
+      "devpts": "default mounts are private; complete candidate program uses gid 0 in the single-GID host mapping rather than Starry gid 5",
+      "unlink": "four raw unlinkat inputs with parent write denied after capabilities are dropped; not the complete root-to-uid1000 program",
+      "capture": "unchanged complete remount program fails in the original named-capture runner and passes in the anonymous-capture runner; private user/PID/mount namespaces",
+      "capture_contract": "three real exec programs produce two passes and one deliberate failure; expected failure/LTP output and nonzero summary verified",
+      "setup_attempt": "initial Linux runner failed before the test because inherited procfs was locked; repeat uses a fresh outer PID/proc namespace"
+    },
+    "limitations": [
+      "full local batches on the other three architectures are not claimed here; corresponding current-head CI must be checked",
+      "Linux pilot candidate still has an existing unknown mmap protection-bit expectation mismatch",
+      "same-condition performance is not measured",
+      "remaining original VFS ownership, CACHED, endpoint, metadata, topology and independent-review acceptance scope is not complete"
+    ],
+    "logs": {
+      "instance-before-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/instance-before-std.log",
+        "sha256": "73c4b0c6fc475caee75a4e06e2ab851e3cb00f5b37d014d23476afb36bd0a6ef"
+      },
+      "instance-before-full-system.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/instance-before-full-system.log",
+        "sha256": "4418028467f1d1de15f5351dc76c05229a91a836d6fc834d31fbc9fafe80dc3f"
+      },
+      "cgroup-namespace-before-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cgroup-namespace-before-qemu.log",
+        "sha256": "c6540803fd3acaf51c1ace70b92b85f3864f3c3c1a7b88bf16c93a5f6f941143"
+      },
+      "instance-after-x86_64-system.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/instance-after-x86_64-system.log",
+        "sha256": "10e968c07cc2893b67dc0795c3b423d7e9a24bfb6b5158c0e5a3331151349fd5"
+      },
+      "instance-after-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/instance-after-clippy.log",
+        "sha256": "55ee6e8f93d252056592a9fb25c1f3c1e2da1c53bdabfaad9e8409d0cd93ef31"
+      },
+      "cgroup-unlink-before-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cgroup-unlink-before-qemu.log",
+        "sha256": "2f0edd31d60cac606d075e084a404e479849adb52229ab1e4a39261afd69398e"
+      },
+      "unlink-order-before-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/unlink-order-before-qemu.log",
+        "sha256": "1ff3c5fa419c45e59d346fe38ac4a039b45666550167cf8732e2faa3fcee4908"
+      },
+      "instance-verified-loongarch64-system.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/instance-verified-loongarch64-system.log",
+        "sha256": "66ff18b46a8155b2022b01c139ac578cbfe103a73f26332bc638b4a24c9a55f7"
+      },
+      "instance-verified-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/instance-verified-clippy.log",
+        "sha256": "a7075279af7a2feaa8508a56df4eb5b35cfb43422ff806ae948dad1ce98aec54"
+      },
+      "readonly-writers-diagnostic.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/readonly-writers-diagnostic.log",
+        "sha256": "aa82492778fa9523cc46b0be39c9b1c17d8a45a5fe47a0c29ca40718784ce086"
+      },
+      "instance-clean-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/instance-clean-std.log",
+        "sha256": "6956ae7c564b6376f1a72af69a5e5d649f6d763fe27344892fd61d055c8db727"
+      },
+      "instance-clean-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/instance-clean-clippy.log",
+        "sha256": "e90bce4429b33b72dec65e453ec9f2e0720c68b1569924c71c662c82b3a2edd8"
+      },
+      "instance-clean-loongarch64-system.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/instance-clean-loongarch64-system.log",
+        "sha256": "c539e07c74b9183fdb4b87f11a4994425692f3ebe162359e44b35a48f6e11e3d"
+      },
+      "linux-unlink-type-order.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/linux-unlink-type-order.log",
+        "sha256": "005503bbc3ee411c033ad3ec882c7b051788930de4d3f739a23c129e684da5a9"
+      },
+      "readonly-capture-linux/before.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/readonly-capture-linux/before.log",
+        "sha256": "47406c694aa9899635c25e1cf67c93f1172afcca9cd4f703d35837a98b8414ba"
+      },
+      "readonly-capture-linux/after.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/readonly-capture-linux/after.log",
+        "sha256": "c5901c0500a396edce15fb50573ca83c4d16c702a56e4610cd558c0f747404fa"
+      },
+      "readonly-capture-linux/capture-contract.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/readonly-capture-linux/capture-contract.log",
+        "sha256": "3d3d00ad992dc9085087d45834e04be4f40044be8e05159c41cfbb17979ee6b1"
       }
     }
   }
