@@ -163,13 +163,26 @@ download_xtask_bin_artifact = true
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
+echo "==> axvisor loongarch64 Linux guests"
 target/debug/tg-xtask axvisor test qemu --arch loongarch64
+echo "==> axvm loongarch64 IOCSR isolation axtest"
+target/debug/tg-xtask ktest qemu --package axvm-kernel-tests --test loongarch_iocsr --arch loongarch64 \
+  --config virtualization/test_crates/axvm-kernel-tests/build-loongarch64-unknown-none-softfloat.toml \
+  --qemu-config virtualization/test_crates/axvm-kernel-tests/qemu-loongarch64.toml
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "loongarch64"
 cases = ["smoke"]
+
+[[check.suite]]
+kind = "ktest-qemu"
+package = "axvm-kernel-tests"
+test = "loongarch_iocsr"
+arch = "loongarch64"
+config = "virtualization/test_crates/axvm-kernel-tests/build-loongarch64-unknown-none-softfloat.toml"
+qemu_config = "virtualization/test_crates/axvm-kernel-tests/qemu-loongarch64.toml"
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-svm"

@@ -219,6 +219,13 @@ AxVM 的既有 `axtest` feature 增加可选普通依赖 `axtest`，使作为普
 cargo xtask ktest qemu --package axvm-kernel-tests --test loongarch_iocsr --arch loongarch64
 ```
 
+`.github/ci/checks/axvisor.toml` 的 `test-axvisor-loongarch64-qemu` 在同一 LVZ
+容器任务中先执行既有 Linux smoke，再通过上述 ktest 入口执行本套件，显式传入
+测试包的构建和 QEMU 配置。相邻的 `ktest-qemu` 登记将测试源码及配置变化路由到
+该任务；沿用现有命令执行器的错误传播，任一测试失败都会使任务失败。
+测试仍在一个独立内核启动中执行，不能与携带 Linux 客户机的 smoke 合并；
+该调整复用原任务和原测试，不增加 CI 任务或测试用例。
+
 链接器 `KEEP(.axtest_array)` 只保护已进入链接的描述符，不能据此假定 rlib
 归档成员必然被抽取。验收必须在同一运行中看到
 `iocsr_pending_gate_and_vm_lifetime`、
