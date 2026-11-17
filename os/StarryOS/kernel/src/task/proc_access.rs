@@ -4,7 +4,10 @@ use alloc::sync::Arc;
 
 use linux_raw_sys::general::CAP_SYS_PTRACE;
 
-use super::{Cred, FsCredentialsSnapshot, ProcessData, Thread, UserTaskRef};
+use super::{
+    Cred, FsCredentialsSnapshot, PidIdentity, PidView, ProcessData, TgidNumber, Thread, TidNumber,
+    UserTaskRef,
+};
 use crate::{
     StarryError, StarryResult,
     mm::CloneUserRefError,
@@ -25,6 +28,7 @@ pub(super) struct ProcReadCredentials {
 pub(crate) struct ProcLinkCaller {
     identity: FsCredentialsSnapshot,
     process: Arc<ProcessData>,
+    thread_identity: Arc<PidIdentity>,
 }
 
 impl ProcLinkCaller {
@@ -36,6 +40,7 @@ impl ProcLinkCaller {
         Self {
             identity,
             process: thread.proc_data.clone(),
+            thread_identity: thread.pid_identity(),
         }
     }
 
@@ -54,7 +59,16 @@ impl ProcLinkCaller {
         Self {
             identity: self.identity.for_real_id_access(),
             process: self.process.clone(),
+            thread_identity: self.thread_identity.clone(),
         }
+    }
+
+    pub(crate) fn proc_process_number(&self, view: &PidView) -> Option<TgidNumber> {
+        view.visible_process_number(&self.process.proc.identity())
+    }
+
+    pub(crate) fn proc_thread_number(&self, view: &PidView) -> Option<TidNumber> {
+        view.visible_thread_number(&self.thread_identity)
     }
 }
 

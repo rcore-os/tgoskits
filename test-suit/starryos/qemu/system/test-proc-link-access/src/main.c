@@ -34,6 +34,7 @@ struct probe {
     int fd;
     struct stat expected[5];
     int result;
+    int self_links[2];
 };
 
 static int diagnostic(const char *stage, const char *path)
@@ -68,6 +69,39 @@ static int same_object(const struct stat *a, const struct stat *b)
 {
     return a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
            (a->st_mode & S_IFMT) == (b->st_mode & S_IFMT);
+}
+
+static int probe_self_links(const struct probe *p)
+{
+    const char *names[] = {"/proc/self", "/proc/thread-self"};
+    char expected[2][64];
+    snprintf(expected[0], sizeof(expected[0]), "%ld", syscall(SYS_getpid));
+    snprintf(expected[1], sizeof(expected[1]), "%ld/task/%ld",
+             syscall(SYS_getpid), syscall(SYS_gettid));
+    for (size_t i = 0; i < 2; ++i) {
+        struct stat st;
+        char text[64];
+        if (fstat(p->self_links[i], &st) != 0 || !S_ISLNK(st.st_mode))
+            return diagnostic("O_PATH nofollow holds self link", names[i]);
+        ssize_t size = syscall(SYS_readlinkat, p->self_links[i], "", text,
+                               sizeof(text) - 1);
+        if (size < 0) return diagnostic("read held self link", names[i]);
+        text[size] = '\0';
+        if (strcmp(text, expected[i]) != 0) {
+            fprintf(stderr, "FAIL: held %s target=%s expected=%s\n",
+                    names[i], text, expected[i]);
+            return 1;
+        }
+        const struct raw_open_how how = {
+            .flags = O_PATH | O_DIRECTORY,
+            .resolve = 0x02, /* NO_MAGICLINKS permits ordinary self symlinks. */
+        };
+        int directory = syscall(SYS_openat2, AT_FDCWD, names[i], &how, sizeof(how));
+        if (directory < 0) return diagnostic("follow self as ordinary link", names[i]);
+        close(directory);
+    }
+    puts("INFO: self links use the reading task, including inherited link fds");
+    return 0;
 }
 
 static int probe_links(const struct probe *p, int allowed)
@@ -126,7 +160,7 @@ static void *thread_probe(void *opaque)
     struct probe *p = opaque;
     printf("INFO: same-group caller tid=%ld target tgid=%d dumpable=0\n",
            syscall(SYS_gettid), p->pid);
-    p->result = probe_links(p, 1);
+    p->result = probe_self_links(p) || probe_links(p, 1);
     return NULL;
 }
 
@@ -194,7 +228,7 @@ int main(void)
     int fixture = -1;
     pid_t child = -1, observer = -1;
     char name[] = "/tmp/proc-link-access-XXXXXX";
-    struct probe p = {0};
+    struct probe p = {.self_links = {-1, -1}};
     setvbuf(stdout, NULL, _IONBF, 0);
     signal(SIGPIPE, SIG_IGN);
     puts("STARRY_SYSTEM_TEST_BEGIN: test-proc-link-access");
@@ -209,6 +243,14 @@ int main(void)
     }
     p.pid = getpid();
     p.fd = fixture;
+    p.self_links[0] = syscall(SYS_openat, AT_FDCWD, "/proc/self",
+                             O_PATH | O_NOFOLLOW, 0);
+    p.self_links[1] = syscall(SYS_openat, AT_FDCWD, "/proc/thread-self",
+                             O_PATH | O_NOFOLLOW, 0);
+    if (probe_self_links(&p) != 0) {
+        failed = 1;
+        goto cleanup;
+    }
     if (fstat(fixture, &p.expected[0]) != 0 ||
         fstatat(AT_FDCWD, ".", &p.expected[1], 0) != 0 ||
         fstatat(AT_FDCWD, "/", &p.expected[2], 0) != 0 ||
@@ -292,6 +334,8 @@ cleanup:
             failed |= diagnostic("reap target", "");
     }
     if (fixture >= 0) close(fixture);
+    for (size_t i = 0; i < 2; ++i)
+        if (p.self_links[i] >= 0) close(p.self_links[i]);
     if (unlink(name) != 0 && errno != ENOENT)
         failed |= diagnostic("clean fixture", name);
     if (failed == 0) puts("TEST_PROC_LINK_ACCESS_PASSED");

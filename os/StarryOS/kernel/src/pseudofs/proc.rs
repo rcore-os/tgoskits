@@ -39,6 +39,7 @@ use crate::{
 };
 
 mod link;
+mod self_link;
 use link::ProcLinkKind;
 
 /// Linux `new_idmap_permitted`: without the capability in the initial user
@@ -1856,7 +1857,7 @@ impl SimpleDirOps for ThreadDir {
     }
 }
 
-/// Handles /proc/[pid] & /proc/self
+/// Handles numeric process entries and caller-dependent self symlinks.
 struct ProcFsHandler {
     fs: Arc<SimpleFs>,
     view: PidView,
@@ -1871,36 +1872,34 @@ impl SimpleDirOps for ProcFsHandler {
                     procfs_visible_pid(&self.view, &proc_data.proc)
                         .map(|pid| pid.to_string().into())
                 })
-                .chain([Cow::Borrowed("self")]),
+                .chain([Cow::Borrowed("self"), Cow::Borrowed("thread-self")]),
         )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        let (task, path_pid, procfs_pid, proc_data) = if name == "self" {
-            let task = current_user_task();
-            let proc_data = task.as_thread().proc_data.clone();
-            let path_pid =
-                procfs_visible_pid(&self.view, &proc_data.proc).ok_or(VfsError::NotFound)?;
-            (task, path_pid, None, proc_data)
-        } else {
-            let pid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-            let identity = self
-                .view
-                .resolve_process(TgidNumber::try_from(pid).map_err(|_| VfsError::NotFound)?)
-                .map_err(|_| VfsError::NotFound)?;
-            let proc_data = identity.live_data().ok_or(VfsError::NotFound)?;
-            let task = identity.live_task().ok_or(VfsError::NotFound)?;
-            let procfs_pid = Some(pid);
-            (task, pid, procfs_pid, proc_data)
+        let self_kind = match name {
+            "self" => Some(self_link::SelfLinkKind::Process),
+            "thread-self" => Some(self_link::SelfLinkKind::Thread),
+            _ => None,
         };
+        if let Some(kind) = self_kind {
+            return Ok(self_link::node(self.fs.clone(), self.view.clone(), kind).into());
+        }
+        let pid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+        let identity = self
+            .view
+            .resolve_process(TgidNumber::try_from(pid).map_err(|_| VfsError::NotFound)?)
+            .map_err(|_| VfsError::NotFound)?;
+        let proc_data = identity.live_data().ok_or(VfsError::NotFound)?;
+        let task = identity.live_task().ok_or(VfsError::NotFound)?;
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(
             self.fs.clone(),
             Arc::new(ThreadDir {
                 fs: self.fs.clone(),
                 task: task.downgrade(),
                 proc_data,
-                path_pid,
-                procfs_pid,
+                path_pid: pid,
+                procfs_pid: Some(pid),
                 view: self.view.clone(),
             }),
         ));
