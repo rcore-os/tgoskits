@@ -383,8 +383,24 @@ static void check_vblank_timeout(int fd)
           WEXITSTATUS(status) == 0, "WAIT_VBLANK has a 3-second EBUSY deadline");
 }
 
-static int vblank_wait_child(int fd, int ready_fd, int expect_disable_wake)
+static long query_vblank(int fd, union drm_wait_vblank *query)
 {
+    *query = (union drm_wait_vblank){0};
+    return syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, query);
+}
+
+static long queue_immediate_sequence(int fd, uint32_t crtc_id, uint64_t user_data)
+{
+    struct drm_crtc_queue_sequence event = {
+        .crtc_id = crtc_id, .user_data = user_data, .sequence = 0,
+    };
+    return syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &event);
+}
+
+static int vblank_wait_child(int fd, uint32_t crtc_id, int ready_fd,
+                             int expect_disable_wake)
+{
+    (void)crtc_id;
     union drm_wait_vblank wait = {0};
     wait.req.type = _DRM_VBLANK_RELATIVE;
     wait.req.sequence = 100000;
@@ -436,7 +452,7 @@ static void check_vblank_disable_reenable(int fd, uint32_t crtc_id,
     }
     if (waiter == 0) {
         close(ready_pipe[0]);
-        _exit(vblank_wait_child(fd, ready_pipe[1], 0));
+        _exit(vblank_wait_child(fd, crtc_id, ready_pipe[1], 0));
     }
     close(ready_pipe[1]);
     char ready;
@@ -719,8 +735,8 @@ int main(void)
      * type=0（absolute，target=0）是纯查询：真实时钟下同一周期内两次
      * 查询返回相同序列号，跨周期则 +1，因此只要求不回退。 */
     union drm_wait_vblank wv1 = {0}, wv2 = {0};
-    CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wv1), 0, "WAIT_VBLANK 1");
-    CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wv2), 0, "WAIT_VBLANK 2");
+    CHECK_RET(query_vblank(fd, &wv1), 0, "WAIT_VBLANK 1");
+    CHECK_RET(query_vblank(fd, &wv2), 0, "WAIT_VBLANK 2");
     CHECK(wv2.reply.sequence >= wv1.reply.sequence, "vblank seq monotonic");
     CHECK(wv2.reply.sequence >= seq1, "vblank seq >= flip seq");
 
@@ -846,7 +862,7 @@ int main(void)
     struct drm_crtc_queue_sequence immediate = {
         .crtc_id = crtc_ids[0], .user_data = 0xace0, .sequence = 0,
     };
-    CHECK_RET(ioctl(other, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &immediate), 0,
+    CHECK_RET(queue_immediate_sequence(other, crtc_ids[0], 0xace0), 0,
               "queue immediate event on other open");
     CHECK_ERR(read(fd, buf, sizeof(buf)), EAGAIN, "other open's event is isolated");
     n = read(other, &seq_ev, sizeof(seq_ev));
@@ -871,15 +887,9 @@ int main(void)
     struct pollfd isolated = { .fd = fd, .events = POLLIN };
     CHECK(poll(&isolated, 1, 100) == 0, "closing other open cancels its events");
 
-    struct drm_crtc_queue_sequence first_ready = {
-        .crtc_id = crtc_ids[0], .sequence = 0, .user_data = 0xface01,
-    };
-    struct drm_crtc_queue_sequence second_ready = {
-        .crtc_id = crtc_ids[0], .sequence = 0, .user_data = 0xface02,
-    };
-    CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &first_ready), 0,
+    CHECK_RET(queue_immediate_sequence(fd, crtc_ids[0], 0xface01), 0,
               "queue first immediate event for partial read");
-    CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &second_ready), 0,
+    CHECK_RET(queue_immediate_sequence(fd, crtc_ids[0], 0xface02), 0,
               "queue second immediate event for partial read");
     void *guard = mmap(NULL, sizeof(seq_ev), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(guard != MAP_FAILED, "map inaccessible destination for partial read");
@@ -1117,7 +1127,7 @@ int main(void)
     CHECK(waiter >= 0, "fork waiter for concurrent CRTC disable");
     if (waiter == 0) {
         close(ready_pipe[0]);
-        _exit(vblank_wait_child(fd, ready_pipe[1], 1));
+        _exit(vblank_wait_child(fd, crtc_ids[0], ready_pipe[1], 1));
     }
     close(ready_pipe[1]);
     char ready;
