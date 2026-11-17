@@ -30,7 +30,7 @@ pub use file_open::{AuthorizedFileOpen, FileOpenRequest, LockedFileOpenAttempt};
 pub use fs::*;
 pub use lookup::{
     CachedLookup, CachedLookupContext, CachedLookupOptions, LookupPolicy, LookupRestrictions,
-    LookupScope,
+    LookupScope, SYMLINKS_MAX,
 };
 pub use metadata::*;
 pub use mount::*;

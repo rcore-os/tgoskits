@@ -10,9 +10,6 @@ use axfs_ng_vfs::{
 
 use super::{FsContextOwner, FsContextSnapshot};
 
-/// Maximum number of symlinks that will be followed during path resolution.
-pub const SYMLINKS_MAX: usize = 40;
-
 /// The independent boot root owner; ordinary task scopes fork its snapshot.
 pub static ROOT_FS_CONTEXT: OnceLock<FsContextOwner> = OnceLock::new();
 

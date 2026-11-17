@@ -4690,6 +4690,25 @@ Linux tmpfs 丢弃负项，因此普通 ENOENT 后的 CACHED 仍为 EAGAIN；有
 后端的缓存能力仍须分别实现和验证，不能用此阶段宣称整个缓存路径完成。
 此改动不迁移持久格式，可按提交回退；合入前仍需独立领域设计与实现审查。
 
+### 7.4 缓存链接的路径帧
+
+静态文本链接通过 `NodeOps::cached_link_target` 显式提供不可变目标，默认返回
+`WouldBlock`，不能把动态对象链接的显示文字当作目标。MemoryFs 的实际
+`FileContent` 保存共享不可变文本，缓存读取只尝试原锁并复制 Arc；普通后端
+查询仍按自己的返回类型产生 String，不维护第二份链接缓存。
+
+`CachedLookup` 用拥有目标文本的路径帧保留尚未处理的后缀。相对目标沿原父目录
+继续，绝对目标重新检查 root 和 mount 策略，所有帧共用 `SYMLINKS_MAX`，不会
+因链接展开而重置预算。文本解析及可能的帧分配都发生在 producer 保护退出后。
+O_PATH 的最终 nofollow 保留链接，尾部目录要求继续传给展开后的目标。
+
+缓存模式的向上错误不能沿用普通遍历：Linux v7.1 的 `follow_dotdot_rcu` 在
+BENEATH 根边界或 NO_XDEV 的向上跨挂载处返回 ECHILD，CACHED 又拒绝 unlazy，
+最终为 EAGAIN；普通模式的相应拒绝为 EXDEV。绝对链接的 BENEATH 拒绝仍为
+EXDEV。既有私有 tmpfs 旅程验证这些差异，并在普通查询预热长链后严格核对
+40 次成功、41 次 ELOOP。首次未预热的 Linux 夹具与最终相同 C 的产品红绿
+分别保留。链接 atime 与挂载时间策略仍需单独闭合，不能以静态目标能力外推。
+
 ## 8. 迁移与验收
 
 本设计改变共享 VFS 契约，迁移需要覆盖实际调用方与后端，而不是只修改 Starry syscall。

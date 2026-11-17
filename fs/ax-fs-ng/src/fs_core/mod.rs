@@ -6,7 +6,7 @@ mod view;
 
 #[cfg(feature = "vfs")]
 pub use axfs_ng_vfs::MountNamespace;
-pub use axfs_ng_vfs::{LookupPolicy, LookupRestrictions, LookupScope};
+pub use axfs_ng_vfs::{LookupPolicy, LookupRestrictions, LookupScope, SYMLINKS_MAX};
 pub use context::*;
 pub(crate) use lookup::{LookupOpenIntent, LookupSession};
 pub use owner::*;

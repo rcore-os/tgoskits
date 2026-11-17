@@ -354,7 +354,7 @@ struct FileContent {
     /// We only need to store the length here because we delegate the actual
     /// content management to page cache.
     length: AtomicU64,
-    symlink: Mutex<Option<String>>,
+    symlink: Mutex<Option<Arc<str>>>,
 }
 
 struct DirContent {
@@ -641,6 +641,16 @@ impl NodeOps for MemoryNode {
                 .len() as u64,
         };
         Ok(metadata)
+    }
+
+    fn cached_link_target(&self) -> VfsResult<Arc<str>> {
+        self.inode
+            .as_file()?
+            .symlink
+            .try_lock()
+            .ok_or(VfsError::WouldBlock)?
+            .clone()
+            .ok_or(VfsError::WouldBlock)
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {

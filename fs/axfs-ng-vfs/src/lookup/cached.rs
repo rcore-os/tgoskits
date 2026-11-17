@@ -1,6 +1,8 @@
 use alloc::sync::Arc;
 
-use super::{LookupPolicy, LookupRestrictions, LookupScope};
+use smallvec::SmallVec;
+
+use super::{LookupPolicy, LookupRestrictions, LookupScope, SYMLINKS_MAX};
 use crate::{
     Location, MutationCredentials, NodePermission, NodeType, PathHandle, PathObservation, VfsError,
     VfsResult,
@@ -34,6 +36,44 @@ pub struct CachedLookupOptions {
 pub struct CachedLookup<'a> {
     context: CachedLookupContext<'a>,
     observation: PathObservation,
+}
+
+enum PathText<'a> {
+    Input(&'a str),
+    Link(Arc<str>),
+}
+
+impl PathText<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Input(text) => text,
+            Self::Link(text) => text,
+        }
+    }
+}
+
+struct PathFrame<'a> {
+    text: PathText<'a>,
+    offset: usize,
+}
+
+impl PathFrame<'_> {
+    fn next_component(&mut self) -> Option<(&str, bool)> {
+        let text = self.text.as_str();
+        let bytes = text.as_bytes();
+        while self.offset < bytes.len() && bytes[self.offset] == b'/' {
+            self.offset += 1;
+        }
+        let start = self.offset;
+        while self.offset < bytes.len() && bytes[self.offset] != b'/' {
+            self.offset += 1;
+        }
+        if start == self.offset {
+            return None;
+        }
+        let more = bytes[self.offset..].iter().any(|byte| *byte != b'/');
+        Some((&text[start..self.offset], more))
+    }
 }
 
 impl<'a> CachedLookup<'a> {
@@ -71,9 +111,19 @@ impl<'a> CachedLookup<'a> {
         } else {
             self.context.start.clone()
         };
-        let directory = options.require_directory || path.ends_with('/');
-        let mut components = path.split('/').filter(|part| !part.is_empty()).peekable();
-        while let Some(component) = components.next() {
+        let mut directory = options.require_directory || path.ends_with('/');
+        let mut pending = SmallVec::<[PathFrame<'_>; 1]>::new();
+        pending.push(PathFrame {
+            text: PathText::Input(path),
+            offset: 0,
+        });
+        let mut links = 0;
+        while let Some(mut frame) = pending.pop() {
+            let Some((component, more_in_frame)) = frame.next_component() else {
+                continue;
+            };
+            let more = more_in_frame || !pending.is_empty();
+            let mut target = None;
             self.observation.validate()?;
             self.check_search(&current)?;
             match component {
@@ -83,9 +133,9 @@ impl<'a> CachedLookup<'a> {
                     crate::path::verify_entry_name(name)?;
                     let entry = current.location().entry().as_dir()?.cached_child(name)?;
                     let child = Location::new(current.location().mountpoint().clone(), entry);
-                    current = self.follow_mounts(self.bind(&current, child)?)?;
-                    if current.location().node_type() == NodeType::Symlink
-                        && (components.peek().is_some() || options.follow_final_link || directory)
+                    let child = self.follow_mounts(self.bind(&current, child)?)?;
+                    if child.location().node_type() == NodeType::Symlink
+                        && (more || options.follow_final_link || directory)
                     {
                         if self
                             .context
@@ -95,11 +145,33 @@ impl<'a> CachedLookup<'a> {
                         {
                             return Err(VfsError::FilesystemLoop);
                         }
-                        // No normal LinkOps callback is permitted here. Link
-                        // producers need their own audited cache capability.
-                        return Err(VfsError::WouldBlock);
+                        if links == SYMLINKS_MAX {
+                            return Err(VfsError::FilesystemLoop);
+                        }
+                        links += 1;
+                        target = Some(child.location().entry().cached_link_target()?);
+                    } else {
+                        current = child;
                     }
                 }
+            }
+            if more_in_frame {
+                pending.push(frame);
+            }
+            if let Some(target) = target {
+                if target.is_empty() {
+                    return Err(VfsError::NotFound);
+                }
+                if target.starts_with('/') {
+                    current = self.jump_root(&current)?;
+                }
+                if !more && target.ends_with('/') {
+                    directory = true;
+                }
+                pending.push(PathFrame {
+                    text: PathText::Link(target),
+                    offset: 0,
+                });
             }
         }
         if directory && !current.location().is_dir() {
@@ -114,6 +186,25 @@ impl<'a> CachedLookup<'a> {
         self.context
             .credentials
             .check_permission(&entry.cached_metadata()?, NodePermission::OTHER_EXEC)
+    }
+
+    fn jump_root(&self, current: &PathHandle) -> VfsResult<PathHandle> {
+        if self.context.policy.scope == LookupScope::Beneath {
+            return Err(VfsError::CrossesDevices);
+        }
+        if self
+            .context
+            .policy
+            .restrictions
+            .contains(LookupRestrictions::NO_XDEV)
+            && !Arc::ptr_eq(
+                current.location().mountpoint(),
+                self.root().location().mountpoint(),
+            )
+        {
+            return Err(VfsError::CrossesDevices);
+        }
+        Ok(self.root().clone())
     }
 
     fn bind(&self, from: &PathHandle, location: Location) -> VfsResult<PathHandle> {
@@ -143,7 +234,9 @@ impl<'a> CachedLookup<'a> {
         loop {
             if path.location().ptr_eq(self.root().location()) {
                 return if self.context.policy.scope == LookupScope::Beneath {
-                    Err(VfsError::CrossesDevices)
+                    // Linux's RCU dotdot refuses this escape before entering
+                    // ref-walk; CACHED cannot unlazy to report ordinary EXDEV.
+                    Err(VfsError::WouldBlock)
                 } else {
                     Ok(path)
                 };
@@ -151,7 +244,17 @@ impl<'a> CachedLookup<'a> {
             self.observation.validate()?;
             if path.location().is_root_of_mount() {
                 match path.location().cached_covered_location()? {
-                    Some(covered) => path = self.bind(&path, covered)?,
+                    Some(covered) => {
+                        if self
+                            .context
+                            .policy
+                            .restrictions
+                            .contains(LookupRestrictions::NO_XDEV)
+                        {
+                            return Err(VfsError::WouldBlock);
+                        }
+                        path = self.bind(&path, covered)?;
+                    }
                     None => return Ok(path),
                 }
             } else {

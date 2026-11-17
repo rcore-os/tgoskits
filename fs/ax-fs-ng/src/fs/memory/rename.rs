@@ -87,7 +87,7 @@ impl MemoryFs {
                 .symlink
                 .lock()
                 .clone()
-                .map(NamespaceRead::LinkText)
+                .map(|target| NamespaceRead::LinkText(target.as_ref().to_owned()))
                 .ok_or(VfsError::InvalidInput),
             NamespaceQuery::Lookup { name, .. } => {
                 match attempt.observe_node(&source, name, retired) {
@@ -181,7 +181,7 @@ impl MemoryAttempt<'_> {
             CreateContent::Symlink(target) => {
                 let file = inode.as_file().expect("new symlink file");
                 file.length.store(target_len, AtomicOrdering::Release);
-                *file.symlink.lock() = Some(target.to_owned());
+                *file.symlink.lock() = Some(Arc::from(target));
             }
             CreateContent::Node(_, device) => inode.metadata.lock_irqsave().rdev = device,
         }

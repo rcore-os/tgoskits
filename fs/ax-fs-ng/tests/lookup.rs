@@ -6,8 +6,8 @@ use ax_fs_ng::{
 };
 use ax_runtime as _;
 use axfs_ng_vfs::{
-    Mountpoint, MutationCredentials, NodePermission, NodeType, PathHandle, PathObservation,
-    VfsError,
+    CachedLookup, CachedLookupContext, CachedLookupOptions, Mountpoint, MutationCredentials,
+    NodePermission, NodeType, PathHandle, PathObservation, VfsError,
 };
 
 #[test]
@@ -93,15 +93,33 @@ fn open_keeps_one_link_budget_through_the_final_target_and_creation() {
             .open(&context, format!("parent-{count}/dangling"))
             .and_then(|opened| opened.into_file())
             .map(|file| file.location().inode());
+        let cached = retry_lookup_contention(|| {
+            CachedLookup::new(CachedLookupContext {
+                root: context.root(),
+                start: context.cwd(),
+                credentials: *context.credentials(),
+                policy: LookupPolicy::default(),
+            })?
+            .resolve(
+                &format!("parent-{count}/present"),
+                CachedLookupOptions {
+                    follow_final_link: true,
+                    require_directory: false,
+                },
+            )
+        })
+        .map(|path| path.location().inode());
         if count == 40 {
             assert_eq!(existing, Err(VfsError::FilesystemLoop));
             assert_eq!(created, Err(VfsError::FilesystemLoop));
+            assert_eq!(cached, Err(VfsError::FilesystemLoop));
             assert!(matches!(
                 directory.lookup_no_follow("created"),
                 Err(VfsError::NotFound)
             ));
         } else {
             assert_eq!(existing, Ok(expected.inode()));
+            assert_eq!(cached, Ok(expected.inode()));
             assert_eq!(
                 created,
                 Ok(directory.lookup_no_follow("created").unwrap().inode())

@@ -5,6 +5,9 @@ mod cached;
 use bitflags::bitflags;
 pub use cached::{CachedLookup, CachedLookupContext, CachedLookupOptions};
 
+/// Maximum number of followed links across one complete path operation.
+pub const SYMLINKS_MAX: usize = 40;
+
 /// Root selection for one operation, independent of its relative start path.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LookupScope {
