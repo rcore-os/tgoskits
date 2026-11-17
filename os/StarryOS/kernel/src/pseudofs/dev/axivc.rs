@@ -27,7 +27,7 @@ use bytemuck::{AnyBitPattern, NoUninit};
 
 use crate::{
     mm::{VmMutPtr, VmPtr},
-    pseudofs::{Device, DeviceMmap, DeviceOps, DirMapping, SimpleFs},
+    pseudofs::{DeviceBacking, DeviceMmap, DeviceOps, DirMapping, SimpleFsContext},
     sync::Mutex,
     task::future::IrqNotify,
 };
@@ -608,25 +608,25 @@ struct ChannelState {
     closing: bool,
 }
 
-pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
+pub(super) fn register_devices(root: &mut DirMapping, fs: SimpleFsContext) -> VfsResult<()> {
     let registry = Arc::new(AxivcRegistry::new(MAX_CHANNELS));
     registry.register_notify_irq();
     root.add(
         "axivc",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(10, AXIVC_MANAGER_MINOR),
             Arc::new(AxivcManager {
                 registry: registry.clone(),
             }),
-        ),
+        )?,
     );
 
     for index in 0..MAX_CHANNELS {
         root.add(
             format!("axivc_publisher_{index}"),
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 DeviceId::new(10, AXIVC_PUBLISHER_MINOR_BASE + index as u32),
@@ -635,11 +635,11 @@ pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
                     role: ChannelRole::Publisher,
                     index,
                 }),
-            ),
+            )?,
         );
         root.add(
             format!("axivc_subscriber_{index}"),
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 DeviceId::new(10, AXIVC_SUBSCRIBER_MINOR_BASE + index as u32),
@@ -648,9 +648,10 @@ pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
                     role: ChannelRole::Subscriber,
                     index,
                 }),
-            ),
+            )?,
         );
     }
+    Ok(())
 }
 
 struct AxivcManager {

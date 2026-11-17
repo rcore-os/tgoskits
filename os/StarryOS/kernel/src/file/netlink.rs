@@ -293,16 +293,16 @@ static NETLINK_SOCKETS: LazyLock<Mutex<Vec<Weak<NetlinkSocket>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl NetlinkSocket {
-    pub fn new(protocol: u32, socket_type: u32) -> Arc<Self> {
-        Arc::new(Self {
-            inode: crate::pseudofs::object::ObjectInode::new(axfs_ng_vfs::NodeType::Socket, 0o777),
+    pub fn new(protocol: u32, socket_type: u32) -> StarryResult<Arc<Self>> {
+        Ok(Arc::new(Self {
+            inode: crate::pseudofs::object::ObjectInode::new(axfs_ng_vfs::NodeType::Socket, 0o777)?,
             protocol,
             socket_type,
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
             state: Mutex::new(NetlinkState::default()),
             queue: Mutex::new(VecDeque::with_capacity(MAX_QUEUED)),
-        })
+        }))
     }
 
     pub(crate) fn location(&self) -> axfs_ng_vfs::Location {
@@ -794,11 +794,12 @@ fn link_infos() -> Vec<LinkInfo> {
                     IF_OPER_UNKNOWN
                 },
                 link_addresses: (info.kind != InterfaceKind::Tun).then(|| {
-                    let broadcast = if matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap) {
-                        [0xff; 6]
-                    } else {
-                        [0; 6]
-                    };
+                    let broadcast =
+                        if matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap) {
+                            [0xff; 6]
+                        } else {
+                            [0; 6]
+                        };
                     (address, broadcast)
                 }),
             }
@@ -812,15 +813,16 @@ fn addr_infos() -> Vec<AddrInfo> {
         .filter_map(|info| {
             let ipv4 = info.ipv4?;
             let local = ipv4.address.address().octets();
-            let broadcast = matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap).then(|| {
-                let ip = u32::from_be_bytes(local);
-                let mask = if ipv4.address.prefix_len() == 0 {
-                    0
-                } else {
-                    !0u32 << (32 - ipv4.address.prefix_len())
-                };
-                (ip | !mask).to_be_bytes()
-            });
+            let broadcast =
+                matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap).then(|| {
+                    let ip = u32::from_be_bytes(local);
+                    let mask = if ipv4.address.prefix_len() == 0 {
+                        0
+                    } else {
+                        !0u32 << (32 - ipv4.address.prefix_len())
+                    };
+                    (ip | !mask).to_be_bytes()
+                });
             Some(AddrInfo {
                 index: info.id.get(),
                 label: info.name,

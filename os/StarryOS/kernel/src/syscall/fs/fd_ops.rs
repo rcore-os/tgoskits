@@ -92,7 +92,7 @@ fn add_to_fd(
                 return add_file_like(Arc::new(File::new(file, flags)), flags & O_CLOEXEC != 0);
             }
             if let Some(namespace) = crate::file::NamespaceObject::at_location(file.location()) {
-                return namespace.into_fd().add_to_fd_table(flags & O_CLOEXEC != 0);
+                return namespace.into_fd()?.add_to_fd_table(flags & O_CLOEXEC != 0);
             }
             if file.location().node_type() == NodeType::Fifo {
                 let reservation = crate::file::FileDescriptorReservation::new()?;
@@ -148,19 +148,20 @@ fn add_to_fd(
                     return add_file_like(wrapped, flags & O_CLOEXEC != 0);
                 }
                 if let Some(ptmx) = inner.downcast_ref::<tty::Ptmx>() {
-                    // Opening /dev/ptmx creates a new pseudo-terminal
-                    let (master, pty_number) = ptmx.create_pty()?;
-                    // TODO: this is cursed
-                    let pts = view.resolve("/dev/pts")?;
+                    // Linux ptmx_open retains filp->f_path. Only this open's
+                    // terminal I/O state is new; its attributes remain the ptmx inode's.
+                    let uid = current.as_thread().cred().fsuid;
+                    let master = device.with_open_ops(ptmx.create_pty(uid)?);
+                    let original = file.location();
                     let entry = DirEntry::new_file(
                         FileNode::new(master),
                         NodeType::CharacterDevice,
                         Reference::new(
-                            Some(pts.location().entry().clone()),
-                            pty_number.to_string(),
+                            original.entry().parent(),
+                            original.entry().name().to_string(),
                         ),
                     );
-                    let loc = Location::new(file.location().mountpoint().clone(), entry);
+                    let loc = Location::new(original.mountpoint().clone(), entry);
                     file = ax_fs_ng::vfs::File::new(
                         FileBackend::Direct(file.path_handle().rebind(loc)?),
                         file.flags(),
@@ -854,14 +855,14 @@ pub fn sys_flock(
 
 #[cfg(all(test, axtest))]
 fn fcntl_setpipe_size_returns_capacity_for_test() -> bool {
-    let (read_end, _write_end) = Pipe::new();
+    let (read_end, _write_end) = Pipe::new().unwrap();
     matches!(set_pipe_size(&read_end, 4097), Ok(8192))
 }
 
 #[cfg(all(test, axtest))]
 fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
     // Sub-page sizes round up to one page (4096).
-    let (read_end, _write_end) = Pipe::new();
+    let (read_end, _write_end) = Pipe::new().unwrap();
     matches!(set_pipe_size(&read_end, 1), Ok(4096))
         // Power-of-two page multiples stay unchanged.
         && matches!(set_pipe_size(&read_end, 8192), Ok(8192))

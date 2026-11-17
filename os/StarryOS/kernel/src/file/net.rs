@@ -83,14 +83,14 @@ pub struct Socket {
 }
 
 impl Socket {
-    pub fn new(inner: SocketInner, ip_domain: u32) -> Self {
-        Self {
-            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Socket, 0o777),
+    pub fn new(inner: SocketInner, ip_domain: u32) -> StarryResult<Self> {
+        Ok(Self {
+            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Socket, 0o777)?,
             inner,
             ip_domain,
             async_mode: AtomicBool::new(false),
             owner: AtomicI32::new(0),
-        }
+        })
     }
 
     pub(crate) fn location(&self) -> axfs_ng_vfs::Location {

@@ -127,24 +127,30 @@ fn prepare_user_join(
 fn setns_via_nsfd(current: &UserTaskRef, nsfd: &NsFd) -> StarryResult<isize> {
     let thread = current.as_thread();
     let mut change = NamespaceChange::new(thread)?;
-    if !matches!(nsfd, NsFd::Mnt(_) | NsFd::User(_)) && !may_join_other_namespace(&change) {
+    if !matches!(
+        nsfd.object(),
+        crate::file::NamespaceObject::Mnt(_) | crate::file::NamespaceObject::User(_)
+    ) && !may_join_other_namespace(&change)
+    {
         return Err(StarryError::OperationNotPermitted);
     }
-    match nsfd {
-        NsFd::User(ns) => prepare_user_join(&mut change, ns.clone(), current)?,
-        NsFd::Mnt(ns) => {
+    match nsfd.object() {
+        crate::file::NamespaceObject::User(ns) => {
+            prepare_user_join(&mut change, ns.clone(), current)?
+        }
+        crate::file::NamespaceObject::Mnt(ns) => {
             change.prepare_mount_join(ns.clone(), FsSharingRequirement::SoleOwner)?;
         }
-        NsFd::Uts(ns) => change.proxy_mut().set_ns_uts(ns.clone()),
-        NsFd::Ipc(ns) => change.proxy_mut().set_ns_ipc(ns.clone()),
-        NsFd::Pid(ns) => {
+        crate::file::NamespaceObject::Uts(ns) => change.proxy_mut().set_ns_uts(ns.clone()),
+        crate::file::NamespaceObject::Ipc(ns) => change.proxy_mut().set_ns_ipc(ns.clone()),
+        crate::file::NamespaceObject::Pid(ns) => {
             if thread.proc_data.proc.threads().len() > 1 {
                 return Err(StarryError::InvalidInput);
             }
             change.proxy_mut().set_ns_pid(ns.clone());
         }
-        NsFd::Net(ns) => change.proxy_mut().set_ns_net(ns.clone()),
-        NsFd::Cgroup(ns) => change.proxy_mut().set_ns_cgroup(ns.clone()),
+        crate::file::NamespaceObject::Net(ns) => change.proxy_mut().set_ns_net(ns.clone()),
+        crate::file::NamespaceObject::Cgroup(ns) => change.proxy_mut().set_ns_cgroup(ns.clone()),
     }
     change.commit()?;
     Ok(0)

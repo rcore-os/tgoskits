@@ -14,11 +14,11 @@ use super::{
 };
 use crate::{
     mm::VmMutPtr,
-    pseudofs::{Device, DeviceOps, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFs},
+    pseudofs::{DeviceBacking, DeviceOps, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFsContext},
 };
 
 pub(super) struct UsbRootDir {
-    pub(super) fs: Arc<SimpleFs>,
+    pub(super) fs: SimpleFsContext,
     pub(super) manager: Arc<UsbFsManager>,
 }
 
@@ -55,12 +55,12 @@ impl SimpleDirOps for UsbRootDir {
                 manager,
                 bus_num,
             }),
-        )))
+        )?))
     }
 }
 
 struct UsbBusDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     manager: Arc<UsbFsManager>,
     bus_num: u8,
 }
@@ -90,7 +90,7 @@ impl SimpleDirOps for UsbBusDir {
             .device_snapshot_with_generation(self.bus_num, device_num)
             .ok_or(VfsError::NotFound)?;
 
-        Ok(NodeOpsMux::File(Device::new(
+        Ok(DeviceBacking::new(
             self.fs.clone(),
             NodeType::CharacterDevice,
             usb_device_id(self.bus_num, device_num),
@@ -100,7 +100,8 @@ impl SimpleDirOps for UsbBusDir {
                 device_num,
                 generation,
             }),
-        )))
+        )?
+        .into())
     }
 }
 
@@ -164,7 +165,14 @@ impl DeviceOps for UsbDeviceOps {
             }
             USBDEVFS_CONTROL => self
                 .manager
-                .snapshot_device_ioctl(current, self.bus_num, self.device_num, self.generation, cmd, arg)
+                .snapshot_device_ioctl(
+                    current,
+                    self.bus_num,
+                    self.device_num,
+                    self.generation,
+                    cmd,
+                    arg,
+                )
                 .map_err(Into::into),
             _ => Err(VfsError::Unsupported),
         }

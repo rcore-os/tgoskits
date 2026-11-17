@@ -390,7 +390,7 @@ pub fn sys_fsconfig(
                     .tmpfs_size_limit
                     .map_or_else(MemoryFs::new, MemoryFs::new_with_size_limit),
                 MountContextKind::Ramfs => MemoryFs::new_ramfs(),
-                MountContextKind::DevPts => new_devptsfs(state.devpts_options),
+                MountContextKind::DevPts => new_devptsfs(state.devpts_options)?,
             });
         }
         command if command == fsconfig_command::FSCONFIG_CMD_RECONFIGURE as u32 => {
@@ -694,7 +694,7 @@ pub fn sys_mount(
 
     match fs_type.as_str() {
         "proc" => {
-            let fs = crate::pseudofs::proc::new_procfs(current.as_thread().active_pid_namespace());
+            let fs = crate::pseudofs::proc::new_procfs(current.as_thread().active_pid_namespace())?;
             let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true)?;
@@ -739,7 +739,7 @@ pub fn sys_mount(
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         "devpts" => {
-            let fs = new_devptsfs(parse_devpts_options(current, data)?);
+            let fs = new_devptsfs(parse_devpts_options(current, data)?)?;
             let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true)?;

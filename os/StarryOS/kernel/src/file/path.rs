@@ -5,8 +5,8 @@ use alloc::sync::Arc;
 use axfs_ng_vfs::{PathHandle, VfsError, VfsResult};
 
 use super::{
-    Directory, File, FileLike, MountTableFile, NamespaceObject, NsFd, PacketSocket, Pipe, Socket,
-    memfd::Memfd, netlink::NetlinkSocket,
+    Directory, File, FileLike, MountTableFile, NsFd, PacketSocket, Pipe, Socket, memfd::Memfd,
+    netlink::NetlinkSocket,
 };
 
 /// Retains the selected mount use without interpreting the display path.
@@ -38,8 +38,10 @@ pub(crate) fn descriptor_path(file: &Arc<dyn FileLike>) -> VfsResult<PathHandle>
         socket.location()
     } else if let Some(socket) = file.downcast_ref::<NetlinkSocket>() {
         socket.location()
+    } else if let Some(queue) = file.downcast_ref::<crate::ipc::mqueue::MqDescriptor>() {
+        crate::pseudofs::mqueue_location(queue.queue().clone())
     } else if let Some(namespace) = file.downcast_ref::<NsFd>() {
-        NamespaceObject::from_fd(namespace).location()
+        namespace.location()
     } else {
         return Err(VfsError::OperationNotSupported);
     };

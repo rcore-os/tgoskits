@@ -606,17 +606,17 @@ fn pipe_write_reader_wake_due(
 }
 
 impl Shared {
-    fn new(state: PipeState) -> Self {
+    fn new(state: PipeState) -> StarryResult<Self> {
         let readiness = state.readiness();
-        Self {
-            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Fifo, 0o600),
+        Ok(Self {
+            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Fifo, 0o600)?,
             state: Mutex::new(state),
             readiness: AtomicU64::new(readiness.0),
             wait_rx: PipeWaitSet::new(),
             wait_tx: PipeWaitSet::new(),
             poll_usage: AtomicBool::new(false),
             open_wait: WaitQueue::new(),
-        }
+        })
     }
 
     fn readiness(&self) -> PipeReadiness {
@@ -872,10 +872,10 @@ impl Pipe {
         Some(format!("pipe:[{}]", node.inode.inode()).into())
     }
 
-    pub fn new() -> (Pipe, Pipe) {
+    pub fn new() -> StarryResult<(Pipe, Pipe)> {
         let mut state = PipeState::empty();
         state.add_endpoint(PipeAccess::ReadWrite);
-        let shared = Arc::new(Shared::new(state));
+        let shared = Arc::new(Shared::new(state)?);
         let read_end = Pipe {
             access: PipeAccess::Read,
             shared: shared.clone(),
@@ -888,7 +888,7 @@ impl Pipe {
             non_blocking: AtomicBool::new(false),
             opened_file: None,
         };
-        (read_end, write_end)
+        Ok((read_end, write_end))
     }
 
     pub const fn is_read(&self) -> bool {
@@ -1142,7 +1142,7 @@ fn rounded_pipe_size(size: usize) -> StarryResult<usize> {
 
 #[cfg(all(test, axtest))]
 fn peer_close_with_multiple_readers_is_visible_for_test() -> bool {
-    let (read_end, write_end) = Pipe::new();
+    let (read_end, write_end) = Pipe::new().unwrap();
     let second_reader = read_end.duplicate_read_end_for_test();
 
     drop(write_end);
@@ -1152,14 +1152,14 @@ fn peer_close_with_multiple_readers_is_visible_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 fn resize_rejects_oversized_pipe_for_test() -> bool {
-    let (read_end, _write_end) = Pipe::new();
+    let (read_end, _write_end) = Pipe::new().unwrap();
     read_end.resize(1024 * 1024 + 1).is_err()
 }
 
 #[cfg(all(test, axtest))]
 fn pipe_linux_io_semantics_hold_for_test() -> bool {
     let null_io_matches = {
-        let (read_end, write_end) = Pipe::new();
+        let (read_end, write_end) = Pipe::new().unwrap();
         read_end.set_nonblocking(true).ok();
         write_end.set_nonblocking(true).ok();
 
@@ -1195,7 +1195,7 @@ fn pipe_linux_io_semantics_hold_for_test() -> bool {
     };
 
     let duplicates_preserve_nonblocking = {
-        let (read_end, write_end) = Pipe::new();
+        let (read_end, write_end) = Pipe::new().unwrap();
         read_end.set_nonblocking(true).ok();
         write_end.set_nonblocking(true).ok();
         read_end.duplicate_read_end_for_test().nonblocking()
@@ -1221,7 +1221,7 @@ fn pipe_linux_io_semantics_hold_for_test() -> bool {
     };
 
     let published_readiness_matches = {
-        let (read_end, write_end) = Pipe::new();
+        let (read_end, write_end) = Pipe::new().unwrap();
         let resized_to_one_slot = write_end.resize(PIPE_BUF).is_ok();
         let input = [b'p'; PIPE_BUF];
         let mut src: &[u8] = &input;
@@ -1507,7 +1507,7 @@ impl Pipe {
 
 #[cfg(all(test, axtest))]
 fn pipe_resize_rounding_and_state_rules_hold_for_test() -> bool {
-    let (read_end, _write_end) = Pipe::new();
+    let (read_end, _write_end) = Pipe::new().unwrap();
 
     // Initial capacity is the default 64 KiB ring buffer.
     let initial_capacity = read_end.capacity();
@@ -1686,7 +1686,7 @@ mod tests {
 
     #[axtest::axtest]
     fn exclusive_pipe_poll_registration_marks_linux_poll_usage() {
-        let (read_end, _write_end) = Pipe::new();
+        let (read_end, _write_end) = Pipe::new().unwrap();
         let wakes = Arc::new(CountWake(AtomicUsize::new(0)));
         let waker = Waker::from(wakes);
         let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);

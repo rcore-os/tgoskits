@@ -1,34 +1,32 @@
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::any::Any;
 
-use axfs_ng_vfs::{DeviceId, NodeType, VfsResult};
+use axfs_ng_vfs::VfsResult;
 
 use crate::{
     StarryResult,
-    pseudofs::{Device, DeviceOps, SimpleFs, dev::tty::pts::PtsInstance},
+    pseudofs::{DeviceOps, SimpleFsContext, dev::tty::pts::PtsInstance},
 };
 
 pub struct Ptmx {
-    fs: Arc<SimpleFs>,
-    instance: Arc<PtsInstance>,
+    fs: SimpleFsContext,
+    instance: Weak<PtsInstance>,
 }
 
 impl Ptmx {
-    pub(crate) fn new(fs: Arc<SimpleFs>, instance: Arc<PtsInstance>) -> Self {
+    pub(crate) fn new(fs: SimpleFsContext, instance: Weak<PtsInstance>) -> Self {
         Self { fs, instance }
     }
 
-    pub fn create_pty(&self) -> StarryResult<(Arc<Device>, u32)> {
+    pub fn create_pty(&self, uid: u32) -> StarryResult<Arc<dyn DeviceOps>> {
+        let instance = self
+            .instance
+            .upgrade()
+            .ok_or(crate::StarryError::BadState)?;
         let (master, slave, link) = super::pty::create_pty_pair();
-        let pty_number = self.instance.add_slave(self.fs.clone(), slave)?;
-        link.bind(&self.instance, pty_number);
-        let device = Device::new(
-            self.fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(128, pty_number),
-            master,
-        );
-        Ok((device, pty_number))
+        let pty_number = instance.add_slave(self.fs.clone(), slave, uid)?;
+        link.bind(&instance, pty_number);
+        Ok(master)
     }
 }
 

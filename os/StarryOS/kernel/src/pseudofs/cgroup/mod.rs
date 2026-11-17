@@ -13,7 +13,7 @@ use axfs_ng_vfs::{
 };
 
 use self::file::CgroupFile;
-use super::{DirMaker, SimpleFs};
+use super::{DirMaker, SimpleFs, SimpleFsContext, SimpleFsOwner, recipe::DirRecipe};
 
 mod file;
 mod metadata;
@@ -23,17 +23,17 @@ const CGROUP2_SUPER_MAGIC: u32 = 0x6367_7270;
 
 struct CgroupDir {
     this: WeakDirEntry,
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsOwner,
     cgroup: Arc<CgroupNode>,
 }
 
 impl CgroupDir {
-    fn new(fs: Arc<SimpleFs>, cgroup: Arc<CgroupNode>, this: WeakDirEntry) -> Arc<Self> {
+    fn new(fs: SimpleFsOwner, cgroup: Arc<CgroupNode>, this: WeakDirEntry) -> Arc<Self> {
         Arc::new(Self { this, fs, cgroup })
     }
 
-    fn new_maker(fs: Arc<SimpleFs>, cgroup: Arc<CgroupNode>) -> DirMaker {
-        Arc::new(move |this| Self::new(fs.clone(), cgroup.clone(), this))
+    fn new_maker(context: SimpleFsContext, cgroup: Arc<CgroupNode>) -> VfsResult<DirMaker> {
+        Ok(DirMaker::new(context, CgroupDirRecipe { cgroup }))
     }
 
     fn this_entry(&self) -> VfsResult<DirEntry> {
@@ -62,6 +62,20 @@ impl CgroupDir {
     }
 }
 
+struct CgroupDirRecipe {
+    cgroup: Arc<CgroupNode>,
+}
+
+impl DirRecipe for CgroupDirRecipe {
+    fn materialize(
+        self: Arc<Self>,
+        owner: SimpleFsOwner,
+        this: WeakDirEntry,
+    ) -> Arc<dyn DirNodeOps> {
+        CgroupDir::new(owner, self.cgroup.clone(), this)
+    }
+}
+
 impl NodeOps for CgroupDir {
     fn inode(&self) -> u64 {
         self.cgroup.fs_inode(CgroupFsTarget::Directory)
@@ -80,7 +94,12 @@ impl NodeOps for CgroupDir {
     }
 
     fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
-        metadata::change_inode_metadata(&self.fs, &self.cgroup, CgroupFsTarget::Directory, request)
+        metadata::change_inode_metadata(
+            self.fs.as_ref(),
+            &self.cgroup,
+            CgroupFsTarget::Directory,
+            request,
+        )
     }
 
     fn filesystem(&self) -> &dyn FilesystemOps {
@@ -254,17 +273,18 @@ fn cgroup_error_to_vfs_error(error: CgroupError) -> VfsError {
 
 struct CgroupFilesystem {
     filesystem: Filesystem,
-    backend: Arc<SimpleFs>,
+    backend: SimpleFsOwner,
 }
 
 // Linux cgroup_do_get_tree() shares the hierarchy superblock and selects a
 // namespace-root dentry. The default v2 hierarchy is permanently owned.
 static CGROUP2_FILESYSTEM: ax_lazyinit::LazyLock<CgroupFilesystem> =
     ax_lazyinit::LazyLock::new(|| {
-        let (filesystem, backend) =
-            SimpleFs::new_with_handle("cgroup2".into(), CGROUP2_SUPER_MAGIC, |fs| {
-                CgroupDir::new_maker(fs, ax_cgroup::root())
-            });
+        let backend = SimpleFs::new_with("cgroup2".into(), CGROUP2_SUPER_MAGIC, |context| {
+            CgroupDir::new_maker(context, ax_cgroup::root())
+        })
+        .expect("initialize the permanent cgroup hierarchy filesystem");
+        let filesystem = backend.as_filesystem();
         CgroupFilesystem {
             filesystem,
             backend,

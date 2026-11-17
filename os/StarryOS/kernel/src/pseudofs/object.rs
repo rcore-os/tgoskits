@@ -11,27 +11,24 @@ use axfs_ng_vfs::{
 };
 use axpoll::{IoEvents, Pollable};
 
-use super::{DirMapping, SimpleDir, SimpleFs, SimpleFsNode};
+use super::{DirMapping, SimpleDir, SimpleFs, SimpleFsNode, SimpleFsOwner};
 use crate::{sync::Mutex, task::try_current_user_task};
 
 // Pseudo mounts are permanent, but do not retain any object entries.
-fn object_fs(name: &str, magic: u32) -> (Arc<SimpleFs>, Arc<Mountpoint>) {
-    let mut owner = None;
-    let filesystem = SimpleFs::new_with(name.into(), magic, |fs| {
-        owner = Some(fs.clone());
-        SimpleDir::new_maker(fs, Arc::new(DirMapping::new()))
-    });
-    (
-        owner.expect("object filesystem owner"),
-        Mountpoint::new_root(&filesystem),
-    )
+fn object_fs(name: &str, magic: u32) -> (SimpleFsOwner, Arc<Mountpoint>) {
+    let owner = SimpleFs::new_with(name.into(), magic, |context| {
+        SimpleDir::new_maker(context, Arc::new(DirMapping::new()))
+    })
+    .expect("initialize a permanent kernel object filesystem");
+    let mount = Mountpoint::new_root(&owner.as_filesystem());
+    (owner, mount)
 }
 
-static PIPE_FS: LazyLock<(Arc<SimpleFs>, Arc<Mountpoint>)> =
+static PIPE_FS: LazyLock<(SimpleFsOwner, Arc<Mountpoint>)> =
     LazyLock::new(|| object_fs("pipefs", 0x50495045));
-static SOCKET_FS: LazyLock<(Arc<SimpleFs>, Arc<Mountpoint>)> =
+static SOCKET_FS: LazyLock<(SimpleFsOwner, Arc<Mountpoint>)> =
     LazyLock::new(|| object_fs("sockfs", 0x534f434b));
-static NAMESPACE_FS: LazyLock<(Arc<SimpleFs>, Arc<Mountpoint>)> =
+static NAMESPACE_FS: LazyLock<(SimpleFsOwner, Arc<Mountpoint>)> =
     LazyLock::new(|| object_fs("nsfs", 0x6e736673));
 
 /// Inode metadata shared by the real object and every path referring to it.
@@ -43,32 +40,32 @@ pub(crate) struct ObjectInode {
 }
 
 impl ObjectInode {
-    pub(crate) fn new(ty: NodeType, mode: u16) -> Arc<Self> {
+    pub(crate) fn new(ty: NodeType, mode: u16) -> VfsResult<Arc<Self>> {
         let fs = match ty {
             NodeType::Fifo => &*PIPE_FS,
             NodeType::Socket => &*SOCKET_FS,
             _ => &*NAMESPACE_FS,
         };
-        let node = SimpleFsNode::new(fs.0.clone(), ty, NodePermission::from_bits_truncate(mode));
+        let node = SimpleFsNode::new(fs.0.clone(), ty, NodePermission::from_bits_truncate(mode))?;
         {
-            let mut metadata = node.metadata.lock_irqsave();
+            let mut metadata = node.inode.metadata.lock_irqsave();
             metadata.device = fs.1.device();
             metadata.block_size = 4096;
         }
         // Kernel-created objects have no userspace credential owner.
         if let Some(task) = try_current_user_task().expect("valid Starry task extension") {
             let cred = task.as_thread().cred();
-            let mut metadata = node.metadata.lock_irqsave();
+            let mut metadata = node.inode.metadata.lock_irqsave();
             metadata.uid = cred.fsuid;
             metadata.gid = cred.fsgid;
         }
-        let identity = NodeIdentity::new(alloc::vec![Arc::as_ptr(&fs.0) as u64, 0, node.inode()]);
-        Arc::new(Self {
+        let identity = NodeIdentity::new(alloc::vec![fs.0.context().identity(), 0, node.inode()]);
+        Ok(Arc::new(Self {
             node,
             mount: fs.1.clone(),
             identity,
             entry: Mutex::new(None),
-        })
+        }))
     }
 
     pub(crate) fn metadata(&self) -> VfsResult<Metadata> {
@@ -76,18 +73,18 @@ impl ObjectInode {
     }
 
     pub(crate) fn inode(&self) -> u64 {
-        self.node.metadata.lock_irqsave().inode
+        self.node.inode.metadata.lock_irqsave().inode
     }
 
     /// Allocates in the shared nsfs slab domain, including its root inode.
-    pub(crate) fn namespace() -> Arc<Self> {
-        let inode = Self::new(NodeType::RegularFile, 0o444);
+    pub(crate) fn namespace() -> VfsResult<Arc<Self>> {
+        let inode = Self::new(NodeType::RegularFile, 0o444)?;
         {
-            let mut metadata = inode.node.metadata.lock_irqsave();
+            let mut metadata = inode.node.inode.metadata.lock_irqsave();
             metadata.uid = 0;
             metadata.gid = 0;
         }
-        inode
+        Ok(inode)
     }
 
     /// Canonicalizes live paths without retaining an object-to-entry cycle.

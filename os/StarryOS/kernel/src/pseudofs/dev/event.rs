@@ -39,7 +39,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 use crate::{
     mm::UserPtr,
     pseudofs::{
-        Device, DeviceOps, DirMapping, SimpleFs, dev::irq_service::complete_irq_service_cycle,
+        DeviceBacking, DeviceOps, DirMapping, SimpleFsContext,
+        dev::irq_service::complete_irq_service_cycle,
     },
     sync::RawSpinLock,
 };
@@ -688,7 +689,7 @@ impl Pollable for EventDev {
     }
 }
 
-pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
+pub fn input_devices(fs: SimpleFsContext) -> VfsResult<DirMapping> {
     let mut inputs = DirMapping::new();
     let mut mice_alias: Option<Arc<EventDev>> = None;
     let mut input_id: u32 = 0;
@@ -702,12 +703,12 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
 
         let event_dev = Arc::new(EventDev::new(device));
         event_dev.register_irq();
-        let dev = Device::new(
+        let dev = DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(13, 64 + input_id),
             event_dev.clone(),
-        );
+        )?;
         inputs.add(format!("event{input_id}"), dev);
         input_id += 1;
 
@@ -719,15 +720,15 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
     if let Some(event_dev) = mice_alias {
         inputs.add(
             "mice",
-            Device::new(
+            DeviceBacking::new(
                 fs,
                 NodeType::CharacterDevice,
                 DeviceId::new(13, 63),
                 event_dev,
-            ),
+            )?,
         );
     }
 
     EVENT_DEVICE_COUNT.store(input_id, Ordering::Release);
-    inputs
+    Ok(inputs)
 }

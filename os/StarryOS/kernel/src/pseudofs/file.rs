@@ -9,7 +9,9 @@ use axfs_ng_vfs::{
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 
-use super::fs::{SimpleFs, SimpleFsNode};
+use super::{
+    FileMaker, SimpleFsContext, SimpleFsNode, SimpleFsOwner, SimpleInode, recipe::FileRecipe,
+};
 use crate::sync::Mutex;
 
 /// Operations for a simple file.
@@ -99,53 +101,56 @@ where
 }
 
 /// A simple file.
-pub struct SimpleFile {
-    node: SimpleFsNode,
+pub struct SimpleFileBacking {
+    inode: Arc<SimpleInode>,
     ops: Arc<dyn SimpleFileOps>,
     link: Option<Arc<dyn LinkOps>>,
     identity: Option<NodeIdentity>,
 }
 
-impl SimpleFile {
+impl SimpleFileBacking {
     /// Creates a simple file from given file operations.
-    pub fn new(fs: Arc<SimpleFs>, ty: NodeType, ops: impl SimpleFileOps) -> Arc<Self> {
-        let node = SimpleFsNode::new(fs, ty, NodePermission::default());
+    pub fn new(fs: SimpleFsContext, ty: NodeType, ops: impl SimpleFileOps) -> VfsResult<Arc<Self>> {
+        let inode = fs.allocate_inode(ty, NodePermission::default())?;
+        Ok(Arc::new(Self {
+            inode,
+            ops: Arc::new(ops),
+            link: None,
+            identity: None,
+        }))
+    }
+
+    /// Creates a simple file from given file operations.
+    pub fn new_regular(fs: SimpleFsContext, ops: impl SimpleFileOps) -> VfsResult<Arc<Self>> {
+        Self::new(fs, NodeType::RegularFile, ops)
+    }
+
+    /// Creates a dynamic link without fetching or authorizing its target.
+    pub(crate) fn new_link(
+        fs: SimpleFsContext,
+        identity: NodeIdentity,
+        link: impl LinkOps + 'static,
+    ) -> VfsResult<Arc<Self>> {
+        Ok(Arc::new(Self {
+            inode: fs
+                .allocate_inode(NodeType::Symlink, NodePermission::from_bits_truncate(0o777))?,
+            ops: Arc::new(|| Ok(Vec::<u8>::new())),
+            link: Some(Arc::new(link)),
+            identity: Some(identity),
+        }))
+    }
+
+    /// Uses an existing entity, such as a message queue, without copying attributes.
+    pub(super) fn from_inode(inode: Arc<SimpleInode>, ops: impl SimpleFileOps) -> Arc<Self> {
         Arc::new(Self {
-            node,
+            inode,
             ops: Arc::new(ops),
             link: None,
             identity: None,
         })
     }
 
-    /// Creates a simple file from given file operations.
-    pub fn new_regular(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<Self> {
-        Self::new(fs, NodeType::RegularFile, ops)
-    }
-
-    /// Creates a dynamic link without fetching or authorizing its target.
-    pub(crate) fn new_link(
-        fs: Arc<SimpleFs>,
-        identity: NodeIdentity,
-        link: impl LinkOps + 'static,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            node: SimpleFsNode::new(
-                fs,
-                NodeType::Symlink,
-                NodePermission::from_bits_truncate(0o777),
-            ),
-            ops: Arc::new(|| Ok(Vec::<u8>::new())),
-            link: Some(Arc::new(link)),
-            identity: Some(identity),
-        })
-    }
-
-    /// Overwrite the node's stored ownership, permission bits and timestamps.
-    /// Pseudo-filesystems that back a real kernel object (e.g. `/dev/mqueue`,
-    /// whose files carry the owning queue's `i_mode`/`i_uid`/`i_gid` and inode
-    /// times) use this to report those instead of the defaults. The node's
-    /// `size` still comes from the live content length.
+    /// Initializes this entity's ownership, permissions and inode timestamps.
     pub fn set_attrs(
         &self,
         mode: NodePermission,
@@ -155,7 +160,7 @@ impl SimpleFile {
         mtime: core::time::Duration,
         ctime: core::time::Duration,
     ) {
-        let mut metadata = self.node.metadata.lock_irqsave();
+        let mut metadata = self.inode.metadata.lock_irqsave();
         metadata.mode = mode;
         metadata.uid = uid;
         metadata.gid = gid;
@@ -163,18 +168,31 @@ impl SimpleFile {
         metadata.mtime = mtime;
         metadata.ctime = ctime;
     }
+}
 
-    /// Report a fixed `st_size` from `stat` instead of the live content length.
-    /// For pseudo files that mirror a kernel object whose inode size is a fixed
-    /// documented width (e.g. `/dev/mqueue/<name>` = `FILENT_SIZE` 80), so
-    /// `stat` matches Linux regardless of the current status-line length.
-    ///
-    /// Stored on the node's metadata because `stat` reads the size through
-    /// [`SimpleFsNode::metadata`], which now honors a non-zero stored size
-    /// instead of always recomputing from the live content length.
-    pub fn set_fixed_size(&self, size: u64) {
-        self.node.metadata.lock_irqsave().size = size;
+impl FileRecipe for SimpleFileBacking {
+    fn materialize(self: Arc<Self>, owner: SimpleFsOwner) -> Arc<dyn FileNodeOps> {
+        Arc::new(SimpleFile {
+            node: SimpleFsNode::bind(owner, self.inode.clone()),
+            ops: self.ops.clone(),
+            link: self.link.clone(),
+            identity: self.identity.clone(),
+        })
     }
+}
+
+impl From<Arc<SimpleFileBacking>> for FileMaker {
+    fn from(backing: Arc<SimpleFileBacking>) -> Self {
+        Self::new(backing.inode.context(), backing)
+    }
+}
+
+/// Active file adapter; its backing recipe never owns this wrapper.
+pub struct SimpleFile {
+    node: SimpleFsNode,
+    ops: Arc<dyn SimpleFileOps>,
+    link: Option<Arc<dyn LinkOps>>,
+    identity: Option<NodeIdentity>,
 }
 
 #[inherit_methods(from = "self.node")]
@@ -290,24 +308,47 @@ pub trait DirectRwFsFileOps: Send + Sync + 'static {
     }
 }
 
-impl<T: DirectRwFsFileOps> SpecialFsFile<T> {
-    /// Creates a file from given file object and specified permissions.
+/// Filesystem-free backing for direct I/O producers.
+pub struct SpecialFsFileBacking<T: DirectRwFsFileOps> {
+    inode: Arc<SimpleInode>,
+    ops: Arc<T>,
+}
+
+impl<T: DirectRwFsFileOps> SpecialFsFileBacking<T> {
     pub fn new_with_perm(
-        fs: Arc<SimpleFs>,
+        fs: SimpleFsContext,
         ty: NodeType,
         obj: T,
         perm: NodePermission,
-    ) -> Arc<Self> {
-        let node = SimpleFsNode::new(fs, ty, perm);
-        Arc::new(Self {
-            node,
+    ) -> VfsResult<Arc<Self>> {
+        let inode = fs.allocate_inode(ty, perm)?;
+        Ok(Arc::new(Self {
+            inode,
             ops: Arc::new(obj),
-        })
+        }))
     }
 
-    /// Creates a regular file from given file operations object and specified permissions.
-    pub fn new_regular_with_perm(fs: Arc<SimpleFs>, obj: T, perm: NodePermission) -> Arc<Self> {
+    pub fn new_regular_with_perm(
+        fs: SimpleFsContext,
+        obj: T,
+        perm: NodePermission,
+    ) -> VfsResult<Arc<Self>> {
         Self::new_with_perm(fs, NodeType::RegularFile, obj, perm)
+    }
+}
+
+impl<T: DirectRwFsFileOps> FileRecipe for SpecialFsFileBacking<T> {
+    fn materialize(self: Arc<Self>, owner: SimpleFsOwner) -> Arc<dyn FileNodeOps> {
+        Arc::new(SpecialFsFile {
+            node: SimpleFsNode::bind(owner, self.inode.clone()),
+            ops: self.ops.clone(),
+        })
+    }
+}
+
+impl<T: DirectRwFsFileOps> From<Arc<SpecialFsFileBacking<T>>> for FileMaker {
+    fn from(backing: Arc<SpecialFsFileBacking<T>>) -> Self {
+        Self::new(backing.inode.context(), backing)
     }
 }
 

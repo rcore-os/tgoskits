@@ -4,7 +4,7 @@ use alloc::{string::String, sync::Arc, vec};
 
 use axfs_ng_vfs::{LinkCaller, LinkOps, LinkTarget, NodeIdentity, PathHandle, VfsError, VfsResult};
 
-use super::{SimpleFile, SimpleFs, require_proc_task};
+use super::{SimpleFileBacking, SimpleFsContext, require_proc_task};
 use crate::{
     file::{
         Directory, FD_TABLE, File, FileLike, MountTableFile, NamespaceKind, NamespaceObject,
@@ -22,16 +22,16 @@ pub(super) enum ProcLinkKind {
     Namespace(NamespaceKind),
 }
 
-/// A SimpleFs instance owns one fixed proc PID view; retaining it prevents
+/// A SimpleFsContext instance owns one fixed proc PID view; retaining it prevents
 /// instance-address reuse while any corresponding semantic identity is live.
 pub(super) fn identity(
-    fs: &Arc<SimpleFs>,
+    fs: &SimpleFsContext,
     task: &UserTaskRef,
     kind: u64,
     slot: u64,
 ) -> NodeIdentity {
     NodeIdentity::new(vec![
-        Arc::as_ptr(fs) as u64,
+        fs.identity(),
         task.as_thread().pid_identity().id().get(),
         task.id().as_u64(),
         kind,
@@ -40,7 +40,7 @@ pub(super) fn identity(
 }
 
 pub(super) fn directory_identity(
-    fs: &Arc<SimpleFs>,
+    fs: &SimpleFsContext,
     task: WeakUserTaskRef,
     kind: u64,
 ) -> Option<NodeIdentity> {
@@ -48,7 +48,11 @@ pub(super) fn directory_identity(
     Some(identity(fs, &task, kind, 0))
 }
 
-pub(super) fn node(fs: Arc<SimpleFs>, task: &UserTaskRef, kind: ProcLinkKind) -> Arc<SimpleFile> {
+pub(super) fn node(
+    fs: SimpleFsContext,
+    task: &UserTaskRef,
+    kind: ProcLinkKind,
+) -> VfsResult<Arc<SimpleFileBacking>> {
     let (entry_kind, slot) = match kind {
         ProcLinkKind::Fd(fd) => (10, fd as u64),
         ProcLinkKind::Exe => (11, 0),
@@ -57,7 +61,7 @@ pub(super) fn node(fs: Arc<SimpleFs>, task: &UserTaskRef, kind: ProcLinkKind) ->
         ProcLinkKind::Namespace(kind) => (14, kind.key()),
     };
     let identity = identity(&fs, task, entry_kind, slot);
-    SimpleFile::new_link(
+    SimpleFileBacking::new_link(
         fs,
         identity,
         ProcLink {
@@ -133,7 +137,7 @@ impl LinkOps for ProcLink {
         let path = match self.snapshot(caller)? {
             TargetSnapshot::File(file) => descriptor_path(&file)?,
             TargetSnapshot::Path(path) => path,
-            TargetSnapshot::Namespace(namespace) => PathHandle::acquire(namespace.location())?,
+            TargetSnapshot::Namespace(namespace) => PathHandle::acquire(namespace.location()?)?,
         };
         Ok(LinkTarget::Object(path))
     }
@@ -151,7 +155,7 @@ impl LinkOps for ProcLink {
                     Ok(file.path().into_owned())
                 }
             }
-            TargetSnapshot::Namespace(namespace) => Ok(namespace.display()),
+            TargetSnapshot::Namespace(namespace) => namespace.display(),
             TargetSnapshot::Path(path) => display_location(path.location()),
         }
     }

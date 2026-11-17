@@ -8,11 +8,11 @@ use axfs_ng_vfs::{
 };
 use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
 
-use super::{SimpleFs, inode_identity, inode_metadata, update_inode_metadata};
+use super::{SimpleFsOwner, inode_identity, inode_metadata, update_inode_metadata};
 use crate::task::{FsCredentialsSnapshot, current_user_task};
 
 pub(super) struct CgroupFile {
-    pub(super) fs: Arc<SimpleFs>,
+    pub(super) fs: SimpleFsOwner,
     pub(super) cgroup: Arc<CgroupNode>,
     pub(super) kind: CgroupFileKind,
 }
@@ -61,7 +61,7 @@ impl NodeOps for CgroupFile {
 
     fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
         super::metadata::change_inode_metadata(
-            &self.fs,
+            self.fs.as_ref(),
             &self.cgroup,
             CgroupFsTarget::File(self.kind),
             request,

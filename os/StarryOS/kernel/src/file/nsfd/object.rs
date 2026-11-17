@@ -47,7 +47,7 @@ impl NamespaceKind {
         self as u64
     }
 
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Uts => "uts",
             Self::Ipc => "ipc",
@@ -125,13 +125,13 @@ struct NamespaceInodes(Mutex<InodeRecords>);
 static INODES: NamespaceInodes = NamespaceInodes(Mutex::new(BTreeMap::new()));
 
 impl NamespaceInodes {
-    fn get(&self, namespace: &NamespaceObject) -> Arc<ObjectInode> {
+    fn get(&self, namespace: &NamespaceObject) -> axfs_ng_vfs::VfsResult<Arc<ObjectInode>> {
         let owner = namespace.downgrade();
         if let Some(inode) = self.find(&owner) {
-            return inode;
+            return Ok(inode);
         }
         // Allocation, including the nsfs slab lock, is outside the index lock.
-        self.publish(owner, ObjectInode::namespace())
+        Ok(self.publish(owner, ObjectInode::namespace()?))
     }
 
     fn find(&self, owner: &NamespaceOwner) -> Option<Arc<ObjectInode>> {
@@ -202,30 +202,18 @@ impl NamespaceObject {
     }
 
     pub(crate) fn from_fd(fd: &NsFd) -> Self {
-        match fd {
-            NsFd::Uts(ns) => Self::Uts(ns.clone()),
-            NsFd::Ipc(ns) => Self::Ipc(ns.clone()),
-            NsFd::Mnt(ns) => Self::Mnt(ns.clone()),
-            NsFd::Pid(ns) => Self::Pid(ns.clone()),
-            NsFd::Net(ns) => Self::Net(ns.clone()),
-            NsFd::User(ns) => Self::User(ns.clone()),
-            NsFd::Cgroup(ns) => Self::Cgroup(ns.clone()),
-        }
+        fd.object.clone()
     }
 
-    pub(crate) fn into_fd(self) -> NsFd {
-        match self {
-            Self::Uts(ns) => NsFd::Uts(ns),
-            Self::Ipc(ns) => NsFd::Ipc(ns),
-            Self::Mnt(ns) => NsFd::Mnt(ns),
-            Self::Pid(ns) => NsFd::Pid(ns),
-            Self::Net(ns) => NsFd::Net(ns),
-            Self::User(ns) => NsFd::User(ns),
-            Self::Cgroup(ns) => NsFd::Cgroup(ns),
-        }
+    pub(crate) fn into_fd(self) -> StarryResult<NsFd> {
+        let inode = INODES.get(&self)?;
+        Ok(NsFd {
+            object: self,
+            inode,
+        })
     }
 
-    fn kind(&self) -> NamespaceKind {
+    pub(super) fn kind(&self) -> NamespaceKind {
         match self {
             Self::Uts(_) => NamespaceKind::Uts,
             Self::Ipc(_) => NamespaceKind::Ipc,
@@ -249,17 +237,17 @@ impl NamespaceObject {
         }
     }
 
-    pub(crate) fn inode(&self) -> u64 {
-        INODES.get(self).inode()
+    pub(crate) fn inode(&self) -> axfs_ng_vfs::VfsResult<u64> {
+        Ok(INODES.get(self)?.inode())
     }
 
-    pub(crate) fn display(&self) -> String {
-        format!("{}:[{}]", self.kind().name(), self.inode())
+    pub(crate) fn display(&self) -> axfs_ng_vfs::VfsResult<String> {
+        Ok(format!("{}:[{}]", self.kind().name(), self.inode()?))
     }
 
-    pub(crate) fn location(self) -> Location {
-        let inode = INODES.get(&self);
-        inode.location(self)
+    pub(crate) fn location(self) -> axfs_ng_vfs::VfsResult<Location> {
+        let inode = INODES.get(&self)?;
+        Ok(inode.location(self))
     }
 
     pub(crate) fn at_location(location: &Location) -> Option<Self> {
@@ -280,15 +268,15 @@ mod tests {
     };
 
     fn observe_namespace(namespace: &NamespaceObject) -> (u64, u64) {
-        let fd = namespace.clone().into_fd();
+        let fd = namespace.clone().into_fd().unwrap();
         let fd_stat = fd.stat().unwrap();
-        let location = NamespaceObject::from_fd(&fd).location();
+        let location = NamespaceObject::from_fd(&fd).location().unwrap();
         let vnode_stat = location.metadata().unwrap();
         let identity = (vnode_stat.device, vnode_stat.inode);
         assert_eq!((fd_stat.dev, fd_stat.ino), identity);
-        assert_eq!(namespace.inode(), vnode_stat.inode);
+        assert_eq!(namespace.inode().unwrap(), vnode_stat.inode);
         assert_eq!(
-            namespace.display(),
+            namespace.display().unwrap(),
             format!("{}:[{}]", namespace.kind().name(), vnode_stat.inode)
         );
         let root = location.mountpoint().root_location().metadata().unwrap();
@@ -323,9 +311,9 @@ mod tests {
         // Pause one observer at the real allocation/publication boundary,
         // then let another observer publish before the first one resumes.
         assert!(INODES.find(&owner).is_none());
-        let candidate = ObjectInode::namespace();
+        let candidate = ObjectInode::namespace().unwrap();
         let weak_candidate = Arc::downgrade(&candidate);
-        let vnode = namespace.clone().location();
+        let vnode = namespace.clone().location().unwrap();
         let winner = INODES.publish(owner, candidate);
         assert!(
             Arc::ptr_eq(
@@ -342,7 +330,7 @@ mod tests {
         let number = winner.inode();
         let weak_inode = Arc::downgrade(&winner);
         drop(winner);
-        let fd = namespace.clone().into_fd();
+        let fd = namespace.clone().into_fd().unwrap();
         assert_eq!(fd.stat().unwrap().ino, number);
         drop(fd);
         drop(vnode);
@@ -351,16 +339,19 @@ mod tests {
         // No temporary NamespaceObject, fd or vnode remains. The actual
         // namespace allocation alone must keep the indexed inode stable.
         assert!(weak_inode.upgrade().is_some());
-        assert_eq!(NamespaceObject::Ipc(native.clone()).inode(), number);
-        let vnode = NamespaceObject::Ipc(native.clone()).location();
-        let fd = NamespaceObject::Ipc(native.clone()).into_fd();
+        assert_eq!(
+            NamespaceObject::Ipc(native.clone()).inode().unwrap(),
+            number
+        );
+        let vnode = NamespaceObject::Ipc(native.clone()).location().unwrap();
+        let fd = NamespaceObject::Ipc(native.clone()).into_fd().unwrap();
         drop(native);
 
         let trigger = NamespaceObject::Net(Arc::new(RawSpinLock::new(NetNamespace { ns_id: 1 })));
-        trigger.inode();
+        trigger.inode().unwrap();
         assert!(weak_native.upgrade().is_some());
         let peer = NamespaceObject::Ipc(Arc::new(RawSpinLock::new(IpcNamespace { ns_id: 2 })));
-        let peer_inode = INODES.get(&peer);
+        let peer_inode = INODES.get(&peer).unwrap();
         let weak_peer_inode = Arc::downgrade(&peer_inode);
         drop(peer_inode);
         drop(vnode);
@@ -371,7 +362,7 @@ mod tests {
             weak_native.upgrade().is_none(),
             "the index must not own the namespace"
         );
-        trigger.inode();
+        trigger.inode().unwrap();
         assert!(
             weak_inode.upgrade().is_none(),
             "dead records and weak entry caches must not leak inodes"

@@ -1069,7 +1069,7 @@ pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
 #[cfg(all(test, axtest))]
 fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
     fn descriptor() -> FileDescriptor {
-        let (read_end, _write_end) = Pipe::new();
+        let (read_end, _write_end) = Pipe::new().unwrap();
         FileDescriptor {
             inner: Arc::new(read_end),
             cloexec: true,
@@ -1121,7 +1121,7 @@ fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 fn stable_descriptor_lookup_avoids_repeated_read_lock_for_test() -> bool {
-    let (read_end, _write_end) = Pipe::new();
+    let (read_end, _write_end) = Pipe::new().unwrap();
     let scope = FileTableScope::new();
     assert!(
         scope
@@ -1142,8 +1142,8 @@ fn stable_descriptor_lookup_avoids_repeated_read_lock_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 fn alternating_descriptor_lookup_avoids_cache_thrashing_for_test() -> bool {
-    let (first_read, _first_write) = Pipe::new();
-    let (second_read, _second_write) = Pipe::new();
+    let (first_read, _first_write) = Pipe::new().unwrap();
+    let (second_read, _second_write) = Pipe::new().unwrap();
     let scope = FileTableScope::new();
     assert!(
         scope
@@ -1177,8 +1177,8 @@ fn alternating_descriptor_lookup_avoids_cache_thrashing_for_test() -> bool {
 #[cfg(all(test, axtest))]
 fn descriptor_lookup_invalidates_after_reuse_for_test() -> bool {
     let scope = FileTableScope::new();
-    let (first_read, _first_write) = Pipe::new();
-    let (second_read, _second_write) = Pipe::new();
+    let (first_read, _first_write) = Pipe::new().unwrap();
+    let (second_read, _second_write) = Pipe::new().unwrap();
     assert!(
         scope
             .table
@@ -1211,7 +1211,7 @@ fn descriptor_lookup_invalidates_after_reuse_for_test() -> bool {
 #[cfg(all(test, axtest))]
 fn cloned_table_scope_invalidates_after_fd_reuse_for_test() -> bool {
     let parent = FileTableScope::new();
-    let (parent_read, _parent_write) = Pipe::new();
+    let (parent_read, _parent_write) = Pipe::new().unwrap();
     assert!(
         parent
             .table
@@ -1226,7 +1226,7 @@ fn cloned_table_scope_invalidates_after_fd_reuse_for_test() -> bool {
     let child = clone_file_table_scope(&parent.table);
     let first = child.lookup(0).ok();
     assert!(child.table.write().remove(0).is_some());
-    let (child_read, _child_write) = Pipe::new();
+    let (child_read, _child_write) = Pipe::new().unwrap();
     assert!(
         child
             .table

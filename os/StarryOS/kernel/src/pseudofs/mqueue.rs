@@ -11,21 +11,48 @@
 //! The directory listing is built on demand from the live queue registry, so
 //! it always reflects the current set of queues.
 
-use alloc::{borrow::Cow, boxed::Box, sync::Arc};
+use alloc::{borrow::Cow, boxed::Box, string::String, sync::Arc};
 
-use axfs_ng_vfs::{Filesystem, NodePermission, VfsError, VfsResult};
-
-use crate::{
-    ipc::mqueue::{lookup_by_short_name, registry_names},
-    pseudofs::{NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs},
+use ax_lazyinit::LazyLock;
+use axfs_ng_vfs::{
+    DirEntry, FileNode, Filesystem, Location, Mountpoint, NodePermission, NodeType, Reference,
+    VfsError, VfsResult,
 };
 
-/// mqueuefs magic (Linux `MQUEUE_MAGIC`, `0x19800202`).
+use crate::{
+    ipc::mqueue::{MessageQueue, lookup_by_short_name, registry_names},
+    pseudofs::{
+        NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFileBacking, SimpleFs, SimpleFsOwner,
+        SimpleInode,
+    },
+};
+
 const MQUEUE_MAGIC: u32 = 0x1980_0202;
 
-/// Root directory of `/dev/mqueue`: one file per registered queue.
-struct MqueueDir {
-    fs: Arc<SimpleFs>,
+struct MqueueFilesystem {
+    owner: SimpleFsOwner,
+    object_mount: Arc<Mountpoint>,
+}
+
+// The current IPC queue registry is global. Linux mqueue_get_tree likewise keys
+// a shared superblock by the IPC namespace; another mount is a view of that owner.
+static MQUEUE_FILESYSTEM: LazyLock<MqueueFilesystem> = LazyLock::new(|| {
+    let owner = SimpleFs::new_with("mqueue".into(), MQUEUE_MAGIC, |context| {
+        let root = SimpleDir::new_maker(context, Arc::new(MqueueDir))?;
+        Ok(root)
+    })
+    .expect("initialize the permanent IPC message-queue filesystem");
+    let object_mount = Mountpoint::new_root(&owner.as_filesystem());
+    MqueueFilesystem {
+        owner,
+        object_mount,
+    }
+});
+
+struct MqueueDir;
+
+fn queue_file(queue: Arc<MessageQueue>) -> Arc<SimpleFileBacking> {
+    SimpleFileBacking::from_inode(queue.inode_state(), move || Ok(queue.status_line()))
 }
 
 impl SimpleDirOps for MqueueDir {
@@ -35,42 +62,42 @@ impl SimpleDirOps for MqueueDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let queue = lookup_by_short_name(name).ok_or(VfsError::NotFound)?;
-        let file = {
-            let queue = queue.clone();
-            SimpleFile::new_regular(self.fs.clone(), move || Ok(queue.status_line()))
-        };
-        // Report the mqueue inode's real metadata (Linux `mqueue_get_inode`
-        // stamps `i_mode`/`i_uid`/`i_gid` and the inode times), so `stat` on
-        // `/dev/mqueue/<name>` and a directory listing show the owning queue's
-        // permission mode, creator uid/gid and maintained timestamps rather
-        // than the pseudofs defaults.
-        let (atime, ctime, mtime) = queue.times();
-        file.set_attrs(
-            NodePermission::from_bits_truncate(queue.mode()),
-            queue.uid(),
-            queue.gid(),
-            atime,
-            mtime,
-            ctime,
-        );
-        // Linux `mqueue_get_inode` fixes the mqueuefs file's `i_size` at
-        // `FILENT_SIZE` (80), the documented width of the `QSIZE:...NOTIFY_PID:...`
-        // status line, not the live length of the rendered line. Report that so
-        // `stat("/dev/mqueue/<name>")` matches Linux (st_size == 80).
-        file.set_fixed_size(queue.inode_size());
-        Ok(NodeOpsMux::File(file))
+        Ok(queue_file(queue).into())
     }
 
     fn is_cacheable(&self) -> bool {
-        // The queue set and each file's contents change at runtime, so the VFS
-        // must re-resolve names and re-read content rather than cache them.
         false
     }
 }
 
-/// Build the mqueuefs filesystem for mounting at `/dev/mqueue`.
-pub fn new_mqueuefs() -> Filesystem {
-    SimpleFs::new_with("mqueue".into(), MQUEUE_MAGIC, |fs| {
-        SimpleDir::new_maker(fs.clone(), Arc::new(MqueueDir { fs }))
-    })
+pub(crate) fn mqueue_device() -> u64 {
+    MQUEUE_FILESYSTEM.object_mount.device()
+}
+
+pub(crate) fn allocate_mqueue_inode(mode: NodePermission) -> VfsResult<Arc<SimpleInode>> {
+    MQUEUE_FILESYSTEM
+        .owner
+        .context()
+        .allocate_inode(NodeType::RegularFile, mode)
+}
+
+/// Selects the real queue inode for descriptor metadata, without a pathname lookup.
+pub(crate) fn mqueue_location(queue: Arc<MessageQueue>) -> Location {
+    let owner = &*MQUEUE_FILESYSTEM;
+    let maker: super::FileMaker = queue_file(queue).into();
+    let file = maker
+        .prepare(owner.owner.clone())
+        .expect("queue belongs to this IPC filesystem")
+        .materialize();
+    let entry = DirEntry::new_file(
+        FileNode::new(file),
+        NodeType::RegularFile,
+        Reference::new(None, String::new()),
+    );
+    Location::new(owner.object_mount.clone(), entry)
+}
+
+/// Mounts another view of the current IPC namespace's filesystem instance.
+pub fn new_mqueuefs() -> VfsResult<Filesystem> {
+    Ok(MQUEUE_FILESYSTEM.owner.as_filesystem())
 }

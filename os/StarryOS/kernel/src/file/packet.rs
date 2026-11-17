@@ -125,7 +125,7 @@ impl PacketSocket {
         }
         let info = first_visible_ethernet()?;
         Ok(Self {
-            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Socket, 0o777),
+            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Socket, 0o777)?,
             state: Mutex::new(PacketSocketState {
                 bound: SockAddrLl::from_interface(&info, protocol)?,
                 pending: None,

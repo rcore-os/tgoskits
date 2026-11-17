@@ -37,7 +37,8 @@ use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
 use rdif_gpu::{BusIdentity, GpuIdentity};
 
 use crate::pseudofs::{
-    DirMaker, DirMapping, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs,
+    DirMaker, DirMapping, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFileBacking, SimpleFs,
+    SimpleFsContext,
 };
 
 /// The DRM major number. Matches Linux's DRM_MAJOR (226).
@@ -70,24 +71,24 @@ fn framebuffer_present() -> bool {
 }
 
 /// Build the sysfs filesystem.
-pub fn new_sysfs() -> Filesystem {
+pub fn new_sysfs() -> VfsResult<Filesystem> {
     // 0x62656572 = sysfs magic.
-    SimpleFs::new_with("sysfs".into(), 0x62656572, builder)
+    SimpleFs::new_with("sysfs".into(), 0x62656572, builder).map(|owner| owner.as_filesystem())
 }
 
-fn builder(fs: Arc<SimpleFs>) -> DirMaker {
+fn builder(fs: SimpleFsContext) -> VfsResult<DirMaker> {
     let mut root = DirMapping::new();
     root.add(
         "class",
-        SimpleDir::new_maker(fs.clone(), Arc::new(ClassDir { fs: fs.clone() })),
+        SimpleDir::new_maker(fs.clone(), Arc::new(ClassDir { fs: fs.clone() }))?,
     );
     root.add(
         "bus",
-        SimpleDir::new_maker(fs.clone(), Arc::new(BusDir { fs: fs.clone() })),
+        SimpleDir::new_maker(fs.clone(), Arc::new(BusDir { fs: fs.clone() }))?,
     );
     root.add(
         "devices",
-        SimpleDir::new_maker(fs.clone(), Arc::new(DevicesDir { fs: fs.clone() })),
+        SimpleDir::new_maker(fs.clone(), Arc::new(DevicesDir { fs: fs.clone() }))?,
     );
     // /sys/dev/{char,block}/<major>:<minor> — symlinks to the real
     // device dirs under /sys/devices/.  libudev's
@@ -96,15 +97,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // when verifying an fd and its udev device refer to the same node.
     root.add(
         "dev",
-        SimpleDir::new_maker(fs.clone(), Arc::new(DevDir { fs: fs.clone() })),
+        SimpleDir::new_maker(fs.clone(), Arc::new(DevDir { fs: fs.clone() }))?,
     );
     root.add("kernel", {
         let mut kernel = DirMapping::new();
         kernel.add(
             "debug",
-            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new()))?,
         );
-        SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
+        SimpleDir::new_maker(fs.clone(), Arc::new(kernel))?
     });
     // `/sys/fs/cgroup` is the mount point systemd lays its cgroup hierarchy on
     // (it mounts tmpfs then cgroup2 here). On Linux the kernel provides this
@@ -115,16 +116,16 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         let mut fs_dir = DirMapping::new();
         fs_dir.add(
             "cgroup",
-            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new()))?,
         );
-        SimpleDir::new_maker(fs.clone(), Arc::new(fs_dir))
+        SimpleDir::new_maker(fs.clone(), Arc::new(fs_dir))?
     });
     SimpleDir::new_maker(fs.clone(), Arc::new(root))
 }
 
 /// `/sys/dev/` — `char/` and `block/` subdirs.
 struct DevDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for DevDir {
@@ -135,10 +136,10 @@ impl SimpleDirOps for DevDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         Ok(NodeOpsMux::Dir(match name {
-            "char" => SimpleDir::new_maker(fs.clone(), Arc::new(DevCharDir { fs })),
+            "char" => SimpleDir::new_maker(fs.clone(), Arc::new(DevCharDir { fs }))?,
             // No block devices yet — present as empty rather than 404
             // so libudev's "enumerate all block" doesn't bail.
-            "block" => SimpleDir::new_maker(fs.clone(), Arc::new(DevBlockDir)),
+            "block" => SimpleDir::new_maker(fs.clone(), Arc::new(DevBlockDir))?,
             _ => return Err(VfsError::NotFound),
         }))
     }
@@ -159,7 +160,7 @@ impl SimpleDirOps for DevBlockDir {
 
 /// `/sys/dev/char/<major>:<minor>` — symlinks to the real device dirs.
 struct DevCharDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for DevCharDir {
@@ -188,9 +189,7 @@ impl SimpleDirOps for DevCharDir {
             .ok_or(VfsError::NotFound)?;
         let target = match (maj, min) {
             (DRM_MAJOR, 0) if gpu_present() => "../../devices/virtual/drm/card0".to_owned(),
-            (DRM_MAJOR, 128) if gpu_present() => {
-                "../../devices/virtual/drm/renderD128".to_owned()
-            }
+            (DRM_MAJOR, 128) if gpu_present() => "../../devices/virtual/drm/renderD128".to_owned(),
             (FB_MAJOR, 0) if framebuffer_present() => {
                 "../../devices/virtual/graphics/fb0".to_owned()
             }
@@ -203,9 +202,9 @@ impl SimpleDirOps for DevCharDir {
             _ => return Err(VfsError::NotFound),
         };
         Ok(
-            SimpleFile::new(self.fs.clone(), NodeType::Symlink, move || {
+            SimpleFileBacking::new(self.fs.clone(), NodeType::Symlink, move || {
                 Ok(target.clone())
-            })
+            })?
             .into(),
         )
     }
@@ -216,12 +215,12 @@ impl SimpleDirOps for DevCharDir {
 // ========================================================================
 
 struct ClassDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for ClassDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-                let names: &'static [&'static str] = &["drm", "graphics", "input", "pwm"];
+        let names: &'static [&'static str] = &["drm", "graphics", "input", "pwm"];
         Box::new(names.iter().copied().map(Cow::Borrowed))
     }
 
@@ -229,15 +228,29 @@ impl SimpleDirOps for ClassDir {
         let fs = self.fs.clone();
         Ok(NodeOpsMux::Dir(match name {
             "drm" => {
-                let names = if gpu_present() { &["card0", "renderD128"][..] } else { &[] };
-                SimpleDir::new_maker(fs.clone(), Arc::new(ClassSubsystemDir::new(fs, "drm", names)))
+                let names = if gpu_present() {
+                    &["card0", "renderD128"][..]
+                } else {
+                    &[]
+                };
+                SimpleDir::new_maker(
+                    fs.clone(),
+                    Arc::new(ClassSubsystemDir::new(fs, "drm", names)),
+                )?
             }
             "graphics" => {
-                let names = if framebuffer_present() { &["fb0"][..] } else { &[] };
-                SimpleDir::new_maker(fs.clone(), Arc::new(ClassSubsystemDir::new(fs, "graphics", names)))
+                let names = if framebuffer_present() {
+                    &["fb0"][..]
+                } else {
+                    &[]
+                };
+                SimpleDir::new_maker(
+                    fs.clone(),
+                    Arc::new(ClassSubsystemDir::new(fs, "graphics", names)),
+                )?
             }
-            "input" => SimpleDir::new_maker(fs.clone(), Arc::new(InputClassDir { fs })),
-                        "pwm" => crate::pseudofs::dev::pwm::pwm_class_dir_maker(fs),
+            "input" => SimpleDir::new_maker(fs.clone(), Arc::new(InputClassDir { fs }))?,
+            "pwm" => crate::pseudofs::dev::pwm::pwm_class_dir_maker(fs)?,
             _ => return Err(VfsError::NotFound),
         }))
     }
@@ -246,13 +259,13 @@ impl SimpleDirOps for ClassDir {
 /// `/sys/class/<subsystem>/<name>` — every entry is a symlink into
 /// `/sys/devices/virtual/<subsystem>/...`.
 struct ClassSubsystemDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     subsystem: &'static str,
     names: Vec<&'static str>,
 }
 
 impl ClassSubsystemDir {
-    fn new(fs: Arc<SimpleFs>, subsystem: &'static str, names: &[&'static str]) -> Self {
+    fn new(fs: SimpleFsContext, subsystem: &'static str, names: &[&'static str]) -> Self {
         Self {
             fs,
             subsystem,
@@ -272,9 +285,9 @@ impl SimpleDirOps for ClassSubsystemDir {
         }
         let target = format!("../../devices/virtual/{}/{}", self.subsystem, name);
         Ok(
-            SimpleFile::new(self.fs.clone(), NodeType::Symlink, move || {
+            SimpleFileBacking::new(self.fs.clone(), NodeType::Symlink, move || {
                 Ok(target.clone())
-            })
+            })?
             .into(),
         )
     }
@@ -285,7 +298,7 @@ impl SimpleDirOps for ClassSubsystemDir {
 /// `/sys/devices/virtual/input/input<N>/event<N>` so libinput's walk
 /// up through the parent `input<N>` container resolves correctly.
 struct InputClassDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for InputClassDir {
@@ -306,9 +319,9 @@ impl SimpleDirOps for InputClassDir {
         }
         let target = format!("../../devices/virtual/input/input{n}/event{n}");
         Ok(
-            SimpleFile::new(self.fs.clone(), NodeType::Symlink, move || {
+            SimpleFileBacking::new(self.fs.clone(), NodeType::Symlink, move || {
                 Ok(target.clone())
-            })
+            })?
             .into(),
         )
     }
@@ -323,7 +336,7 @@ fn input_device_count() -> u32 {
 // ========================================================================
 
 struct BusDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for BusDir {
@@ -339,12 +352,12 @@ impl SimpleDirOps for BusDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         Ok(NodeOpsMux::Dir(match name {
-            "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusClassDir)),
+            "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusClassDir))?,
             "event_source" => {
-                SimpleDir::new_maker(fs.clone(), Arc::new(EventSourceBusDir { fs: fs.clone() }))
+                SimpleDir::new_maker(fs.clone(), Arc::new(EventSourceBusDir { fs: fs.clone() }))?
             }
             "usb" if crate::pseudofs::usbfs::has_manager() => {
-                SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new()))
+                SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new()))?
             }
             _ => return Err(VfsError::NotFound),
         }))
@@ -410,7 +423,7 @@ const ARMV8_PMUV3_EVENTS: &[(&str, u16)] = &[
 ];
 
 struct EventSourceBusDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for EventSourceBusDir {
@@ -424,14 +437,14 @@ impl SimpleDirOps for EventSourceBusDir {
             "devices" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(EventSourceDevicesDir { fs: fs.clone() }),
-            ),
+            )?,
             _ => return Err(VfsError::NotFound),
         }))
     }
 }
 
 struct EventSourceDevicesDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for EventSourceDevicesDir {
@@ -466,7 +479,7 @@ impl SimpleDirOps for EventSourceDevicesDir {
             return Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(HwPmuDeviceDir { fs, ty, cluster }),
-            )));
+            )?));
         }
         let ty = PERF_EVENT_SOURCES
             .iter()
@@ -476,7 +489,7 @@ impl SimpleDirOps for EventSourceDevicesDir {
         Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
             fs.clone(),
             Arc::new(EventSourceDeviceDir { fs: fs.clone(), ty }),
-        )))
+        )?))
     }
 }
 
@@ -487,7 +500,7 @@ impl SimpleDirOps for EventSourceDevicesDir {
 /// aliases. aarch64-only.
 #[cfg(target_arch = "aarch64")]
 struct HwPmuDeviceDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     ty: u32,
     cluster: Option<crate::perf::event_map::ClusterId>,
 }
@@ -509,26 +522,26 @@ impl SimpleDirOps for HwPmuDeviceDir {
             // dispatcher routes it to the hardware-PMU backend.
             "type" => {
                 let body = format!("{}\n", self.ty);
-                Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
+                Ok(SimpleFileBacking::new_regular(fs, move || Ok(body.clone()))?.into())
             }
             "cpus" => {
                 let cluster = self.cluster;
-                Ok(
-                    SimpleFile::new_regular(fs, move || Ok(crate::perf::percpu::cpu_list(cluster)))
-                        .into(),
-                )
+                Ok(SimpleFileBacking::new_regular(fs, move || {
+                    Ok(crate::perf::percpu::cpu_list(cluster))
+                })?
+                .into())
             }
             "format" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(HwPmuFormatDir { fs }),
-            ))),
+            )?)),
             "events" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(HwPmuEventsDir {
                     fs,
                     cluster: self.cluster,
                 }),
-            ))),
+            )?)),
             _ => Err(VfsError::NotFound),
         }
     }
@@ -541,7 +554,7 @@ impl SimpleDirOps for HwPmuDeviceDir {
 /// reads it (`config & 0xFFFF`).
 #[cfg(target_arch = "aarch64")]
 struct HwPmuFormatDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -553,7 +566,9 @@ impl SimpleDirOps for HwPmuFormatDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         match name {
-            "event" => Ok(SimpleFile::new_regular(fs, || Ok("config:0-15\n".to_owned())).into()),
+            "event" => {
+                Ok(SimpleFileBacking::new_regular(fs, || Ok("config:0-15\n".to_owned()))?.into())
+            }
             _ => Err(VfsError::NotFound),
         }
     }
@@ -565,7 +580,7 @@ impl SimpleDirOps for HwPmuFormatDir {
 /// `perf_event_attr`. See [`ARMV8_PMUV3_EVENTS`].
 #[cfg(target_arch = "aarch64")]
 struct HwPmuEventsDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     cluster: Option<crate::perf::event_map::ClusterId>,
 }
 
@@ -583,7 +598,7 @@ impl SimpleDirOps for HwPmuEventsDir {
         let fs = self.fs.clone();
         let event = hw_pmu_alias(self.cluster, name).ok_or(VfsError::NotFound)?;
         let body = format!("event={event:#04x}\n");
-        Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
+        Ok(SimpleFileBacking::new_regular(fs, move || Ok(body.clone()))?.into())
     }
 }
 
@@ -621,7 +636,7 @@ fn hw_pmu_alias(cluster: Option<crate::perf::event_map::ClusterId>, name: &str) 
 }
 
 struct EventSourceDeviceDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     ty: u32,
 }
 
@@ -647,7 +662,7 @@ impl SimpleDirOps for EventSourceDeviceDir {
         match name {
             "type" => {
                 let body = format!("{}\n", self.ty);
-                Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
+                Ok(SimpleFileBacking::new_regular(fs, move || Ok(body.clone()))?.into())
             }
             // `/sys/bus/event_source/devices/<k|u>probe/format/` — aya reads
             // `format/retprobe` to learn which `config` bit selects the
@@ -656,14 +671,14 @@ impl SimpleDirOps for EventSourceDeviceDir {
             "format" if self.supports_retprobe() => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(EventSourceFormatDir { fs }),
-            ))),
+            )?)),
             _ => Err(VfsError::NotFound),
         }
     }
 }
 
 struct EventSourceFormatDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for EventSourceFormatDir {
@@ -677,7 +692,9 @@ impl SimpleDirOps for EventSourceFormatDir {
             // `config:0` = the retprobe flag lives in bit 0 of `config`, which
             // is exactly what `perf_event_open_kprobe` decodes (config 1 =
             // kretprobe). Matches the format string the real kernel exposes.
-            "retprobe" => Ok(SimpleFile::new_regular(fs, || Ok("config:0\n".to_owned())).into()),
+            "retprobe" => {
+                Ok(SimpleFileBacking::new_regular(fs, || Ok("config:0\n".to_owned()))?.into())
+            }
             _ => Err(VfsError::NotFound),
         }
     }
@@ -688,7 +705,7 @@ impl SimpleDirOps for EventSourceFormatDir {
 // ========================================================================
 
 struct DevicesDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for DevicesDir {
@@ -708,11 +725,11 @@ impl SimpleDirOps for DevicesDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         Ok(NodeOpsMux::Dir(match name {
-            "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusDir { fs })),
-            "system" => SimpleDir::new_maker(fs.clone(), Arc::new(SystemDir { fs })),
-            "virtual" => SimpleDir::new_maker(fs.clone(), Arc::new(VirtualDir { fs })),
+            "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusDir { fs }))?,
+            "system" => SimpleDir::new_maker(fs.clone(), Arc::new(SystemDir { fs }))?,
+            "virtual" => SimpleDir::new_maker(fs.clone(), Arc::new(VirtualDir { fs }))?,
             #[cfg(target_arch = "aarch64")]
-            ARMV8_PMUV3_DEVICE => SimpleDir::new_maker(fs.clone(), Arc::new(PmuDeviceDir { fs })),
+            ARMV8_PMUV3_DEVICE => SimpleDir::new_maker(fs.clone(), Arc::new(PmuDeviceDir { fs }))?,
             _ => return Err(VfsError::NotFound),
         }))
     }
@@ -724,7 +741,7 @@ impl SimpleDirOps for DevicesDir {
 /// right `pmu-events` JSON map for the detected CPU microarchitecture.
 #[cfg(target_arch = "aarch64")]
 struct PmuDeviceDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -735,14 +752,14 @@ impl SimpleDirOps for PmuDeviceDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         match name {
-            "cpuid" => Ok(SimpleFile::new_regular(self.fs.clone(), || {
+            "cpuid" => Ok(SimpleFileBacking::new_regular(self.fs.clone(), || {
                 // perf reads this to identify the CPU core and select a
                 // microarchitectural event map. Format is the raw MIDR_EL1
                 // as hex (no 0x prefix) — perf's filename__read_str reads
                 // until EOF and compares bytewise.
                 let midr = crate::perf::read_midr_el1();
                 Ok(alloc::format!("{midr:016x}\n"))
-            })
+            })?
             .into()),
             _ => Err(VfsError::NotFound),
         }
@@ -751,7 +768,7 @@ impl SimpleDirOps for PmuDeviceDir {
 
 /// `/sys/devices/system/` — kernel topology subsystems.
 struct SystemDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for SystemDir {
@@ -766,7 +783,7 @@ impl SimpleDirOps for SystemDir {
                 Arc::new(SystemCpuDir {
                     fs: self.fs.clone(),
                 }),
-            ))),
+            )?)),
             _ => Err(VfsError::NotFound),
         }
     }
@@ -774,7 +791,7 @@ impl SimpleDirOps for SystemDir {
 
 /// `/sys/devices/system/cpu/` — enough CPU topology for userspace to size pools.
 struct SystemCpuDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for SystemCpuDir {
@@ -792,7 +809,8 @@ impl SimpleDirOps for SystemCpuDir {
         let fs = self.fs.clone();
         Ok(match name {
             "online" | "possible" | "present" => {
-                SimpleFile::new_regular(fs, || Ok(format!("{}\n", cpu_range_string()))).into()
+                SimpleFileBacking::new_regular(fs, || Ok(format!("{}\n", cpu_range_string())))?
+                    .into()
             }
             _ => {
                 let cpu = name
@@ -805,14 +823,14 @@ impl SimpleDirOps for SystemCpuDir {
                 NodeOpsMux::Dir(SimpleDir::new_maker(
                     fs.clone(),
                     Arc::new(SystemCpuEntryDir { fs, cpu }),
-                ))
+                )?)
             }
         })
     }
 }
 
 struct SystemCpuEntryDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     cpu: usize,
 }
 
@@ -829,7 +847,10 @@ impl SimpleDirOps for SystemCpuEntryDir {
                 } else {
                     "0\n"
                 };
-                Ok(SimpleFile::new_regular(self.fs.clone(), move || Ok(online.to_owned())).into())
+                Ok(
+                    SimpleFileBacking::new_regular(self.fs.clone(), move || Ok(online.to_owned()))?
+                        .into(),
+                )
             }
             "regs" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 self.fs.clone(),
@@ -837,7 +858,7 @@ impl SimpleDirOps for SystemCpuEntryDir {
                     fs: self.fs.clone(),
                     cpu: self.cpu,
                 }),
-            ))),
+            )?)),
             _ => Err(VfsError::NotFound),
         }
     }
@@ -845,7 +866,7 @@ impl SimpleDirOps for SystemCpuEntryDir {
 
 /// `/sys/devices/system/cpu/cpu<N>/regs/` — `identification/midr_el1` for perf.
 struct CpuRegsDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     cpu: usize,
 }
 
@@ -862,7 +883,7 @@ impl SimpleDirOps for CpuRegsDir {
                     fs: self.fs.clone(),
                     cpu: self.cpu,
                 }),
-            ))),
+            )?)),
             _ => Err(VfsError::NotFound),
         }
     }
@@ -870,7 +891,7 @@ impl SimpleDirOps for CpuRegsDir {
 
 /// `/sys/devices/system/cpu/cpu<N>/regs/identification/` — `midr_el1` for perf.
 struct CpuIdRegsDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     cpu: usize,
 }
 
@@ -883,10 +904,10 @@ impl SimpleDirOps for CpuIdRegsDir {
         match name {
             "midr_el1" => {
                 let cpu = self.cpu;
-                Ok(SimpleFile::new_regular(self.fs.clone(), move || {
+                Ok(SimpleFileBacking::new_regular(self.fs.clone(), move || {
                     let midr = crate::perf::cpu_midr(cpu);
                     Ok(alloc::format!("{midr:016x}\n"))
-                })
+                })?
                 .into())
             }
             _ => Err(VfsError::NotFound),
@@ -906,7 +927,7 @@ fn cpu_range_string() -> String {
 /// `/sys/devices/virtual/` — one subdirectory per subsystem hosting
 /// "virtual" (non-bus) devices.
 struct VirtualDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for VirtualDir {
@@ -926,7 +947,10 @@ impl SimpleDirOps for VirtualDir {
                 } else {
                     &[]
                 };
-                SimpleDir::new_maker(fs.clone(), Arc::new(DeviceContainer::new(fs, "drm", entries)))
+                SimpleDir::new_maker(
+                    fs.clone(),
+                    Arc::new(DeviceContainer::new(fs, "drm", entries)),
+                )?
             }
             "graphics" => {
                 let entries = if framebuffer_present() {
@@ -937,9 +961,9 @@ impl SimpleDirOps for VirtualDir {
                 SimpleDir::new_maker(
                     fs.clone(),
                     Arc::new(DeviceContainer::new(fs, "graphics", entries)),
-                )
+                )?
             }
-            "input" => SimpleDir::new_maker(fs.clone(), Arc::new(InputDevicesDir { fs })),
+            "input" => SimpleDir::new_maker(fs.clone(), Arc::new(InputDevicesDir { fs }))?,
             _ => return Err(VfsError::NotFound),
         }))
     }
@@ -948,7 +972,7 @@ impl SimpleDirOps for VirtualDir {
 /// Per-subsystem container under `/sys/devices/virtual/<subsystem>/`
 /// with a static list of children.
 struct DeviceContainer {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     subsystem: &'static str,
     /// (name, (major, minor), devname-in-/dev)
     entries: Vec<(&'static str, (u32, u32), &'static str)>,
@@ -956,7 +980,7 @@ struct DeviceContainer {
 
 impl DeviceContainer {
     fn new(
-        fs: Arc<SimpleFs>,
+        fs: SimpleFsContext,
         subsystem: &'static str,
         entries: &[(&'static str, (u32, u32), &'static str)],
     ) -> Self {
@@ -989,7 +1013,7 @@ impl SimpleDirOps for DeviceContainer {
                 devname: devname.to_owned(),
                 parent_kind: ParentKind::ClassRoot,
             }),
-        )))
+        )?))
     }
 }
 
@@ -998,7 +1022,7 @@ impl SimpleDirOps for DeviceContainer {
 /// nesting so `udev_device_get_parent()` on an event node returns the
 /// `inputN` container.
 struct InputDevicesDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for InputDevicesDir {
@@ -1023,7 +1047,7 @@ impl SimpleDirOps for InputDevicesDir {
                 fs: self.fs.clone(),
                 index: n,
             }),
-        )))
+        )?))
     }
 }
 
@@ -1031,7 +1055,7 @@ impl SimpleDirOps for InputDevicesDir {
 /// evdev device.  Holds its own `uevent` + `subsystem` so `udevadm info`
 /// can walk through it, plus the `event<N>` child dir.
 struct InputParentDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     index: u32,
 }
 
@@ -1053,22 +1077,22 @@ impl SimpleDirOps for InputParentDir {
         let fs = self.fs.clone();
         let n = self.index;
         Ok(match name {
-            "uevent" => SimpleFile::new_regular(fs, move || {
+            "uevent" => SimpleFileBacking::new_regular(fs, move || {
                 let mut body = format!("PRODUCT=0/0/0/0\nNAME=\"starry-input{n}\"\n");
                 for tag in EVDEV_TAGS {
                     body.push_str(tag);
                     body.push_str("=1\n");
                 }
                 Ok(body)
-            })
+            })?
             .into(),
             "name" => {
                 let body = format!("starry-input{n}\n");
-                SimpleFile::new_regular(fs, move || Ok(body.clone())).into()
+                SimpleFileBacking::new_regular(fs, move || Ok(body.clone()))?.into()
             }
-            "subsystem" => SimpleFile::new(fs, NodeType::Symlink, || {
+            "subsystem" => SimpleFileBacking::new(fs, NodeType::Symlink, || {
                 Ok("../../../../class/input".to_owned())
-            })
+            })?
             .into(),
             _ if name == format!("event{n}") => NodeOpsMux::Dir(SimpleDir::new_maker(
                 self.fs.clone(),
@@ -1080,7 +1104,7 @@ impl SimpleDirOps for InputParentDir {
                     devname: format!("input/event{n}"),
                     parent_kind: ParentKind::InputInputN,
                 }),
-            )),
+            )?),
             _ => return Err(VfsError::NotFound),
         })
     }
@@ -1095,7 +1119,7 @@ enum ParentKind {
 
 /// The attribute directory for a single device.
 struct DeviceAttributesDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     subsystem: &'static str,
     name: String,
     dev: (u32, u32),
@@ -1119,13 +1143,15 @@ impl SimpleDirOps for DeviceAttributesDir {
                 let (major, minor) = self.dev;
                 let devname = self.devname.clone();
                 let subsystem = self.subsystem;
-                SimpleFile::new_regular(fs, move || {
+                SimpleFileBacking::new_regular(fs, move || {
                     let mut buf = format!(
                         "MAJOR={major}\nMINOR={minor}\nDEVNAME={devname}\nSUBSYSTEM={subsystem}\n"
                     );
                     // DRM devices need DRIVER= so Mesa's loader_get_driver_for_fd()
                     // can match the device to a DRI driver for GBM.
-                    if subsystem == "drm" && let Some(identity) = gpu_identity() {
+                    if subsystem == "drm"
+                        && let Some(identity) = gpu_identity()
+                    {
                         buf.push_str("DRIVER=");
                         buf.push_str(&identity.driver_name);
                         buf.push('\n');
@@ -1137,16 +1163,16 @@ impl SimpleDirOps for DeviceAttributesDir {
                         }
                     }
                     Ok(buf)
-                })
+                })?
                 .into()
             }
             "dev" => {
                 let (major, minor) = self.dev;
-                SimpleFile::new_regular(fs, move || Ok(format!("{major}:{minor}\n"))).into()
+                SimpleFileBacking::new_regular(fs, move || Ok(format!("{major}:{minor}\n")))?.into()
             }
             "name" => {
                 let body = format!("{}\n", self.name);
-                SimpleFile::new_regular(fs, move || Ok(body.clone())).into()
+                SimpleFileBacking::new_regular(fs, move || Ok(body.clone()))?.into()
             }
             "subsystem" => {
                 // /sys/class/<subsystem>, relative from the real devpath.
@@ -1157,7 +1183,7 @@ impl SimpleDirOps for DeviceAttributesDir {
                     ParentKind::InputInputN => "../../../../..",
                 };
                 let target = format!("{}/class/{}", ups, self.subsystem);
-                SimpleFile::new(fs, NodeType::Symlink, move || Ok(target.clone())).into()
+                SimpleFileBacking::new(fs, NodeType::Symlink, move || Ok(target.clone()))?.into()
             }
             "device" => {
                 // Point DRM and framebuffer nodes to their bound GPU. The
@@ -1170,7 +1196,7 @@ impl SimpleDirOps for DeviceAttributesDir {
                     (ParentKind::ClassRoot, _) => "..".to_owned(),
                     (ParentKind::InputInputN, _) => "..".to_owned(),
                 };
-                SimpleFile::new(fs, NodeType::Symlink, move || Ok(target.clone())).into()
+                SimpleFileBacking::new(fs, NodeType::Symlink, move || Ok(target.clone()))?.into()
             }
             _ => return Err(VfsError::NotFound),
         })
@@ -1182,7 +1208,7 @@ impl SimpleDirOps for DeviceAttributesDir {
 // ========================================================================
 
 struct PlatformBusDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for PlatformBusDir {
@@ -1208,12 +1234,12 @@ impl SimpleDirOps for PlatformBusDir {
                 driver,
                 identity,
             }),
-        )))
+        )?))
     }
 }
 
 struct PlatformDeviceDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     driver: String,
     identity: Option<GpuIdentity>,
 }
@@ -1242,8 +1268,11 @@ impl SimpleDirOps for PlatformDeviceDir {
         Ok(match name {
             "uevent" => {
                 let driver = self.driver.clone();
-                let modalias = self.identity.as_ref().and_then(|identity| identity.modalias.clone());
-                SimpleFile::new_regular(fs, move || {
+                let modalias = self
+                    .identity
+                    .as_ref()
+                    .and_then(|identity| identity.modalias.clone());
+                SimpleFileBacking::new_regular(fs, move || {
                     let mut body = format!("DRIVER={driver}\nSUBSYSTEM=platform\n");
                     if let Some(modalias) = &modalias {
                         body.push_str("MODALIAS=");
@@ -1251,12 +1280,12 @@ impl SimpleDirOps for PlatformDeviceDir {
                         body.push('\n');
                     }
                     Ok(body)
-                })
+                })?
                 .into()
             }
-            "subsystem" => SimpleFile::new(fs, NodeType::Symlink, || {
+            "subsystem" => SimpleFileBacking::new(fs, NodeType::Symlink, || {
                 Ok("../../../bus/platform".to_owned())
-            })
+            })?
             .into(),
             "vendor" | "device" | "subsystem_vendor" | "subsystem_device" | "revision"
             | "class" => {
@@ -1273,14 +1302,15 @@ impl SimpleDirOps for PlatformDeviceDir {
                     "class" => format!("0x{:06x}\n", pci.class),
                     _ => unreachable!(),
                 };
-                SimpleFile::new_regular(fs, move || Ok(value.clone())).into()
+                SimpleFileBacking::new_regular(fs, move || Ok(value.clone()))?.into()
             }
             // libdrm `drmNodeIsDRM` stat's `/sys/dev/char/<maj>:<min>/device/drm`
             // to decide a node is a DRM node. Without this dir, drmGetDevice2
             // fails with -EINVAL → EGL device enumeration empty → gbm device
             // creation fails.
             "drm" if self.identity.is_some() => {
-                SimpleDir::new_maker(fs.clone(), Arc::new(PlatformDrmDir { fs: fs.clone() })).into()
+                SimpleDir::new_maker(fs.clone(), Arc::new(PlatformDrmDir { fs: fs.clone() }))?
+                    .into()
             }
             _ => return Err(VfsError::NotFound),
         })
@@ -1290,7 +1320,7 @@ impl SimpleDirOps for PlatformDeviceDir {
 /// DRM children of the currently bound GPU's sysfs parent. The card and
 /// render nodes link to their corresponding virtual DRM devices.
 struct PlatformDrmDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 
 impl SimpleDirOps for PlatformDrmDir {
@@ -1301,13 +1331,13 @@ impl SimpleDirOps for PlatformDrmDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         Ok(match name {
-            "card0" => SimpleFile::new(fs, NodeType::Symlink, || {
+            "card0" => SimpleFileBacking::new(fs, NodeType::Symlink, || {
                 Ok("../../../virtual/drm/card0".to_owned())
-            })
+            })?
             .into(),
-            "renderD128" => SimpleFile::new(fs, NodeType::Symlink, || {
+            "renderD128" => SimpleFileBacking::new(fs, NodeType::Symlink, || {
                 Ok("../../../virtual/drm/renderD128".to_owned())
-            })
+            })?
             .into(),
             _ => return Err(VfsError::NotFound),
         })

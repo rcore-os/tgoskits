@@ -160,7 +160,7 @@ FAT 的根目录不能通过 `root_dir → DirEntry → FatInode → FatFilesyst
 
 ### 2.5 简单文件系统的实体寿命
 
-`SimpleFs::root` 当前强持根目录项，普通根的 `SimpleFsNode.fs` 又强持
+`SimpleFs::root` 原先强持根目录项，普通根的 `SimpleFsNode.fs` 又强持
 `SimpleFs`；`CgroupDir.fs` 的自定义根也有相同返回边。静态目录 maker、
 静态文件和动态 ops 还可能经捕获的 FS 形成额外环。仅把 root 改弱会在
 `new_with()` 返回前失去唯一根引用；把节点 FS 改弱又不能满足
@@ -221,6 +221,13 @@ impl FnOnce(SimpleFsContext) -> VfsResult<DirMaker>) -> VfsResult<SimpleFsOwner>
 而不是仅约定它不得这样做。通用句柄内部只接收擦除类型后的原 Arc，
 不增加可取回具体 Arc 的 downcast。私有根物化将升级结果重新包成同一持有句柄。
 Object 工厂从具体结果保留这个 owner，不把完整 FS 偷塞回 context。
+`SimpleFsOwner::as_filesystem` 克隆构造时唯一建立的通用 `Filesystem`，
+不能每次重新调用 `Filesystem::new`，否则同一 receiver 会得到不同的
+`FilesystemMountState`、设备号和只读状态。实际 FS 的 `publication` 只保存
+这对状态的 `WeakFilesystem`，并在 owner 逃逸前初始化；
+`Filesystem::new` 在此只查询 `is_readonly`，不调用根物化。
+外部 owner 同时保活具体 receiver 与通用状态，`root_dir` 才能从原 self-Weak
+和 publication 重建同一绑定，不形成指向自己的强返回边。
 各可挂载工厂返回 `VfsResult<Filesystem>` 并向原 mount/初始化调用者传播错误；
 永久对象 FS 的一次性初始化失败才可在其既有致命初始化边界显式终止。
 
@@ -277,7 +284,15 @@ MountUse 已有的强根保活继续使用，不给通用 `Filesystem` 新增一
 
 devpts 的数字表须保留真实设备 backing，而不是每次 lookup 复制属性；
 删除从表中取出后，在表锁外释放。ptmx 是实例内持久实体，lookup 不重置 chmod，
-其属性 owner 与 per-open master I/O 状态分开。配方不得经
+其属性 owner 与 per-open master I/O 状态分开。
+内置 devfs 的 `/dev/ptmx` 保持独立静态实体，`/dev/pts/ptmx` 是其内置
+`PtsInstance` 的另一个持久实体，两者在原 devfs 分配域中提供同一 PTY 实例的
+打开入口，不合并属性。新挂载的 devpts 各有自己的 context 和实例；bind
+继续保留原文件系统与实例。`Ptmx` 仅持 context 和实例 Weak，根的 `PtsDir`
+保活实际实例，数字表只持 `DeviceBacking`。打开操作沿已选中的 ptmx 保留
+路径和 inode 属性，为该描述另装 master I/O，不再查询全局 `/dev/pts`。
+此路径对应固定 Linux `ptmx_open` 保留 `filp->f_path` 的行为。
+配方不得经
 `instance → ptmx backing → Ptmx → instance` 新建另一条强环。
 当前 Legacy 共享表可能保存另一实际 FS 的 Device，不能机械把它换成当前
 lookup receiver，也不能在 Weak FS 升级失败时把仍有实体的设备说成已消失。
@@ -287,8 +302,14 @@ devfs 视图的归属；不能混用新 backing 与未处理的旧跨实例共�
 mqueue 的路径、mqd 和后续权限检查须读写同一 `MessageQueue` 属性 owner，
 不保留 `status_line` 包装中的属性副本。资源计费创建者与可修改文件属主必须分离，
 不能 chown 后向新属主退还原创建者的 charge；不新增业务 ID、队列命名或 namespace
-身份。真实 owner 的迁移及 mqd 属性入口另受元数据契约约束，不能仅靠配方分层
-宣称已经接通。Cgroup 配方只保留组件节点，在物化时取得当前视图 FS；
+身份。当前 `MQ_REGISTRY` 是全局 IPC 队列域，因此 `MQUEUE_FILESYSTEM` 也保留该域的
+一个实际 FS，挂载克隆同一通用句柄。它不登记第二份属性或强缓存队列。
+`MessageQueue` 只持在该域分配的 `SimpleInode`；名字查找构造的内容配方和
+`MqDescriptor` 的原生对象路径都绑定这个实体，mqd 的 `fstat` 与后续
+`mq_open` 权限检查也读取其属性锁。`creator_uid` 单独记录 charge 的归属。
+队列状态互斥锁允许向 inode 属性锁投影时间，元数据尝试不反向进入消息状态锁。
+这仍是单一全局 IPC 域，不代表完成了 IPC 命名空间隔离。
+Cgroup 配方只保留组件节点，在物化时取得当前视图 FS；
 其实际 receiver 校验、同 hierarchy guard 和节点属性所有权不变。
 
 #### 2.5.4 迁移与验收
@@ -313,9 +334,9 @@ trace、SeqObject 等有状态内容 ops 保留原 producer 的创建时机与�
 保持一个旧描述时应继续保活，重新物化不复制文件描述偏移；候选竞争败选也要锁外释放。
 这些判定优先并入既有完整身份/生命周期旅程，不以只检查 Arc 数量或访问器回读代替。
 
-本节是下一单元的分层设计，不是已实现或已验收声明。Starry 当前受 Overlay
-编译阻塞时，不能绕过模块建立假装配或把组件模型当作系统通过；完成领域接点
-和独立设计核对后再派发生产迁移，后续仍须真实系统入口及受影响目标的证据。
+本节规定实体与包装的迁移边界。实现仍须通过真实 kernel axtest、系统用例和
+受影响功能组合核对，不能用组件模型代替内核装配。独立设计与实现认可仍是
+合入前的要求，生命周期测试通过不替代这项审查。
 
 ### 2.6 proc 动态实体与观察
 

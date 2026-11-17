@@ -23,11 +23,11 @@ use core::{
 
 use ax_io::SeekFrom;
 use ax_runtime::hal::time::wall_time;
+use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
 use linux_raw_sys::general::{
-    O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, S_IFREG, SIGEV_NONE, SIGEV_SIGNAL,
-    SIGEV_THREAD,
+    O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, SIGEV_NONE, SIGEV_SIGNAL, SIGEV_THREAD,
 };
 use starry_signal::{SignalInfo, Signo};
 
@@ -378,14 +378,6 @@ struct Inner {
     /// insertion order (FIFO) is the faithful degenerate case. Correctness here
     /// is the notification/handoff semantics, not priority ordering.
     recv_waiters: VecDeque<Arc<RecvWaiter>>,
-    /// Last-access / last-status-change / last-modification wall-clock times of
-    /// the mqueuefs inode. Linux stamps all three at creation
-    /// (`simple_inode_init_ts`) and bumps atime+ctime on the mqueuefs file
-    /// operations (`inode_set_atime_to_ts(inode, inode_set_ctime_current())`
-    /// at ipc/mqueue.c:654,1340,1367,1420).
-    atime: Duration,
-    ctime: Duration,
-    mtime: Duration,
 }
 
 /// A POSIX message queue.
@@ -397,14 +389,10 @@ pub struct MessageQueue {
     /// Sleepable task-context state. Hard IRQ paths never inspect POSIX
     /// message queues; they publish into their own bounded endpoints instead.
     inner: Mutex<Inner>,
-    /// Owner uid, captured from `current_fsuid` at creation and checked against
-    /// the caller on a later `mq_open`. Linux keeps it in the mqueue inode.
-    uid: u32,
-    /// Owner gid, captured from `current_fsgid` at creation.
-    gid: u32,
-    /// Permission bits (`mode & ~umask & 0777`), checked on open the way Linux
-    /// checks the mqueue inode `i_mode` via `inode_permission`.
-    mode: u16,
+    /// The real inode is shared by paths, descriptors and subsequent permission checks.
+    inode: Arc<crate::pseudofs::SimpleInode>,
+    /// Accounting remains attached to the creator even after ownership changes.
+    creator_uid: u32,
     /// Bytes this queue charged against `uid`'s `RLIMIT_MSGQUEUE` at creation,
     /// refunded on destroy (`Drop`). Fixed for the queue's lifetime, mirroring
     /// Linux's `mq_bytes` recomputed identically in `mqueue_evict_inode`.
@@ -427,12 +415,31 @@ impl MessageQueue {
         uid: u32,
         gid: u32,
         charged_bytes: u64,
-    ) -> Arc<Self> {
+    ) -> StarryResult<Arc<Self>> {
+        let inode = match crate::pseudofs::allocate_mqueue_inode(
+            NodePermission::from_bits_truncate(mode & 0o777),
+        ) {
+            Ok(inode) => inode,
+            Err(error) => {
+                refund_user_bytes(uid, charged_bytes);
+                return Err(error.into());
+            }
+        };
         // Linux bumps `mq_queues_count` when the inode is created
         // (ipc/mqueue.c:586); the matching decrement is in `Drop`.
         MQ_QUEUES_COUNT.fetch_add(1, Ordering::Relaxed);
         let now = wall_time();
-        Arc::new(Self {
+        {
+            let mut metadata = inode.metadata.lock_irqsave();
+            metadata.uid = uid;
+            metadata.gid = gid;
+            metadata.size = FILENT_SIZE;
+            metadata.block_size = ax_memory_addr::PAGE_SIZE_4K as u64;
+            metadata.atime = now;
+            metadata.ctime = now;
+            metadata.mtime = now;
+        }
+        Ok(Arc::new(Self {
             inner: Mutex::new(Inner {
                 buckets: BTreeMap::new(),
                 len: 0,
@@ -440,17 +447,13 @@ impl MessageQueue {
                 msg_size,
                 notify: None,
                 recv_waiters: VecDeque::new(),
-                atime: now,
-                ctime: now,
-                mtime: now,
             }),
-            uid,
-            gid,
-            mode: mode & 0o777,
+            inode,
+            creator_uid: uid,
             charged_bytes,
             poll_send: PollSet::new(),
             poll_recv: PollSet::new(),
-        })
+        }))
     }
 
     /// Permission check for `mq_open` on an existing queue, mirroring Linux
@@ -473,14 +476,15 @@ impl MessageQueue {
         // Select the permission triad: owner (fsuid == queue uid), then group
         // (fsgid or a supplementary group == queue gid), else other. Linux
         // walks the same order in `acl_permission_check`.
-        let shift = if fsuid == self.uid {
+        let metadata = self.inode.metadata();
+        let shift = if fsuid == metadata.uid {
             6
-        } else if is_group_member(self.gid) {
+        } else if is_group_member(metadata.gid) {
             3
         } else {
             0
         };
-        let granted = ((self.mode >> shift) & 0o7) as u32;
+        let granted = ((metadata.mode.bits() >> shift) & 0o7) as u32;
         // Read = 0o4, write = 0o2 in the granted triad.
         let need_read = access_mode == O_RDONLY || access_mode == O_RDWR;
         let need_write = access_mode == O_WRONLY || access_mode == O_RDWR;
@@ -707,8 +711,7 @@ impl MessageQueue {
                 {
                     let removed = inner.notify.take();
                     let now = wall_time();
-                    inner.atime = now;
-                    inner.ctime = now;
+                    self.touch_inode(now);
                     drop(inner);
                     if let Some(n) = removed {
                         notify_thread_teardown(&n);
@@ -728,7 +731,7 @@ impl MessageQueue {
                     sigev_value,
                     thread: None,
                 });
-                Self::stamp_register(&mut inner);
+                self.stamp_register();
                 Ok(())
             }
             NotifyRequest::None => {
@@ -743,7 +746,7 @@ impl MessageQueue {
                     sigev_value: 0,
                     thread: None,
                 });
-                Self::stamp_register(&mut inner);
+                self.stamp_register();
                 Ok(())
             }
             NotifyRequest::Thread { sock, cookie } => {
@@ -758,17 +761,16 @@ impl MessageQueue {
                     sigev_value: 0,
                     thread: Some(ThreadNotify { sock, cookie }),
                 });
-                Self::stamp_register(&mut inner);
+                self.stamp_register();
                 Ok(())
             }
         }
     }
 
     /// Stamp atime+ctime on a successful registration (ipc/mqueue.c:1367).
-    fn stamp_register(inner: &mut Inner) {
+    fn stamp_register(&self) {
         let now = wall_time();
-        inner.atime = now;
-        inner.ctime = now;
+        self.touch_inode(now);
     }
 
     /// Drop the `mq_notify` registration if it is owned by this stable process
@@ -799,10 +801,9 @@ impl MessageQueue {
     /// notify_pid)` in Linux column order. Reading the mqueuefs file also bumps
     /// atime+ctime, matching `mqueue_read_file` (ipc/mqueue.c:654).
     pub fn report(&self) -> (usize, u32, u32, u32) {
-        let mut inner = self.inner.lock();
+        let inner = self.inner.lock();
         let now = wall_time();
-        inner.atime = now;
-        inner.ctime = now;
+        self.touch_inode(now);
         Self::status_fields(&inner)
     }
 
@@ -826,30 +827,22 @@ impl MessageQueue {
     /// `inode_set_atime_to_ts(inode, inode_set_ctime_current(inode))`.
     fn touch_status_read(&self) {
         let now = wall_time();
-        let mut inner = self.inner.lock();
-        inner.atime = now;
-        inner.ctime = now;
+        self.touch_inode(now);
     }
 
-    /// The queue's owner uid (creator `fsuid`), for `/dev/mqueue` stat.
+    fn touch_inode(&self, now: Duration) {
+        let mut metadata = self.inode.metadata.lock_irqsave();
+        metadata.atime = now;
+        metadata.ctime = now;
+    }
+
+    pub(crate) fn inode_state(&self) -> Arc<crate::pseudofs::SimpleInode> {
+        self.inode.clone()
+    }
+
+    /// The current inode owner used by sticky-directory permission checks.
     pub fn uid(&self) -> u32 {
-        self.uid
-    }
-
-    /// The queue's owner gid (creator `fsgid`), for `/dev/mqueue` stat.
-    pub fn gid(&self) -> u32 {
-        self.gid
-    }
-
-    /// The queue's permission bits (`i_mode & 0777`), for `/dev/mqueue` stat.
-    pub fn mode(&self) -> u16 {
-        self.mode
-    }
-
-    /// The inode timestamps `(atime, ctime, mtime)` for `/dev/mqueue` stat.
-    pub fn times(&self) -> (Duration, Duration, Duration) {
-        let inner = self.inner.lock();
-        (inner.atime, inner.ctime, inner.mtime)
+        self.inode.metadata().uid
     }
 
     /// The mqueuefs inode `i_size`. Linux fixes it at `FILENT_SIZE` (80), the
@@ -864,17 +857,9 @@ impl MessageQueue {
     /// creator uid/gid, fixed `FILENT_SIZE` and the maintained timestamps,
     /// matching what Linux `mqueue_get_inode` stamps on the inode.
     pub fn kstat(&self) -> Kstat {
-        let (atime, ctime, mtime) = self.times();
-        Kstat {
-            mode: S_IFREG | self.mode as u32,
-            uid: self.uid,
-            gid: self.gid,
-            size: self.inode_size(),
-            atime,
-            ctime,
-            mtime,
-            ..Default::default()
-        }
+        let mut metadata = self.inode.metadata();
+        metadata.device = crate::pseudofs::mqueue_device();
+        crate::file::metadata_to_kstat(&metadata)
     }
 
     /// Current byte occupancy of the queue (`info->qsize`, the sum of message
@@ -906,9 +891,7 @@ impl MessageQueue {
     /// inode_set_ctime_current(inode))` (ipc/mqueue.c:1420).
     pub fn touch_attr(&self) {
         let now = wall_time();
-        let mut inner = self.inner.lock();
-        inner.atime = now;
-        inner.ctime = now;
+        self.touch_inode(now);
     }
 }
 
@@ -920,7 +903,7 @@ impl Drop for MessageQueue {
         // `RLIMIT_MSGQUEUE` charge (`dec_rlimit_ucounts`, ipc/mqueue.c:549).
         MQ_QUEUES_COUNT.fetch_sub(1, Ordering::Relaxed);
         if self.charged_bytes != 0 {
-            refund_user_bytes(self.uid, self.charged_bytes);
+            refund_user_bytes(self.creator_uid, self.charged_bytes);
         }
     }
 }

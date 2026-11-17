@@ -100,7 +100,7 @@ impl Pipe {
                 if access == PipeAccess::Write && nonblocking {
                     return Err(StarryError::NoSuchDeviceOrAddress);
                 }
-                let shared = Arc::new(Shared::new(PipeState::empty()));
+                let shared = Arc::new(Shared::new(PipeState::empty())?);
                 registry.channels.insert(key, Arc::downgrade(&shared));
                 shared
             }

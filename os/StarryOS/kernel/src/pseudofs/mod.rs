@@ -13,6 +13,7 @@ pub(crate) mod object;
 pub(crate) mod overlay;
 pub(crate) mod proc;
 mod proc_mountinfo;
+mod recipe;
 mod sysfs;
 pub(crate) mod usbfs;
 
@@ -21,14 +22,17 @@ use alloc::{boxed::Box, sync::Arc};
 pub use ax_fs_ng::MemoryFs;
 use ax_fs_ng::vfs::{FsView, current_fs_context};
 use ax_lazyinit::LazyInit;
-use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
+use axfs_ng_vfs::{Filesystem, NodePermission, VfsResult};
+pub(crate) use mqueue::{allocate_mqueue_inode, mqueue_device, mqueue_location};
 
-pub use self::{device::*, dir::*, file::*, fs::*};
+pub use self::{
+    device::*,
+    dir::*,
+    file::*,
+    fs::*,
+    recipe::{DirMaker, FileMaker},
+};
 use crate::StarryResult;
-
-/// A callback that builds a `Arc<dyn DirNodeOps>` for a given
-/// `WeakDirEntry`.
-pub type DirMaker = Arc<dyn Fn(WeakDirEntry) -> Arc<dyn DirNodeOps> + Send + Sync>;
 
 /// An enum containing either a directory ([`DirMaker`]) or a file (`Arc<dyn
 /// FileNodeOps>`).
@@ -37,12 +41,12 @@ pub enum NodeOpsMux {
     /// A directory node.
     Dir(DirMaker),
     /// A file node.
-    File(Arc<dyn FileNodeOps>),
+    File(FileMaker),
 }
 
 enum NodeOpsMuxTy {
     Static(NodeOpsMux),
-    Dynamic(Box<dyn Fn() -> NodeOpsMux + Send + Sync>),
+    Dynamic(Box<dyn Fn() -> VfsResult<NodeOpsMux> + Send + Sync>),
 }
 
 impl From<DirMaker> for NodeOpsMux {
@@ -51,9 +55,12 @@ impl From<DirMaker> for NodeOpsMux {
     }
 }
 
-impl<T: FileNodeOps> From<Arc<T>> for NodeOpsMux {
-    fn from(ops: Arc<T>) -> Self {
-        Self::File(ops)
+impl<T> From<Arc<T>> for NodeOpsMux
+where
+    FileMaker: From<Arc<T>>,
+{
+    fn from(backing: Arc<T>) -> Self {
+        Self::File(backing.into())
     }
 }
 
@@ -104,7 +111,7 @@ pub fn mount_all() -> StarryResult<()> {
     let fs = FsView::current(current_fs_context(), &caller);
     let usbfs = usbfs::new_usbfs()?;
     let root_mount_device = fs.root_dir().mountpoint().device();
-    mount_at(&fs, "/dev", dev::new_devfs(root_mount_device))?;
+    mount_at(&fs, "/dev", dev::new_devfs(root_mount_device)?)?;
     if let Some(dev_usbfs) = usbfs {
         mount_at(&fs, "/dev/bus/usb", dev_usbfs)?;
     }
@@ -112,20 +119,20 @@ pub fn mount_all() -> StarryResult<()> {
     SHM_TMPFS.init_once(mount_temporary(&fs, "/dev/shm")?);
     TMP_TMPFS.init_once(mount_temporary(&fs, "/tmp")?);
 
-    mount_at(&fs, "/dev/mqueue", mqueue::new_mqueuefs())?;
+    mount_at(&fs, "/dev/mqueue", mqueue::new_mqueuefs()?)?;
 
     mount_at(
         &fs,
         "/proc",
-        proc::new_procfs(crate::task::ROOT_PID_NS.clone()),
+        proc::new_procfs(crate::task::ROOT_PID_NS.clone())?,
     )?;
 
-    mount_at(&fs, "/sys", sysfs::new_sysfs())?;
+    mount_at(&fs, "/sys", sysfs::new_sysfs()?)?;
     if usbfs::has_manager() {
-        mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs())?;
+        mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs()?)?;
     }
 
-    mount_at(&fs, "/sys/kernel/debug", debug::new_debugfs())?;
+    mount_at(&fs, "/sys/kernel/debug", debug::new_debugfs()?)?;
 
     drop(fs);
 

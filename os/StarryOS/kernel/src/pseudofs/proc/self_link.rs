@@ -4,7 +4,7 @@ use alloc::{format, string::String, sync::Arc, vec};
 
 use axfs_ng_vfs::{LinkCaller, LinkOps, LinkTarget, NodeIdentity, VfsError, VfsResult};
 
-use super::{PidView, SimpleFile, SimpleFs};
+use super::{PidView, SimpleFileBacking, SimpleFsContext};
 use crate::task::ProcLinkCaller;
 
 #[derive(Clone, Copy)]
@@ -13,7 +13,11 @@ pub(super) enum SelfLinkKind {
     Thread,
 }
 
-pub(super) fn node(fs: Arc<SimpleFs>, view: PidView, kind: SelfLinkKind) -> Arc<SimpleFile> {
+pub(super) fn node(
+    fs: SimpleFsContext,
+    view: PidView,
+    kind: SelfLinkKind,
+) -> VfsResult<Arc<SimpleFileBacking>> {
     let entry_kind = match kind {
         SelfLinkKind::Process => 20,
         SelfLinkKind::Thread => 21,
@@ -21,8 +25,8 @@ pub(super) fn node(fs: Arc<SimpleFs>, view: PidView, kind: SelfLinkKind) -> Arc<
     // The link belongs to this proc instance. Its target belongs to each
     // operation's caller, including reads through a link fd opened by another
     // task. Never bind the identity or recipe to the task materializing it.
-    let identity = NodeIdentity::new(vec![Arc::as_ptr(&fs) as u64, entry_kind]);
-    SimpleFile::new_link(fs, identity, SelfLink { view, kind })
+    let identity = NodeIdentity::new(vec![fs.identity(), entry_kind]);
+    SimpleFileBacking::new_link(fs, identity, SelfLink { view, kind })
 }
 
 struct SelfLink {

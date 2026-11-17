@@ -17,7 +17,10 @@ use axfs_ng_vfs::{
 };
 use inherit_methods_macro::inherit_methods;
 
-use super::{DirMaker, NodeOpsMux, SimpleFs, SimpleFsNode};
+use super::{
+    DirMaker, NodeOpsMux, SimpleFsContext, SimpleFsNode, SimpleFsOwner, SimpleInode,
+    recipe::DirRecipe,
+};
 use crate::pseudofs::NodeOpsMuxTy;
 
 /// Operations for a simple directory.
@@ -59,13 +62,10 @@ impl SimpleDirOps for DirMapping {
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        self.map
-            .get(name)
-            .map(|ty| match ty {
-                NodeOpsMuxTy::Static(ops) => ops.clone(),
-                NodeOpsMuxTy::Dynamic(maker) => maker(),
-            })
-            .ok_or(VfsError::NotFound)
+        match self.map.get(name).ok_or(VfsError::NotFound)? {
+            NodeOpsMuxTy::Static(ops) => Ok(ops.clone()),
+            NodeOpsMuxTy::Dynamic(maker) => maker(),
+        }
     }
 
     fn is_cacheable(&self) -> bool {
@@ -103,7 +103,7 @@ impl DirMapping {
     pub fn add_dynamic(
         &mut self,
         name: impl Into<String>,
-        maker: impl Fn() -> NodeOpsMux + Send + Sync + 'static,
+        maker: impl Fn() -> VfsResult<NodeOpsMux> + Send + Sync + 'static,
     ) {
         self.map
             .insert(name.into(), NodeOpsMuxTy::Dynamic(Box::new(maker)));
@@ -152,18 +152,31 @@ impl<O: SimpleDirOps> SimpleDir<O> {
     }
 
     /// Create a [`DirMaker`] from given directory operations.
-    pub fn new_maker(fs: Arc<SimpleFs>, ops: Arc<O>) -> DirMaker {
-        Arc::new(move |this| {
-            SimpleDir::new(
-                SimpleFsNode::new(
-                    fs.clone(),
-                    NodeType::Directory,
-                    NodePermission::from_bits_truncate(0o755),
-                ),
-                ops.clone(),
-                this,
-            )
-        })
+    pub fn new_maker(context: SimpleFsContext, ops: Arc<O>) -> VfsResult<DirMaker> {
+        let inode = context.allocate_inode(
+            NodeType::Directory,
+            NodePermission::from_bits_truncate(0o755),
+        )?;
+        Ok(DirMaker::new(context, SimpleDirRecipe { inode, ops }))
+    }
+}
+
+struct SimpleDirRecipe<O> {
+    inode: Arc<SimpleInode>,
+    ops: Arc<O>,
+}
+
+impl<O: SimpleDirOps> DirRecipe for SimpleDirRecipe<O> {
+    fn materialize(
+        self: Arc<Self>,
+        owner: SimpleFsOwner,
+        this: WeakDirEntry,
+    ) -> Arc<dyn DirNodeOps> {
+        SimpleDir::new(
+            SimpleFsNode::bind(owner, self.inode.clone()),
+            self.ops.clone(),
+            this,
+        )
     }
 }
 
@@ -235,9 +248,11 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         let reference = Reference::new(self.this.upgrade(), name.to_owned());
         Ok(match ops {
             NodeOpsMux::Dir(maker) => {
-                DirEntry::new_dir(|this| DirNode::new(maker(this)), reference)
+                let prepared = maker.prepare(self.node.owner())?;
+                DirEntry::new_dir(|this| DirNode::new(prepared.materialize(this)), reference)
             }
-            NodeOpsMux::File(ops) => {
+            NodeOpsMux::File(maker) => {
+                let ops = maker.prepare(self.node.owner())?.materialize();
                 let node_type = ops.metadata()?.node_type;
                 DirEntry::new_file(FileNode::new(ops.clone()), node_type, reference)
             }
