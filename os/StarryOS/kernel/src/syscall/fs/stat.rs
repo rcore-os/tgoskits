@@ -224,7 +224,7 @@ pub fn sys_faccessat2(
     let cred = link_caller.fs_credentials().credentials();
     let file = resolve_at_checked(&link_caller, dirfd, path.as_deref(), flags, |directory| {
         let metadata = metadata_to_kstat(&directory.metadata()?);
-        check_dac_access(&cred, &metadata, X_OK).map_err(axfs_ng_vfs::VfsError::from)
+        check_dac_access(cred, &metadata, X_OK).map_err(axfs_ng_vfs::VfsError::from)
     })?;
     if mode == 0 {
         return Ok(0);
@@ -246,7 +246,7 @@ pub fn sys_faccessat2(
             return Err(StarryError::ReadOnlyFilesystem);
         }
     }
-    check_dac_access(&cred, &metadata, mode)?;
+    check_dac_access(cred, &metadata, mode)?;
     if mode & W_OK != 0
         && !matches!(node_type, S_IFBLK | S_IFCHR | S_IFIFO | S_IFSOCK)
         && let ResolveAtResult::File(location) = &file
