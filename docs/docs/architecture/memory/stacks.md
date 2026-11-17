@@ -168,7 +168,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 runtime `StackHandle`。
 | 边界 | 负责组件 | 故障处理 |
 | --- | --- | --- |
 | 用户 stack 虚拟内存区域权限 | Starry `AddrSpace` / backend | `handle_page_fault()` 返回是否成功，trap 层再处理 signal |
-| kernel task guard page | `axruntime` + `ax-mm` | 诊断 `diagnose_current_stack_guard_page_fault()` |
+| kernel task guard page | `axruntime` + `ax-mm` | `panic_on_current_stack_guard_page_fault()` 将边界写入主 panic 记录并终止 |
 | CPU boot stack 范围 | `someboot` / `ax-hal` | 启动配置，当前无动态 guard |
 
 分析 stack overflow 时必须先确认 fault address 属于哪种 stack。把用户虚拟内存区域 fault 误判成 kernel guard，或把 boot stack 当作 allocator 泄漏，都会得出错误结论。

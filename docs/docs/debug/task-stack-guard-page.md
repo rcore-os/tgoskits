@@ -46,7 +46,7 @@ token 的普通 `Drop` 只发布退休状态。显式 `release()` 或 `retry_ker
 
 ## 2. 保护范围与诊断
 
-诊断属于 runtime stack owner，调用方不需要查找第二个全局栈登记表。`diagnose_current_stack_guard_page_fault()` 从当前线程的 `RuntimeStack` 读取 reservation 和 usable 边界。
+诊断属于 runtime stack owner，调用方不需要查找第二个全局栈登记表。`panic_on_current_stack_guard_page_fault()` 从当前线程的 `RuntimeStack` 读取 reservation 和 usable 边界，命中时直接进入主 panic 记录，其他地址正常返回。
 
 ### 2.1 覆盖边界
 
@@ -63,7 +63,7 @@ canary 继续检查没有触及 guard 的栈内破坏。guard 不替代 canary�
 
 ### 2.2 故障输出
 
-ArceOS 和 Starry fault handler 先检查当前任务 guard；命中后输出以下字段，再进入原有 fatal fault 路径。
+ArceOS 和 Starry fault handler 先检查当前任务 guard；命中后由同一主 panic 记录输出以下字段并终止。保护页原因不经过独立的 panic 前紧急写入，避免该次声明返回零字节后只留下通用缺页信息。
 
 ```text
 task stack guard page hit: fault_addr=0x..., stack=[0x.....0x...), guard=[0x.....0x...)
