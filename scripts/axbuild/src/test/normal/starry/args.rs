@@ -78,6 +78,7 @@ pub struct ArgsTestQemu {
         long,
         value_name = "ELF",
         requires = "build_config",
+        conflicts_with_all = ["arch", "target", "test_case", "list"],
         help = "Boot this validated, byte-preserved ELF instead of the fresh build"
     )]
     pub fixed_elf: Option<PathBuf>,
