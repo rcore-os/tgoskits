@@ -38,7 +38,7 @@ extern char **environ;
 
 #ifndef SYS_execveat
 #if defined(__x86_64__)
-#define SYS_execveat 358
+#define SYS_execveat 322
 #elif defined(__aarch64__) || defined(__riscv) || defined(__loongarch__)
 #define SYS_execveat 281
 #else
