@@ -1354,3 +1354,31 @@ chmod 未共享；devpts 旅程观察重复 lookup 丢失 ptmx 权限，均外�
 包装跳过。AArch64 原栈保护用例实际输出完整地址诊断并通过，Rust suite
 9/9；旧 3dfc 的失败记录保留。该终态只证明 4f16858e51，后续 SimpleFs
 提交仍须核实自己的完整 CI。原始任务与日志见 `ci_4f16858e51_terminal`。
+
+### 9.47 队列的打开描述
+
+普通路径打开按实际 SimpleFile 的 QueueStatus 生产者选择 MqDescriptor，保留
+原 File 和挂载使用权。O_PATH 仍走自身的对象路径；元数据 fd 投影优先使用
+原 PathHandle，只读 bind alias 的 fchmod 返回 EROFS。队列、原生 inode、
+描述偏移和标志分别由原所有者维护，不新增名字索引或属性副本。
+
+f7ff4bd7a1 的增强状态程序在旧普通分派下稳定失败，2bcfc68ab9 通过。
+第二轮在 568402cfbc 增强定位读取、只写描述错误优先级、原始写拒绝和 seek
+溢出，旧实现在该轮程序失败，最终 10ed803b4a 通过。每轮红绿和 Linux 对照
+均使用各自相同 C。每个完整向量段按传统 read 操作处理，
+后续段失败保留已完成字节；顺序 readv 的游标锁覆盖所有段。Linux 6.8 相同 C
+也通过。首次遗漏 signal.h 的编译错误单独保存，不计产品红证据。
+
+最终 72/72 Clippy、Kernel 标准库和格式检查通过。88cee91658 的完整 x86
+system 为 541/541，后续逐段策略收敛后的 10ed803b4a 另行运行相同 mqueue
+程序通过，未把前者写成后者的完整 system 结果。新测试未增加默认用例或启动。
+根证据键为 mqueue_path_descriptions，兼容表共 149 行；单段内部部分复制、
+受控并发、名字/删除状态、IPC 域和其他描述消费者继续保留缺口。
+
+### 9.48 实体基础的持续集成终态
+
+a69cd19120 的终态为 44 成功、0 失败、5 个重复 PR 包装跳过。四架构真实
+日志都含原 mqueue/devpts 增强程序成功和 AXTEST_SUITE_OK；x86 system
+541/541，RISC-V 与 LoongArch 各 538/538，AArch64 为 513/23/1/1 四组。
+该终态只覆盖实体基础，不代表后续队列描述提交的 CI。日志及快照见
+ci_a69cd19120_terminal。刷新 dev 后仍为 9bc2ee1411，已是当前分支祖先。

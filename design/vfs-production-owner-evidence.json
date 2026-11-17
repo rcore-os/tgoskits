@@ -5674,5 +5674,315 @@
     ],
     "syscall_rows_after_phase": 113
   },
-  "updated_at": "2026-11-17T17:45:58.062719+00:00"
+  "updated_at": "2026-11-17T18:45:43.069225+00:00",
+  "mqueue_path_descriptions": {
+    "source": "10ed803b4a682ec8099c475910728c3aaeee4e58",
+    "source_files": [
+      {
+        "path": "os/StarryOS/kernel/src/file/path.rs",
+        "sha256": "f3630d2a732ecf192a5eddba90292d73000d2870da456cb995146cdf1fc271ea"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/ipc/mqueue.rs",
+        "sha256": "83ec42bafeeb6e4dda09d3177271ea8c12196a46af867030bcb7e04852803ce1"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/mm/io.rs",
+        "sha256": "0ddee99a36c7ce6677c3d192f4754000a17d2f1aff40cde6fc0820066bd8013f"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/file.rs",
+        "sha256": "62b5a3a6f67389e34d98d5fdd3fac4db556d220ddae9ef2f5c86d941b9305718"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/mod.rs",
+        "sha256": "c2f23e80a505dcfc32889fa67692e29c4775def82caefbd96029dd092b404bb5"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/mqueue.rs",
+        "sha256": "dc2edbb65d221c272d7083cc3ba2b43ffacfa84c1da806d2887cb245ead47e99"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs",
+        "sha256": "05f29e6a6e38ec1d3731387a53ce981ec6e2e9fe0f11784a353ecfb9479abded"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/fs/io.rs",
+        "sha256": "faad2f9c4bdbd949ec920478dafd46e65da1bb29a08e55bded373427e0eab996"
+      },
+      {
+        "path": "test-suit/starryos/qemu/system/mqueue-fd-read-status/src/main.c",
+        "sha256": "5f1fa6d8b82a192079a89383b03bfe45f1f62ad0c00c82577471ca331f6a5fcd"
+      }
+    ],
+    "ordinary_path_regression": {
+      "test_source": "f7ff4bd7a195e9851b3842035e6923988c52403c",
+      "old_implementation_source": "f7ff4bd7a195e9851b3842035e6923988c52403c",
+      "first_fix_source": "2bcfc68ab984f19ab2273c02ef064b393b5a9c54",
+      "linux_source_sha256": "3716ab01ff67732cb50d566473f76c59b3a6c3b5b27433fc3c6e78c3684a2428  test-suit/starryos/qemu/system/mqueue-fd-read-status/src/main.c",
+      "before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-before.log",
+          "sha256": "6f5341223d11fc43e68638524c2ca29599b06419a95f3c2d0650c5b149ca6b2f",
+          "bytes": 29668
+        },
+        "source": "f7ff4bd7a195e9851b3842035e6923988c52403c"
+      },
+      "after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-after.log",
+          "sha256": "c2fecf9d71acdd1d4270cbdc6ed0469cbf6b72a4537adc6ccdd590103a48b093",
+          "bytes": 29353
+        },
+        "source": "2bcfc68ab984f19ab2273c02ef064b393b5a9c54"
+      },
+      "old_elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-mqueue-endpoint-before-f7ff4bd7a1.elf",
+        "sha256": "325c4aa822633b74a198851b999a01a3dd77d3896b849f4a68aac6e8cd73a9f6",
+        "bytes": 217690992
+      },
+      "outcome": "The same C program passed on Linux, failed on the original ordinary File dispatch, and passed after retaining queue operations and the original mount. Observations include mq_* interoperability, shared dup state, per-close notification flush, fixed SEEK_END and readonly-bind fchmod EROFS."
+    },
+    "positioned_io_regression": {
+      "test_source": "568402cfbcac4b4db247297f2f0ecc0a8157a75f",
+      "old_implementation_source": "568402cfbcac4b4db247297f2f0ecc0a8157a75f",
+      "same_c_in_final_source": true,
+      "linux_source_sha256": "5f1fa6d8b82a192079a89383b03bfe45f1f62ad0c00c82577471ca331f6a5fcd  test-suit/starryos/qemu/system/mqueue-fd-read-status/src/main.c",
+      "before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-positioned-before.log",
+          "sha256": "2939312627a30bfd53df53beb2102e2cd65be3145993593578a3c6ea9ef7c83e",
+          "bytes": 30180
+        },
+        "source": "568402cfbcac4b4db247297f2f0ecc0a8157a75f"
+      },
+      "after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-final.log",
+          "sha256": "4ca82fbd5c05a5b457bf987f47a31bd8b1a84b4ad1d05540999b1dd5116c6c50",
+          "bytes": 29350
+        },
+        "source": "10ed803b4a682ec8099c475910728c3aaeee4e58"
+      },
+      "outcome": "Linux passed; the ordinary-descriptor fix alone still failed positioned reads, write rejection, O_WRONLY/iovec error precedence and seek overflow. The final legacy per-segment implementation passes the same full C journey. Positioned reads preserve the shared cursor, successful complete segments survive a later EFAULT, and failed/EOF reads preserve times."
+    },
+    "validation": {
+      "mqueue-endpoint-linux": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-linux.log",
+          "sha256": "745322ecb27976cfe4135324fc79db65053b370a48b4f81fa648c05997b20394",
+          "bytes": 18
+        }
+      },
+      "mqueue-endpoint-before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-before.log",
+          "sha256": "6f5341223d11fc43e68638524c2ca29599b06419a95f3c2d0650c5b149ca6b2f",
+          "bytes": 29668
+        },
+        "source": "f7ff4bd7a195e9851b3842035e6923988c52403c"
+      },
+      "mqueue-endpoint-after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-after.log",
+          "sha256": "c2fecf9d71acdd1d4270cbdc6ed0469cbf6b72a4537adc6ccdd590103a48b093",
+          "bytes": 29353
+        },
+        "source": "2bcfc68ab984f19ab2273c02ef064b393b5a9c54"
+      },
+      "mqueue-positioned-linux": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-positioned-linux.log",
+          "sha256": "745322ecb27976cfe4135324fc79db65053b370a48b4f81fa648c05997b20394",
+          "bytes": 18
+        }
+      },
+      "mqueue-positioned-before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-positioned-before.log",
+          "sha256": "2939312627a30bfd53df53beb2102e2cd65be3145993593578a3c6ea9ef7c83e",
+          "bytes": 30180
+        },
+        "source": "568402cfbcac4b4db247297f2f0ecc0a8157a75f"
+      },
+      "mqueue-endpoint-system-after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-system-after.log",
+          "sha256": "e304fbbbefdb760f3f0f775f94c3f849e0b3a13d586bf80b306615a4776b249d",
+          "bytes": 1473427
+        },
+        "source": "88cee91658ee1f96ea321df0afa191131e122377"
+      },
+      "mqueue-endpoint-clippy": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-clippy.log",
+          "sha256": "7635f41519e8572f67997155c499f1cca6b5cf162e1c6b4910d4d7480d0625fb",
+          "bytes": 69215
+        },
+        "source": "10ed803b4a682ec8099c475910728c3aaeee4e58"
+      },
+      "mqueue-endpoint-final-std": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-final-std.log",
+          "sha256": "7dbd0d1c57644084a94d236494ab5eda8e544b1f508408d222849d15fa837c0f",
+          "bytes": 38591
+        },
+        "source": "10ed803b4a682ec8099c475910728c3aaeee4e58"
+      },
+      "mqueue-endpoint-final": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-final.log",
+          "sha256": "4ca82fbd5c05a5b457bf987f47a31bd8b1a84b4ad1d05540999b1dd5116c6c50",
+          "bytes": 29350
+        },
+        "source": "10ed803b4a682ec8099c475910728c3aaeee4e58"
+      },
+      "mqueue-endpoint-format": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      }
+    },
+    "final_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-10ed803b4a.elf",
+      "sha256": "576a4e04f8ec2516bd82a34adc75fe6ccbd2c833cbf76c580f477c01140a1e4c",
+      "bytes": 217906496
+    },
+    "intermediate_full_system_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-88cee91658.elf",
+      "sha256": "39d531bc54cb0e9176422e745a97b77a6000f1a3a496e4f460975c24cb50051c",
+      "bytes": 218064304
+    },
+    "intermediate_scope": "The 541/541 full system run is tied to 88cee91658. The final change restores generic IoVectorBufIo::write and scopes legacy vector reads to MqDescriptor, holding one cursor lock across sequential segments. Final source 10ed803b4a separately passed the same targeted C, Kernel std and all 72 Clippy checks; the intermediate full run is not claimed as a full run of the final source.",
+    "test_layout": {
+      "added_cases": 0,
+      "added_default_boots": 0,
+      "existing_case": "qemu/system/mqueue-fd-read-status"
+    },
+    "descriptor_layout": {
+      "method": "gdb -nx -batch; sizeof of DWARF types from the actual same-target release ELFs; no guest execution or injected probes",
+      "before": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-before-layout.log",
+        "sha256": "f425a8ed925b5aeb40254cb45135fd9f187d7e0cc0072a9dbc4b01ed7f121bd1",
+        "bytes": 18
+      },
+      "after": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-final-layout.log",
+        "sha256": "2d3bb7a6b493c464b4a03831097819c4766f9ea0396bf3e66890e8041781c377",
+        "bytes": 18
+      },
+      "mq_descriptor_bytes": {
+        "before": 104,
+        "after": 112
+      },
+      "retained_file_bytes": {
+        "before": 200,
+        "after": 200
+      },
+      "scope": "Descriptor body sizes only: mq_open adds one pointer slot; ordinary opens retain the original File in a separate Arc allocation, shared by dup. Allocator overhead, total heap peak, throughput and latency are not measured."
+    },
+    "linux": {
+      "kernel": "6.8.0-149-generic",
+      "container": "tgoskits-ci-prerequisites:base",
+      "scope": "Existing local image, network disabled, isolated SYS_ADMIN mount namespace, source mounted read-only; no host mount mutation."
+    },
+    "preparation_failure": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-endpoint-linux-missing-signal-header.log",
+        "sha256": "718b7215bd2a7dc05ab1bda8352633ff545484d0bfc2ef047905a3daf6ece475",
+        "bytes": 417
+      },
+      "scope": "The first C compile lacked signal.h for SIGEV_NONE. This is test preparation failure, not product regression evidence."
+    },
+    "limits": [
+      "The IPC registry is still global. mq_open display names, unlink/deleted state and nlink, remaining metadata and non-stream consumers are not complete.",
+      "The direct partial-copy oracle proves a completed iovec followed by a fault; it does not prove partial copying inside one segment or a controlled concurrent readv interleaving.",
+      "The final new C has local x86 evidence only. Its other architecture runtime evidence must come from the new exact-head CI.",
+      "Poll/select/epoll, advisory locks and all remaining regular-file APIs for pathname queue descriptions need their own applicable evidence.",
+      "No same-condition throughput/latency or total heap peak comparison is claimed."
+    ]
+  },
+  "ci_a69cd19120_terminal": {
+    "source": "a69cd19120a608507c20d81d9b6afd7777b50b72",
+    "run_id": 44141312790,
+    "counts": {
+      "success": 44,
+      "skipped": 5,
+      "failure": 0,
+      "pending": 0
+    },
+    "snapshot": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-a69cd19120-latest.json",
+      "sha256": "c14d41bd20903e3d1a4c5bfcc5585f4934be4a387abbf02b30c632ec3a3e1fc6",
+      "bytes": 15153
+    },
+    "starry_logs": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-a69cd19120-starry-x86_64.log",
+          "sha256": "c73088251a4a8260e9ea4e0d4fb71037520d8e48f15318bf534693265221d4fd",
+          "bytes": 2264092
+        },
+        "system_summaries": [
+          "STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.315",
+          "STARRY_SYSTEM_TEST_SUMMARY: total=541 passed=541 failed=0 elapsed_s=314.721"
+        ],
+        "native_suite_ok": true
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-a69cd19120-starry-aarch64.log",
+          "sha256": "eaf63f0285ba1212b4466c9f5a7aaba323499e26227f8439f3a1b69a61612bc4",
+          "bytes": 2158907
+        },
+        "system_summaries": [
+          "STARRY_SYSTEM_TEST_SUMMARY: total=513 passed=513 failed=0 elapsed_s=418.872",
+          "STARRY_SYSTEM_TEST_SUMMARY: total=23 passed=23 failed=0 elapsed_s=19.250",
+          "STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.176",
+          "STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.454"
+        ],
+        "native_suite_ok": true
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-a69cd19120-starry-riscv64.log",
+          "sha256": "c00e961be46364d33bf209910ee67b5ed0d3fc5380a7603146ec1ca773915a55",
+          "bytes": 2126064
+        },
+        "system_summaries": [
+          "STARRY_SYSTEM_TEST_SUMMARY: total=538 passed=538 failed=0 elapsed_s=512.208"
+        ],
+        "native_suite_ok": true
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-a69cd19120-starry-loongarch64.log",
+          "sha256": "ae9d4061d945eff9b817c07ef7cddbc81205fd08c2d5cf53cd268cfc47003bca",
+          "bytes": 876037
+        },
+        "system_summaries": [
+          "STARRY_SYSTEM_TEST_SUMMARY: total=538 passed=538 failed=0 elapsed_s=240.930"
+        ],
+        "native_suite_ok": true
+      }
+    },
+    "skipped_reason": "The same five duplicate pull-request wrapper jobs. Workflow routing is unchanged in this phase.",
+    "scope": "The SimpleFs foundation head only. The old shared-inode/devpts C programs ran successfully on all four architectures. This does not certify the subsequent pathname descriptor phase."
+  }
 }
