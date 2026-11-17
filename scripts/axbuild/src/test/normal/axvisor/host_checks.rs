@@ -11,6 +11,7 @@ use serde::Deserialize;
 use super::{AxvisorQemuCase, host_probe, types::AxvisorHttpProbeConfig};
 
 pub(super) struct HostChecks {
+    mixed: Option<super::mixed_checks::MixedChecks>,
     guard: Option<host_probe::HostHttpProbeGuard>,
     capture: Option<crate::support::qemu_output_capture::QemuOutputCaptureGuard>,
     _qmp_directory: Option<tempfile::TempDir>,
@@ -18,6 +19,9 @@ pub(super) struct HostChecks {
 
 impl HostChecks {
     pub(super) fn finish(self) -> Option<host_probe::HostHttpProbeOutcome> {
+        if let Some(mixed) = self.mixed {
+            return Some(mixed.finish());
+        }
         // Stop and reap host children before closing the serial tee: a live
         // child may still hold inherited descriptors for that capture.
         let outcome = self.guard.and_then(host_probe::HostHttpProbeGuard::finish);
@@ -25,7 +29,7 @@ impl HostChecks {
         outcome
     }
     pub(super) fn is_configured(&self) -> bool {
-        self.guard.is_some()
+        self.guard.is_some() || self.mixed.is_some()
     }
 }
 
@@ -34,6 +38,23 @@ pub(super) fn prepare(qemu: &mut QemuConfig, case: &AxvisorQemuCase) -> anyhow::
         &case.case.qemu_config_path,
         case.selected_checks.as_deref(),
     )?;
+    let interactive = qemu
+        .shell_check_steps
+        .iter()
+        .any(|step| step.shell_cmd.is_some());
+    if interactive
+        && check_plan
+            .checks
+            .iter()
+            .any(|check| check.document.contains_key("host_http_probe"))
+    {
+        return Ok(HostChecks {
+            mixed: Some(super::mixed_checks::prepare(qemu, case, check_plan)?),
+            guard: None,
+            capture: None,
+            _qmp_directory: None,
+        });
+    }
     let mut probing = false;
     for check in &check_plan.checks {
         anyhow::ensure!(
@@ -229,13 +250,14 @@ pub(super) fn prepare(qemu: &mut QemuConfig, case: &AxvisorQemuCase) -> anyhow::
     }
 
     Ok(HostChecks {
+        mixed: None,
         guard: host_probe_guard,
         capture: observation_capture,
         _qmp_directory: qmp_directory,
     })
 }
 
-fn pick_free_local_port() -> anyhow::Result<u16> {
+pub(super) fn pick_free_local_port() -> anyhow::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
         .context("failed to pick a free local port for QEMU hostfwd")?;
     Ok(listener.local_addr()?.port())

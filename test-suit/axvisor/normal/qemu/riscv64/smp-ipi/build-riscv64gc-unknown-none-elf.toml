@@ -1,9 +1,0 @@
-features = [
-    "ax-driver/nvme",
-
-    "sstc",
-]
-log = "Info"
-target = "riscv64gc-unknown-none-elf"
-vm_configs = ["test-suit/axvisor/normal/qemu/riscv64/smp-ipi/guest.toml"]
-max_cpu_num = 4

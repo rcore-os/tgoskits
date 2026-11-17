@@ -19,12 +19,14 @@ args = [
 fail_regex = [
     "(?i)\bpanic(?:ked)?\b",
     "(?i)kernel panic",
+    "(?i)\\bpanic(?:ked)?\\b",
 ]
-timeout = 600
+timeout = 780
 to_bin = true
 uefi = false
 
 [axbuild]
 checks = [
+    "tests/browser-console.toml",
     "tests/control-plane.toml",
 ]

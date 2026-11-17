@@ -21,7 +21,7 @@ features = [
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
-  "test-suit/axvisor/normal/board/orangepi-5-plus/triple-guest-functional/guests/linux/guest.toml",
-  "test-suit/axvisor/normal/board/orangepi-5-plus/triple-guest-functional/guests/starry/guest.toml",
-  "test-suit/axvisor/normal/board/orangepi-5-plus/triple-guest-functional/guests/zephyr/guest.toml",
+  "test-suit/axvisor/normal/board/orangepi-5-plus/triple-guest-functional/guest-linux.toml",
+  "test-suit/axvisor/normal/board/orangepi-5-plus/triple-guest-functional/guest-starry.toml",
+  "test-suit/axvisor/normal/board/orangepi-5-plus/triple-guest-functional/guest-zephyr.toml",
 ]

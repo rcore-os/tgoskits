@@ -1,0 +1,5 @@
+timeout = 180
+
+[host_http_probe]
+probe_script = "../probes/reset.py"
+request_timeout_secs = 60

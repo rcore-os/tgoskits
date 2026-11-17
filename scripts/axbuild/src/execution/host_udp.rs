@@ -127,6 +127,28 @@ mod tests {
 
     #[test]
     fn datagrams_are_preserved_and_fixture_releases_its_exclusive_port() {
+        // Other host-tool tests replace process stdio and launch children.
+        // Verify descriptor release in a process that owns only this fixture.
+        const CHILD: &str = "AXBUILD_UDP_LIFETIME_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let name = concat!(
+                module_path!(),
+                "::datagrams_are_preserved_and_fixture_releases_its_exclusive_port"
+            );
+            let name = name.split_once("::").unwrap().1;
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         let fixture = HostUdpEchoGuard::start(&EchoConfig {
             bind: loopback(),
             port: 0,
@@ -160,7 +182,11 @@ mod tests {
         })
         .unwrap();
         drop(fixture);
-        assert!(UdpSocket::bind(address).is_ok());
+        let released = UdpSocket::bind(address);
+        assert!(
+            released.is_ok(),
+            "UDP fixture {address} was not released: {released:?}"
+        );
     }
 
     #[test]

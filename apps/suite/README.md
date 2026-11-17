@@ -7,7 +7,8 @@
 ```text
 suite/
 └── axvisor/
-    └── board/orangepi-5-plus/robot/robot-linux-perf30/
+    ├── board/orangepi-5-plus/robot-linux-perf30/
+    └── qemu/aarch64/console/                 两项控制台检查，同启执行
 ```
 
 一个场景对应一次宿主启动。构建、板卡或 QEMU 配置与 `guest.toml` 放场景根目录，启动后检查放 `tests/<用途>.toml`，由运行配置的 `[axbuild].checks` 按顺序引用。环境兼容的新增检查优先复用已有启动；不能共享时另建场景并说明原因。不得用目录整理降低原有负载或通过门槛。
@@ -26,3 +27,12 @@ cargo xtask axvisor app board --app-root apps/suite/axvisor \
 迁入时更新构建中的客户机路径、检查引用、脚本与资产引用及使用文档；确认原 CI 没有消费者，再移除旧入口。接入自动测试需要单独登记，不能把手动目录迁移当作运行验收。
 
 手动选单项时，在`--app <场景路径>`后加`--test-case <检查文件名>`；多个名称可逗号分隔。公共准备继续位于tests，通过requires显式引用，同启执行一次。默认全部执行仍使用checks顺序。
+
+QEMU控制台检查：
+
+```sh
+cargo xtask axvisor app qemu --app-root apps/suite/axvisor \
+  --group qemu --arch aarch64 --app aarch64/console
+```
+
+详见[控制台应用README](axvisor/qemu/aarch64/console/README.md)。`interleave`与`atomic-output`仅由此显式应用根发现，不再登记于test-suit/general。

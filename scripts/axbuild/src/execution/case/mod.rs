@@ -20,7 +20,7 @@ pub(crate) use cache::copy_file_fast;
 #[cfg(test)]
 use cache::save_rootfs_cache_image;
 pub(crate) use checks::{
-    load_runtime_checks, load_selected_runtime_checks, materialize_runtime_checks,
+    RuntimeChecks, load_runtime_checks, load_selected_runtime_checks, materialize_runtime_checks,
     materialize_selected_runtime_checks, runtime_check_names, runtime_check_references,
     select_runtime_members,
 };

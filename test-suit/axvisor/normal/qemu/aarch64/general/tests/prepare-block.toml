@@ -1,0 +1,13 @@
+timeout = 240
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 3"
+success_regex = ["(?m)^✓ VM\\[3\\] started successfully\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 4"
+success_regex = ["(?m)^✓ VM\\[4\\] started successfully\\s*$"]
+timeout = 120

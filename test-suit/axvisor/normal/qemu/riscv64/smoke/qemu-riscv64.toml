@@ -16,6 +16,10 @@ args = [
     "root=/dev/nvme0n1 rw init=/bin/sh axvisor.vm_start=1,2",
     "-m",
     "4G",
+    "-device",
+    "virtio-blk-device,drive=disk1",
+    "-drive",
+    "id=disk1,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img,readonly=on,snapshot=on",
 ]
 fail_regex = [
     "(?m)^VIRTIO_BLK_MOUNT_FAIL:",
@@ -24,12 +28,14 @@ fail_regex = [
     "(?i)login incorrect",
     "(?i)permission denied",
     "(?m)^(?:echo|cat|rm):\\s",
+    "(?i)IPI extension is not available",
 ]
-timeout = 300
+timeout = 420
 to_bin = true
 uefi = false
 
 [axbuild]
 checks = [
     "tests/shell-and-block.toml",
+    "tests/smp-ipi.toml",
 ]

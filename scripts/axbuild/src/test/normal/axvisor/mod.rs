@@ -5,8 +5,10 @@ mod host_checks;
 mod host_probe;
 mod http_probe;
 mod initramfs;
+mod mixed_checks;
 mod ovmf;
 mod qemu;
+mod serial_checks;
 mod types;
 
 #[cfg(test)]

@@ -44,11 +44,11 @@ normal/
 checks = ["tests/robot-virtual.toml", "tests/network.toml"]
 ```
 
-场景名称取运行配置目录相对分组根的路径，例如`board/orangepi-5-plus/robot/robot-linux`；无需重复登记`id`。不再提供`aliases`兼容旧名称；测试名称取检查文件名（不含`.toml`）。工具仍支持外部调用方显式提供`id`；无外部检查的旧配置保持原发现规则。引用按书写顺序执行，相对当前运行配置解析；构建中的`vm_configs`等原项目路径语义不变。检查定义继续使用原`[[shell_check_steps]]`，或原`[host_http_probe]`。探针的`probe_script`和可选`asset_dir`相对功能定义解析：前者定位脚本，后者定位原夹具目录。
+场景名称取运行配置目录相对分组根的路径，例如`board/orangepi-5-plus/robot/robot-virtual-linux`；无需重复登记`id`。不再提供`aliases`兼容旧名称；测试名称取检查文件名（不含`.toml`）。工具仍支持外部调用方显式提供`id`；无外部检查的旧配置保持原发现规则。引用按书写顺序执行，相对当前运行配置解析；构建中的`vm_configs`等原项目路径语义不变。检查定义继续使用原`[[shell_check_steps]]`，或原`[host_http_probe]`。探针的`probe_script`和可选`asset_dir`相对功能定义解析：前者定位脚本，后者定位原夹具目录。
 
-axbuild先展开引用，再交给未修改的ostool。不得同时维护内联检查和外部引用，空清单、缺失/重复引用及无可执行检查明确失败。全部检查完成才能通过；任一失败、超时或未完成均向外返回失败。HTTP探针每项保留预算，整批结束或失败后才关闭QEMU。
+axbuild先展开引用。纯串口组沿用ostool，混合组由上层串口适配器顺序执行原步骤，ostool继续负责QEMU进程与整组超时；不修改ostool。不得同时维护内联检查和外部引用，空清单、缺失/重复引用及无可执行检查明确失败。全部检查完成才能通过；任一失败、超时或未完成均向外返回失败。HTTP探针每项保留预算，整批结束或失败后才关闭QEMU。
 
-串口组沿用原有序步骤；probe组依次执行原探针。目前混合组只接受一个位于最前面的无命令启动日志检查，再执行probe。交互式串口与probe任意交错会被拒绝，不能自动退成多次启动。自动检查使用`axvisor test`；手动Web启动使用`manual/common`的原hostfwd配置，不把只启动QEMU当作测试通过。
+串口、HTTP混合组在Unix宿主上共用一个QEMU生命周期，严格按checks及requires展开顺序执行。串口socket以wait=on从开机捕获，全部步骤与探针成功且QEMU正常退出后才通过；退出时仍检查剩余串口失败。纯HTTP及原有前置启动日志检查保留原流程。自动检查使用`axvisor test`；手动Web启动使用`manual/common`的原hostfwd配置，不把只启动QEMU当作测试通过。
 
 ## 如何看已登记测试
 
@@ -63,23 +63,23 @@ cargo xtask axvisor test qemu --arch aarch64 --test-group manual --list
 
 | normal QEMU | 启动组总数 | 主CI启动组 |
 | --- | ---: | ---: |
-| AArch64 | 11 | 8 |
-| RISC-V | 2 | 1 |
+| AArch64 | 4 | 3 |
+| RISC-V | 1 | 1 |
 | LoongArch | 1 | 1 |
-| Intel VMX | 8 | 8 |
-| AMD SVM | 6 | 6 |
-| 合计 | 28 | 24 |
+| Intel VMX | 3 | 3 |
+| AMD SVM | 2 | 2 |
+| 合计 | 11 | 10 |
 
-AArch64 `memory-web`以一次SMP1无盘启动承接原`qemu-host-initramfs`及`web-ui-diskless`两项检查；原90秒日志期限和180秒probe预算保留，整组270秒。`--test-case qemu/aarch64/memory-web`执行整组；追加`/memory-root`或`/dashboard`可单独选择其中一项，同时选择两项仍只启动一次。其他原检查内容保持，因此主CI原25项normal QEMU检查由24个启动组承接。
+AArch64 `memory-web`以一次SMP1无盘启动承接原`qemu-host-initramfs`及`web-ui-diskless`两项检查；原90秒日志期限和180秒probe预算保留，整组270秒。`--test-case qemu/aarch64/memory-web`执行整组；追加`/memory-root`或`/dashboard`可单独选择其中一项，同时选择两项仍只启动一次。当前27项normal功能检查，其中25项主CI检查由10个启动组承接。具体分组、单项命令和不能合并的边界见[qemu/README.md](normal/qemu/README.md)。
 
-未进入主CI的QEMU检查仍是`atomic-output`、`interleave`、`qemu-ivc`和RISC-V的`smp-ipi`；IVC混合客机仍保留原协议不匹配停用边界。manual的两个三ArceOS控制台变体保持手动。
+未进入主CI的QEMU检查仍是AArch64 `ivc`和RISC-V的`smoke/smp-ipi`；IVC混合客机仍保留原协议不匹配停用边界。manual的两个三ArceOS控制台变体保持手动。
 
 板卡保留13个normal入口，其中8个进入主CI：OrangePi的三客机、两个单客机机器人、两个UART6双客机，以及ASUS、ROC、Phytium各一项。其余普通Linux/Starry启动、24客机网络、Rock4D、RDK-S100保持原未登记状态。两个perf30变体与virtcpufreq模板已整合到`apps/suite/axvisor/board/orangepi-5-plus/robot-linux-perf30`，不再由本目录发现，也未新增自动登记。`board --list`另兼容展示3个性能目录入口，不应将它们重复计入本目录CI。
 
 ## 使用和维护
 
 ```sh
-cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/smoke,qemu/aarch64/memory-web
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/general/shell-and-block,qemu/aarch64/memory-web
 cargo xtask axvisor test board --board orangepi-5-plus-triple-guest-functional --test-case board/orangepi-5-plus/triple-guest-functional
 # 外部项目可以显式提供自己的套件根，包含所选分组，不要求TGOSKits目录布局：
 cargo xtask axvisor test qemu --test-root /path/to/suite --test-group custom --arch aarch64 --list
@@ -146,3 +146,7 @@ success_regex = ["本项成功标记"]
 24客户机的标准board入口通过同目录`guest-builds.toml`自动生成配置并构建每份客户机；`--list`仍不运行准备。大规模网络检查仍为一次启动、24客户机、8核各3个vCPU和原48步，不因修复准备流程改变负载。
 
 运行时宿主initramfs采用内容寻址路径，构建输出以`AXBUILD_GUEST_BUNDLE: `后的JSON发布实际路径与SHA256；跨进程消费者使用这份明确结果，不根据同架构固定文件名或目录mtime猜测最新产物。
+
+OrangePi模拟机器人场景使用`robot/robot-virtual-linux`与`robot/robot-virtual-starry`目录名，`virtual`仅指执行器模拟。三客户机场景的配置直接放在场景根目录：`guest-linux.toml`、`guest-starry.toml`、`guest-zephyr.toml`；不再增加guests或角色子目录层。其他场景不因此强制改名。
+
+原两项控制台检查interleave/atomic-output已迁入[apps/suite](../../apps/suite/axvisor/qemu/aarch64/console/README.md)，不再由test-suit发现；普通CI的25项功能保持，general整组就是原五项CI检查。

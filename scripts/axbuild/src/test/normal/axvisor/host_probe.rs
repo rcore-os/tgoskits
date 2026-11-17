@@ -106,6 +106,31 @@ impl HostHttpProbeGuard {
         stop: Arc<AtomicBool>,
         probe: HostHttpProbeFn,
     ) -> anyhow::Result<Self> {
+        Self::start_worker(config, host_port, case_name, qmp_socket, stop, probe, true)
+    }
+
+    /// The callback owns serial connection and per-phase HTTP readiness.
+    /// Connecting serial first releases QEMU's `wait=on` boot barrier.
+    pub(crate) fn start_ordered(
+        config: &AxvisorHttpProbeConfig,
+        host_port: u16,
+        case_name: &str,
+        qmp_socket: Option<PathBuf>,
+        stop: Arc<AtomicBool>,
+        probe: HostHttpProbeFn,
+    ) -> anyhow::Result<Self> {
+        Self::start_worker(config, host_port, case_name, qmp_socket, stop, probe, false)
+    }
+
+    fn start_worker(
+        config: &AxvisorHttpProbeConfig,
+        host_port: u16,
+        case_name: &str,
+        qmp_socket: Option<PathBuf>,
+        stop: Arc<AtomicBool>,
+        probe: HostHttpProbeFn,
+        wait_for_http: bool,
+    ) -> anyhow::Result<Self> {
         let addr = format!("127.0.0.1:{host_port}");
         let connect_timeout = Duration::from_secs(config.connect_timeout_secs);
         let thread_stop = stop.clone();
@@ -122,13 +147,16 @@ impl HostHttpProbeGuard {
             // init); the probe then runs the HTTP assertions. The probe is
             // consumed exactly once.
             let mut outcome = (|| -> anyhow::Result<HostHttpProbeOutcome> {
-                wait_for_port_ready(&thread_addr, connect_timeout, &thread_stop).with_context(
-                    || {
-                        format!(
-                            "guest HTTP server never became reachable within {connect_timeout:?}"
-                        )
-                    },
-                )?;
+                if wait_for_http {
+                    wait_for_port_ready(&thread_addr, connect_timeout, &thread_stop).with_context(
+                        || {
+                            format!(
+                                "guest HTTP server never became reachable within \
+                                 {connect_timeout:?}"
+                            )
+                        },
+                    )?;
+                }
                 Ok(probe())
             })()
             .unwrap_or_else(HostHttpProbeOutcome::failed);
@@ -187,7 +215,7 @@ impl Drop for HostHttpProbeGuard {
 /// elapses, or a stop is requested. A successful connect means the guest's
 /// network stack is up; the in-guest server may still be booting, so the probe
 /// itself should retry its first request.
-fn wait_for_port_ready(
+pub(super) fn wait_for_port_ready(
     addr: &str,
     connect_timeout: Duration,
     stop: &AtomicBool,

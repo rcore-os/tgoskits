@@ -4,7 +4,7 @@
 
 ## 1. 测试目标与架构
 
-三个客户机由 `build-aarch64-unknown-none-softfloat.toml` 的 `vm_configs` 按顺序装载，分别由 `guests/linux/guest.toml`、`guests/starry/guest.toml` 和 `guests/zephyr/guest.toml` 描述，在一次运行中同时启动并全程保持运行。三者都是 `guest_type = "virtualized"`：Linux 与 StarryOS 从各自独立的文件后端 VirtIO 块设备启动（guest 侧 Linux 为 `/dev/vda`，StarryOS 用整盘 `root=/dev/vda`），Zephyr 不挂磁盘，只运行 tgosimages 发布的 `zephyr-triple-guest-functional` Shell 镜像。
+三个客户机由 `build-aarch64-unknown-none-softfloat.toml` 的 `vm_configs` 按顺序装载，分别由 `guest-linux.toml`、`guest-starry.toml` 和 `guest-zephyr.toml` 描述，在一次运行中同时启动并全程保持运行。三者都是 `guest_type = "virtualized"`：Linux 与 StarryOS 从各自独立的文件后端 VirtIO 块设备启动（guest 侧 Linux 为 `/dev/vda`，StarryOS 用整盘 `root=/dev/vda`），Zephyr 不挂磁盘，只运行 tgosimages 发布的 `zephyr-triple-guest-functional` Shell 镜像。
 
 Linux 与 StarryOS 的客户机 FDT 都由 AxVisor 从宿主固件 FDT 按虚拟化规则生成（两者都没有 `dtb_path`），Zephyr 使用与镜像同批构建的 DTB。三个客户机的 `passthrough` 与 `disabled` 列表都为空，它们看到的中断控制器、控制台、块设备和网卡全部是 AxVisor 的仿真窗口。
 
@@ -42,8 +42,8 @@ StarryOS 的 `RootSelector` 按硬件家族匹配根设备名称：VirtIO 块设
 | `/guest/linux/orangepi-5-plus-6.1.99-virtualized` | 板卡已有（发布/部署流程提供） | 板卡已部署的 6.1.99 虚拟客体内核（6.1.99 虚拟客体变体，控制台 8250/ttyS0），不由本 checkout 构建。作为本用例的全虚拟化 Linux 客户机内核，它必须实际带有 virtio-mmio/virtio-blk/virtio-net 与 ext4 支持，否则客户机无法启动 |
 | `/guest/rootfs-aarch64-orangepi-jammy-0.img` | 准备生成 | `linux` 客户机根盘，原始 ext4，会被用例改写 |
 | `/guest/rootfs-aarch64-orangepi-jammy-1.img` | 准备生成 | `starry` 客户机根盘，原始 ext4，会被用例改写，UUID 与 `-0` 不同 |
-| `/guest/zephyr/zephyr-triple-guest-functional` | tgosimages `scripts/apps/zephyr-triple-guest-functional.sh` | Zephyr Shell 二进制，部署到 `guests/zephyr/guest.toml` 的 `kernel_path` |
-| `/guest/zephyr/zephyr-triple-guest-functional.dtb` | 同一次 Zephyr 构建 | 与二进制同批构建的 DTB，部署到 `guests/zephyr/guest.toml` 的 `dtb_path` |
+| `/guest/zephyr/zephyr-triple-guest-functional` | tgosimages `scripts/apps/zephyr-triple-guest-functional.sh` | Zephyr Shell 二进制，部署到 `guest-zephyr.toml` 的 `kernel_path` |
+| `/guest/zephyr/zephyr-triple-guest-functional.dtb` | 同一次 Zephyr 构建 | 与二进制同批构建的 DTB，部署到 `guest-zephyr.toml` 的 `dtb_path` |
 
 ## 4. 准备脚本、构建命令与执行环境
 
@@ -51,7 +51,7 @@ StarryOS 的 `RootSelector` 按硬件家族匹配根设备名称：VirtIO 块设
 
 ### 4.1 StarryOS 客户机内核
 
-`guests/starry/guest.toml` 的 `kernel_path` 引用 `target/aarch64-unknown-none-softfloat/release/starryos.bin`；`cargo xtask axvisor test board` 在构建宿主时把该文件作为宿主 initramfs 的内置资源打包（安装到 `/guest/builtin/images`）并改写配置引用。`cargo xtask axvisor test board` 只构建并启动 AxVisor，**不会**替你重建 StarryOS 客户机内核，因此在跑标准板卡测试之前必须先在标准 `tgoskits` 仓库根目录用本用例的 `starry-guest-build.toml`（`max_cpu_num = 1`）显式构建一次，否则打包进去的会是旧产物或根本不存在的产物。CI 项把这条构建命令放在同一条 `command` 的前置步骤里并用 `&&` 串起来，只有客户机构建成功才会启动板卡；`pull_request_command` 保持同一条带前置构建的命令。
+`guest-starry.toml` 的 `kernel_path` 引用 `target/aarch64-unknown-none-softfloat/release/starryos.bin`；`cargo xtask axvisor test board` 在构建宿主时把该文件作为宿主 initramfs 的内置资源打包（安装到 `/guest/builtin/images`）并改写配置引用。`cargo xtask axvisor test board` 只构建并启动 AxVisor，**不会**替你重建 StarryOS 客户机内核，因此在跑标准板卡测试之前必须先在标准 `tgoskits` 仓库根目录用本用例的 `starry-guest-build.toml`（`max_cpu_num = 1`）显式构建一次，否则打包进去的会是旧产物或根本不存在的产物。CI 项把这条构建命令放在同一条 `command` 的前置步骤里并用 `&&` 串起来，只有客户机构建成功才会启动板卡；`pull_request_command` 保持同一条带前置构建的命令。
 
 ```bash
 cargo xtask starry build \
@@ -59,7 +59,7 @@ cargo xtask starry build \
   --smp 1
 ```
 
-该配置只为这个客户机启用 VirtIO 块设备与网卡驱动特性。`starryos/legacy-board-init` 已经被删除，本用例不再通过构建特性选择 init 路径：`guests/starry/guest.toml` 的 cmdline 直接使用主线板卡 guest 的 `init=/bin/sh` 方案，`HOME=/root`、`USER=root`、`HOSTNAME=starry` 与 `init=/bin/sh` 一样位于内核 cmdline（`--` 之前），`--` 之后才是传给 shell 的参数 `-c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"`，所以 StarryOS 客户机自身的 shell 提示符仍是板卡检查等待的 `root@starry:~#`，Jammy 根文件系统里缺失的 OpenRC 资产不再参与启动。
+该配置只为这个客户机启用 VirtIO 块设备与网卡驱动特性。`starryos/legacy-board-init` 已经被删除，本用例不再通过构建特性选择 init 路径：`guest-starry.toml` 的 cmdline 直接使用主线板卡 guest 的 `init=/bin/sh` 方案，`HOME=/root`、`USER=root`、`HOSTNAME=starry` 与 `init=/bin/sh` 一样位于内核 cmdline（`--` 之前），`--` 之后才是传给 shell 的参数 `-c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"`，所以 StarryOS 客户机自身的 shell 提示符仍是板卡检查等待的 `root@starry:~#`，Jammy 根文件系统里缺失的 OpenRC 资产不再参与启动。
 
 ### 4.2 客户机根盘与本地 APT 仓库准备
 
@@ -85,7 +85,7 @@ Zephyr 客户机运行 `zephyr-triple-guest-functional` Shell 镜像。该镜像
 ./scripts/apps/zephyr-triple-guest-functional.sh
 ```
 
-产物是 tgosimages 标准 Orange Pi Zephyr 镜像目录 `IMAGES/orangepi/zephyr/` 下的 `zephyr-triple-guest-functional`、`zephyr-triple-guest-functional.elf` 和 `zephyr-triple-guest-functional.dtb`。部署时把二进制与**同一次构建**的 DTB 一起安装到第 3 节列出的板卡路径，使 ELF 入口与 DTB 里的 GIC/UART/`sram0`（128 MiB 客户机 RAM）身份同 `guests/zephyr/guest.toml` 的 `entry_point` 与 `memory_regions` 保持一致：
+产物是 tgosimages 标准 Orange Pi Zephyr 镜像目录 `IMAGES/orangepi/zephyr/` 下的 `zephyr-triple-guest-functional`、`zephyr-triple-guest-functional.elf` 和 `zephyr-triple-guest-functional.dtb`。部署时把二进制与**同一次构建**的 DTB 一起安装到第 3 节列出的板卡路径，使 ELF 入口与 DTB 里的 GIC/UART/`sram0`（128 MiB 客户机 RAM）身份同 `guest-zephyr.toml` 的 `entry_point` 与 `memory_regions` 保持一致：
 
 ```bash
 install -m 0644 IMAGES/orangepi/zephyr/zephyr-triple-guest-functional \
@@ -162,9 +162,9 @@ sync
 | 文件 | 角色 |
 | --- | --- |
 | `build-aarch64-unknown-none-softfloat.toml` | AxVisor 宿主构建组：`features` 与按顺序装载的三个 `vm_configs` |
-| `guests/linux/guest.toml` | VM1 全虚拟化 Linux（`linux`）：板卡已部署的 6.1.99 虚拟客体内核 `/guest/linux/orangepi-5-plus-6.1.99-virtualized`、显式 16550 控制台、`-0` 文件后端根盘、`virtio-net` |
-| `guests/starry/guest.toml` | VM2 全虚拟化 StarryOS（`starry`）：由本 checkout 构建的内核（打包为宿主 initramfs 内置资源）、`-1` 文件后端根盘、`virtio-net` |
-| `guests/zephyr/guest.toml` | VM3 全虚拟化 Zephyr（`zephyr-triple-guest-functional`）：部署的 `zephyr-triple-guest-functional` 二进制与同批 DTB、合成 vGIC 跟随宿主板级 GIC 地址 |
+| `guest-linux.toml` | VM1 全虚拟化 Linux（`linux`）：板卡已部署的 6.1.99 虚拟客体内核 `/guest/linux/orangepi-5-plus-6.1.99-virtualized`、显式 16550 控制台、`-0` 文件后端根盘、`virtio-net` |
+| `guest-starry.toml` | VM2 全虚拟化 StarryOS（`starry`）：由本 checkout 构建的内核（打包为宿主 initramfs 内置资源）、`-1` 文件后端根盘、`virtio-net` |
+| `guest-zephyr.toml` | VM3 全虚拟化 Zephyr（`zephyr-triple-guest-functional`）：部署的 `zephyr-triple-guest-functional` 二进制与同批 DTB、合成 vGIC 跟随宿主板级 GIC 地址 |
 | `starry-guest-build.toml` | 板卡测试前手工构建 StarryOS 客户机内核的配置（`cargo xtask starry build`，`max_cpu_num = 1`） |
 | `prepare-guest-apt-repo.sh` | 在板卡原生 Linux 上把缓存的 `hello` 包变成隔离 `file:` 仓库，预热客户机 APT |
 | `functional/board-orangepi-5-plus-triple-guest-functional.toml` | 板卡入口：按顺序注入 `shell_check_steps`，是唯一的判定来源 |

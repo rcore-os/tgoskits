@@ -1,2 +1,4 @@
-vm_configs = ["test-suit/axvisor/normal/qemu/aarch64/http-control-plane/guest.toml"]
+vm_configs = [
+    "test-suit/axvisor/normal/qemu/aarch64/http-control-plane/guest.toml",
+]
 busybox_initramfs = "tmp/axbuild/axvisor/qemu-http-control-plane/initramfs-aarch64.cpio.gz"

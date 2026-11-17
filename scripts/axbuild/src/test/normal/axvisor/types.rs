@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
@@ -100,6 +103,9 @@ pub(crate) struct AxvisorHttpProbeConfig {
     /// Optional fixture directory relative to the check definition directory.
     #[serde(default)]
     pub(crate) asset_dir: Option<PathBuf>,
+    /// Case-owned profile inputs. Runner-owned endpoint variables take priority.
+    #[serde(default)]
+    pub(crate) env: BTreeMap<String, String>,
 }
 
 /// Default probe-asset file name inside the case directory.

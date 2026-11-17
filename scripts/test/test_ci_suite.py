@@ -477,6 +477,39 @@ class ClassifiedStarryRoutingTests(unittest.TestCase):
             self.assertEqual({item.template_id for item in selections}, {"fixture-board"})
 
 class ExplicitAxvisorCheckRoutingTests(unittest.TestCase):
+    def test_member_registration_preserves_one_boot_and_excludes_manual_checks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            group = root / 'test-suit/axvisor/normal/qemu/aarch64/fixture'
+            (group / 'tests').mkdir(parents=True)
+            build = group / 'build-aarch64-unknown-none-softfloat.toml'
+            build.write_text("target='aarch64-unknown-none-softfloat'\n")
+            runtime = group / 'qemu-aarch64.toml'
+            runtime.write_text("args=[]\n[axbuild]\nchecks=['tests/first.toml','tests/second.toml','tests/manual.toml']\n")
+            for name in ('first', 'second', 'manual'):
+                (group / f'tests/{name}.toml').write_text("[[shell_check_steps]]\nshell_cmd='true'\n")
+            identity = 'qemu/aarch64/fixture'
+            registration = {'kind': 'axvisor-qemu', 'arch': 'aarch64',
+                            'cases': [identity + '/first', identity + '/second']}
+            checks = [{'id': 'fixture', 'name': 'Fixture', 'command': 'fixture', 'suite': [registration]}]
+            ci_suite.validate_suite_catalog(root, checks)
+            rows = ci_suite.resolve_suite_selections(root, checks, [build.relative_to(root).as_posix()])
+            self.assertEqual(len(rows), 1)
+            self.assertIn('--test-case ' + identity + '/first,' + identity + '/second', rows[0].command)
+            self.assertNotIn('/manual', rows[0].command)
+            first = group / 'tests/first.toml'
+            rows = ci_suite.resolve_suite_selections(root, checks, [first.relative_to(root).as_posix()])
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(rows[0].command.endswith(identity + '/first'))
+            registration['cases'] = [identity]
+            ci_suite.validate_suite_catalog(root, checks)
+            rows = ci_suite.resolve_suite_selections(root, checks, [build.relative_to(root).as_posix()])
+            self.assertEqual(len(rows), 1)
+            self.assertIn(identity + '/manual', rows[0].command)
+            registration['cases'] = [identity + '/missing']
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.validate_suite_catalog(root, checks)
+
     def test_declared_ids_and_shared_inputs_route_every_registered_consumer(self):
         import os
         with tempfile.TemporaryDirectory() as temporary:

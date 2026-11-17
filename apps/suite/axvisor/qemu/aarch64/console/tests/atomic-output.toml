@@ -1,0 +1,34 @@
+timeout = 300
+requires = ["prepare-atomic-output.toml"]
+
+[[shell_check_steps]]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?i)I/O error", "sleeping or rescheduling is not allowed in atomic context", "Axvisor host console output worker stopped", "Axvisor host console output stopped"]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm show --full 3"
+success_regex = ["(?m)^=== VM Details: 3 ===\\s*$", "(?m)^VCPU Details:\\s*$"]
+timeout = 60
+
+[[shell_check_steps]]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?i)I/O error", "sleeping or rescheduling is not allowed in atomic context", "Axvisor host console output worker stopped", "Axvisor host console output stopped"]
+shell_cmd = "help"
+success_regex = ["(?m)^ArceOS Shell - Available Commands:\\s*$"]
+timeout = 30
+
+[[shell_check_steps]]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?i)I/O error", "sleeping or rescheduling is not allowed in atomic context", "Axvisor host console output worker stopped", "Axvisor host console output stopped"]
+shell_cmd = "vm list"
+success_regex = ["(?m)^VM ID\\s+NAME\\s+STATUS"]
+timeout = 30
+
+[[shell_check_steps]]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?i)I/O error", "sleeping or rescheduling is not allowed in atomic context", "Axvisor host console output worker stopped", "Axvisor host console output stopped"]
+shell_cmd = "vm console 3"
+success_regex = ["(?m)^test pass!\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?i)I/O error", "sleeping or rescheduling is not allowed in atomic context", "Axvisor host console output worker stopped", "Axvisor host console output stopped"]
+shell_prefix = "~ #"
+shell_cmd = "echo CONSOLE_ATOMIC_OUTPUT_OK"
+success_regex = ["(?m)^CONSOLE_ATOMIC_OUTPUT_OK\\s*$"]
+timeout = 30

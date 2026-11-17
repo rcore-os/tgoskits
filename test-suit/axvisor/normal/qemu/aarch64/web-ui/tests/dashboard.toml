@@ -1,6 +1,0 @@
-timeout = 600
-
-[host_http_probe]
-asset_dir = ".."
-request_timeout_secs = 30
-probe_script = "../../../common/web-ui/http_probe.py"

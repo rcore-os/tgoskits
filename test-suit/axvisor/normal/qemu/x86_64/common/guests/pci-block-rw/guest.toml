@@ -1,6 +1,6 @@
 # Backend-neutral Linux guest for the writable VirtIO PCI block case.
 [base]
-id = 1
+id = 5
 name = "linux-x86-pci-block-rw"
 guest_type = "passthrough"
 cpu_num = 1
@@ -10,7 +10,7 @@ phys_cpu_ids = [1]
 entry_point = 0x8000
 kernel_path = "${workspace}/target/axbuild/images/qemu-x86_64/linux/linux-qemu"
 kernel_load_addr = 0x20_0000
-ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-pci-block-rw/initramfs-x86_64.cpio.gz"
+ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-x86-functional/initramfs-x86_64.cpio.gz"
 ramdisk_load_addr = 0x0800_0000
 enable_bios = false
 boot_protocol = "direct"

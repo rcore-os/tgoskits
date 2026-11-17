@@ -10,7 +10,9 @@ features = [
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
-vm_configs = ["test-suit/axvisor/normal/qemu/aarch64/http-control-plane/guest.toml"]
+vm_configs = [
+    "test-suit/axvisor/normal/qemu/aarch64/http-control-plane/guest.toml",
+]
 
 # Control-plane bind. The control plane has no authentication, so no token is
 # configured; hostfwd reachability requires binding all interfaces.

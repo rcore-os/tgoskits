@@ -186,12 +186,22 @@ pub(crate) fn load_selected_runtime_checks(
             }
         }
         if selected.is_some()
-            && checks.len() == 1
-            && let Some(budget) = checks[0]
-                .document
-                .get("timeout")
-                .and_then(toml::Value::as_integer)
+            && let Some(budgets) = checks
+                .iter()
+                .map(|check| {
+                    check
+                        .document
+                        .get("timeout")
+                        .and_then(toml::Value::as_integer)
+                })
+                .collect::<Option<Vec<_>>>()
         {
+            let budget = budgets.into_iter().try_fold(0_i64, |total, budget| {
+                ensure!(budget > 0, "check timeout must be positive");
+                total
+                    .checked_add(budget)
+                    .context("selected check timeout budget overflow")
+            })?;
             let budget = runtime
                 .get("timeout")
                 .and_then(toml::Value::as_integer)
@@ -336,26 +346,35 @@ mod tests {
             |name: &str, contents: &str| fs::write(root.path().join(name), contents).unwrap();
         write(
             "runtime.toml",
-            "[axbuild]\nchecks=['first.toml','second.toml','broken.toml']\n",
+            "timeout=300\n[axbuild]\nchecks=['first.toml','second.toml','broken.toml']\n",
         );
         write(
             "enter.toml",
-            "[[shell_check_steps]]\nshell_cmd='enter guest'\n",
+            "timeout=10\n[[shell_check_steps]]\nshell_cmd='enter guest'\n",
         );
         write(
             "first.toml",
-            "requires=['enter.toml']\n[[shell_check_steps]]\nshell_cmd='first'\nsuccess_regex=['\
-             FIRST']\n",
+            r#"timeout=20
+requires=['enter.toml']
+[[shell_check_steps]]
+shell_cmd='first'
+success_regex=['FIRST']
+"#,
         );
         write(
             "second.toml",
-            "requires=['enter.toml']\n[[shell_check_steps]]\nshell_cmd='second'\nsuccess_regex=['\
-             SECOND']\n",
+            r#"timeout=30
+requires=['enter.toml']
+[[shell_check_steps]]
+shell_cmd='second'
+success_regex=['SECOND']
+"#,
         );
         write("broken.toml", "invalid=[");
         let config = root.path().join("runtime.toml");
         let one = load_selected_runtime_checks(&config, Some(&["second".into()])).unwrap();
         assert_eq!(one.checks.len(), 2);
+        assert_eq!(one.runtime["timeout"].as_integer(), Some(40));
         assert_eq!(
             one.runtime["shell_check_steps"].as_array().unwrap().len(),
             2
@@ -376,6 +395,7 @@ mod tests {
             .map(|step| step["shell_cmd"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(commands, ["enter guest", "first", "second"]);
+        assert_eq!(both.runtime["timeout"].as_integer(), Some(60));
         assert!(load_selected_runtime_checks(&config, Some(&[])).is_err());
         assert!(load_selected_runtime_checks(&config, Some(&["missing".into()])).is_err());
         assert!(load_runtime_checks(&config).is_err());

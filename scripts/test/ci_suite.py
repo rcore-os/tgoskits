@@ -4,7 +4,7 @@ import os
 import re
 import tomllib
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +144,7 @@ class _RuntimeCase:
     wrapper_dir: Path
     runtime_config: Path
     build_config: Path
+    check: Path | None = None
 
 
 def resolve_suite_selections(
@@ -267,9 +268,13 @@ def validate_suite_catalog(
         ]
         registered_cases = registration.get("cases")
         if registered_cases:
-            missing = set(registered_cases) - {
-                runtime_case.case for runtime_case in candidates
-            }
+            present = {runtime_case.case for runtime_case in candidates}
+            present.update(
+                runtime_case.case.rsplit("/", 1)[0]
+                for runtime_case in candidates
+                if runtime_case.check is not None
+            )
+            missing = set(registered_cases) - present
             if missing:
                 raise SuiteRouteError(
                     f"check '{check['id']}' registers missing suite cases: {sorted(missing)}"
@@ -754,7 +759,15 @@ def _runtime_selections(
                     1,
                 )
 
-        selections.append(_selection(template, platform, selector, command, path))
+        if runtime_case.kind == "axvisor-qemu" and runtime_case.check is not None:
+            selections.append(_selection(
+                template, platform, selector, command, path,
+                batch_key=(template["id"], runtime_case.arch, runtime_case.runtime_config),
+                batch_cases=(selector,),
+                batch_command=command.removesuffix(selector) + "{cases}",
+            ))
+        else:
+            selections.append(_selection(template, platform, selector, command, path))
 
     for batch in board_batches.values():
         selectors = [selector for selector, _, _ in batch]
@@ -894,18 +907,28 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             group_root = root / runtime_config.relative_to(root).parts[0]
             case = runtime_config.parent.relative_to(group_root).as_posix()
         case = references.get("id", case)
-        cases.append(
-            _RuntimeCase(
-                kind=qemu_kind,
-                arch=arch,
-                board=None,
-                case=case,
-                case_dir=runtime_config.parent,
-                wrapper_dir=wrapper_dir,
-                runtime_config=runtime_config,
-                build_config=build_config,
-            )
+        runtime_case = _RuntimeCase(
+            kind=qemu_kind,
+            arch=arch,
+            board=None,
+            case=case,
+            case_dir=runtime_config.parent,
+            wrapper_dir=wrapper_dir,
+            runtime_config=runtime_config,
+            build_config=build_config,
         )
+        if os_name == "axvisor" and "checks" in references:
+            if not references["checks"]:
+                raise SuiteRouteError(f"empty runtime check list: {runtime_config}")
+            names = set()
+            for relative in references["checks"]:
+                check = runtime_config.parent / relative
+                if check.stem in names or not check.is_file():
+                    raise SuiteRouteError(f"invalid or duplicate runtime check: {check}")
+                names.add(check.stem)
+                cases.append(replace(runtime_case, case=f"{case}/{check.stem}", check=check))
+        else:
+            cases.append(runtime_case)
 
     for runtime_config in sorted(root.rglob("board-*.toml")):
         if any(_is_prefix(runtime_config, declared_root) for declared_root in declared_roots):
@@ -978,8 +1001,11 @@ def _references_runtime_input(case: _RuntimeCase, changed: Path, workspace_root:
                 return True
             continue
         document = _toml_document(source)
-        for entry in document.get("axbuild", {}).get("checks", []):
-            pending.append(source.parent / entry)
+        if source == case.runtime_config.resolve() and case.check is not None:
+            pending.append(case.check)
+        else:
+            for entry in document.get("axbuild", {}).get("checks", []):
+                pending.append(source.parent / entry)
         for entry in document.get("requires", []):
             pending.append(source.parent / entry)
         for entry in document.get("vm_configs", []):
@@ -1147,7 +1173,11 @@ def _registered_template(
             continue
         registered_cases = registration.get("cases")
         if registered_cases and case not in registered_cases:
-            continue
+            if not (
+                kind == "axvisor-qemu" and case is not None
+                and any(case.startswith(parent + "/") for parent in registered_cases)
+            ):
+                continue
         matches.append(check)
     if len(matches) > 1:
         ids = ", ".join(sorted(check["id"] for check in matches))

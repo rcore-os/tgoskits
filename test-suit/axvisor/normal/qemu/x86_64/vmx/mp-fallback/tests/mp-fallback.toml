@@ -1,8 +1,0 @@
-timeout = 600
-
-[[shell_check_steps]]
-shell_prefix = "axvisor:/$"
-shell_cmd = "vm console 1"
-success_regex = [
-    "(?m)^AXVISOR_X86_MP_FALLBACK_PASSED\\s*$",
-]

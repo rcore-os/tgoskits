@@ -6,7 +6,7 @@ default_runner = "qcs"
 [[check]]
 id = "test-axvisor-aarch64-qemu-smoke-axtest"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · Smoke + virtio-blk/PCI memory test guests + axtest"
+name = "QEMU aarch64 · General + guest devices + axtest"
 # The shared build and the axtest runs are joined by the two-vCPU AxVM runtime
 # case, whose QEMU budget alone is 900 s, so the job keeps a wider bound than
 # the build-only stages used to need.
@@ -14,8 +14,8 @@ timeout_minutes = 45
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
-echo "==> axvisor aarch64 qemu/aarch64/smoke (memory-root check shares the diskless dashboard boot)"
-cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/smoke
+echo "==> axvisor aarch64 shared general boot (five CI checks)"
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/general
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
 echo "==> axvisor aarch64 five virtio-net guest vCPUs on two host CPUs"
@@ -61,7 +61,7 @@ run_axvm_cross_test --arch riscv64 --package axvm \
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["qemu/aarch64/smoke", "qemu-pci-memory-test"]
+cases = ["qemu/aarch64/general", "qemu-pci-memory-test"]
 
 [[check.suite]]
 # The two-vCPU runtime case is a ktest execution unit of its own: the AxVM
@@ -94,32 +94,32 @@ echo "==> axvisor web UI typecheck, unit tests, and bundle"
 [[check]]
 id = "test-axvisor-aarch64-qemu-web-ui"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · Web dashboard from the disk root and the initramfs root"
+name = "QEMU aarch64 · Memory-root web dashboard"
 timeout_minutes = 30
 node_version = "24"
 command = '''
 echo "==> axvisor aarch64 web dashboard (axbuild runs npm itself for the bundle)"
-cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/web-ui,qemu/aarch64/memory-web
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/memory-web
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["qemu/aarch64/web-ui", "qemu/aarch64/memory-web"]
+cases = ["qemu/aarch64/memory-web"]
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · HTTP control-plane + VM pool + browser console + ArceOS IVC"
+name = "QEMU aarch64 · HTTP control-plane + browser console"
 timeout_minutes = 30
 node_version = "24"
 command = '''
-echo "==> axvisor aarch64 HTTP control-plane, VM pool, browser console and ArceOS IVC"
+echo "==> axvisor aarch64 minimal-web HTTP control-plane and browser console"
 # Keep all cases in one axbuild invocation. The QEMU runner groups cases by
 # Cargo identity before building, so equal AxVisor kernels are compiled once
 # and their per-case initramfs/runtime inputs are still prepared independently.
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal \
-  --test-case qemu/aarch64/http-control-plane,qemu/aarch64/vm-pool,qemu/aarch64/vm-pool-http,qemu/aarch64/browser-console,qemu/aarch64/ivc-arceos
+  --test-case qemu/aarch64/http-control-plane
 # Disabled until the Linux IVC guest image matches the v2 publisher protocol.
 # echo "==> axvisor aarch64 IVC"
 # cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu/aarch64/ivc
@@ -130,10 +130,6 @@ kind = "axvisor-qemu"
 arch = "aarch64"
 cases = [
   "qemu/aarch64/http-control-plane",
-  "qemu/aarch64/vm-pool",
-  "qemu/aarch64/vm-pool-http",
-  "qemu/aarch64/browser-console",
-  "qemu/aarch64/ivc-arceos",
   # "qemu/aarch64/ivc", # Linux guest image uses IVC v3; ArceOS publisher uses v2.
 ]
 
@@ -145,8 +141,8 @@ timeout_minutes = 30
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
-echo "==> axvisor riscv64 qemu/riscv64/smoke"
-cargo xtask axvisor test qemu --arch riscv64 --test-case qemu/riscv64/smoke
+echo "==> axvisor riscv64 qemu/riscv64/smoke/shell-and-block"
+cargo xtask axvisor test qemu --arch riscv64 --test-case qemu/riscv64/smoke/shell-and-block
 echo "==> axvisor riscv64 IPI cross-test"
 cargo xtask cross-test --arch riscv64 \
   --package axvm \
@@ -156,7 +152,7 @@ cargo xtask cross-test --arch riscv64 \
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "riscv64"
-cases = ["qemu/riscv64/smoke"]
+cases = ["qemu/riscv64/smoke/shell-and-block"]
 
 [[check]]
 id = "test-axvisor-loongarch64-qemu"
@@ -184,13 +180,13 @@ runner = "kvm-amd"
 cache_key = ""
 timeout_minutes = 120
 command = '''
-cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/svm/smoke,qemu/x86_64/svm/direct-acpi,qemu/x86_64/svm/ovmf-acpi,qemu/x86_64/svm/pci-enumeration,qemu/x86_64/svm/pci-block-rw,qemu/x86_64/svm/pci-block-ro
+cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/svm/smoke,qemu/x86_64/svm/functional
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["qemu/x86_64/svm/smoke", "qemu/x86_64/svm/direct-acpi", "qemu/x86_64/svm/ovmf-acpi", "qemu/x86_64/svm/pci-enumeration", "qemu/x86_64/svm/pci-block-rw", "qemu/x86_64/svm/pci-block-ro"]
+cases = ["qemu/x86_64/svm/smoke", "qemu/x86_64/svm/functional"]
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-vmx"
@@ -204,13 +200,13 @@ node_version = "24"
 command = '''
 echo "==> axvisor x86_64 VMX smoke, ACPI and PCI"
 cargo xtask axvisor test qemu --arch x86_64 \
-  --test-case qemu/x86_64/vmx/smoke,qemu/x86_64/vmx/direct-acpi,qemu/x86_64/vmx/mp-fallback,qemu/x86_64/vmx/ovmf-acpi,qemu/x86_64/vmx/pci-enumeration,qemu/x86_64/vmx/pci-block-rw,qemu/x86_64/vmx/pci-block-ro,qemu/x86_64/vmx/web-ui
+  --test-case qemu/x86_64/vmx/smoke,qemu/x86_64/vmx/functional,qemu/x86_64/vmx/web-ui
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["qemu/x86_64/vmx/smoke", "qemu/x86_64/vmx/direct-acpi", "qemu/x86_64/vmx/mp-fallback", "qemu/x86_64/vmx/ovmf-acpi", "qemu/x86_64/vmx/pci-enumeration", "qemu/x86_64/vmx/pci-block-rw", "qemu/x86_64/vmx/pci-block-ro", "qemu/x86_64/vmx/web-ui"]
+cases = ["qemu/x86_64/vmx/smoke", "qemu/x86_64/vmx/functional", "qemu/x86_64/vmx/web-ui"]
 
 [[check]]
 id = "test-axloader-http-smoke"

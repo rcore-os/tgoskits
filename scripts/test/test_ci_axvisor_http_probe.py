@@ -12,11 +12,18 @@ from unittest.mock import patch
 
 PROBE_PATH = (
     Path(__file__).resolve().parents[2]
-    / "test-suit/axvisor/normal/qemu/aarch64/vm-pool-http/pool/http_probe.py"
+    / "test-suit/axvisor/normal/qemu/aarch64/general/probes/pool.py"
 )
 SPEC = importlib.util.spec_from_file_location("pool_http_probe", PROBE_PATH)
 probe = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(probe)
+
+WEB_SPEC = importlib.util.spec_from_file_location(
+    "dashboard_http_probe",
+    Path(__file__).resolve().parents[2] / "test-suit/axvisor/normal/qemu/common/web-ui/http_probe.py",
+)
+dashboard = importlib.util.module_from_spec(WEB_SPEC)
+WEB_SPEC.loader.exec_module(dashboard)
 
 
 def text_frame(body):
@@ -25,6 +32,17 @@ def text_frame(body):
 
 
 class EventReaderTests(unittest.TestCase):
+    def test_dashboard_consumes_buffered_snapshot_and_bounds_partial_frames(self):
+        client, _server = self.socket_pair()
+        snapshot = {"type": "snapshot", "vms": []}
+        stream = dashboard.WebSocket(client, text_frame(snapshot) + b"\x81")
+        self.assertEqual(dashboard.receive_text(stream, time.monotonic() + 0.05), snapshot)
+        client.settimeout(10)
+        started = time.monotonic()
+        with self.assertRaises((AssertionError, TimeoutError)):
+            dashboard.receive_text(stream, started + 0.05)
+        self.assertLess(time.monotonic() - started, 1)
+
     def socket_pair(self):
         client, server = socket.socketpair()
         self.addCleanup(client.close)

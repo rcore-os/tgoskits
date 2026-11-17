@@ -1,6 +1,0 @@
-timeout = 600
-
-[host_http_probe]
-asset_dir = ".."
-request_timeout_secs = 60
-probe_script = "../pool/http_probe.py"

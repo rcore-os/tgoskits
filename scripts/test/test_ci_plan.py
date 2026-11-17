@@ -375,7 +375,7 @@ command = "cargo xtask clippy --all"
                     line for line in commands.splitlines()
                     if not line.lstrip().startswith("#")
                 )
-                self.assertRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/ivc-arceos(?:[,\s]|$)")
+                self.assertRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/general(?:[,\s]|$)")
                 self.assertNotRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/ivc(?:[,\s]|$)")
                 # The ordinary CI check keeps the native StarryOS board suite but no
                 # longer registers the single-guest AxVisor smokes.
@@ -1220,7 +1220,7 @@ command = "true"
         root = MODULE_PATH.parents[2] / "test-suit/axvisor/normal/qemu/x86_64"
         marker = "AXVISOR_X86_OVMF_ACPI_PASSED"
         for backend in ("vmx", "svm"):
-            config_path = root / backend / "ovmf-acpi" / ("qemu-x86_64-vmx.toml" if backend == "vmx" else "qemu-x86_64.toml")
+            config_path = root / backend / "functional" / ("qemu-x86_64-vmx.toml" if backend == "vmx" else "qemu-x86_64.toml")
             config = tomllib.loads(config_path.read_text())
             steps = [step for relative in config["axbuild"]["checks"]
                      for step in tomllib.loads((config_path.parent / relative).read_text())["shell_check_steps"]]

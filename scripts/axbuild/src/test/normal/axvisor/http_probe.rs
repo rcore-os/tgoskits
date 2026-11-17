@@ -220,6 +220,7 @@ fn spawn_probe_asset(
         .try_clone()
         .context("failed to clone probe output pipe")?;
     let mut command = Command::new(script);
+    command.envs(&config.env);
     if let Some(configs) = builtin_configs {
         command.env("AXVISOR_BUILTIN_CONFIG_DIR", configs);
     }
@@ -309,6 +310,7 @@ mod tests {
             request_timeout_secs: 5,
             probe_script,
             asset_dir: None,
+            env: Default::default(),
         }
     }
 
@@ -342,7 +344,7 @@ mod tests {
         use std::{fs, os::unix::fs::PermissionsExt};
         let path = dir.join(name);
         let script = format!(
-            "#!/bin/sh\nprintf '%s' \"$AXVISOR_HTTP_BASE|$AXVISOR_HTTP_CASE_DIR\" > \
+            "#!/bin/sh\nprintf '%s' \"$AXVISOR_HTTP_BASE|$AXVISOR_HTTP_CASE_DIR|$CASE_PROFILE\" > \
              \"$AXVISOR_HTTP_CASE_DIR/env.txt\"\nexit {code}\n"
         );
         fs::write(&path, script).unwrap();
@@ -384,7 +386,14 @@ mod tests {
     fn run_executes_the_case_probe_asset_with_env() {
         let dir = fixture_dir();
         let probe = write_fixture_probe(dir.path(), "http_probe.py", 0);
-        let config = test_config(PathBuf::from("http_probe.py"));
+        let mut config = test_config(PathBuf::from("http_probe.py"));
+        config
+            .env
+            .insert("CASE_PROFILE".into(), "fixture-profile".into());
+        config.env.insert(
+            "AXVISOR_HTTP_BASE".into(),
+            "must-not-override-runner".into(),
+        );
         let stop = Arc::new(AtomicBool::new(false));
 
         let outcome = run("127.0.0.1:12345", &config, dir.path(), None, stop);
@@ -399,7 +408,9 @@ mod tests {
         let recorded = std::fs::read_to_string(dir.path().join("env.txt")).unwrap();
         assert_eq!(
             recorded,
-            "http://127.0.0.1:12345|".to_string() + &dir.path().to_string_lossy()
+            "http://127.0.0.1:12345|".to_string()
+                + &dir.path().to_string_lossy()
+                + "|fixture-profile"
         );
         assert!(probe.exists());
     }

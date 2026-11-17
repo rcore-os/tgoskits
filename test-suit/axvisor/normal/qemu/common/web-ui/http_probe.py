@@ -100,7 +100,8 @@ GUEST_ISOLATION_RESULT = b"49284"
 
 # The builtin guest (`linux-virtio-blk-fs.toml` in the shared config library),
 # indexed at build time and created on the first HTTP start request.
-DEFAULT_VM_ID = 1
+DEFAULT_VM_ID = int(os.environ.get("AXVISOR_HTTP_VM_ID", "1"))
+DEFAULT_VM_ROUTE = "vm-%d" % DEFAULT_VM_ID
 # The one path the bundle has to carry: `GET /api/manifest` is the bootstrap, and
 # it cannot come from the manifest itself. Every other path the dashboard calls
 # is read out of that response, so this is the whole list by design — a bundle
@@ -268,32 +269,42 @@ class WebSocket:
         self.stream = stream
         self.buffered = buffered
 
-    def recv_exact(self, length):
-        while len(self.buffered) < length:
-            chunk = self.stream.recv(length - len(self.buffered))
-            if not chunk:
-                raise AssertionError("WebSocket closed while receiving a frame")
-            self.buffered += chunk
+    def recv_exact(self, length, deadline=None):
+        timeout = self.stream.gettimeout()
+        try:
+            while len(self.buffered) < length:
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("WebSocket frame deadline expired")
+                    self.stream.settimeout(remaining if timeout is None else min(timeout, remaining))
+                chunk = self.stream.recv(length - len(self.buffered))
+                if not chunk:
+                    raise AssertionError("WebSocket closed while receiving a frame")
+                self.buffered += chunk
+        finally:
+            if deadline is not None:
+                self.stream.settimeout(timeout)
         output = self.buffered[:length]
         self.buffered = self.buffered[length:]
         return output
 
-    def recv_frame(self):
-        first, second = self.recv_exact(2)
+    def recv_frame(self, deadline=None):
+        first, second = self.recv_exact(2, deadline)
         opcode = first & 0x0F
         length = second & 0x7F
         if length == 126:
-            length = struct.unpack("!H", self.recv_exact(2))[0]
+            length = struct.unpack("!H", self.recv_exact(2, deadline))[0]
         elif length == 127:
-            length = struct.unpack("!Q", self.recv_exact(8))[0]
+            length = struct.unpack("!Q", self.recv_exact(8, deadline))[0]
         if second & 0x80:
-            mask = self.recv_exact(4)
+            mask = self.recv_exact(4, deadline)
             payload = bytes(
                 byte ^ mask[index % 4]
-                for index, byte in enumerate(self.recv_exact(length))
+                for index, byte in enumerate(self.recv_exact(length, deadline))
             )
         else:
-            payload = self.recv_exact(length)
+            payload = self.recv_exact(length, deadline)
         return opcode, payload
 
     def send_binary(self, payload):
@@ -354,10 +365,11 @@ def receive_text(websocket, deadline):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise AssertionError("no event frame arrived before the deadline")
-        ready, _, _ = select.select([websocket.stream], [], [], remaining)
-        if not ready:
-            raise AssertionError("no event frame arrived before the deadline")
-        opcode, payload = websocket.recv_frame()
+        if not websocket.buffered:
+            ready, _, _ = select.select([websocket.stream], [], [], remaining)
+            if not ready:
+                raise AssertionError("no event frame arrived before the deadline")
+        opcode, payload = websocket.recv_frame(deadline)
         if opcode == 1:
             return json.loads(payload.decode("utf-8"))
         if opcode == 8:
@@ -773,7 +785,7 @@ def check_lifecycle(events):
     # The registry is empty at boot. A start request resolves the builtin
     # catalog, creates VM[1], and starts it in one operation.
     status, body = request("POST", "/api/vms/%d/start" % DEFAULT_VM_ID)
-    expect_status("POST /api/vms/1/start (lazy builtin)", status, 200)
+    expect_status(f"POST /api/vms/{DEFAULT_VM_ID}/start (lazy builtin)", status, 200)
     if body.get("ok") is not True:
         raise AssertionError("start returned %r" % (body,))
 
@@ -784,28 +796,28 @@ def check_lifecycle(events):
 
     deadline = time.monotonic() + POLL_DEADLINE
     while True:
-        detail = vm_detail(DEFAULT_VM_ID, "GET /api/vms/1 (waiting for guest entry)")
+        detail = vm_detail(DEFAULT_VM_ID, f"GET /api/vms/{DEFAULT_VM_ID} (waiting for guest entry)")
         if (detail.get("guest_entry_count") or 0) >= 1 and detail.get("status") == "running":
             print(
-                "  web-ui probe: VM[1] running, guest_entry_count=%d"
+                f"  web-ui probe: VM[{DEFAULT_VM_ID}] running, guest_entry_count=%d"
                 % detail["guest_entry_count"]
             )
             break
         if time.monotonic() >= deadline:
-            raise AssertionError("VM[1] never entered the guest: %r" % (detail,))
+            raise AssertionError(f"VM[{DEFAULT_VM_ID}] never entered the guest: %r" % (detail,))
         time.sleep(POLL_INTERVAL)
 
     # Attach after lazy creation. The route did not exist in the initial
     # console list, and now appears with the configured guest name.
     routes = console_routes("GET /api/consoles (builtin guest created)")
-    if sorted(routes) != ["axvisor", "vm-1"]:
+    if sorted(routes) != ["axvisor", DEFAULT_VM_ROUTE]:
         raise AssertionError("lazy start did not publish the guest lane: %r" % (routes,))
-    check("guest lane name", routes["vm-1"], "linux-web-ui")
-    guest = expect_upgrade("/ws/vm-1", 101)
-    receive_until(guest, b"browser console attached to VM 1")
+    check("guest lane name", routes[DEFAULT_VM_ROUTE], "linux-web-ui")
+    guest = expect_upgrade("/ws/" + DEFAULT_VM_ROUTE, 101)
+    receive_until(guest, ("browser console attached to VM %d" % DEFAULT_VM_ID).encode())
     check(
         "guest lane held",
-        lane_attached("GET /api/consoles (guest lane held)", "vm-1"),
+        lane_attached("GET /api/consoles (guest lane held)", DEFAULT_VM_ROUTE),
         True,
     )
 
@@ -815,7 +827,7 @@ def check_lifecycle(events):
     # `number[]` reading is what blanked the page.
     vcpus = detail.get("vcpu_states")
     if not isinstance(vcpus, list) or not vcpus:
-        raise AssertionError("GET /api/vms/1 reported no vcpu_states: %r" % (detail,))
+        raise AssertionError(f"GET /api/vms/{DEFAULT_VM_ID} reported no vcpu_states: %r" % (detail,))
     masks = [vcpu.get("phys_cpu_set") for vcpu in vcpus]
     for mask in masks:
         if mask is not None and not isinstance(mask, int):
@@ -864,15 +876,15 @@ def check_lifecycle(events):
     # in place and input is still routed -- and still rejected. This proves the
     # rejection notice is re-armed after a successful guest session.
     status, body = request("POST", "/api/vms/%d/stop" % DEFAULT_VM_ID)
-    expect_status("POST /api/vms/1/stop", status, 200)
+    expect_status(f"POST /api/vms/{DEFAULT_VM_ID}/stop", status, 200)
     deadline = time.monotonic() + POLL_DEADLINE
     while True:
-        detail = vm_detail(DEFAULT_VM_ID, "GET /api/vms/1 (waiting for stop)")
+        detail = vm_detail(DEFAULT_VM_ID, f"GET /api/vms/{DEFAULT_VM_ID} (waiting for stop)")
         if detail.get("status") == "stopped":
-            print("  web-ui probe: VM[1] stopped, console lane kept")
+            print(f"  web-ui probe: VM[{DEFAULT_VM_ID}] stopped, console lane kept")
             break
         if time.monotonic() >= deadline:
-            raise AssertionError("VM[1] never stopped: %r" % (detail,))
+            raise AssertionError(f"VM[{DEFAULT_VM_ID}] never stopped: %r" % (detail,))
         time.sleep(POLL_INTERVAL)
     guest.send_binary(b"x")
     receive_output_until(
@@ -885,13 +897,13 @@ def check_lifecycle(events):
     guest.close()
     poll_lane_attached(
         "GET /api/consoles (guest lane released)",
-        "vm-1",
+        DEFAULT_VM_ROUTE,
         False,
         time.monotonic() + POLL_DEADLINE,
     )
 
     status, _ = request("DELETE", "/api/vms/%d" % DEFAULT_VM_ID)
-    expect_status("DELETE /api/vms/1", status, 204)
+    expect_status(f"DELETE /api/vms/{DEFAULT_VM_ID}", status, 204)
     expect_event(
         events, "removed", DEFAULT_VM_ID, time.monotonic() + EVENT_TIMEOUT, "close event frame"
     )
@@ -913,7 +925,7 @@ def check_recreate(events):
         raise AssertionError("pool response did not expose builtin catalog: %r" % (pool,))
     candidates = [entry for entry in builtin if entry.get("id") == DEFAULT_VM_ID]
     if len(candidates) != 1:
-        raise AssertionError("builtin catalog did not expose exactly one VM[1] candidate: %r" % candidates)
+        raise AssertionError(f"builtin catalog did not expose exactly one VM[{DEFAULT_VM_ID}] candidate: %r" % candidates)
     vm_config = candidates[0].get("toml")
     if not isinstance(vm_config, str) or not vm_config:
         raise AssertionError("pool candidate did not contain TOML: %r" % candidates[0])
@@ -927,11 +939,11 @@ def check_recreate(events):
     )
     poll_consoles_for(
         "GET /api/consoles (guest recreated)",
-        ["axvisor", "vm-1"],
+        ["axvisor", DEFAULT_VM_ROUTE],
         time.monotonic() + POLL_DEADLINE,
     )
     status, _ = request("DELETE", "/api/vms/%d" % DEFAULT_VM_ID)
-    expect_status("DELETE /api/vms/1 (cleanup)", status, 204)
+    expect_status(f"DELETE /api/vms/{DEFAULT_VM_ID} (cleanup)", status, 204)
 
 
 def main():

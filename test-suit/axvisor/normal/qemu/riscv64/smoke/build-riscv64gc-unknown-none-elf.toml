@@ -10,5 +10,6 @@ target = "riscv64gc-unknown-none-elf"
 vm_configs = [
     "os/axvisor/configs/vms/qemu/riscv64/linux-virtio-blk.toml",
     "os/axvisor/configs/vms/qemu/riscv64/linux-virtio-blk-vm2.toml",
+    "test-suit/axvisor/normal/qemu/riscv64/smoke/guest-smp-ipi.toml",
 ]
 max_cpu_num = 4
