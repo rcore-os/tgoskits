@@ -1051,7 +1051,7 @@ pub struct MqDescriptor {
     queue: Arc<MessageQueue>,
     /// An ordinary open retains its original mount and active path owner.
     /// `mq_open` selects the permanent IPC object mount instead.
-    file: Option<File>,
+    file: Option<Arc<File>>,
     /// Per-open-file-description flags. The `O_ACCMODE` bits are fixed at open;
     /// `O_NONBLOCK` is the only bit `mq_setattr` may toggle. Atomic so a
     /// `mq_setattr` here never disturbs a sibling descriptor of the same queue.
@@ -1075,12 +1075,12 @@ impl MqDescriptor {
     /// Adopts an already authorized pathname open without resolving it again.
     pub(crate) fn from_file(queue: Arc<MessageQueue>, file: File) -> Self {
         let mut descriptor = Self::new(queue, file.open_flags());
-        descriptor.file = Some(file);
+        descriptor.file = Some(Arc::new(file));
         descriptor
     }
 
     pub(crate) fn backing_file(&self) -> Option<&File> {
-        self.file.as_ref()
+        self.file.as_deref()
     }
 
     /// The shared queue this descriptor refers to.
@@ -1093,12 +1093,39 @@ impl MqDescriptor {
         self.flags.load(Ordering::Acquire) & O_ACCMODE
     }
 
-    fn stream_write_error(&self) -> StarryError {
+    pub(crate) fn status_write_error(&self) -> StarryError {
         if self.access() == O_RDONLY {
             Errno::EBADF.into()
         } else {
             Errno::EINVAL.into()
         }
+    }
+
+    pub(crate) fn validate_read_access(&self) -> StarryResult {
+        if self.access() == O_WRONLY {
+            Err(Errno::EBADF.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Reads a status snapshot without changing this description's cursor.
+    pub(crate) fn read_at(&self, dst: &mut IoDst, mut offset: u64) -> StarryResult<usize> {
+        self.read_status(dst, &mut offset)
+    }
+
+    fn read_status(&self, dst: &mut IoDst, offset: &mut u64) -> StarryResult<usize> {
+        self.validate_read_access()?;
+        // Snapshot under the queue mutex, then release it before a faultable
+        // user copy. Only sequential reads retain the description's cursor lock.
+        let status = self.queue.status_line();
+        let start = (*offset as usize).min(status.len());
+        let copied = dst.write(&status.as_bytes()[start..])?;
+        *offset += copied as u64;
+        if copied != 0 {
+            self.queue.touch_status_read();
+        }
+        Ok(copied)
     }
 
     /// Whether this descriptor is in non-blocking mode (`O_NONBLOCK`).
@@ -1129,7 +1156,7 @@ impl MqDescriptor {
     /// Seek the mqueue status-file offset, matching Linux's `default_llseek`
     /// attached to `mqueue_file_operations`. `SEEK_END` is relative to the
     /// mqueue inode's fixed `FILENT_SIZE`, not the rendered line length.
-    pub fn seek_status(&self, pos: SeekFrom) -> StarryResult<u64> {
+    fn seek_status(&self, pos: SeekFrom) -> StarryResult<u64> {
         let mut offset = self.read_offset.lock();
         let next = match pos {
             SeekFrom::Start(next) => next,
@@ -1141,7 +1168,7 @@ impl MqDescriptor {
                 .ok_or(Errno::EINVAL)?,
         };
         if next > i64::MAX as u64 {
-            return Err(Errno::EOVERFLOW.into());
+            return Err(Errno::EINVAL.into());
         }
         *offset = next;
         Ok(next)
@@ -1149,41 +1176,20 @@ impl MqDescriptor {
 }
 
 impl FileLike for MqDescriptor {
+    fn seek(&self, pos: SeekFrom) -> StarryResult<u64> {
+        self.seek_status(pos)
+    }
+
     fn validate_write_access(&self) -> StarryResult {
-        Err(self.stream_write_error())
+        Err(self.status_write_error())
     }
 
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
-        // The VFS rejects reads through an O_WRONLY file before dispatching to
-        // `mqueue_read_file`; StarryOS's generic `sys_read` dispatches directly
-        // to FileLike, so the descriptor must provide that gate itself.
-        if self.access() == O_WRONLY {
-            return Err(Errno::EBADF.into());
-        }
-
-        // Linux rebuilds the status line for each `mqueue_read_file` call, then
-        // `simple_read_from_buffer` copies from the current file offset. Take
-        // the queue snapshot before touching user memory and hold only this
-        // descriptor's offset lock across the copy; never hold `inner` while a
-        // user-buffer write can fault.
-        let status = self.queue.status_line();
-        let copied = {
-            let mut offset = self.read_offset.lock();
-            let start = (*offset as usize).min(status.len());
-            let copied = dst.write(&status.as_bytes()[start..])?;
-            *offset += copied as u64;
-            copied
-        };
-        if copied != 0 {
-            // Linux updates atime+ctime only after `simple_read_from_buffer`
-            // copied at least one byte successfully.
-            self.queue.touch_status_read();
-        }
-        Ok(copied)
+        self.read_status(dst, &mut self.read_offset.lock())
     }
 
     fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
-        Err(self.stream_write_error())
+        Err(self.status_write_error())
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
@@ -1215,7 +1221,7 @@ impl FileLike for MqDescriptor {
     }
 
     fn inode_key(&self) -> Option<InodeKey> {
-        self.file.as_ref().and_then(FileLike::inode_key)
+        self.file.as_deref().and_then(FileLike::inode_key)
     }
 
     fn on_close(&self, owner: PidIdentityId) {

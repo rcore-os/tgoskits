@@ -172,12 +172,19 @@ impl Write for IoVectorBufIo<'_> {
             if len == 0 {
                 break;
             }
-            vm_write_slice(
+            if let Err(error) = vm_write_slice(
                 self.inner.task,
                 iov.iov_base.wrapping_add(self.offset),
                 &buf[count..count + len],
-            )
-            .map_err(vm_error_to_io_error)?;
+            ) {
+                // A later segment's fault cannot undo bytes already copied to
+                // earlier segments. Let the file commit that successful prefix.
+                return if count == 0 {
+                    Err(vm_error_to_io_error(error))
+                } else {
+                    Ok(count)
+                };
+            }
             self.offset += len;
             self.inner.len -= len;
             count += len;

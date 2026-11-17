@@ -73,6 +73,8 @@ fn positioned_write_file(file_like: &Arc<dyn FileLike>) -> StarryResult<&File> {
         memfd.inner().as_ref()
     } else if let Some(mount_table) = file_like.downcast_ref::<MountTableFile>() {
         mount_table.inner().as_ref()
+    } else if let Some(queue) = file_like.downcast_ref::<MqDescriptor>() {
+        return Err(queue.status_write_error());
     } else if file_like.is::<Directory>() {
         return Err(StarryError::BadFileDescriptor);
     } else {
@@ -144,6 +146,9 @@ pub fn sys_readv(
 ) -> StarryResult<isize> {
     debug!("sys_readv <= fd: {fd}, iovcnt: {iovcnt}");
     let f = get_file_like(fd)?;
+    if let Some(queue) = f.downcast_ref::<MqDescriptor>() {
+        queue.validate_read_access()?;
+    }
     f.read(&mut IoVectorBuf::new(current, iov, iovcnt)?.into_io())
         .map(|n| n as _)
 }
@@ -211,10 +216,6 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResu
     if let Ok(f) = File::from_fd(fd) {
         let off = f.inner().seek(pos)?;
         return Ok(off as _);
-    }
-
-    if let Ok(mq) = any_file.clone().downcast_arc::<MqDescriptor>() {
-        return Ok(mq.seek_status(pos)? as _);
     }
 
     if let Ok(d) = any_file.clone().downcast_arc::<Directory>() {
@@ -546,6 +547,10 @@ pub fn sys_pread64(
     if offset < 0 {
         return Err(StarryError::InvalidInput);
     }
+    let file_like = get_file_like(fd)?;
+    if let Some(queue) = file_like.downcast_ref::<MqDescriptor>() {
+        return Ok(queue.read_at(&mut VmBytesMut::new(current, buf, len), offset as u64)? as _);
+    }
     let f = file_or_espipe(fd)?;
     let read = f
         .inner()
@@ -562,6 +567,10 @@ pub fn sys_pwrite64(
 ) -> StarryResult<isize> {
     if offset < 0 {
         return Err(StarryError::InvalidInput);
+    }
+    let file_like = get_file_like(fd)?;
+    if let Some(queue) = file_like.downcast_ref::<MqDescriptor>() {
+        return Err(queue.status_write_error());
     }
     // Route memfd fds through the seal-aware `Memfd::write_at` so
     // `F_SEAL_WRITE`/`F_SEAL_GROW` apply to offset writes the same
@@ -645,6 +654,17 @@ pub fn sys_preadv2(
     validate_rwf_flags(flags)?;
     if offset < -1 {
         return Err(StarryError::InvalidInput);
+    }
+    let file_like = get_file_like(fd)?;
+    if let Some(queue) = file_like.downcast_ref::<MqDescriptor>() {
+        queue.validate_read_access()?;
+        let mut io_buf = IoVectorBuf::new(current, iov, iovcnt)?.into_io();
+        return if offset == -1 {
+            queue.read(&mut io_buf)
+        } else {
+            queue.read_at(&mut io_buf, offset as u64)
+        }
+        .map(|n| n as _);
     }
     let mut io_buf = IoVectorBuf::new(current, iov, iovcnt)?.into_io();
     if offset == -1 {
