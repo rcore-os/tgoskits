@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command};
+use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
 
@@ -7,16 +7,16 @@ use super::process::ProcessExt;
 /// Ensures the active toolchain provides a target without installing into a CI image.
 pub(crate) fn ensure_target(target: &str) -> Result<()> {
     let prepared_image = std::env::var("TGOSKITS_PREBUILT_CONTAINER").as_deref() == Ok("1");
-    ensure_target_with_rustup(target, prepared_image, Path::new("rustup"))
+    ensure_target_with_rustup(target, prepared_image, Command::new("rustup"))
 }
 
 fn ensure_target_with_rustup(
     target: &str,
     prepared_image: bool,
-    rustup_executable: &Path,
+    mut rustup: Command,
 ) -> Result<()> {
     if prepared_image {
-        let output = Command::new(rustup_executable)
+        let output = rustup
             .args(["target", "list", "--installed"])
             .output()
             .context("failed to query installed Rust targets")?;
@@ -35,7 +35,7 @@ fn ensure_target_with_rustup(
         return Ok(());
     }
 
-    Command::new(rustup_executable)
+    rustup
         .args(["target", "add", target])
         .exec()
         .with_context(|| format!("failed to install Rust target `{target}` via rustup"))
@@ -43,7 +43,7 @@ fn ensure_target_with_rustup(
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+    use std::{fs, path::PathBuf, process::Command};
 
     use tempfile::TempDir;
 
@@ -57,8 +57,15 @@ mod tests {
             output.replace('\'', "'\\''")
         );
         fs::write(&executable, script).unwrap();
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
         (directory, executable)
+    }
+
+    fn fixture_command(script: &std::path::Path) -> Command {
+        // Run the interpreter directly: another parallel child's fork can
+        // temporarily retain a writable script fd before its own exec.
+        let mut command = Command::new("/bin/sh");
+        command.arg(script);
+        command
     }
 
     #[test]
@@ -75,7 +82,7 @@ mod tests {
                 .write(true)
                 .open(&executable)
                 .unwrap();
-            let result = ensure_target_with_rustup(target, true, &executable);
+            let result = ensure_target_with_rustup(target, true, fixture_command(&executable));
             assert_eq!(
                 result.is_ok(),
                 available,
@@ -90,8 +97,13 @@ mod tests {
     fn bare_hosts_keep_target_installation_and_propagate_failure() {
         for status in [0, 7] {
             let (_directory, executable) = rustup_fixture("", status);
-            let result = ensure_target_with_rustup("fixture-target", false, &executable);
-            assert_eq!(result.is_ok(), status == 0);
+            let _script_writer = fs::OpenOptions::new()
+                .write(true)
+                .open(&executable)
+                .unwrap();
+            let result =
+                ensure_target_with_rustup("fixture-target", false, fixture_command(&executable));
+            assert_eq!(result.is_ok(), status == 0, "result={result:?}");
             let calls = fs::read_to_string(executable.with_extension("calls")).unwrap();
             assert_eq!(calls, "target add fixture-target\n");
         }
