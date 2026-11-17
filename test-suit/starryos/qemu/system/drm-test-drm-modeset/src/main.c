@@ -486,6 +486,13 @@ static void check_vblank_disable_reenable(int fd, uint32_t crtc_id,
           "restore affinity after quick re-enable test");
 }
 
+static int vblank_advance_matches_active_time(uint64_t before, uint64_t after,
+                                             uint64_t elapsed_ns, uint64_t period_ns)
+{
+    return period_ns != 0 && after >= before &&
+           after - before <= 1 + elapsed_ns / period_ns;
+}
+
 int main(void)
 {
     TEST_START("drm-modeset");
@@ -1177,9 +1184,8 @@ int main(void)
            (unsigned long long)resumed_event.sequence, (long long)resumed_event.tv_ns,
            (unsigned long long)after_enable.sequence, (long long)after_enable.sequence_ns,
            (unsigned long long)reenabled_ns, (unsigned long long)period_ns);
-    CHECK(after_enable.sequence >= resumed_event.sequence &&
-          after_enable.sequence - resumed_event.sequence <=
-          1 + reenabled_ns / period_ns,
+    CHECK(vblank_advance_matches_active_time(resumed_event.sequence,
+                                            after_enable.sequence, reenabled_ns, period_ns),
           "disabled interval does not advance vblank sequence");
     check_binding(fd, plane_ids[0], crtc_ids[0], next_fb.fb_id);
     struct drm_crtc_get_sequence after_event = { .crtc_id = crtc_ids[0] };
