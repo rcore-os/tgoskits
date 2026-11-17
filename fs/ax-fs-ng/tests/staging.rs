@@ -8,6 +8,7 @@ use axfs_ng_vfs::{
 
 #[test]
 fn staging_preserves_copied_content_identity_and_explicit_cleanup() {
+    ax_block::os::task::install_test_runtime_ops();
     use core::time::Duration;
 
     use ax_fs_ng::file::{OpenOptions, copy_staging_data};

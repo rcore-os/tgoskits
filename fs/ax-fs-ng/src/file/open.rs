@@ -1232,7 +1232,11 @@ mod tests {
             drop(path_file);
         }
 
-        check_backing_write_rights();
+        // Native cached I/O shares the fixture's page provider with cache
+        // tests. Own its epoch instead of consuming another test's budget.
+        crate::os::memory::test_support::with_test_page_provider(true, |_| {
+            check_backing_write_rights();
+        });
 
         let filesystem = crate::MemoryFs::new();
         let mount = Mountpoint::new_root(&filesystem);

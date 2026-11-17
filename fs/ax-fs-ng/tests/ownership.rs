@@ -13,6 +13,7 @@ fn create(
     name: &str,
     kind: NodeType,
 ) -> DirEntry {
+    ax_block::os::task::install_test_runtime_ops();
     axfs_ng_vfs::Location::new(mount.clone(), parent.clone())
         .create(
             name,
@@ -407,6 +408,7 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
 #[cfg(feature = "vfs")]
 #[test]
 fn device_creation_checks_capability_and_retains_device_metadata() {
+    ax_block::os::task::install_test_runtime_ops();
     use ax_fs_ng::{CreateAttributes, CreateContent, FsContext};
     use axfs_ng_vfs::{DeviceId, Mountpoint};
 
