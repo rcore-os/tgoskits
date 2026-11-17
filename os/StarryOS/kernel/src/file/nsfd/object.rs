@@ -201,10 +201,6 @@ impl NamespaceObject {
         })
     }
 
-    pub(crate) fn from_fd(fd: &NsFd) -> Self {
-        fd.object.clone()
-    }
-
     pub(crate) fn into_fd(self) -> StarryResult<NsFd> {
         let inode = INODES.get(&self)?;
         Ok(NsFd {
@@ -270,7 +266,7 @@ mod tests {
     fn observe_namespace(namespace: &NamespaceObject) -> (u64, u64) {
         let fd = namespace.clone().into_fd().unwrap();
         let fd_stat = fd.stat().unwrap();
-        let location = NamespaceObject::from_fd(&fd).location().unwrap();
+        let location = fd.object().clone().location().unwrap();
         let vnode_stat = location.metadata().unwrap();
         let identity = (vnode_stat.device, vnode_stat.inode);
         assert_eq!((fd_stat.dev, fd_stat.ino), identity);
