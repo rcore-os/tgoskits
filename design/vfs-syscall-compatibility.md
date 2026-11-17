@@ -95,7 +95,7 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| execve；x86_64 59；其余三架构 221 | v7.1 [do_open_execat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L764) | 主映像与解释器保留实际对象，proc fd 路径必须经过真实挂载与链接授权，失败释放执行访问 | sys_execve → one FsView.resolve → load_user_app(PathHandle, FsView) → shebang/PT_INTERP resolve in supplied view → ExecutableFile/ElfImage/CachedFile → AddrSpace | 部分正确 | 09ccf6cb2c 的 exec family 与视图证明保留；2b31db7844 的同一写后重执行 C 与完整 x86 system 541/541 通过，写后头部失效见 14.1；CLONE_FS 受控并发和解释器错误映射仍有缺口 |
+| execve；x86_64 59；其余三架构 221 | v7.1 [do_open_execat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L764) | 主映像与解释器保留实际对象，proc fd 路径必须经过真实挂载与链接授权，失败释放执行访问 | sys_execve → one FsView.resolve → load_user_app(PathHandle, FsView) → shebang/PT_INTERP resolve in supplied view → ExecutableFile/ElfImage/CachedFile → AddrSpace | 部分正确 | 09ccf6cb2c 的 exec family 与视图证明保留；2b31db7844 的同一写后重执行 C 与完整 x86 system 541/541 通过，写后头部失效见 14.1；CLONE_FS 受控并发和其余 ELF 边界仍有缺口；解释器格式与短读见 14.3 |
 | execveat；x86_64 322；其余三架构 281 | v7.1 [do_open_execat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L764) | dirfd、AT_EMPTY_PATH、nofollow 和 AT_EXECVE_CHECK 决定对象与行为，解释器按调用者文件系统视图解析 | sys_execveat → one FsView → resolve_at_from_view or retained memfd path_handle → load_user_app borrowing original view → loader/MM → publication 外退休旧 MM | 部分正确 | 09ccf6cb2c 的原 exec family 程序直接覆盖 dirfd、空路径、nofollow、无效 fd 和参数预算，x86 完整批次通过；AT_EXECVE_CHECK 未实现，全部 fd 类型与错误优先级尚未证明 |
 
 
@@ -423,7 +423,7 @@ mqueue 的路径配方、mqd stat 和后续权限检查共享队列实体。两�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| execve/主映像写后重执行；x86_64 59；其余三架构 221 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c#L855) | 每次装载检查当前 ELF magic，坏主映像返回 ENOEXEC；失败不保留执行访问 | sys_execve → load_user_app → load_elf → ElfImage.load → CachedFile.read_at → 本次 ELFHeaders；ExecutableFile/MM 保留实际路径 | 部分正确 | 相同 C 在 Linux 通过、088637d6cd 稳定失败、2b31db7844 完整 x86 system 541/541 通过；恢复原头后同一 inode 再执行成功。其余目标的本次回归与 PT_INTERP 的 ELIBBAD 尚未据此证明 |
+| execve/主映像写后重执行；x86_64 59；其余三架构 221 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c#L855) | 每次装载检查当前 ELF magic，坏主映像返回 ENOEXEC；失败不保留执行访问 | sys_execve → load_user_app → load_elf → ElfImage.load → CachedFile.read_at → 本次 ELFHeaders；ExecutableFile/MM 保留实际路径 | 部分正确 | 相同 C 在 Linux 通过、088637d6cd 稳定失败、2b31db7844 完整 x86 system 541/541 通过；恢复原头后同一 inode 再执行成功。06400fc668 的四架构均实际通过该程序；直接、映射和后端改写一致性仍需各自证明，解释器错误见 14.3 |
 | execveat/写后重执行；x86_64 322；其余三架构 281 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c#L855) | 选定文件后同样读取当前头部；dirfd、空路径与 flags 保持各自检查顺序 | sys_execveat → one FsView/retained path → load_user_app → ElfImage.load → CachedFile → loader/MM | 无法确认 | 共用重新读取边界，原 exec family 程序在本轮完整批次通过；未直接运行 execveat 写后损坏/恢复旅程，不把 execve 的判据替代此入口 |
 
 ### 14.2 寿命与证据范围
@@ -433,7 +433,23 @@ mqueue 的路径配方、mqd stat 和后续权限检查共享队列实体。两�
 Clippy 含其功能组合。最终源码 2b31db7844 另通过 Native 265/265 和 Kernel
 标准库检查，原卸载旅程包含在完整 x86 system 中。
 
-Linux v7.1 对坏 PT_INTERP 使用 ELIBBAD，当前 Starry 的该路径仍映射为 EINVAL，
-是保留的具体缺口。直接、映射或后端写入的数据页一致性也需要各自证明；本轮移除
-旧解析头命中，不能代替全部 raw 消费者契约。原始日志、源码摘要及同条件微基准
-输入和样本保存在生产证据键 `elf_header_freshness`。
+2b31db7844 阶段记录的解释器格式错误与短读差异由第 14.3 节继续处理。直接、
+映射或后端写入的数据页一致性仍需要各自证明；移除旧解析头命中，不能代替全部
+raw 消费者契约。该阶段原始日志、源码摘要及同条件微基准输入和样本保存在
+生产证据键 `elf_header_freshness`。
+
+### 14.3 解释器拒绝与恢复
+
+`ElfImage::load` 在解析前检查本次已读字节数。主映像允许短脚本，PT_INTERP
+要求完整原生头；`UnexpectedEof` 映射 EIO，`InvalidElfInterpreter` 映射
+ELIBBAD，路径、权限和实际 I/O 错误保留原传播。以下范围有两个原始执行入口
+的 x86 直接证据，不能据此宣称全部 ELF 结构或其他体系结构的兼容性。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| execve/PT_INTERP 格式与短读；x86_64 59；其余三架构 221 | v7.1 [elf_read](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c#L480)、[解释器检查](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c#L957) | 完整头的坏格式返回 ELIBBAD；不足原生头的短读先返回 EIO；失败保留调用者并释放主映像/解释器执行访问 | sys_execve → load_user_app/UserImageBuilder → load_elf → view.resolve/check_executable_access → ExecutableFile → ElfImage.load → StarryError.errno/abort | 部分正确 | 第一轮同一 C 在 Linux 104/0、cb2e029332 为 102/2、3e6f7499f9 为 104/0；第二轮相同增强 C 在 Linux 112/0、83960a291e 为 110/2、c463de79d5 为 112/0。完整读取后格式与短读的 x86 旅程通过；路径内嵌 NUL 后填充、全部格式/体系结构及其他优先级仍有缺口 |
+| execveat/PT_INTERP 格式与短读；x86_64 322；其余三架构 281 | v7.1 [elf_read](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c#L480)、[解释器检查](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c#L957) | 选定文件后按同一解释器读取规则拒绝；dirfd 与 flags 仍先按自身规则检查 | sys_execveat → one FsView/selected path → load_user_app → load_elf → native-header minimum → InvalidElfInterpreter or UnexpectedEof → ABI | 部分正确 | 同一两轮 C 直接调用 SYS_execveat，分别稳定观察 EINVAL/ELIBBAD 的旧错误及修后 ELIBBAD/EIO；恢复同一解释器 inode 后实际执行 shell 并取得 42。AT_EXECVE_CHECK、全部 dirfd/flags 和上述格式缺口不由此证明 |
+
+本轮没有增加默认用例或启动。最终 Kernel 标准库和四目标 Clippy 72/72 通过。测试程序自己的旧头文件 x86_64 后备编号另修正为 322：强制启用
+后备分支时，原值在 Linux 为 98/14，修后 112/0；常规头文件下两版预处理逐字
+相同。该项属于测试用例的 ABI 修正，没有作为 Starry 内核的产品失败证据。

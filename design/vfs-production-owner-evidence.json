@@ -7650,5 +7650,871 @@
       }
     },
     "scope": "Published queue-description implementation and its full four-architecture runs. Not evidence for the subsequent ELF-header change."
+  },
+  "elf_interpreter_failures": {
+    "recorded_at": "2026-11-17T20:47:25.582258+00:00",
+    "kernel_source": "c463de79d5bd512f6d3f77b2f2c5550d8a565975",
+    "final_source": "61e1b04c82974b35cf791b8549bac2032f847e1b",
+    "source_files": [
+      {
+        "path": "os/StarryOS/kernel/src/error.rs",
+        "sha256": "ae50cfd3957c183718a2d50b20de874416ba83dd3c9d624db4e202199b43a576"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/mm/loader.rs",
+        "sha256": "a649d002d28a3402bcd03e570c5754782749a3d5a6240b12fc5b213927c4595e"
+      },
+      {
+        "path": "test-suit/starryos/qemu/system/test-execve/src/main.c",
+        "sha256": "d2e35303e5518983d8ab940ef99b6b35292bfd5b2eb84ae1432759c54b39445d"
+      }
+    ],
+    "linux_baseline": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "url": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c",
+      "source": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/linux-8cd9520d35-binfmt_elf.c",
+        "sha256": "ec882e2f70b9f3647a16496f425f9951d6b494516350d1fec168c59e080b9702",
+        "bytes": 58543
+      },
+      "semantics": "elf_read at lines 480-489 requires an exact read and converts short reads to EIO. load_elf_binary reads the native interpreter header at lines 925-929, then rejects its invalid format with ELIBBAD at lines 957-972. Native wire size uses the existing xmas-elf HeaderPt1 and HeaderPt2_<P64> types, before decoding."
+    },
+    "format_failure": {
+      "test_source": "cb2e0293321f74cb8d8975c359a12d2051c64cfb",
+      "test_sha256": "4c6604ea038a4b7c07470203c8787dd1a14ea52164ff34b153dd8b3f783eab24",
+      "same_c_on_old_new_linux": true,
+      "before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-before.log",
+          "sha256": "84afc4a289b486e3c1324effbee475ab3b3f9e57f92da92998a956e441c956c1",
+          "bytes": 49893
+        },
+        "source": "cb2e0293321f74cb8d8975c359a12d2051c64cfb"
+      },
+      "after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-after.log",
+          "sha256": "0c57c68c0778995b904cfa9c3d79af386a69d6948718e47d9f2ac4f50538be56",
+          "bytes": 49769
+        },
+        "source": "3e6f7499f9bf5d38b870d3e17b71874d38915619"
+      },
+      "linux": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-linux.log",
+          "sha256": "3b96c028fe182346130db5049eceaae8e04653e56a4018b114ba23ca3c617716",
+          "bytes": 11685
+        }
+      },
+      "outcome": "Both raw exec APIs returned EINVAL for a complete interpreter with bad magic; Linux and the format-error fix return ELIBBAD. Failed loads release both executable/write leases. Restoring the same interpreter inode executes the copied real shell and produces status 42."
+    },
+    "short_read_failure": {
+      "test_source": "83960a291e2817b9a1fbd8d44904b9dc1ad355d9",
+      "test_sha256": "4dd8d11670d0ea50707901b34fd2c9c4e4dbd6322b715d7f249889255ea988a3",
+      "same_c_on_old_new_linux": true,
+      "before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-short-before.log",
+          "sha256": "c813500fb4544caf41ca0e4389378770242fdcbb365930b0c98b007e56a00f1c",
+          "bytes": 51515
+        },
+        "source": "83960a291e2817b9a1fbd8d44904b9dc1ad355d9"
+      },
+      "after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-final.log",
+          "sha256": "cae8575b93d4f6088feddd5f56bac658f078da93da363fc571db231262da9e7e",
+          "bytes": 51390
+        },
+        "source": "c463de79d5bd512f6d3f77b2f2c5550d8a565975"
+      },
+      "linux": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-short-linux.log",
+          "sha256": "a4713fac8b7a32541a3044d4adf0defe2d22aebe15952947dafc86fd3ae4a74f",
+          "bytes": 17968
+        }
+      },
+      "outcome": "The first format fix still returned ELIBBAD for a four-byte interpreter. The extended same C fails only its two raw EIO checks on that implementation and passes on Linux and the final minimum-read implementation. Full contents are restored through a writer on the same inode, followed by actual successful execution."
+    },
+    "test_harness_abi_fallback": {
+      "evidence": {
+        "before": {
+          "macro": "358",
+          "exit_code": 1,
+          "source_sha256": "4dd8d11670d0ea50707901b34fd2c9c4e4dbd6322b715d7f249889255ea988a3",
+          "log_sha256": "66e94e8ea56010285c9a761a8397688b98074d7af3e3f08593937f297eacec21",
+          "summary": [
+            "DONE: 98 pass, 14 fail"
+          ]
+        },
+        "after": {
+          "macro": "322",
+          "exit_code": 0,
+          "source_sha256": "d2e35303e5518983d8ab940ef99b6b35292bfd5b2eb84ae1432759c54b39445d",
+          "log_sha256": "d100cb5c5484927f07899ed7b666549965174f19c0699f2de5d60a86211f0fd1",
+          "summary": [
+            "DONE: 112 pass, 0 fail"
+          ]
+        },
+        "ordinary_header_preprocessing": {
+          "identical": true,
+          "sha256": "5a7868606f61509f8d868564ddace8c94e9c86df501aff949cd572dc9bed2ade",
+          "scope": "Host compiler with its normal headers: the corrected fallback is inactive. Forced old-header proof independently activates the actual fallback branch."
+        }
+      },
+      "force_header": "#include \"test_framework.h\"\n#include <sys/syscall.h>\n#undef SYS_execveat\n",
+      "compiler_flags": "-std=c11 -O2 -Wall -Wextra -Werror -pthread -include elf-interpreter-force-fallback.h",
+      "linux_syscall_source": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/linux-8cd9520d35-syscall_64.tbl",
+        "sha256": "93e42d351de2002418bf499b9a538f189fd683e8ecd52b4adc8a0bbe59130455",
+        "bytes": 15873
+      },
+      "linux_syscall_url": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/x86/entry/syscalls/syscall_64.tbl#L334",
+      "scope": "The existing test itself used 358 when x86_64 headers omitted SYS_execveat; the fixed Linux ABI is 322. The actual fallback is forced by including the ordinary syscall header then undefining just that macro. Existing assertions fail 98/14 with the old value and pass 112/0 with 322. This is a test-program failure, not a Starry kernel regression. Normal-header preprocessing is identical; the corrected final C separately passes the real Starry case."
+    },
+    "validation": {
+      "elf-interpreter-linux": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-linux.log",
+          "sha256": "3b96c028fe182346130db5049eceaae8e04653e56a4018b114ba23ca3c617716",
+          "bytes": 11685
+        }
+      },
+      "elf-interpreter-before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-before.log",
+          "sha256": "84afc4a289b486e3c1324effbee475ab3b3f9e57f92da92998a956e441c956c1",
+          "bytes": 49893
+        },
+        "source": "cb2e0293321f74cb8d8975c359a12d2051c64cfb"
+      },
+      "elf-interpreter-after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-after.log",
+          "sha256": "0c57c68c0778995b904cfa9c3d79af386a69d6948718e47d9f2ac4f50538be56",
+          "bytes": 49769
+        },
+        "source": "3e6f7499f9bf5d38b870d3e17b71874d38915619"
+      },
+      "elf-interpreter-short-linux": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-short-linux.log",
+          "sha256": "a4713fac8b7a32541a3044d4adf0defe2d22aebe15952947dafc86fd3ae4a74f",
+          "bytes": 17968
+        }
+      },
+      "elf-interpreter-short-before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-short-before.log",
+          "sha256": "c813500fb4544caf41ca0e4389378770242fdcbb365930b0c98b007e56a00f1c",
+          "bytes": 51515
+        },
+        "source": "83960a291e2817b9a1fbd8d44904b9dc1ad355d9"
+      },
+      "elf-interpreter-final": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-final.log",
+          "sha256": "cae8575b93d4f6088feddd5f56bac658f078da93da363fc571db231262da9e7e",
+          "bytes": 51390
+        },
+        "source": "c463de79d5bd512f6d3f77b2f2c5550d8a565975"
+      },
+      "elf-interpreter-harness-final": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-harness-final.log",
+          "sha256": "f6a9773da23eca0ea5bf15c34f38927c4940ddb8eafe7d1b5618ae3502b86dd8",
+          "bytes": 51175
+        },
+        "source": "61e1b04c82974b35cf791b8549bac2032f847e1b"
+      },
+      "elf-interpreter-final-std": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-final-std.log",
+          "sha256": "1bc1143c1e22231e49f5790195a38da67b399bf1a0e21608827c72c1a8fc3e92",
+          "bytes": 38591
+        },
+        "source": "c463de79d5bd512f6d3f77b2f2c5550d8a565975"
+      },
+      "elf-interpreter-final-clippy": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-final-clippy.log",
+          "sha256": "4a3991197ac6f7da874ae91dab7e3bf0fde8b35eb0dc028858e6eaf7e4368856",
+          "bytes": 69419
+        },
+        "source": "c463de79d5bd512f6d3f77b2f2c5550d8a565975"
+      },
+      "elf-interpreter-fallback-before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-fallback-before.log",
+          "sha256": "66e94e8ea56010285c9a761a8397688b98074d7af3e3f08593937f297eacec21",
+          "bytes": 16652
+        }
+      },
+      "elf-interpreter-fallback-after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-fallback-after.log",
+          "sha256": "d100cb5c5484927f07899ed7b666549965174f19c0699f2de5d60a86211f0fd1",
+          "bytes": 15991
+        }
+      }
+    },
+    "format": {
+      "source": "c463de79d5bd512f6d3f77b2f2c5550d8a565975",
+      "kind": "tool_receipt",
+      "tool_chunk_id": "c2a46e",
+      "exit_code": 0,
+      "commands": [
+        "cargo fmt --package starry-kernel --check",
+        "rustfmt --edition 2024 --check --config skip_children=true os/StarryOS/kernel/src/error.rs os/StarryOS/kernel/src/mm/loader.rs",
+        "git diff --check"
+      ],
+      "output": "No output; all three commands completed successfully in the recorded tool call."
+    },
+    "before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-elf-interpreter-before-cb2e029332.elf",
+      "sha256": "146e39dcd60d39574f1d80a563c8307a9bf02e66efce79cb225469bf84babc48",
+      "bytes": 217789848
+    },
+    "format_fix_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-3e6f7499f9.elf",
+      "sha256": "eee4f5c13f6ea271de9e6b0dbf264a56b3e3fdd3291f1b125a76eefa0d364e42",
+      "bytes": 217885240
+    },
+    "short_read_before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-elf-interpreter-short-before-83960a291e.elf",
+      "sha256": "eee4f5c13f6ea271de9e6b0dbf264a56b3e3fdd3291f1b125a76eefa0d364e42",
+      "bytes": 217885240
+    },
+    "final_kernel_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-c463de79d5.elf",
+      "sha256": "540dceed6def969f3737098c7a6a05fb5d3b1b8d5c60e99632c24c764d09cb30",
+      "bytes": 217712952
+    },
+    "final_system_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-61e1b04c82.elf",
+      "sha256": "540dceed6def969f3737098c7a6a05fb5d3b1b8d5c60e99632c24c764d09cb30",
+      "bytes": 217712952
+    },
+    "image_size": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-interpreter-image-size.log",
+        "sha256": "c2db43e96497b6625eba9a6ae89d8822174f1456bdeb2ff0b5237f5d8194456b",
+        "bytes": 315
+      },
+      "scope": "GNU size text/data/bss accounting of actual same-target normal release ELFs. Not resident memory, peak heap or latency; no additional timing comparison is claimed for these error-path changes."
+    },
+    "test_layout": {
+      "existing_case": "qemu/system/test-execve",
+      "added_default_cases": 0,
+      "added_default_boots": 0
+    },
+    "ownership": "The existing builder aborts unpublished mappings and releases main/interpreter executable leases on errors. No cache, owner, registry or compatibility layer is added. The kernel std and 72-check results belong to c463de79d5; the only later implementation-source change is the verified C fallback constant, whose final real guest case is recorded separately.",
+    "limits": [
+      "Direct interpreter error/recovery runs are x86_64; the new published head still needs its own complete CI matrix.",
+      "The previous 541/541 full system and 265/265 native results belong to the separate 2b31db7844 phase, not this final interpreter implementation.",
+      "Other ELF structures, machine/class checks, PT_INTERP NUL padding and all flag/error precedence are not established by these selected native-header cases.",
+      "The 088637d6cd versus 2b31db7844 latency samples remain tied to that cache-removal comparison; no new latency claim is made for c463de79d5."
+    ]
+  },
+  "ci_06400fc668_terminal": {
+    "head": "06400fc6687650547d4bd9d442a79cce46c92503",
+    "snapshot": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-06400fc668-terminal.json",
+      "sha256": "e9e26aca9234c4b74359f06e155f2bcfbc857a7c440b8709f815b26cd4b0459d",
+      "bytes": 18811
+    },
+    "counts": {
+      "SUCCESS": 44,
+      "SKIPPED": 5
+    },
+    "checks": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:03:20Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165140096/job/134329058478",
+        "name": "Plan CI",
+        "startedAt": "2026-11-17T20:03:11Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:03:53Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134329007104",
+        "name": "Plan CI",
+        "startedAt": "2026-11-17T20:03:04Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:03:20Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165140096/job/134329209143",
+        "name": "Preflight",
+        "startedAt": "2026-11-17T20:03:21Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:11:18Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134329556169",
+        "name": "Preflight / Formatting + publish dry-run",
+        "startedAt": "2026-11-17T20:03:58Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:04:32Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134329556099",
+        "name": "Preflight / Axvisor control plane layering",
+        "startedAt": "2026-11-17T20:03:58Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:07:32Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134329555906",
+        "name": "Preflight / Synchronization lint",
+        "startedAt": "2026-11-17T20:03:56Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:03:21Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165140096/job/134329210076",
+        "name": "Workspace",
+        "startedAt": "2026-11-17T20:03:21Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:35:35Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334268989",
+        "name": "Workspace / Incremental Clippy",
+        "startedAt": "2026-11-17T20:11:24Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:28:14Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334269133",
+        "name": "Workspace / std tests",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:15:37Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334268934",
+        "name": "Workspace / axbuild independent package and consumer",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:03:21Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165140096/job/134329210013",
+        "name": "ArceOS",
+        "startedAt": "2026-11-17T20:03:21Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:20:54Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334272237",
+        "name": "ArceOS / QEMU x86_64 · Suites",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:20:33Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334273171",
+        "name": "ArceOS / QEMU riscv64 · Suites + task IPI",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:21:12Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334272316",
+        "name": "ArceOS / QEMU aarch64 · GICv2 SMP4 boot + suites",
+        "startedAt": "2026-11-17T20:11:23Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:18:53Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334272888",
+        "name": "ArceOS / QEMU loongarch64 · Suites",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:15:39Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334273079",
+        "name": "ArceOS / CPU aarch64 · Hardware contracts",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:17:08Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334273512",
+        "name": "ArceOS / CPU riscv64 · Hardware contracts",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:16:37Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334272732",
+        "name": "ArceOS / CPU loongarch64 · Hardware contracts",
+        "startedAt": "2026-11-17T20:11:24Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:18:39Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334272633",
+        "name": "ArceOS / CPU x86_64 · Hardware contracts",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:16:19Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334273818",
+        "name": "ArceOS / QEMU x86_64 · Portable driver contracts",
+        "startedAt": "2026-11-17T20:11:24Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:20:05Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334272944",
+        "name": "ArceOS / Board OrangePi 5 Plus · kernel and user-mode",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:18:06Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334273319",
+        "name": "ArceOS / Board Loongson-3A6000-LL · Native UEFI ArceOS Hello",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:03:21Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165140096/job/134329210533",
+        "name": "Starry",
+        "startedAt": "2026-11-17T20:03:21Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:33:05Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334270391",
+        "name": "Starry / QEMU riscv64 · Suites",
+        "startedAt": "2026-11-17T20:11:23Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:38:47Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334269900",
+        "name": "Starry / QEMU aarch64 · Suites",
+        "startedAt": "2026-11-17T20:11:23Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:29:09Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334271033",
+        "name": "Starry / QEMU loongarch64 · Suites",
+        "startedAt": "2026-11-17T20:11:23Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:34:41Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334270886",
+        "name": "Starry / QEMU x86_64 · Suites",
+        "startedAt": "2026-11-17T20:11:23Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:29:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334269629",
+        "name": "Starry / Board AKA-00 SG2002 · Suites",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:24:05Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334269653",
+        "name": "Starry / Board VisionFive 2 · Suites",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:23:19Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334270149",
+        "name": "Starry / Board JL LSGD2K10 · Suites",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:03:21Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165140096/job/134329210943",
+        "name": "AxVisor",
+        "startedAt": "2026-11-17T20:03:21Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:24:50Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334273993",
+        "name": "AxVisor / QEMU aarch64 · Smoke + virtio-blk guest + axtest",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:12:23Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334274518",
+        "name": "AxVisor / Web UI · Unit tests and bundle",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:16:18Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334274469",
+        "name": "AxVisor / QEMU aarch64 · Web dashboard from the disk root and the initramfs root",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:21:28Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334274871",
+        "name": "AxVisor / QEMU aarch64 · HTTP control-plane + VM pool + browser console + ArceOS IVC",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:18:58Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334275720",
+        "name": "AxVisor / QEMU riscv64 · Smoke + IPI",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:17:19Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334276048",
+        "name": "AxVisor / QEMU loongarch64 · Suites",
+        "startedAt": "2026-11-17T20:11:24Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:15:45Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334274833",
+        "name": "AxVisor / SVM x86_64 · Smoke, ACPI and PCI",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:26:50Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334275966",
+        "name": "AxVisor / VMX x86_64 · Smoke, ACPI, PCI and Web UI",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:34:43Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334276193",
+        "name": "AxVisor / UEFI x86_64 · AxLoader 3OS HTTP boot",
+        "startedAt": "2026-11-17T20:11:26Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:18:23Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334276020",
+        "name": "AxVisor / UEFI loongarch64 · AxLoader HTTP boot",
+        "startedAt": "2026-11-17T20:11:23Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:30:43Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334275354",
+        "name": "AxVisor / Board OrangePi 5 Plus · StarryOS board suites",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:28:06Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334276891",
+        "name": "AxVisor / Board OrangePi 5 Plus · Linux + StarryOS + Zephyr",
+        "startedAt": "2026-11-17T20:11:26Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:23:15Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334275137",
+        "name": "AxVisor / Board ROC-RK3568-PC · Linux guest",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:26:03Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334273805",
+        "name": "AxVisor / Board Phytium Pi · Linux guest",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:17:07Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334274036",
+        "name": "AxVisor / Board ASUS NUC15CRH · Linux guest",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:31:06Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334274417",
+        "name": "AxVisor / Board OrangePi 5 Plus · AxVisor Linux + StarryOS guests UVC/NPU + FT232 loopback",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:31:04Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44165124650/job/134334273659",
+        "name": "AxVisor / Board OrangePi 5 Plus DualGuest robot · Linux/StarryOS + Zephyr",
+        "startedAt": "2026-11-17T20:11:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-17T20:38:54Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://artifact.ci",
+        "name": "artifact.ci",
+        "startedAt": "2026-11-17T20:38:54Z",
+        "status": "COMPLETED",
+        "workflowName": ""
+      }
+    ],
+    "starry_logs": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-06400fc668-starry-x86_64.log",
+          "sha256": "e95d916f73d284ae90594068ec46ba35bb91b0237421d41e096f84bafa0fea09",
+          "bytes": 2263524
+        },
+        "system_summaries": [
+          "STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.234",
+          "STARRY_SYSTEM_TEST_SUMMARY: total=541 passed=541 failed=0 elapsed_s=263.167"
+        ],
+        "native_summaries": [
+          "AXTEST_SUMMARY pass=265 fail=0 skip=0 total=265"
+        ],
+        "header_write_regression_passed": true,
+        "success_message_visible": true,
+        "output_policy": "full output"
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-06400fc668-starry-aarch64.log",
+          "sha256": "16566b2b19119d9235185bedb063889e927743e80aa82190c1065a509d33a8af",
+          "bytes": 2158734
+        },
+        "system_summaries": [
+          "STARRY_SYSTEM_TEST_SUMMARY: total=513 passed=513 failed=0 elapsed_s=411.116",
+          "STARRY_SYSTEM_TEST_SUMMARY: total=23 passed=23 failed=0 elapsed_s=19.153",
+          "STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.167",
+          "STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.635"
+        ],
+        "native_summaries": [
+          "AXTEST_SUMMARY pass=275 fail=0 skip=0 total=275"
+        ],
+        "header_write_regression_passed": true,
+        "success_message_visible": true,
+        "output_policy": "full output"
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-06400fc668-starry-riscv64.log",
+          "sha256": "59ceb46c5c60672d2a3cd3e3531749847792becfc8b0cf3cc05cb67579a6dd6a",
+          "bytes": 2125761
+        },
+        "system_summaries": [
+          "STARRY_SYSTEM_TEST_SUMMARY: total=538 passed=538 failed=0 elapsed_s=423.250"
+        ],
+        "native_summaries": [
+          "AXTEST_SUMMARY pass=264 fail=0 skip=0 total=264"
+        ],
+        "header_write_regression_passed": true,
+        "success_message_visible": true,
+        "output_policy": "full output"
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-06400fc668-starry-loongarch64.log",
+          "sha256": "a63ade60bda805a2e763e4483aed63df1d6b5914b5d25f061659a5e88124a7fd",
+          "bytes": 875800
+        },
+        "system_summaries": [
+          "STARRY_SYSTEM_TEST_SUMMARY: total=538 passed=538 failed=0 elapsed_s=239.243"
+        ],
+        "native_summaries": [
+          "AXTEST_SUMMARY pass=265 fail=0 skip=0 total=265"
+        ],
+        "header_write_regression_passed": true,
+        "success_message_visible": false,
+        "output_policy": "capture-failures; successful custom-program output is intentionally not replayed"
+      }
+    },
+    "loongarch_success_output": {
+      "config": "test-suit/starryos/qemu/system/qemu-loongarch64.toml",
+      "config_sha256": "24795f9ed81a61aaacdc6ef2903549d119b089f3ed27864b90d7a383f73d2faf",
+      "runner": "test-suit/starryos/qemu/system/common/starry_system_test_runner.c",
+      "runner_sha256": "bb965dc5f012a4a45e9889760622b8d687087c4f1139e6ffd7137059e5dc060b",
+      "scope": "The fixed-head LoongArch config uses --capture-failures and preserve_all. Its runner launches the real program with argc=1 and replays successful output only for LTP. The case directly compiles src/main.c without an architecture skip; main unconditionally calls check_header_refresh. The fresh grouped build and explicit successful program exit are verified. A missing success printf is expected in this mode, not a skipped case."
+    },
+    "scope": "Complete terminal evidence for the published current-header-read phase. All four architectures ran the same-inode header-write regression and native suite. This does not cover the later interpreter error changes.",
+    "skipped_scope": "Five existing duplicate pull_request wrappers intentionally skip; push jobs supply the real matrix."
   }
 }
