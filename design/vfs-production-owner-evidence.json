@@ -8887,5 +8887,147 @@
     },
     "scope": "Terminal published interpreter-error phase, before cache-only changes. All four architectures ran the real execve program and native suite. LoongArch intentionally captures successful output; absence of individual success prints does not imply a skipped case. This CI does not cover the later CACHED implementation.",
     "skipped_scope": "Five duplicate pull_request wrappers intentionally skip; push jobs supply the actual matrix."
+  },
+  "cached_link_text": {
+    "recorded_at": "2026-11-17T23:17:50.713457+00:00",
+    "before_source": "5983630d73ccee63875c10af39461b01e654bd45",
+    "after_source": "c854aa5f7f709057eef1647f6df6474283e83597",
+    "test_source": {
+      "path": "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c",
+      "sha256": "b5154fde27633a3ef1aa6c4cc0854ffb570bfed884dca87412b3e063791abd71"
+    },
+    "source_files": [
+      {
+        "path": "fs/ax-fs-ng/src/fs/memory.rs",
+        "sha256": "e11e9c68c11da285932c8bb8bd860efbb2aed1ab963bfb430b7b0a6ea3964f43"
+      },
+      {
+        "path": "fs/ax-fs-ng/src/fs/memory/rename.rs",
+        "sha256": "a24089aedabb7a23dcbcdc2562f19418c7ebdf6ffdcc69f82da4fa9085d93ae9"
+      },
+      {
+        "path": "fs/ax-fs-ng/src/fs_core/context.rs",
+        "sha256": "adc02104914d9e99def0078f88268b81c7c8e087010e4fbd3cd0276e11c16141"
+      },
+      {
+        "path": "fs/ax-fs-ng/src/fs_core/mod.rs",
+        "sha256": "55f8f973a47049c9074cebecf3230714eccc3c4534dad1f89c9d10e0aad85ff7"
+      },
+      {
+        "path": "fs/ax-fs-ng/tests/lookup.rs",
+        "sha256": "3e4cbd9262f2d6158ea27e709b6bc7790301e36407d1a8705ecf79dd5bab12da"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/lib.rs",
+        "sha256": "6f6d07c1954a74fd930567468b42f5e1ed05d5b64f7d1fce1da724506b307ec0"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/lookup/cached.rs",
+        "sha256": "972d18adf5e2c4ebaf9fae622932f83b13426b0e2df5362ac7823f070072fa25"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/lookup/mod.rs",
+        "sha256": "691c090accfb02481ff2a41533b6f1fe8f4eebbcd9fa176712e402a095b2cc36"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/node/mod.rs",
+        "sha256": "5f2cd9603c36b9d8385d56a8d227ac31adab88dfbf3ec55addd7e9b79285bc46"
+      }
+    ],
+    "checks": {
+      "cached-links-linux": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-links-linux.log",
+          "sha256": "3bc1518821982928a94f053f632e1397e9fe0f6268766ba2be8ed20cd1bd37a4",
+          "bytes": 5273
+        }
+      },
+      "cached-links-before": {
+        "exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-links-before.log",
+          "sha256": "ef974f9ff9e20ea92a867085c5a8aed7c7c100ee99b5bfbb1090d956e1c7f10a",
+          "bytes": 34503
+        },
+        "source": "5983630d73ccee63875c10af39461b01e654bd45"
+      },
+      "cached-links-after": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-links-after.log",
+          "sha256": "72eb33271b6e61c5aaf1655c2f183beaa5015a0115d098afe6291fb6ee35feab",
+          "bytes": 35309
+        },
+        "source": "c854aa5f7f709057eef1647f6df6474283e83597"
+      },
+      "cached-links-std": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-links-std.log",
+          "sha256": "7bb4ded7bbc6ed080cf3ecc4700451e8008ed003ed961c9fddb573829ec06323",
+          "bytes": 313783
+        },
+        "source": "c854aa5f7f709057eef1647f6df6474283e83597"
+      },
+      "cached-links-clippy-final": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-links-clippy-final.log",
+          "sha256": "7ba87f017f7eb6866c94b6bee6b1d201d9f2fcac82a12133a2d918d9e381801f",
+          "bytes": 3184
+        },
+        "source": "c854aa5f7f709057eef1647f6df6474283e83597"
+      },
+      "cached-links-format-check": {
+        "exit_code": 0,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-links-format-check.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        "source": "c854aa5f7f709057eef1647f6df6474283e83597"
+      }
+    },
+    "before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-5983630d73.elf",
+      "sha256": "475f668121c9028c18cdb641c194a4ef2cad39b5f74c538818538ca7b412a94c",
+      "bytes": 217867232
+    },
+    "after_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-c854aa5f7f.elf",
+      "sha256": "f4a8f6f96be40014519982c785fa2a0c87833e56794daf12a4a05f785a4cbff7",
+      "bytes": 217798656
+    },
+    "linux_references": {
+      "baseline": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "namei": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c",
+      "functions": [
+        "reserve_stack",
+        "pick_link",
+        "follow_dotdot_rcu",
+        "try_to_unlazy",
+        "path_openat"
+      ],
+      "host_version": "6.8.0-149-generic",
+      "host_comparison": "https://github.com/torvalds/linux/blob/v6.8/fs/namei.c",
+      "scope": "Both fixed implementations reject BENEATH dotdot escape and NO_XDEV upward crossing from RCU with ECHILD; CACHED refuses unlazy and the syscall returns EAGAIN. Absolute text-link BENEATH remains EXDEV. Before long-chain CACHED checks, ordinary 40/41-link opens prime every name and atime; exact budget assertions remain success/ELOOP."
+    },
+    "invalid_linux_fixture": {
+      "exit_code": 1,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-links-linux-invalid-rcu.log",
+        "sha256": "ab0a9629a9c730302d538bc7b6aef8231536e11189c012327845690b4493648c",
+        "bytes": 4957
+      },
+      "source": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-links-linux-invalid-rcu-main.c",
+        "sha256": "a7628fd5c3d8c37b189944243de8cf5409302f8ae9af7ac726b76eb8acb0dae3",
+        "bytes": 19903
+      },
+      "scope": "The first fixture incorrectly required EXDEV for cached BENEATH dotdot and assumed freshly created long links were sufficient without ordinary cache/atime priming. This is not a product red. The fixed identical C passes Linux and fails the old Starry implementation in ten assertions; neither budget result was weakened."
+    },
+    "component_scope": "The existing real MemoryFs lookup integration test now applies CachedLookup to a symlink prefix with an original final-component suffix, verifying one shared 40-link budget and actual final inode identity. No new test case or boot was added.",
+    "implementation_scope": "Immutable MemoryFs link text is owned once by FileContent as Arc<str>; the cache capability only tries its original producer lock. CachedLookup owns text path frames and shares SYMLINKS_MAX with ordinary resolution. No ordinary LinkOps/lookup or dynamic display-text fallback is used. Kernel Rust is unchanged; the two changed packages pass nine Clippy selections and the real x86 syscall runs. Symlink atime/mount policy, dynamic object/text producers, ordinary cached opens, native cached metadata, other target runtime and the complete PR remain unfinished."
   }
 }

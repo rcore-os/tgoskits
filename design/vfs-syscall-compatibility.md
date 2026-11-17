@@ -33,7 +33,9 @@ Linux 基准为 v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。编号�
 | openat2/NO_MAGICLINKS；四架构 437 | v7.1 [nd_jump_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L1163) | 普通文本链接允许；对象回调保留自身错误，成功对象跳转为 ELOOP；nofollow 末链接可持有 | sys_openat2 → LookupSession.follow → LinkOps.target(saved caller) → Text/Object 分派 | 部分正确 | x86 普通链接、proc fd 对象拒绝、末项 nofollow、self/thread-self 文本跟随通过；其他目标及完整错误顺序待补 |
 | openat2/CACHED O_PATH；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293)、[缓存遍历](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2678) | 只使用有效缓存；需慢路径或观察失效时 EAGAIN，不能由缓存中没有名字推断 ENOENT | sys_openat2 → try_cached_fs_binding → CachedLookup/PathObservation → path_only 或 Directory → captured CachedFileTable.install | 部分正确 | 同一 C 的 Linux 通过、6a4a9f23f1 三项 EOPNOTSUPP 失败、46138dd272 x86 QEMU 1/1 通过；缓存正项、tmpfs 未命中、实际 inode、CLOEXEC 与挂载引用见 15.1；其他目标运行、受控任务发布竞争及全部组合仍待补 |
 | openat2/CACHED 普通打开；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293) | create/truncate/tmpfile 组合先为 EAGAIN；已有文件的普通打开在缓存条件满足时可以完成 | sys_openat2 先拒绝变更类组合；open_cached_path 对非 O_PATH 仍直接 WouldBlock | 不正确 | 变更类参数检查保留；普通缓存打开尚未实现，不以一律 EAGAIN 声称完成 |
-| openat2/CACHED 文本链接；四架构 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 可用的缓存链接参与同一次预算和 root/mount 策略，不能调用需要慢路径的链接 producer | sys_openat2 → CachedLookup.walk；需要跟随时目前仍为 WouldBlock，NO_SYMLINKS 拒绝与最终 nofollow 另有分支 | 不正确 | 缓存链接内容能力和直接系统旅程尚未实现；不使用普通 LinkOps.target 回退 |
+| openat2/CACHED 文本链接；四架构 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2003) | 可用的缓存链接参与同一次预算和 root/mount 策略，不能调用需要慢路径的链接 producer | sys_openat2 → CachedLookup.walk/path frames → NodeOps.cached_link_target → MemoryFs 实际 Arc 文本；普通与缓存共用 SYMLINKS_MAX | 部分正确 | 同一 C 在 Linux 通过、5983630d73 失败 10 项、c854aa5f7f x86 QEMU 1/1；覆盖绝对/相对、IN_ROOT/BENEATH、NO_MAGICLINKS/NO_SYMLINKS/nofollow、尾斜杠及预热后 40/41 预算；atime、挂载时间策略、动态 producer 和其他目标运行仍待补 |
+| openat2/CACHED BENEATH dotdot；四架构 437 | v7.1 [follow_dotdot_rcu](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2151)、[try_to_unlazy](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L930) | 根处向上遍历在 RCU 返回 ECHILD，CACHED 不能进入 ref-walk，最终 EAGAIN；绝对输入和绝对链接仍为 EXDEV | sys_openat2 → CachedLookup.ascend root check → WouldBlock；绝对链接经 jump_root → CrossesDevices | 部分正确 | 相同 C 的 Linux EAGAIN，5983630d73 错为 EXDEV，c854aa5f7f x86 客机 EAGAIN；绝对链接另经 EXDEV 断言，其他目标和受控并发仍待补 |
+| openat2/CACHED NO_XDEV 向上；四架构 437 | v7.1 [follow_dotdot_rcu](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2151) | 向上跨挂载需要离开 RCU 时缓存模式为 EAGAIN；不能套用普通模式的 EXDEV | sys_openat2 → CachedLookup.ascend → cached_covered_location → NO_XDEV/WouldBlock，保持原路径引用 | 部分正确 | Linux 对照 EAGAIN，5983630d73 的 EXDEV 稳定失败，c854aa5f7f x86 QEMU 通过；向下及全部组合另需相应证明 |
 | openat2/CACHED 原生后端元数据；四架构 437 | v7.1 [inode_permission](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 每个搜索目录检查实际有效属性；需要 I/O 或重验证则为 EAGAIN | CachedLookup.check_search → NodeOps.cached_metadata；目前仅 MemoryNode 实现，其余默认 WouldBlock | 不正确 | 实际 tmpfs 属性已接入；原生 Ext4、FAT 和动态 producer 的缓存属性能力尚未实现，既有负项版本证明不能替代此门禁 |
 
 ### 2.2 普通打开与链接句柄
@@ -123,7 +125,7 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 | link；x86_64 86 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 按不跟随源末链接的 linkat 语义取得源；目标特殊末项为 EEXIST | sys_link → sys_linkat → resolve_at_with_boundary_checked → link_resolved | 部分正确 | 原权限程序覆盖普通 link；不由共享 helper 外推所有 legacy 输入 |
 | linkat；x86_64 265；其余三架构 37 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 源 empty-path/跟随 flags 保留；目标点直接 EEXIST，不重走打开目录的物理父亲 | sys_linkat → one FsView → owned source + typed destination → link_resolved | 部分正确 | 旧 272141b52a 的完整权限程序因点目标错误 EACCES 失败；cf78f01c61 同一程序在四架构通过；共享 FS 的直接并发交错仍待补 |
 | symlink；x86_64 88 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 目标文字不参与当前查找；新链接名称的特殊末项 EEXIST，尾斜杠不创建非目录 | sys_symlink → sys_symlinkat → FsView.symlink → ParentLookup → create_symlink | 部分正确 | 原权限程序包含 symlink 与只读目录拒绝；尾斜杠的直接系统输入仍需补齐 |
-| symlinkat；x86_64 266；其余三架构 36 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 按新名称的 dirfd 解析父目录，保存文字并授权实际创建槽位 | sys_symlinkat → with_fs → FsView.symlink → typed creation_name → backend | 部分正确 | 原完整权限程序覆盖 symlinkat；完整错误优先级仍未穷尽 |
+| symlinkat；x86_64 266；其余三架构 36 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 按新名称的 dirfd 解析父目录，保存文字并授权实际创建槽位 | sys_symlinkat → with_fs → FsView.symlink → typed creation_name → MemoryFs FileContent 的实际不可变文本 | 部分正确 | 原完整权限程序覆盖 symlinkat；c854aa5f7f 的同一 Linux/x86 程序通过原始 SYS_symlinkat 创建目标后分别普通和缓存跟随，内容身份与 40/41 预算通过；完整错误优先级仍未穷尽 |
 | mknod；x86_64 133 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 类型和设备能力检查保留，创建名称中的特殊末项不能替换已有目录 | sys_mknod → sys_mknodat → FsView.create_node → ParentLookup → create_initialized | 无法确认 | AX 既有设备创建功能旅程通过；不能替代该 legacy syscall 的直接运行 |
 | mknodat；x86_64 259；其余三架构 33 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 按 dirfd 保留父目录和末项，真实 owner 决定能力、权限与创建结果 | sys_mknodat → with_fs → FsView.create_node → typed creation_name → actual slot | 部分正确 | 原权限程序覆盖设备能力及存在性；完整类型、尾斜杠和其他边界继续核对 |
 
@@ -496,3 +498,24 @@ DirNode 缓存，并通过另一个目录别名真实创建使其失效，不伪
 组件测试还证明缓存查询不调用普通 lookup 或 metadata、锁竞争直接拒绝，以及
 清除缓存后不能继续将未验证项作为命中。全局发布观察在隔离进程中真实进入
 目标阶段，最外层拒绝零测试。18 包标准库及三包 81/81 项 Clippy 均通过。
+
+### 15.3 链接文本与共享预算
+
+c854aa5f7f 的缓存路径使用 MemoryFs 的实际不可变文本和拥有型路径帧，不调用
+普通 LinkOps，也不把对象链接显示文字当作目标。相同增强 C 在 Linux 通过，
+5983630d73 稳定失败 10 项，修后真实 x86 QEMU 1/1；普通预热后严格核对
+40 次成功、41 次 ELOOP，组件集成测试另核对原末项后缀与共享预算。
+
+缓存 BENEATH 根处和 NO_XDEV 向上的 EAGAIN 与普通模式 EXDEV 分开验证。
+绝对 BENEATH 文本链接仍为 EXDEV，IN_ROOT 的绝对目标沿原起点根解析；
+NO_SYMLINKS、NO_MAGICLINKS、最终 nofollow 和尾斜杠也在同一旅程中执行。
+18 包标准库、两个修改软件包的 9/9 项 Clippy 和格式检查通过，Kernel Rust
+未修改，默认用例及启动数不增加。完整记录为 `cached_link_text`；链接 atime、
+挂载时间策略、动态 producer、普通缓存打开及原生缓存属性继续保留限制。
+
+普通读取仍将同一实际文本投影到原接口类型。内部解析通过不等于用户态读取
+入口已经取得直接证据，该边界单独列出。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| readlinkat/MemoryFs 文本；x86_64 267；其余三架构 78 | v7.1 [do_readlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L524) | 读取实际链接文字并按缓冲区长度复制，不把目标作为新路径跟随 | sys_readlinkat → FsView.read_link → DirEntry.read_link → MemoryNode.read_at；原生查询将 FileContent 的 Arc 文本转换为 NamespaceRead.LinkText String | 无法确认 | 同一 C 的普通与缓存解析实际消费同一目标，标准库通过；本轮没有原始 SYS_readlinkat 的 MemoryFs 文本读取旅程，不能代替此入口的直接证据 |

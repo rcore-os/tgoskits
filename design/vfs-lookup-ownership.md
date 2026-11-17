@@ -4626,6 +4626,27 @@ Linux tmpfs 丢弃负项，因此普通 ENOENT 后的 CACHED 仍为 EAGAIN；有
 的夹具失败均独立保留，未作为产品回归。普通打开、链接跟随、其他后端缓存
 元数据与受控调用者发布竞争仍未完成，不以此阶段代替完整 CACHED 或整个 PR。
 
+### 6.34 缓存链接与向上遍历
+
+c854aa5f7f 为静态链接提供显式缓存目标能力。MemoryFs 的 `FileContent` 保存
+一份不可变 Arc 文本，普通查询在返回边界转换为 String，缓存查询只尝试原锁
+并取得共享引用。`CachedLookup` 的拥有型帧保留原后缀，相对与绝对目标分别沿
+原父目录和既定 root 策略处理；与普通查找共用 `SYMLINKS_MAX`。
+
+缓存 dotdot 不能套用普通错误。BENEATH 根逃逸及 NO_XDEV 向上跨挂载对齐
+`follow_dotdot_rcu` 的拒绝 unlazy，返回 EAGAIN；绝对链接的 BENEATH 拒绝
+仍为 EXDEV。原 test-path-lookup-ownership 的同一增强 C 在 Linux 通过，
+5983630d73 失败 10 项，其中两项为旧 EXDEV/EAGAIN 差异，其余为链接能力
+缺失；c854aa5f7f 在真实 x86 QEMU 为 1/1，原 inode 和卸载寿命判据仍通过。
+
+长链先经普通查询预热名称与 atime，再严格要求缓存 40 次成功、41 次 ELOOP。
+原 MemoryFs 集成测试另验证链接前缀展开后保留原末项，所有帧共享一次预算。
+18 包标准库、两个修改包的 9/9 项 Clippy 及格式检查均通过；本阶段没有修改
+Kernel Rust，也没有增加默认用例或启动。最初的 Linux 夹具失败和未锚定日志
+计数的证据校验失败分别保留，不作为产品红绿。完整记录为 `cached_link_text`。
+链接 atime、挂载时间策略和动态 producer 仍未闭合，普通缓存打开与原生缓存
+元数据也继续列为未完成。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
