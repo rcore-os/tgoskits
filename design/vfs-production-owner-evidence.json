@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "owned_lookup_results",
+  "latest_evidence_section": "typed_parent_lookup",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -3348,5 +3348,221 @@
         "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
       }
     }
+  },
+  "typed_parent_lookup": {
+    "implementation_commits": [
+      "190c9a2d5f4d65575c861a4621ef9686b676c9db",
+      "df88f5e52aeec907213500d37bbe6be846881ee7",
+      "cf78f01c61936886641252e4a8e0c5ae6d820edd"
+    ],
+    "suffix_test_source": "9b3d54bbe2cf24922fd747f0d53d61f1803f3a0d",
+    "suffix_fix_source": "5111b453580d8b7a2d0a89e9edfec8457daf9793",
+    "last_component": {
+      "parent_result": "ParentLookup",
+      "kinds": [
+        "Name",
+        "Root",
+        "Current",
+        "Parent"
+      ],
+      "trailing_directory_requirement_retained": true,
+      "physical_parent_name_adapter_removed": true,
+      "legacy_parent_tuple_api_removed": true
+    },
+    "multi_operand_view": {
+      "source": "linkat and renameat2 capture one FsView, then view_at borrows its original FS snapshot",
+      "concurrent_shared_fs_syscall_proof": "not yet obtained"
+    },
+    "dot_destination_before": {
+      "source": "272141b52a8fe36af6ebc1b98f1783eb89dccea5",
+      "log": "owned-lookup-full-system.log",
+      "program": "bug-dir-mutation-permissions",
+      "program_exit": 1,
+      "outer_exit": 1,
+      "failure": "linkat to final dot returns EACCES instead of EEXIST"
+    },
+    "final_std": {
+      "source": "5111b453580d8b7a2d0a89e9edfec8457daf9793",
+      "packages_passed": 18,
+      "packages_failed": 0,
+      "outer_exit": 0
+    },
+    "clippy": {
+      "migration_source": "cf78f01c61936886641252e4a8e0c5ae6d820edd",
+      "migration_checks_passed": 78,
+      "migration_checks_failed": 0,
+      "migration_outer_exit": 0,
+      "suffix_source": "5111b453580d8b7a2d0a89e9edfec8457daf9793",
+      "suffix_checks_passed": 6,
+      "suffix_checks_failed": 0,
+      "suffix_outer_exit": 0
+    },
+    "qemu": {
+      "x86_64": {
+        "source": "cf78f01c61936886641252e4a8e0c5ae6d820edd",
+        "program": "bug-dir-mutation-permissions",
+        "program_sha256": "fbdf28c930bfd24502fc87c98b9b1229bea0ae4db007fbaecfb9dae006faef54",
+        "outer_exit": 0,
+        "cases_passed": 1,
+        "cases_failed": 0,
+        "elf_sha256": "65a7eed2dc52eb54871809c1797187b3e3f4785708c849e697a88d2d058f1437"
+      },
+      "aarch64": {
+        "source": "cf78f01c61936886641252e4a8e0c5ae6d820edd",
+        "program": "bug-dir-mutation-permissions",
+        "program_sha256": "fbdf28c930bfd24502fc87c98b9b1229bea0ae4db007fbaecfb9dae006faef54",
+        "outer_exit": 0,
+        "cases_passed": 1,
+        "cases_failed": 0,
+        "elf_sha256": "2217d87eb7ba3066af686a0989db91c9e21fb098eac121bf35ac49377f180914"
+      },
+      "riscv64": {
+        "source": "cf78f01c61936886641252e4a8e0c5ae6d820edd",
+        "program": "bug-dir-mutation-permissions",
+        "program_sha256": "fbdf28c930bfd24502fc87c98b9b1229bea0ae4db007fbaecfb9dae006faef54",
+        "outer_exit": 0,
+        "cases_passed": 1,
+        "cases_failed": 0,
+        "elf_sha256": "2a0ea7daf0bbdf9a189d96b6b70561ba9d0aad096e35d26794b34165d23accb9"
+      },
+      "loongarch64": {
+        "source": "cf78f01c61936886641252e4a8e0c5ae6d820edd",
+        "program": "bug-dir-mutation-permissions",
+        "program_sha256": "fbdf28c930bfd24502fc87c98b9b1229bea0ae4db007fbaecfb9dae006faef54",
+        "outer_exit": 0,
+        "cases_passed": 1,
+        "cases_failed": 0,
+        "elf_sha256": "de07ee717adb5d8ba15f16c3972ed5f8b7af83cf76250500f293c6f32291c015"
+      }
+    },
+    "suffix_regression": {
+      "negative_source": "9b3d54bbe2cf24922fd747f0d53d61f1803f3a0d",
+      "negative_failed_package": "ax-fs-ng",
+      "negative_failed_profiles": 2,
+      "negative_outer_exit": 1,
+      "failure": "mixed exchange directory suffix returns NotADirectory instead of the backend capability refusal",
+      "positive_source": "5111b453580d8b7a2d0a89e9edfec8457daf9793",
+      "positive_outer_exit": 0,
+      "test_file_sha256": "73316c6f76d439e6b69fc8f85a271a4bc0054588d7df04d390c184bf51e5583b",
+      "same_test_across_red_green": true,
+      "backend_exchange_support_added": false,
+      "host_linux_probe": "typed-parent-linux-exchange-probe.json"
+    },
+    "remaining_scope_unchanged": true,
+    "compatibility_table_rows": 42,
+    "recorded_at": "2026-11-17T09:30:34.212842+00:00",
+    "x86_other_programs": {
+      "source": "cf78f01c61936886641252e4a8e0c5ae6d820edd",
+      "ownership_passed": 107,
+      "ownership_failed": 0,
+      "path_passed": 45,
+      "path_failed": 0,
+      "ownership_outer_exit": 0,
+      "path_outer_exit": 0
+    },
+    "source_sha256": {
+      "fs/ax-fs-ng/src/api.rs": "7dc27e18f60c90a4a5796d96e5d72170864c9b31cfb899c08b25422e0a26ad92",
+      "fs/ax-fs-ng/src/fs_core/lookup.rs": "70d33fb05b8923144df6ccbcc3f83ec12ad5fb46e55720962ce78e2517c93b39",
+      "fs/ax-fs-ng/src/fs_core/mod.rs": "9835b4d1f57ee05bd5d6387923f711c3153cbff93d27c388781a861a492686ae",
+      "fs/ax-fs-ng/src/fs_core/parent.rs": "96ed14be2a1633e653286797a7a60fc11fd84e80e5798f27464908d3fddc28e7",
+      "fs/ax-fs-ng/src/fs_core/view.rs": "597a32fd127bef541d2aeb4241f143dedc6239394bc3e6460d8c464730a14b5e",
+      "fs/ax-fs-ng/src/initramfs.rs": "d3e25beae6e84384b1a777a7e629a40ba42ac9840da4842a296aed8e645c7bc0",
+      "fs/ax-fs-ng/src/lib.rs": "a6c5f599accc46791881e0750ff9102f24f02fc2f291a8d54b03bae6b5ece258",
+      "fs/ax-fs-ng/tests/ownership.rs": "73316c6f76d439e6b69fc8f85a271a4bc0054588d7df04d390c184bf51e5583b",
+      "os/StarryOS/kernel/src/file/fs.rs": "37d6db604c95e2aada8b0df965d2d540c748d1eaa51c8011479106ad1f32cc04",
+      "os/StarryOS/kernel/src/file/mod.rs": "02658f44549eedb28f8269202be18dba772ef99e2e784d91239a5fddbf13ea1d",
+      "os/StarryOS/kernel/src/syscall/fs/ctl.rs": "76c1adbd3c54593a6210b41497da62f9c048522068926f11511580255b9e1f96"
+    },
+    "logs": {
+      "typed-parent-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-std.log",
+        "sha256": "aafec7272270ff13c6fd5e5ca69544dbd2e3a5d58ff3ac5f10688b1501f3c566"
+      },
+      "typed-parent-std.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-std.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "typed-parent-final-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-final-std.log",
+        "sha256": "b84667e18e8ac09f29c24d36c037f377516cf5bdaee60d65c8d56ca45fb04ecf"
+      },
+      "typed-parent-final-std.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-final-std.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "typed-parent-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-clippy.log",
+        "sha256": "47be045ae5a67152296f0f1b8d997f88378c0489a416f4cc6cb9d61538fa78bf"
+      },
+      "typed-parent-clippy.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-clippy.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "typed-parent-final-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-final-clippy.log",
+        "sha256": "389efc5b6b6770d5c854db41f10c62bed6306adc5f9259ee50c48b70247956b1"
+      },
+      "typed-parent-final-clippy.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-final-clippy.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "typed-parent-exchange-negative-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-exchange-negative-std.log",
+        "sha256": "981743524fd705d60b91a97dd291345cec2ca11f3ba423f3cc2c18ad8eab933e"
+      },
+      "typed-parent-exchange-negative-std.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-exchange-negative-std.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "typed-parent-mutation-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-mutation-qemu.log",
+        "sha256": "60e8feb5469a27bb863023db05909e9de69b3c4398ce98d30a99ae7e4e58c9b8"
+      },
+      "typed-parent-mutation-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-mutation-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "typed-parent-ownership-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-ownership-qemu.log",
+        "sha256": "a2dcfea4ab6ba14cf2947175512ac67b016062e9bc3db894b0c7abe348ddd0a2"
+      },
+      "typed-parent-ownership-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-ownership-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "typed-parent-path-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-path-qemu.log",
+        "sha256": "64b6049a80a416b05c86f2695ac459dc66bae742f9be8840531749535ecc137c"
+      },
+      "typed-parent-path-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-path-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "typed-parent-aarch64-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-aarch64-qemu.log",
+        "sha256": "b1b0116e1b7a02fa2aa8108369143ac736b9d1def932058eb49ab4292a14cc7c"
+      },
+      "typed-parent-aarch64-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-aarch64-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "typed-parent-riscv64-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-riscv64-qemu.log",
+        "sha256": "3034e1b6dc9754da4a610dc3df48c28fadc5443186125512c0845e6a9c010186"
+      },
+      "typed-parent-riscv64-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-riscv64-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "typed-parent-loongarch64-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-loongarch64-qemu.log",
+        "sha256": "a3ea1a378453f407c0fbb6c8c29df4c212b7990c686e7762519301105701aaf7"
+      },
+      "typed-parent-loongarch64-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/typed-parent-loongarch64-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      }
+    },
+    "compile_attempts_counted_as_pass": false
   }
 }

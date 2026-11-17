@@ -537,7 +537,7 @@ dirfd 是搜索起点，不自动成为进程根。`IN_ROOT` 将本次起点设�
 `ParentLookup` 保存实际父目录的 PathHandle、`FinalComponent`、尾斜杠要求、
 原搜索记录和权限边界。父解析在末尾 `.`、`..` 之前停止，不能沿物理父关系
 重新取得一个普通名称。lookup/open 完成器才消费这些遍历意图；命名操作按
-fixed Linux 的 filename_create、filename_rmdir、filename_unlinkat 与 rename
+固定 Linux 基准的 filename_create、filename_rmdir、filename_unlinkat 与 rename
 规则解释特殊末项。创建类特殊末项返回 EEXIST，rmdir 分别为 EINVAL、
 ENOTEMPTY、EBUSY，unlink 为 EISDIR；rename 在 mount 身份与两端末项之间
 保留 Linux 的检查顺序。尾斜杠不授权跟随删除操作的最终符号链接。
@@ -848,16 +848,17 @@ LinkTarget 的 Object 快照也要在原 fd、MM 或 FsContext 拥有者尚保�
 各按真实来源取得或继承权利，仍须分别执行 NO_XDEV 与 scoped 检查。
 取得 use 时发现正常卸载竞争属于拓扑重验证，不能误报为允许创建的 Missing。
 
-`FsView::resolve`、nofollow、checked、trace 和 parent 出口直接转交
-`PathHandle`，搜索记录为 `Vec<PathHandle>`；本次 dirfd 权限边界同样保留原句柄。
+`FsView::resolve`、nofollow、checked 和 trace 出口直接转交 `PathHandle`，
+搜索记录为 `Vec<PathHandle>`；parent 出口由 `ParentLookup` 保存原父目录、
+末组件与搜索记录，本次 dirfd 权限边界同样保留原句柄。
 查询不得把会话拥有路径降为裸 Location 返回，再由调用方取得另一份 mount use。
 `Continuation` 完成结果、Starry `ResolveAtResult::File`、目录迭代及 archive/migration
 调用方使用同一拥有契约。后端操作只在这些拥有者仍存活时借用 `.location()`，
 PathHandle 不增加 Deref、into_raw 或省略持有者的兼容出口。
 
 `create_dir`、link、symlink 和 create_node 返回值以父目录已有句柄 rebind，
-保留相同 mount 的原使用权。父名称适配在确实跨越覆盖层时先取得新的使用权，
-再结束旧拥有者；特殊末组件的类型化与父关系重验仍按第 3.2、3.4 节继续迁移。
+保留相同 mount 的原使用权。父解析直接保留原命名意图，删除把已解析对象重建为
+物理父名称的适配；命名提交的父关系重验仍按第 3.4 节继续闭合。
 `ReadDir::from_path` 与原生 Directory 创建直接消费拥有路径，读状态先于最后路径
 退休。exec 的主映像、脚本解释器和 PT_INTERP 查找结果直接交给装载缓存。
 

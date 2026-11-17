@@ -10,7 +10,9 @@ Linux 基准为 v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。编号�
 
 ### 1.2 运行条件
 
-当前拥有型迁移源码为 `802004f30c`，测试夹具提交为 `272141b52a`。最终 18 包标准库和 AX/runtime/Kernel 的 106 项 Clippy 通过；x86_64 的 ownership、路径和 proc 程序分别为 107/107、45/45 和 1/1。以同一 ELF 运行完整 system 为 534/541，通过范围与七个失败分别保留。
+拥有型迁移源码 `802004f30c` 与夹具提交 `272141b52a` 的 18 包标准库及 AX/runtime/Kernel 的 106 项 Clippy 通过；x86_64 的 ownership、路径和 proc 程序分别为 107/107、45/45 和 1/1。同一阶段完整 system 为 534/541，通过范围与七个失败分别保留。
+
+类型化父解析 `cf78f01c61` 的原权限程序在四架构均为 1/1，AX/Kernel 的 78 项 Clippy 通过；x86 ownership、path 分别保持 107/107、45/45。`5111b45358` 随后修正交换操作的尾斜杠前置判定，原有完整改名旅程的同一增强断言先失败后通过，最终 18 包标准库及 AX 六项 Clippy 通过。这一后续修正没有增加 MemoryFs 的交换能力，也没有把前一版本的四架构 ELF 改写为它的运行结果。
 
 前一 proc 阶段 `ac8e8bdd61` 的同一完整程序在 AArch64 为 1/1，在 Linux 6.8 的私有用户、PID、挂载命名空间通过。后者提供可观察对照，固定 v7.1 源码决定语义。这些历史结果不改写为本次所有权迁移在该架构的运行证明；RISC-V、LoongArch64 及未直接运行的边界仍保留证据缺口。
 
@@ -95,3 +97,33 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 | --- | --- | --- | --- | --- | --- |
 | execve；x86_64 59；其余三架构 221 | v7.1 [do_execveat_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | 选定执行文件及解释器后，以实际 file/path 保持映像身份，退出后释放活动执行引用 | sys_execve → FsView.resolve → load_user_app(PathHandle) → ExecutableFile/ElfLoader/CachedFile → AddrSpace executable 与映射 | 部分正确 | x86 proc-pid-exe 的普通、bind 与 unlinked 对象检查通过；bind 执行文件退出后卸载仍 EBUSY，内部缓存退休继续处理 |
 | execveat；x86_64 322；其余三架构 281 | v7.1 [execveat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | dirfd、AT_EMPTY_PATH 与 nofollow 决定实际执行对象及错误，保留描述和路径至装载 | sys_execveat → resolve_at 或 retained memfd path_handle → load_user_app → loader/MM | 无法确认 | 已迁移实际 PathHandle 消费；本阶段没有直接覆盖所有 fd 类型、flags 及错误优先级的系统回归 |
+
+
+## 5. 类型化末组件
+
+`190c9a2d5f` 的父解析输出为 `ParentLookup`；`cf78f01c61` 包含导入及重新导出的完整迁移。原查找的点和点点在父出口保持未消费，普通 lookup/open 在原 Continuation 内继续遍历。命名操作据此决定错误，既有后端仍在实际槽位重新授权。
+
+### 5.1 命名入口
+
+每个入口单独保留调用链和运行范围。原完整权限程序已从错误版本失败变为四架构通过，18 包标准库、迁移版四目标 Clippy 及后续 AX 定向 Clippy 均通过。共享 FS 并发观察不能由函数签名或单线程通过外推；MemoryFs 的 EXCHANGE/WHITEOUT 能力仍未提供。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| mkdir；x86_64 83 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 路径父遍历成功后，根、点和点点均为 EEXIST；正常目录允许尾斜杠 | sys_mkdir → sys_mkdirat → FsView.create_dir → ParentLookup → native create | 部分正确 | 原目录权限程序包含创建存在性、dirfd 与 DAC 判定 |
+| mkdirat；x86_64 258；其余三架构 34 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 绝对路径忽略 dirfd；特殊末项不转为其物理目录名称，正常创建在真实父槽位授权 | sys_mkdirat → with_fs → FsView.create_dir → typed component → Location.create | 部分正确 | 原完整目录权限程序直接覆盖 mkdirat；跨目标结果在本阶段终态记录 |
+| rmdir；x86_64 84 | v7.1 [filename_rmdir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5392) | 父遍历后，点为 EINVAL、点点为 ENOTEMPTY、根为 EBUSY；最终链接不作为目录目标跟随 | sys_rmdir → sys_unlinkat(AT_REMOVEDIR) → FsView.remove_dir → ParentLookup | 部分正确 | 原完整权限程序覆盖点、点点、只读父权限和目录删除 |
+| unlink；x86_64 87 | v7.1 [filename_unlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5534) | 特殊末项为 EISDIR；带尾斜杠的非目录为 ENOTDIR；最终链接自身参与删除 | sys_unlink → sys_unlinkat → FsView.remove_file → original parent slot | 部分正确 | 原权限及 ownership 程序覆盖 unlink 和目录拒绝；完整尾斜杠矩阵仍待补 |
+| unlinkat；x86_64 263；其余三架构 35 | v7.1 [filename_unlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5534) | flags 决定 unlink 或 rmdir；父目录和末项保持原意图，实际提交仍重验当前名称对象 | sys_unlinkat → with_fs → remove_file/remove_dir → ParentLookup → namespace command | 部分正确 | 原完整权限程序覆盖 dirfd 点、点点与 DAC；本阶段不声明完整并发覆盖 |
+| rename；x86_64 82 | v7.1 [do_renameat2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L6110) | 按普通替换解释两端；特殊末项保留 EBUSY，mount 身份检查先于末项拒绝 | sys_rename → sys_renameat → sys_renameat2 → one FsView → rename_resolved | 部分正确 | 原完整 ownership 程序包含替换、同对象和跨 mount 行为 |
+| renameat；x86_64 264；AArch64/LoongArch64 38；RISC-V 无此入口 | v7.1 [do_renameat2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L6110) | 两端 dirfd 使用同一原始 root/cwd；绝对路径各自忽略 dirfd | sys_renameat → sys_renameat2 → view_at for each operand → ParentLookup | 部分正确 | 原权限程序及路径程序包含 renameat/renameat2；RISC-V 由 renameat2 承担 |
+| renameat2；x86_64 316；其余三架构 276 | v7.1 [do_renameat2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L6110) | 未知或冲突 flags 为 EINVAL；不同 mount 为 EXDEV；源特殊项 EBUSY，NOREPLACE 的特殊目标 EEXIST | sys_renameat2 → one saved FsView → two ParentLookup → rename_resolved → native attempt | 部分正确 | 原权限、ownership 和路径程序覆盖 flags、存在性、改名后身份；并发共享 FS 的 syscall 证明仍待补 |
+| link；x86_64 86 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 按不跟随源末链接的 linkat 语义取得源；目标特殊末项为 EEXIST | sys_link → sys_linkat → resolve_at_with_boundary_checked → link_resolved | 部分正确 | 原权限程序覆盖普通 link；不由共享 helper 外推所有 legacy 输入 |
+| linkat；x86_64 265；其余三架构 37 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 源 empty-path/跟随 flags 保留；目标点直接 EEXIST，不重走打开目录的物理父亲 | sys_linkat → one FsView → owned source + typed destination → link_resolved | 部分正确 | 旧 272141b52a 的完整权限程序因点目标错误 EACCES 失败；cf78f01c61 同一程序在四架构通过；共享 FS 的直接并发交错仍待补 |
+| symlink；x86_64 88 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 目标文字不参与当前查找；新链接名称的特殊末项 EEXIST，尾斜杠不创建非目录 | sys_symlink → sys_symlinkat → FsView.symlink → ParentLookup → create_symlink | 部分正确 | 原权限程序包含 symlink 与只读目录拒绝；尾斜杠的直接系统输入仍需补齐 |
+| symlinkat；x86_64 266；其余三架构 36 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 按新名称的 dirfd 解析父目录，保存文字并授权实际创建槽位 | sys_symlinkat → with_fs → FsView.symlink → typed creation_name → backend | 部分正确 | 原完整权限程序覆盖 symlinkat；完整错误优先级仍未穷尽 |
+| mknod；x86_64 133 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 类型和设备能力检查保留，创建名称中的特殊末项不能替换已有目录 | sys_mknod → sys_mknodat → FsView.create_node → ParentLookup → create_initialized | 无法确认 | AX 既有设备创建功能旅程通过；不能替代该 legacy syscall 的直接运行 |
+| mknodat；x86_64 259；其余三架构 33 | v7.1 [filename_create](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4939) | 按 dirfd 保留父目录和末项，真实 owner 决定能力、权限与创建结果 | sys_mknodat → with_fs → FsView.create_node → typed creation_name → actual slot | 部分正确 | 原权限程序覆盖设备能力及存在性；完整类型、尾斜杠和其他边界继续核对 |
+
+### 5.2 视图边界
+
+`view_at` 只从入口已保存的 FsView 选择各个 dirfd，link/rename 解析两端及最后提交不再次调用 current_fs_context 或 snapshot_fs_binding。空路径源继续保留实际打开描述；fd 表中对象按真实观察点取得。当前记录只确认调用链已经共用视图，跨线程修改 CLONE_FS 的受控直接系统证明仍需补齐。

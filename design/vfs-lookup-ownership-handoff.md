@@ -1008,3 +1008,35 @@ cgroup-basic、ltp-pilot-min、cgroup-ns、devpts-newinstance、unix-bind-chown�
 完整 CACHED、特殊末组件、跨操作数同一原始视图、其余 proc/SimpleFs 及原交付
 范围继续处理。生产证据的 `owned_lookup_results` 保留精确源码、各层终态和摘要；
 系统调用表新增拥有型根、挂载与执行消费者，不由类型迁移推断完整兼容。
+
+
+### 9.34 类型化父解析
+
+`190c9a2d5f` 以 `ParentLookup` 保留原父目录使用权、FinalComponent、尾斜杠、
+搜索记录及 dirfd 边界，删除物理父名称重建与旧 tuple 出口。父解析在末尾点和
+点点之前停止，普通 lookup/open 在同一 Continuation 中消费它们；命名操作按
+Linux 的 create、unlink、rmdir 和 rename 规则分类。删除操作不因尾斜杠跟随
+最终链接。公开创建、initramfs、原生 rename_at 和 Kernel 全部迁移到新出口。
+
+Kernel 的 linkat 和 renameat2 入口只保存一次 FsView，由 `view_at` 选各自 dirfd，
+两端解析与提交使用原 root/cwd/namespace/caller。`df88f5e52a` 与 `cf78f01c61`
+补齐 String 导入和 dirfd 选择入口的重新导出；失败编译与中断轮次不计为通过。
+当前源码已共用原 FS 视图，但跨线程改变 CLONE_FS 的直接受控证明仍未取得。
+
+错误源码 `272141b52a` 的完整目录权限程序会把 dirfd 点目标重建成物理父名称，
+在不可搜索的外层父目录返回 EACCES，预期 EEXIST。相同 C 文件保持摘要不变，
+`cf78f01c61` 在 x86_64、AArch64、RISC-V 和 LoongArch64 均为 xtask 1/1，
+最外层 0。该版 18 包标准库和 AX/Kernel 78 项 Clippy 通过；x86 的 ownership、
+path 完整程序保持 107 pass、0 fail 和 45 pass、0 fail。
+
+核对固定 Linux 的 do_renameat2 后，原完整改名旅程增加带目录尾斜杠的混合类型
+交换拒绝及身份保留判据。错误候选 `9b3d54bbe2` 在两个 VFS profile 返回
+NotADirectory，预期保留后端的 OperationNotSupported；标准库最外层 1。
+`5111b45358` 将目录要求应用到实际交换操作数，同一文件摘要不变，最终 18 包
+标准库与 AX 六项 Clippy 全部通过，最外层 0。Linux 6.8 的直接 renameat2 探针
+确认这类输入合法并交换实际对象；MemoryFs 当前仍不提供 EXCHANGE/WHITEOUT，
+没有用拒绝路径宣称完整交换兼容，也不把前版四架构 ELF 记成该修正的运行结果。
+
+生产证据的 `typed_parent_lookup` 绑定各源码、四架构 ELF、C/Rust 文件与日志
+摘要；系统调用表扩为 42 行。完整 CACHED、实际命名提交的剩余拓扑重验、
+proc/SimpleFs、伪文件系统实例、执行缓存退休及原验收范围继续实施。
