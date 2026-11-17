@@ -258,10 +258,10 @@ pub fn install_builtin(source: &FsView<'_>, target: &FsView<'_>) -> Result<bool>
     drop(plan);
     let report = result
         .map_err(|error| {
-            if error == VfsError::InvalidData {
-                if let Some(validation) = validation_error.borrow_mut().take() {
-                    return anyhow!(validation);
-                }
+            if error == VfsError::InvalidData
+                && let Some(validation) = validation_error.borrow_mut().take()
+            {
+                return anyhow!(validation);
             }
             anyhow::Error::from(error)
         })
