@@ -20,6 +20,9 @@ use crate::{
     register::{DriverRegister, ProbeKind},
 };
 
+#[cfg(test)]
+mod tests;
+
 static PCIE: OnceLock<RawSpinLock<Vec<PcieEnumterator>>> = OnceLock::new();
 static BOUND_IOMMU_DOMAINS: OnceLock<RawSpinLock<BTreeMap<PciAddress, Arc<dyn IommuDomain>>>> =
     OnceLock::new();
