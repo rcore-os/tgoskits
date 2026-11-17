@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "typed_parent_lookup",
+  "latest_evidence_section": "temporary_directories_and_kernel_selection",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -3209,7 +3209,9 @@
         "test-devpts-newinstance",
         "test-unix-bind-chown"
       ],
-      "fixed_elf_sha256": "788f7d79e76ea3086a9218ec398798a7d92ecf1fd555e058f462faf80b0c499a"
+      "elf_sha256": "788f7d79e76ea3086a9218ec398798a7d92ecf1fd555e058f462faf80b0c499a",
+      "fixed_elf_option_enforced": false,
+      "kernel_selection_correction": "normal discovery rebuilt unchanged source and matched the preceding ELF; fixed-elf was ignored before a0a3b8b5fc"
     },
     "arceos_stack_guard_recheck": {
       "source": "272141b52a8fe36af6ebc1b98f1783eb89dccea5",
@@ -3564,5 +3566,187 @@
       }
     },
     "compile_attempts_counted_as_pass": false
+  },
+  "temporary_directories_and_kernel_selection": {
+    "recorded_at": "2026-11-17T09:59:45.852295+00:00",
+    "validation_source": "04d7860504a70403766d34b04cc688f4ba14f9fc",
+    "fixed_kernel_selection": {
+      "negative_source": "45379500769f559742c5989462e336f5f92d5388",
+      "fix_source": "a0a3b8b5fc2907d5df191b7b4edfabfc3fafb1f4",
+      "test": "cli::tests::starry_qemu_requires_one_complete_run_mode",
+      "test_sha256": "59c04310444917ed3b0d84f9df39605d7ef1c54dedf077708915adc8180c032d",
+      "before": {
+        "std_outer_exit": 1,
+        "tests_passed": 509,
+        "tests_failed": 1,
+        "invalid_actual_cli_exit": 0
+      },
+      "after": {
+        "std_outer_exit": 0,
+        "tests_passed": 510,
+        "tests_failed": 0,
+        "invalid_actual_cli_exit": 2
+      },
+      "invalid_actual_cli": "cargo xtask starry test qemu --arch x86_64 --list --fixed-elf /nonexistent/pr2800-should-be-rejected.elf",
+      "external_complete_mode_preserved": true,
+      "evidence_correction": {
+        "owned_full_system": "normal discovery rebuilt unchanged source 272141b52a; ELF matched the preceding build, but fixed-elf did not enforce reuse",
+        "tmp_negative": {
+          "actual_build_source": "5111b453580d8b7a2d0a89e9edfec8457daf9793",
+          "elf_sha256": "4a7b0954ac8602be7c338ffc214d2cca73da76fdfe6df5a0b12ce27161d18a57",
+          "outer_exit": 1,
+          "fixed_elf_option_was_ignored_in_normal_case_mode": true,
+          "not_counted_as_cf78_kernel_run": true
+        },
+        "artifact_helper_rejects_fixed_elf": true
+      }
+    },
+    "temporary_directories": {
+      "fix_source": "04d7860504a70403766d34b04cc688f4ba14f9fc",
+      "paths": [
+        "/tmp",
+        "/dev/shm"
+      ],
+      "mode": "01777",
+      "authority": "TrustedInitialization::kernel().restore_metadata on the mounted root",
+      "test": "test-suit/starryos/qemu/system/syscall-test-unix-bind-chown/src/main.c",
+      "test_sha256": "8ec3af4c110dc402fe2936fa554d9f07fcf41cece283e2a823176a6fe250a6c3",
+      "before": {
+        "actual_build_source": "5111b453580d8b7a2d0a89e9edfec8457daf9793",
+        "elf_sha256": "4a7b0954ac8602be7c338ffc214d2cca73da76fdfe6df5a0b12ce27161d18a57",
+        "outer_exit": 1,
+        "fixed_elf_option_was_ignored_in_normal_case_mode": true,
+        "not_counted_as_cf78_kernel_run": true
+      },
+      "after": {
+        "source": "04d7860504a70403766d34b04cc688f4ba14f9fc",
+        "arch": "x86_64",
+        "outer_exit": 0,
+        "programs_passed": 1,
+        "programs_failed": 0,
+        "elf_sha256": "688507719e5d412a02a533a0ec885b8abeb23860a27366fcf1eb4d2829fe1bd0"
+      },
+      "same_unmodified_program_across_red_green": true,
+      "host_linux": {
+        "kernel": "6.8.0-149-generic",
+        "outer_exit": 0,
+        "assertions_passed": 7,
+        "assertions_failed": 0,
+        "environment": "unshare -Urm --map-current-user --keep-caps, private tmpfs /tmp mode=1777",
+        "limitation": "single identity mapping keeps uid/gid 1000; Starry additionally exercises dropping root to 1000"
+      },
+      "other_architecture_runtime": "not yet run for this fix"
+    },
+    "checks": {
+      "std": {
+        "packages_passed": 2,
+        "packages_failed": 0,
+        "outer_exit": 0
+      },
+      "clippy": {
+        "packages": [
+          "axbuild",
+          "starry-kernel"
+        ],
+        "checks_passed": 73,
+        "checks_failed": 0,
+        "outer_exit": 0
+      }
+    },
+    "full_system": {
+      "source": "04d7860504a70403766d34b04cc688f4ba14f9fc",
+      "arch": "x86_64",
+      "total": 541,
+      "passed": 536,
+      "failed": 5,
+      "outer_exit": 1,
+      "failed_programs": [
+        "bugfix-proc-pid-exe-readlink",
+        "cgroup-basic",
+        "syscall-test-ltp-pilot-min",
+        "test-cgroup-ns",
+        "test-devpts-newinstance"
+      ]
+    },
+    "source_sha256": {
+      "scripts/axbuild/src/cli/mod.rs": "59c04310444917ed3b0d84f9df39605d7ef1c54dedf077708915adc8180c032d",
+      "scripts/axbuild/src/test/normal/starry/args.rs": "3fed718026f8dba0edf1e343e70f8912848c5ceda33c705112faab7c158561ca",
+      "scripts/axbuild/src/test/normal/starry/qemu_run.rs": "3ece62389978d3449a6b02499ac432a084844cc28d66fabfa8e6881b5ef6681d",
+      "os/StarryOS/kernel/src/pseudofs/mod.rs": "8e5ac29522ad1235172758ffb3ee993916cb70ea557f785383b62b113c68f38b"
+    },
+    "logs": {
+      "fixed-elf-discovery-before.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/fixed-elf-discovery-before.log",
+        "sha256": "2ce78efd137613572598c483edf34d5d3eda438c391ef1b7bffdf8321e125ab5"
+      },
+      "fixed-elf-discovery-before.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/fixed-elf-discovery-before.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "fixed-elf-negative-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/fixed-elf-negative-std.log",
+        "sha256": "77846ff6a5cc8a89de21c27093f685b61baa8c55c18501208debdd6108ae1a03"
+      },
+      "fixed-elf-negative-std.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/fixed-elf-negative-std.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "fixed-elf-discovery-after.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/fixed-elf-discovery-after.log",
+        "sha256": "1042437afe4252647ebc7be5858cd6e3e61cbb243b2edf2d4182ac0ce9803fde"
+      },
+      "fixed-elf-discovery-after.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/fixed-elf-discovery-after.exit",
+        "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+      },
+      "temp-and-kernel-selection-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/temp-and-kernel-selection-std.log",
+        "sha256": "bff1fc9c1e84503b4b4e33513629a874d6be720da5cb3a7071b786ea3d8f07fd"
+      },
+      "temp-and-kernel-selection-std.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/temp-and-kernel-selection-std.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "temp-and-kernel-selection-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/temp-and-kernel-selection-clippy.log",
+        "sha256": "bea1d589aac55ba571350179ac30728f705fc02615e13583486fa011763efc57"
+      },
+      "temp-and-kernel-selection-clippy.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/temp-and-kernel-selection-clippy.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "tmp-permissions-before-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/tmp-permissions-before-qemu.log",
+        "sha256": "1ead40b1abe4f674086019bb03aed2dc8aef4933bd98f480bf74fa4a6cd184d4"
+      },
+      "tmp-permissions-before-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/tmp-permissions-before-qemu.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "tmp-permissions-after-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/tmp-permissions-after-qemu.log",
+        "sha256": "10e0779df920c61d619d6e5ad1e55ff29e689bd1750ee72899a5abccb14520e2"
+      },
+      "tmp-permissions-after-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/tmp-permissions-after-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "tmp-permissions-linux.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/tmp-permissions-linux.log",
+        "sha256": "4eea804783ed454db8479365794c2b5db6b9e4e727c3c3b038e15f0eb4cbcddd"
+      },
+      "tmp-permissions-linux.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/tmp-permissions-linux.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "tmp-permissions-full-system.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/tmp-permissions-full-system.log",
+        "sha256": "9ad50edb0e89368316a0e15a38798ba72e0f9c7a076d556affdc3307c113cc43"
+      },
+      "tmp-permissions-full-system.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/tmp-permissions-full-system.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      }
+    }
   }
 }

@@ -998,7 +998,7 @@ x86_64 的 ownership 程序为 107 pass、0 fail，路径程序为 45 pass、0 f
 Axvisor 同一专用配置 Clippy 再次通过，AArch64 内核批次 124 pass、0 fail、
 0 skip，Web UI diskless 为 1/1，全部外层 0。
 
-随后以同一固定 ELF 运行完整 x86_64 system，541 个程序中 534 通过、7 失败，
+随后以同一构建的 ELF 运行完整 x86_64 system，541 个程序中 534 通过、7 失败，
 xtask 与外层均为 1。失败为 dir-mutation-permissions、proc-pid-exe-readlink、
 cgroup-basic、ltp-pilot-min、cgroup-ns、devpts-newinstance、unix-bind-chown。
 已观察到特殊末组件错误顺序、执行文件退出后卸载仍 busy，以及 cgroup/devpts
@@ -1040,3 +1040,32 @@ NotADirectory，预期保留后端的 OperationNotSupported；标准库最外层
 生产证据的 `typed_parent_lookup` 绑定各源码、四架构 ELF、C/Rust 文件与日志
 摘要；系统调用表扩为 42 行。完整 CACHED、实际命名提交的剩余拓扑重验、
 proc/SimpleFs、伪文件系统实例、执行缓存退休及原验收范围继续实施。
+
+
+### 9.35 测试内核选择与临时目录
+
+`a0a3b8b5fc` 修复 Starry 测试工具接受不完整 fixed-elf 请求的问题。发现模式原先
+忽略该参数，仍构建当前源码；现在 fixed_elf 与 arch、target、test_case、list
+互斥，并进入需要完整 build/config/rootfs 的外部运行模式。真实根 CLI 旅程在
+`4537950076` 为 509 pass、1 fail，修后 510 pass、0 fail；同一无效真实命令从
+错误退出 0 改为退出 2。保留完整外部模式的接受判据。
+
+此前 owned-lookup 完整 system 实际重新构建未变化的 `272141b52a`，其 ELF 与
+前一轮摘要相同，但 fixed-elf 并未强制复用。临时目录负例实际源码为
+`5111b45358`，ELF 为 `4a7b0954ac8602be7c338ffc214d2cca73da76fdfe6df5a0b12ce27161d18a57`，
+不再记为 cf78f01c61 的固定内核运行。工具已拒绝这种混用，证据中的字段与解释
+同步纠正；这两次程序的实际结果保留。
+
+`04d7860504` 用 `mount_temporary` 在启动装配 `/tmp`、`/dev/shm` 时通过显式
+初始化权限将实际根设为 01777。普通 MemoryFs 的默认权限不变，运行期创建仍
+经过原授权与 owner 提交。原 unix-bind-chown 完整 C 程序未修改，旧版因普通
+用户无法写入 0755 的 /tmp 失败，新版 x86_64 为 1/1、最外层 0，并核对实际
+socket 的类型及 uid/gid。Linux 6.8 在私有 01777 tmpfs 上同一程序 7 pass、
+0 fail；其单身份映射不证明 Starry 的 root 到 1000 降权步骤。
+
+该源码的两包标准库与 axbuild/Kernel 73 项 Clippy 全部通过，最外层 0；x86_64
+完整 system 为 541 个程序中 536 通过、5 失败，最外层 1。尚存 executable
+卸载、cgroup-basic、ltp-pilot-min、cgroup-ns 和 devpts-newinstance，继续分别核对
+实现和测试。该临时目录修正还没有其余三架构的运行证据，不能据此声明完整批次
+或所有目标通过。精确源码、修前修后日志和摘要保存于生产证据的
+`temporary_directories_and_kernel_selection`。

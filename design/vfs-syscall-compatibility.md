@@ -127,3 +127,24 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 ### 5.2 视图边界
 
 `view_at` 只从入口已保存的 FsView 选择各个 dirfd，link/rename 解析两端及最后提交不再次调用 current_fs_context 或 snapshot_fs_binding。空路径源继续保留实际打开描述；fd 表中对象按真实观察点取得。当前记录只确认调用链已经共用视图，跨线程修改 CLONE_FS 的受控直接系统证明仍需补齐。
+
+
+## 6. 临时文件系统装配
+
+启动期的临时目录权限决定普通用户是否能在真实父目录创建对象。`mount_temporary`
+通过初始化接口设置两个独立 tmpfs 根为 01777，保留运行期 DAC、umask 和创建者身份。
+
+### 6.1 路径套接字
+
+原完整程序在旧实现的 /tmp 权限处失败，修后实际核对 socket inode 及创建者。
+当前证据仅覆盖 x86_64 的此条创建路径，其他 flags、错误顺序和目标继续核对。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| bind(AF_UNIX pathname)；x86_64 49；其余三架构 200 | v7.1 [unix_bind_bsd](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L1350) | 创建要求父目录 write/search；socket 由当前 fsuid/fsgid 和 umask 初始化；Linux 的 /tmp 模式由系统装配决定 | mount_all → mount_temporary → explicit initialization；sys_bind → saved FS/caller/umask → UnixSocket.bind_path_with → create_node initialized in actual parent | 部分正确 | 同一 unix-bind-chown C 程序在 5111b45358 失败，在 04d7860504 x86_64 为 1/1、外层 0；Linux 6.8 私有 tmpfs 对照 7/0；其余目标与完整 AF_UNIX flags/errors 未验证 |
+
+### 6.2 验证边界
+
+/dev/shm 与 /tmp 共用同一初始化规则，但本轮未单独证明共享内存的完整 syscall
+旅程。04d7860504 的两包标准库和 axbuild/Kernel 73 项 Clippy 均通过，完整
+x86_64 system 为 536/541、仍有 5 个失败；静态与部分运行结果不代表整体兼容。
