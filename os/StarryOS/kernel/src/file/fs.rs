@@ -269,7 +269,7 @@ pub(crate) fn display_location(loc: &Location) -> VfsResult<alloc::string::Strin
         return Ok(display.into_owned());
     }
     if let Some(namespace) = super::NamespaceObject::at_location(loc) {
-        return Ok(namespace.display()?);
+        return namespace.display();
     }
     let memfd = loc
         .user_data()

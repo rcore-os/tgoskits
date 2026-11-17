@@ -108,11 +108,11 @@ impl PtsInstance {
         let options = self.options;
         let terminal = pty.terminal.clone();
         let device = DeviceBacking::new(fs, NodeType::CharacterDevice, DeviceId::default(), pty)?;
-        device.update_metadata(MetadataUpdate {
+        device.initialize_metadata(MetadataUpdate {
             mode: Some(options.slave_mode),
             owner: Some((uid, options.slave_gid)),
             ..MetadataUpdate::default()
-        })?;
+        });
 
         let result = {
             let mut table = self.table.lock_irqsave();

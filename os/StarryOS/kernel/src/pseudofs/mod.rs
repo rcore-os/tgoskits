@@ -34,8 +34,7 @@ pub use self::{
 };
 use crate::StarryResult;
 
-/// An enum containing either a directory ([`DirMaker`]) or a file (`Arc<dyn
-/// FileNodeOps>`).
+/// Filesystem-free recipes for a directory or file entity.
 #[derive(Clone)]
 pub enum NodeOpsMux {
     /// A directory node.

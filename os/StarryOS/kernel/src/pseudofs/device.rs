@@ -150,9 +150,8 @@ impl DeviceBacking {
         Arc::new(Self { inode, ops })
     }
 
-    pub(crate) fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
+    pub(super) fn initialize_metadata(&self, update: MetadataUpdate) {
         self.inode.update_metadata(update);
-        Ok(())
     }
 
     pub fn set_device_id(&self, device_id: DeviceId) {
