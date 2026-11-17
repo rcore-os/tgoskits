@@ -102,8 +102,11 @@ static int check_pipe_route(int dirfd, const char *path, int original)
                | reject_open(dirfd, path, O_RDONLY | O_CREAT | O_EXCL, EEXIST)
                | reject_open(dirfd, path, O_RDONLY | O_DIRECTORY, ENOTDIR);
     for (int access = O_RDONLY; access <= O_RDWR; ++access) {
-        for (int openat2 = 0; openat2 < 2; ++openat2) {
-            int fd = raw_open(openat2, dirfd, path, access | O_NONBLOCK | O_CLOEXEC);
+        for (int variant = 0; variant < 4; ++variant) {
+            int openat2 = variant & 1;
+            int flags = access | O_NONBLOCK | O_CLOEXEC;
+            if (variant & 2) flags |= O_TRUNC;
+            int fd = raw_open(openat2, dirfd, path, flags);
             struct stat before, after;
             if (fd < 0 || fstat(original, &before) != 0 || fstat(fd, &after) != 0 ||
                 !S_ISFIFO(after.st_mode) || before.st_dev != after.st_dev ||
@@ -112,8 +115,8 @@ static int check_pipe_route(int dirfd, const char *path, int original)
                 (fcntl(fd, F_GETFD) & FD_CLOEXEC) == 0 ||
                 fcntl(fd, F_SETFL, access) != 0 ||
                 (fcntl(original, F_GETFL) & O_NONBLOCK) == 0) {
-                printf("FAIL: pipe route %s access=%d openat2=%d errno=%d\n",
-                       path, access, openat2, errno);
+                printf("FAIL: pipe route %s flags=%#x openat2=%d errno=%d\n",
+                       path, flags, openat2, errno);
                 failed = 1;
             }
             if (fd >= 0) close(fd);
@@ -128,6 +131,10 @@ static int check_pipe_reopen(int procdir, const char *alias)
     int reader = -1, writer = -1, extra = -1, failed = 0;
     if (pipe2(endpoints, O_CLOEXEC | O_NONBLOCK) != 0)
         return fail("SETUP anonymous pipe");
+    if (write(endpoints[1], "B", 1) != 1) {
+        failed |= fail("SETUP queued pipe contents");
+        goto cleanup;
+    }
     for (int end = 0; end < 2; ++end) {
         char absolute[64], relative[16], aliased[160];
         snprintf(absolute, sizeof(absolute), "/proc/self/fd/%d", endpoints[end]);
@@ -150,6 +157,8 @@ static int check_pipe_reopen(int procdir, const char *alias)
     close(endpoints[0]); endpoints[0] = -1;
     close(endpoints[1]); endpoints[1] = -1;
     char byte = 0;
+    if (read(reader, &byte, 1) != 1 || byte != 'B')
+        failed |= fail("O_TRUNC must leave queued pipe contents intact");
     if (write(writer, "P", 1) != 1 || read(reader, &byte, 1) != 1 || byte != 'P')
         failed |= fail("reopened descriptions keep the original shared pipe buffer");
     close(writer); writer = -1;
