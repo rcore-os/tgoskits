@@ -20,9 +20,9 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     DeviceId, DirEntry, DirEntryId, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor,
     DirectoryReadState, Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps,
-    LinkCaller, LookupStep, Metadata, MetadataUpdate, MountWriteState, NodeFlags, NodeOps,
-    NodePermission, NodeType, OpenOptions, RawSpinLock, RawSpinLockGuard, Reference, RenameOptions,
-    TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
+    LinkCaller, LookupStep, Metadata, MetadataUpdate, MountRoot, MountWriteState, NodeFlags,
+    NodeOps, NodePermission, NodeType, OpenOptions, RawSpinLock, RawSpinLockGuard, Reference,
+    RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -40,8 +40,6 @@ pub use publication::MountPublicationRetirement;
 pub use unmount::*;
 
 type MountCloneMap = Vec<(Arc<Mountpoint>, Arc<Mountpoint>)>;
-
-static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 static MOUNT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -482,7 +480,7 @@ impl Mountpoint {
         Self::new_with_device_source(
             fs,
             location_in_parent,
-            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            fs.mount_state.default_device,
             source,
         )
     }
@@ -495,13 +493,23 @@ impl Mountpoint {
         device: u64,
         source: &str,
     ) -> Arc<Self> {
+        Self::new_rooted_with_device(fs.mount_root(), location_in_parent, device, source)
+    }
+
+    fn new_rooted_with_device(
+        selected: MountRoot,
+        location_in_parent: Option<Location>,
+        device: u64,
+        source: &str,
+    ) -> Arc<Self> {
+        let MountRoot { filesystem, root } = selected;
         Self::new_with_root_and_source(
-            fs.root_dir(),
+            root,
             location_in_parent,
             device,
             source.to_owned(),
-            fs.mount_state.clone(),
-            fs.is_readonly(),
+            filesystem.mount_state.clone(),
+            filesystem.is_readonly(),
         )
     }
 
@@ -525,7 +533,7 @@ impl Mountpoint {
         Self::new_with_root_and_source(
             fs.root_dir(),
             None,
-            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            fs.mount_state.default_device,
             source.to_owned(),
             fs.mount_state.clone(),
             readonly || fs.is_readonly(),

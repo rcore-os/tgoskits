@@ -4254,6 +4254,38 @@ bind 别名共享 filesystem 身份，缓存退休因此覆盖同一后端的别
 IRQ guard；后台 reclaimer 完成映射销毁后发布状态并唤醒，不能先发布可 wait 的
 退出，再让无活动使用者的映射占用阻止紧随的普通卸载。
 
+### 6.19 挂载根与文件系统身份
+
+cgroup2 同一层级的挂载共享底层文件系统，命名空间只决定该文件系统中的挂载根。
+固定 Linux 的 `cgroup_do_get_tree` 先调用 `kernfs_get_tree` 取得层级 superblock，
+再将 `fc->root` 换为命名空间根 cgroup 的 dentry。不能从 kernfs 的通用 ns_tag
+比较推断 cgroup namespace 创建新的 superblock。Linux 6.8 的只读挂载与 stat
+对照也确认不同命名空间的根保留同一个 device。
+
+`FilesystemMountState.default_device` 使普通挂载按实际 Filesystem 实例共享匿名
+设备身份，mount_id 继续独立。显式设备号入口保留物理根设备的既有选择契约；
+不通过给多个独立 FS 填同一数字模拟共享实例。不同 Filesystem 的同名、同 inode
+对象仍有不同默认设备身份。
+
+`MountRoot` 拥有一个 Filesystem 和该实例中的目录。`select_mount_root` 在借用
+输入上核对实际 backend owner 与目录类型，错误不消费输入；成功才克隆所有者。
+它不授予 namespace 或 caller 权限。`mount_root_with_source_retiring` 进入原
+发布协议，准备的挂载同时保留所选目录和原 filesystem state，成功、失败及部分
+传播都由原退休载体带出 topology 和 caller 保护；不在 Drop 提交或回滚。
+
+Kernel 的 `CGROUP2_FILESYSTEM` 随唯一、永久的默认 v2 层级存在。SimpleFs 的
+具体 producer 与公开 Filesystem 配对保存，命名空间根目录用同一 producer
+创建，挂载保留原独立 root pin。没有新增 namespace→filesystem 登记表、幽灵
+挂载或显示路径回查。per-namespace FS 缓存会错误拆分 superblock，单改 device
+数字则不能共享只读状态和授权 owner，因此都不采用。
+
+构造所选根与首次初始化在 namespace/IRQ 短锁外执行。FS 共享只读状态的正常
+remount 继续作用于实际实例；新挂载的局部 readonly 由 mount flags 表达。该
+改动没有持久格式迁移，可随实现整体回退；不支持混用新旧 Rust 接口。新增一个
+默认设备字段，删除每次普通 mount 的设备号分配，尚无同条件性能比较。原 mount
+旅程和 cgroup 系统程序分别验证普通重复挂载身份、不同 FS 区分、同层级跨命名
+空间身份、根目录可见性与 root pin 退休。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。

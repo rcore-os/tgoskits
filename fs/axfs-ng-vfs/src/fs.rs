@@ -159,6 +159,8 @@ static NEXT_FILESYSTEM_ID: AtomicU64 = AtomicU64::new(1);
 /// VFS superblock flags shared by every mount of a filesystem instance.
 pub(crate) struct FilesystemMountState {
     pub(crate) id: FilesystemId,
+    /// Default anonymous device shared by ordinary mounts of this instance.
+    pub(crate) default_device: u64,
     /// Lock order: reconfiguration, shared writes, mount-local writes.
     pub(crate) reconfiguration: Mutex<()>,
     pub(crate) writes: RawSpinLock<MountWriteState>,
@@ -195,6 +197,7 @@ impl FilesystemMountState {
             .expect("filesystem identity space exhausted");
         Self {
             id: FilesystemId(id),
+            default_device: id,
             reconfiguration: Mutex::new(()),
             writes: RawSpinLock::new(MountWriteState::new(readonly)),
         }
@@ -229,6 +232,14 @@ impl FilesystemMountState {
 pub struct Filesystem {
     ops: Arc<dyn FilesystemOps>,
     pub(crate) mount_state: Arc<FilesystemMountState>,
+}
+
+/// A selected directory root that retains its original filesystem instance.
+/// This native mount input does not perform caller authorization or acquire a
+/// mounted-path use. It can only be selected from a directory owned by that FS.
+pub struct MountRoot {
+    pub(crate) filesystem: Filesystem,
+    pub(crate) root: DirEntry,
 }
 
 /// A registry entry that does not extend a filesystem's lifetime.
@@ -283,6 +294,30 @@ impl Filesystem {
     pub fn new_with_readonly(ops: Arc<dyn FilesystemOps>, readonly: bool) -> Self {
         let mount_state = Arc::new(FilesystemMountState::new(readonly || ops.is_readonly()));
         Self { ops, mount_state }
+    }
+
+    /// Selects an existing directory as a mount root without creating another FS.
+    /// Foreign nodes return `CrossesDevices`; files return `NotADirectory`.
+    /// Borrowed inputs remain owned by the caller on failure. Namespace and
+    /// capability policy belongs to the native caller, before publication.
+    pub fn select_mount_root(&self, root: &DirEntry) -> VfsResult<MountRoot> {
+        if crate::owner_address(root.filesystem()) != crate::owner_address(self.ops.as_ref()) {
+            return Err(VfsError::CrossesDevices);
+        }
+        if !root.is_dir() {
+            return Err(VfsError::NotADirectory);
+        }
+        Ok(MountRoot {
+            filesystem: self.clone(),
+            root: root.clone(),
+        })
+    }
+
+    pub(crate) fn mount_root(&self) -> MountRoot {
+        MountRoot {
+            filesystem: self.clone(),
+            root: self.root_dir(),
+        }
     }
 
     /// Returns the VFS read-only state shared by all mounts of this instance.

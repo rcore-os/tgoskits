@@ -46,6 +46,15 @@ impl SimpleFs {
         fs_type: u32,
         root: impl FnOnce(Arc<Self>) -> DirMaker,
     ) -> Filesystem {
+        Self::new_with_handle(name, fs_type, root).0
+    }
+
+    /// Creates one filesystem and retains its concrete producer for rooted views.
+    pub(crate) fn new_with_handle(
+        name: String,
+        fs_type: u32,
+        root: impl FnOnce(Arc<Self>) -> DirMaker,
+    ) -> (Filesystem, Arc<Self>) {
         let fs = Arc::new(Self {
             name,
             fs_type,
@@ -58,7 +67,7 @@ impl SimpleFs {
             |this| DirNode::new(root(this)),
             Reference::root(),
         ));
-        Filesystem::new(fs)
+        (Filesystem::new(fs.clone()), fs)
     }
 
     fn set_root(&self, root: DirEntry) {

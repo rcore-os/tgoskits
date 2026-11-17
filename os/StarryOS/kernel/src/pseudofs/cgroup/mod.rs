@@ -6,7 +6,7 @@ use ax_cgroup::{
 };
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, Filesystem,
-    FilesystemOps, Location, Metadata, MetadataRequest, MetadataUpdate, MutationRetire,
+    FilesystemOps, Location, Metadata, MetadataRequest, MetadataUpdate, MountRoot, MutationRetire,
     NamespaceCompletion, NamespaceEffect, NamespaceMutation, NamespaceOutcome, NodeIdentity,
     NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
@@ -252,11 +252,38 @@ fn cgroup_error_to_vfs_error(error: CgroupError) -> VfsError {
     }
 }
 
-/// Create a cgroup2 filesystem rooted at a stable namespace snapshot.
-pub(crate) fn new_cgroup2fs(root: Arc<CgroupNode>) -> Filesystem {
-    SimpleFs::new_with("cgroup2".into(), CGROUP2_SUPER_MAGIC, move |fs| {
-        CgroupDir::new_maker(fs, root)
-    })
+struct CgroupFilesystem {
+    filesystem: Filesystem,
+    backend: Arc<SimpleFs>,
+}
+
+// Linux cgroup_do_get_tree() shares the hierarchy superblock and selects a
+// namespace-root dentry. The default v2 hierarchy is permanently owned.
+static CGROUP2_FILESYSTEM: ax_lazyinit::LazyLock<CgroupFilesystem> =
+    ax_lazyinit::LazyLock::new(|| {
+        let (filesystem, backend) =
+            SimpleFs::new_with_handle("cgroup2".into(), CGROUP2_SUPER_MAGIC, |fs| {
+                CgroupDir::new_maker(fs, ax_cgroup::root())
+            });
+        CgroupFilesystem {
+            filesystem,
+            backend,
+        }
+    });
+
+/// Selects this namespace's directory in the shared cgroup2 hierarchy.
+/// Call outside namespace/IRQ guards; the mount must retain its independent root pin.
+pub(crate) fn cgroup2_mount_root(root: Arc<CgroupNode>) -> VfsResult<MountRoot> {
+    let owner = &*CGROUP2_FILESYSTEM;
+    let entry = if Arc::ptr_eq(&root, &ax_cgroup::root()) {
+        owner.filesystem.root_dir()
+    } else {
+        DirEntry::new_dir(
+            |this| DirNode::new(CgroupDir::new(owner.backend.clone(), root, this)),
+            Reference::root(),
+        )
+    };
+    owner.filesystem.select_mount_root(&entry)
 }
 
 /// Return the cgroup node represented by an open cgroup2 directory.

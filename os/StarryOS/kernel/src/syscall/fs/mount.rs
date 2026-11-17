@@ -773,14 +773,11 @@ pub fn sys_mount(
                 let namespace = nsproxy.cgroup_ns.lock_irqsave();
                 (namespace.root(), namespace.pin_root())
             };
-            let fs = crate::pseudofs::cgroup::new_cgroup2fs(cgroup_root);
+            let root = crate::pseudofs::cgroup::cgroup2_mount_root(cgroup_root)?;
             let target = context.resolve(target)?;
-            if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true)?;
-            }
             let mp = target
                 .location()
-                .mount_with_source(&fs, mount_source(&source))?;
+                .mount_root_with_source(root, mount_source(&source))?;
             mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true)?;

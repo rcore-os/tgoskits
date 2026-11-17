@@ -56,6 +56,30 @@ impl Location {
         result
     }
 
+    /// Installs a selected directory while preserving its filesystem owner.
+    /// Temporary owners retire before return; do not hold caller protections.
+    pub fn mount_root_with_source(
+        &self,
+        root: MountRoot,
+        source: &str,
+    ) -> VfsResult<Arc<Mountpoint>> {
+        let (result, retirement) = self.mount_root_with_source_retiring(root, source);
+        drop(retirement);
+        result
+    }
+
+    /// Publishes a selected root, retaining all temporary owners on failure too.
+    /// Save the retirement before inspecting the result and release it outside
+    /// caller protections. Preparation may sleep; Scope and IRQ guards are invalid.
+    pub fn mount_root_with_source_retiring(
+        &self,
+        root: MountRoot,
+        source: &str,
+    ) -> (VfsResult<Arc<Mountpoint>>, MountPublicationRetirement) {
+        let device = root.filesystem.mount_state.default_device;
+        self.mount_root_with_device_source_retiring(root, device, source)
+    }
+
     /// Installs a filesystem with a selected device number and source name.
     ///
     /// Do not call under outer protections: temporary owners retire before
@@ -73,7 +97,7 @@ impl Location {
 
     /// Installs a filesystem and returns successful or failed temporary owners.
     ///
-    /// Uses the ordinary default source and device allocation. The caller must
+    /// Uses the default source and this filesystem's device identity. The caller must
     /// store the retirement before inspecting the result. Preparation may call
     /// the backend, allocate, or sleep; Scope, pin and IRQ-safe short locks are
     /// not permitted, even though an otherwise valid sleepable writer is.
@@ -86,18 +110,14 @@ impl Location {
 
     /// Installs a named source, retaining all temporary owners in the pair.
     ///
-    /// Uses ordinary device allocation. The blocking and retirement boundaries
+    /// Uses this filesystem's device identity. The blocking and retirement boundaries
     /// are the same as [`Self::mount_retiring`], on both success and failure.
     pub fn mount_with_source_retiring(
         &self,
         fs: &Filesystem,
         source: &str,
     ) -> (VfsResult<Arc<Mountpoint>>, MountPublicationRetirement) {
-        self.mount_with_device_source_retiring(
-            fs,
-            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
-            source,
-        )
+        self.mount_with_device_source_retiring(fs, fs.mount_state.default_device, source)
     }
 
     /// Prepares and publishes one filesystem installation.
@@ -115,11 +135,20 @@ impl Location {
         device: u64,
         source: &str,
     ) -> (VfsResult<Arc<Mountpoint>>, MountPublicationRetirement) {
+        self.mount_root_with_device_source_retiring(fs.mount_root(), device, source)
+    }
+
+    fn mount_root_with_device_source_retiring(
+        &self,
+        root: MountRoot,
+        device: u64,
+        source: &str,
+    ) -> (VfsResult<Arc<Mountpoint>>, MountPublicationRetirement) {
         let mut retirement = MountPublicationRetirement::new(self);
-        // Backend preparation stays outside topology. The carrier exists first
-        // and owns the prepared mount before the first fallible validation.
-        retirement.mount = Some(Mountpoint::new_with_device_source(
-            fs,
+        // Backend preparation stays outside topology. The carrier owns the
+        // selected root before any fallible publication validation.
+        retirement.mount = Some(Mountpoint::new_rooted_with_device(
+            root,
             Some(retirement.target.clone()),
             device,
             source,
