@@ -82,6 +82,20 @@ fn mount_at(fs: &FsView<'_>, path: &str, mount_fs: Filesystem) -> StarryResult<(
     Ok(())
 }
 
+fn mount_temporary(fs: &FsView<'_>, path: &str) -> StarryResult<Arc<MemoryFs>> {
+    let (filesystem, handle) = MemoryFs::new_with_handle();
+    mount_at(fs, path, filesystem)?;
+    let root = fs.resolve(path)?;
+    axfs_ng_vfs::TrustedInitialization::kernel().restore_metadata(
+        root.location(),
+        axfs_ng_vfs::MetadataUpdate {
+            mode: Some(NodePermission::from_bits_truncate(0o1777)),
+            ..Default::default()
+        },
+    )?;
+    Ok(handle)
+}
+
 /// Mount all filesystems
 pub fn mount_all() -> StarryResult<()> {
     info!("Initialize pseudofs...");
@@ -95,13 +109,8 @@ pub fn mount_all() -> StarryResult<()> {
         mount_at(&fs, "/dev/bus/usb", dev_usbfs)?;
     }
 
-    let (shm_fs, shm_handle) = MemoryFs::new_with_handle();
-    mount_at(&fs, "/dev/shm", shm_fs)?;
-    SHM_TMPFS.init_once(shm_handle);
-
-    let (tmp_fs, tmp_handle) = MemoryFs::new_with_handle();
-    mount_at(&fs, "/tmp", tmp_fs)?;
-    TMP_TMPFS.init_once(tmp_handle);
+    SHM_TMPFS.init_once(mount_temporary(&fs, "/dev/shm")?);
+    TMP_TMPFS.init_once(mount_temporary(&fs, "/tmp")?);
 
     mount_at(&fs, "/dev/mqueue", mqueue::new_mqueuefs())?;
 
