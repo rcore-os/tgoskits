@@ -410,23 +410,16 @@ static int vblank_wait_child(int fd, uint32_t crtc_id, int ready_fd,
     wait.req.sequence = 100000;
     if (write(ready_fd, "R", 1) != 1)
         return 1;
-    close(ready_fd);
+    if (!expect_disable_wake)
+        close(ready_fd);
     alarm(5);
     long result = syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, &wait);
     alarm(0);
     if (expect_disable_wake) {
-        struct drm_crtc_get_sequence frozen = { .crtc_id = crtc_id };
-        if (result != 0 ||
-            syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &frozen) != 0)
-            return 1;
-        return !frozen.active &&
-               wait.reply.sequence == (uint32_t)frozen.sequence &&
-               frozen.sequence >= before.sequence &&
-               frozen.sequence - before.sequence < 100000 &&
-               (int64_t)wait.reply.tv_sec * 1000000000LL +
-               (int64_t)wait.reply.tv_usec * 1000 <= frozen.sequence_ns &&
-               frozen.sequence_ns - ((int64_t)wait.reply.tv_sec * 1000000000LL +
-               (int64_t)wait.reply.tv_usec * 1000) < 1000 ? 0 : 1;
+        ssize_t copied = write(ready_fd, &wait.reply, sizeof(wait.reply));
+        close(ready_fd);
+        return result == 0 && copied == (ssize_t)sizeof(wait.reply) &&
+               (uint32_t)(wait.reply.sequence - (uint32_t)before.sequence) < 100000 ? 0 : 1;
     }
     return result < 0 && errno == EBUSY ? 0 : 1;
 }
@@ -1149,7 +1142,6 @@ int main(void)
     char ready;
     int blocked = read(ready_pipe[0], &ready, 1) == 1 && ready == 'R' &&
                   wait_for_vblank_sleep(waiter) == 0;
-    close(ready_pipe[0]);
     CHECK(blocked, "WAIT_VBLANK is blocked before CRTC disable");
     struct drm_mode_crtc disable = { .crtc_id = crtc_ids[0] };
     CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_SETCRTC, &disable), 0, "disable CRTC");
@@ -1157,6 +1149,9 @@ int main(void)
     CHECK(waitpid(waiter, &wait_status, 0) == waiter && WIFEXITED(wait_status) &&
           WEXITSTATUS(wait_status) == 0,
           "concurrent disable completes WAIT_VBLANK with frozen sequence");
+    struct drm_wait_vblank_reply completed_wait = {0};
+    ssize_t completed_wait_bytes = read(ready_pipe[0], &completed_wait, sizeof(completed_wait));
+    close(ready_pipe[0]);
     check_binding(fd, plane_ids[0], crtc_ids[0], 0);
     struct drm_mode_crtc disabled_crtc = { .crtc_id = crtc_ids[0] };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &disabled_crtc), 0,
@@ -1171,7 +1166,11 @@ int main(void)
     CHECK(n == (ssize_t)sizeof(resumed_event) &&
           resumed_event.user_data == 0xadd00ff &&
           resumed_event.sequence >= before_disable.sequence &&
-          resumed_event.sequence < suspended.sequence,
+          resumed_event.sequence < suspended.sequence &&
+          completed_wait_bytes == (ssize_t)sizeof(completed_wait) &&
+          completed_wait.sequence == (uint32_t)resumed_event.sequence &&
+          completed_wait.tv_sec * 1000000000LL + completed_wait.tv_usec * 1000 <= resumed_event.tv_ns &&
+          resumed_event.tv_ns - (completed_wait.tv_sec * 1000000000LL + completed_wait.tv_usec * 1000) < 1000,
           "disabled event carries the current rather than target sequence");
     struct pollfd other_pfd = { .fd = other_disable, .events = POLLIN };
     CHECK(poll(&other_pfd, 1, 1000) == 1,
