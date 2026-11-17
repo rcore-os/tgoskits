@@ -832,3 +832,74 @@ crate，依赖仍按另一套参数编译。`33df20205c` 复用已有 Cargo rust
 确认最外层为 0。实际 x86 debug 依赖指纹从没有标量 cfg 变为包含该 cfg，
 当前编译报告不再含 chacha20。标准库回归、实际依赖参数和最外层终态分别记录，
 没有把先前退出 143 的日志作为本次验收。
+
+
+### 9.29 保存的调用者与路径视图
+
+`934d5759b9` 把链接解析身份接到 `FsView` 和 `LookupSession`。`FsView` 持有
+冻结的 `FsContextSnapshot`，借用外层保存的 `LinkCaller`，并只从该调用者派生
+`MutationCredentials`。它保留实际 root/cwd/dirfd 使用权，不提供任务状态更新出口。
+原 `FsContext` 只保留路径选择，打开与路径变更入口不再另收一份凭据。
+
+普通、checked、trace 及普通 parent 入口共用 `LookupSession`；旧的文本链接解析
+循环已删除。会话把同一调用者传给 `LinkOps::target`，直接消费 `Text` 或 `Object`，
+保留既有的 40 次预算。所有 `LinkOps` 实现、DirEntry/Location 显示入口及原有调用点
+已迁移为显式身份参数。启动、归档、迁移和 Axvisor 使用明确的 native 身份；
+backing 复制继续使用保存的 mounter 投影，native 身份不能代替 proc 授权。
+
+Starry 的 `ProcLinkCaller` 保存原 `FsCredentialsSnapshot` 与 ProcessData 分配身份，
+`ProcLink` 回调不再抓取当前任务。目标的凭据、dumpable 与 MM owner 仍在每次授权时
+读取。`FsCredentialsSnapshot::for_real_id_access` 保留配对的 user namespace Arc，
+使 access 的 DAC 与 proc READ_FSCREDS 使用同一投影；pidfd 的 READ_REALCREDS 保持独立。
+exec 的脚本解释器及 PT_INTERP 查找也沿用入口保存的调用者。
+
+现有内核授权旅程增加了受控凭据变更：旧操作使用旧身份，新操作使用新身份，
+real-ID 操作使用派生身份。私有错误候选 `f8632295f8` 在派生能力后保留错误的
+fsuid/fsgid，真实 x86_64 QEMU 在同一旅程的 real-ID 授权断言失败，最外层退出 1。
+恢复投影后，完整内核测试为 263 pass、0 fail、0 skip，独立状态文件确认退出 0。
+两次测试源码 SHA-256 相同；正向 ELF、负向 Git tree 与日志均已保留。
+
+`d75084e2ce` 的 VFS/AX 9 项 Clippy 及 18 个受影响软件包的标准库测试通过。
+`5e0d063b0b` 补齐设备创建夹具的能力视图；标准库测试使用已准备的 e2fsprogs
+1.47.3，避免系统旧工具不识别既有格式化选项。`8221696e4c` 修正借用表达，
+让无需链接解析的 cgroup inode 控制继续使用直接凭据快照；该源码的 Kernel/runtime
+100 项 Clippy 和 x86_64 ownership 程序均通过，后者为 107 pass、0 fail、外层 1/1。
+通用 Clippy 明确跳过 Axvisor，其专用命令也没有 Clippy 子命令；专用配置检查另见
+第 9.30 节，没有将工具跳过记为通过。
+
+本轮完整路径查找 C 用例有 28 项断言通过，17 项 openat2 约束仍以 EOPNOTSUPP
+失败，最外层退出 1。scoped 规则、真正非阻塞的 CACHED、特殊末组件、仍返回
+Location 的出口、跨操作数的原始视图、完整 proc/SimpleFs 对象及其余原交付范围
+继续保留。远端 `2e5a149b8d` 的 CI 已全部结束：35 成功、5 失败、4 取消、5 跳过。
+新增 ArceOS AArch64 失败缺少栈保护页诊断行；与此前成功日志的故障地址、PC 和
+栈指针相同，原因仍需验证。当前拉取请求保持 draft，尚未满足最终交付条件。
+
+
+### 9.30 对象打开与实际消费者
+
+`eb1a9befc8` 删除按 `/proc/.../ns/...` 文字截获打开的 `try_open_nsfd`。
+namespace 链接沿 `LookupSession` 取得实际对象，再由已有 `add_to_fd` 分派为 NsFd；
+`O_PATH | O_NOFOLLOW` 先保留链接本身。原截获在真实 proc-link-access 程序中把
+`/proc/2/ns/mnt` 的 nofollow 结果错误变成 namespace fd，fstat 类型断言失败，
+外层退出 1。删除后同一完整 C 程序外层 1/1 通过，未改测试或放宽断言。
+该源码的四架构 Kernel 72 项 Clippy 全部通过。
+
+`d75084e2ce` 补齐 native 调用者的公开导出及 Axvisor memory-root 夹具。
+归档视图使用 `fs_view`，避免遮蔽内核地址转换的 `view()`。AArch64 memory-root
+实际内核测试为 125 pass、0 fail、0 skip，Web UI diskless 用例外层 1/1 通过；
+两者验证真实调用方已采用新的 `FsView`，没有用静态编译代替启动结果。
+
+通用 Clippy 明确要求 Axvisor 专用目标，而 Axvisor 命令没有 Clippy action。
+依据 `AGENTS.md` 第 2.1 节的特殊配置例外，检查任务实现后，复用上述实际 Web UI
+构建日志中的目标 JSON、生成配置、feature、profile 和环境，仅切换为 Clippy，
+同时检查 library 与 binary 并拒绝警告。`982c87b3ba` 和 `54d80a8531` 修复实际
+发现的冗余借用、条件嵌套、立即 push，以及启动选择器迁移后无生产调用的旧包装。
+`StartupSelector` 与 `selected_vm_ids` 删除，现有缺省选择测试直接验证生产使用的
+`startup_selection`，同时检查 start/prepare；旧 getter 回读测试并入该旅程。
+最终该专用配置 Clippy 外层退出 0，随后 AArch64 内核批次为 124 pass、0 fail、
+0 skip，外层退出 0。它沿用原批次、一次启动，没有增加测试启动。
+
+合并 `dev@93ad9be84f` 的 `70e2bb4fb4` 没有 Rust 或锁文件冲突；新增内容是容器
+前置依赖，固定 rustc 和目标契约不变。容器脚本的两个单元测试通过。完整路径用例
+仍有 17 项 scoped openat2 断言失败，非阻塞 CACHED、拥有型出口与第 4、5 节其余
+计划继续实施。上述本地结果分别绑定实际源码；远端最终 head 的 CI 另行核实。

@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "clippy_dependency_policy",
+  "latest_evidence_section": "object_open_and_native_consumer_validation",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -2693,5 +2693,220 @@
     },
     "validation_status_file": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-verified-clippy.exit",
     "validation_log": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-verified-clippy.log"
+  },
+  "saved_link_caller_and_fs_view": {
+    "recorded_at": "2026-11-17T05:33:47.994327+00:00",
+    "implementation_commit": "934d5759b9",
+    "fixture_commit": "5e0d063b0b",
+    "lint_commit": "8221696e4c6862339c181551e6c942b7afcdfeea",
+    "negative": {
+      "base_head": "2e5a149b8ddecf1cab9a432d53fd619e75b5bf3a",
+      "negative_commit": "f8632295f8a14990d9f96b6e87ef164b8aadeb1c",
+      "tree": "772ca1d0e635466b27d2510a8af0ed464681d4c0",
+      "outer_exit": 1,
+      "test_sha256": "f38bd5919f13557caba4ec2168c77b81d966dad2afa90d1447d69438c5db27a5",
+      "panic_excerpt": [
+        "# module: axtest_kernel::task::proc_access::tests",
+        "",
+        "ARCEOS_PANIC_EMERGENCY",
+        "panicked at ",
+        "=== FAIL PATTERN MATCHED: (?i)\\bpanic(?:ked)?\\b",
+        "os/StarryOS/kernel/src/task/proc_access.rs:425:9:",
+        "assertion failed: authorize_saved_thread_read(&real_caller, &target).is_ok()",
+        ""
+      ],
+      "command": "CARGO_INCREMENTAL=0 cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64",
+      "mutation": "for_real_id_access retains original filesystem IDs after deriving real-ID capabilities",
+      "published": false
+    },
+    "kernel_qemu": {
+      "base_head": "2e5a149b8ddecf1cab9a432d53fd619e75b5bf3a",
+      "test_sha256": "f38bd5919f13557caba4ec2168c77b81d966dad2afa90d1447d69438c5db27a5",
+      "outer_exit": 0,
+      "passed": 263,
+      "failed": 0,
+      "skipped": 0,
+      "elf": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-saved-link-caller-axtest.elf",
+      "elf_sha256": "088570eeff4e1dd0cfd6ba13649a81f82ad5546aba8eec5d8503301022fd9c11",
+      "compares_with": "f8632295f8a14990d9f96b6e87ef164b8aadeb1c"
+    },
+    "component_clippy": {
+      "packages": [
+        "ax-fs-ng",
+        "axfs-ng-vfs"
+      ],
+      "passed": 9,
+      "failed": 0,
+      "outer_exit": 0,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-export-clippy.log",
+      "source": "d75084e2ce0bbb382310b24bae0b02f9e3abf5ec"
+    },
+    "std_tests": {
+      "packages": 18,
+      "outer_exit": 0,
+      "source": "d75084e2ce0bbb382310b24bae0b02f9e3abf5ec",
+      "e2fsprogs": "1.47.3",
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-std.log"
+    },
+    "consumer_clippy": {
+      "state": "passed",
+      "source": "8221696e4c6862339c181551e6c942b7afcdfeea",
+      "passed": 100,
+      "failed": 0,
+      "outer_exit": 0,
+      "kernel_checks": 72,
+      "runtime_checks": 28,
+      "axvisor": "explicitly skipped by generic entry; special configuration recorded separately",
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-consumer-clippy.log"
+    },
+    "path_qemu": {
+      "source": "5e0d063b0b",
+      "arch": "x86_64",
+      "assertions_passed": 28,
+      "assertions_failed": 17,
+      "outer_exit": 1,
+      "remaining": "scoped openat2 resolve policies",
+      "elf_sha256": "302269b28e493362b3c4af4b9e47f6db795b4f87cdd687eeb82f195999b84d35",
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-path-qemu.log"
+    },
+    "remote_ci": {
+      "source": "2e5a149b8ddecf1cab9a432d53fd619e75b5bf3a",
+      "success": 35,
+      "failure": 5,
+      "cancelled": 4,
+      "skipped": 5,
+      "in_progress": 0
+    },
+    "remaining_scope_unchanged": true,
+    "ownership_qemu": {
+      "source": "8221696e4c6862339c181551e6c942b7afcdfeea",
+      "arch": "x86_64",
+      "passed": 107,
+      "failed": 0,
+      "outer_exit": 0,
+      "elf_sha256": "502db17d1bf8d7d87d570eef9fdd6db4be340d41fcc8ca17b4e1096fc06a1f1f",
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-test-vfs-ownership.log"
+    }
+  },
+  "object_open_and_native_consumer_validation": {
+    "recorded_at": "2026-11-17T06:35:08.531459+00:00",
+    "namespace_open_commit": "eb1a9befc862690158db43436d7a77a089f55e8d",
+    "namespace_regression": {
+      "before_source": "8221696e4c6862339c181551e6c942b7afcdfeea",
+      "before_exit": 1,
+      "failure": "O_PATH | O_NOFOLLOW namespace link fstat returned the namespace object type",
+      "after_exit": 0,
+      "same_system_program": true,
+      "assertions_relaxed": false,
+      "after_elf_sha256": "77cc22051a71dacf14bf1f2274103bbdea92e769746ee9d20d369844e3fff426"
+    },
+    "namespace_kernel_clippy": {
+      "source": "eb1a9befc862690158db43436d7a77a089f55e8d",
+      "passed": 72,
+      "failed": 0,
+      "outer_exit": 0
+    },
+    "native_consumer_commit": "d75084e2ce0bbb382310b24bae0b02f9e3abf5ec",
+    "native_kernel_qemu": {
+      "arch": "aarch64",
+      "passed": 125,
+      "failed": 0,
+      "skipped": 0,
+      "outer_exit": 0
+    },
+    "web_ui_diskless": {
+      "arch": "aarch64",
+      "outer_exit": 0,
+      "project_passed": 1,
+      "project_failed": 0
+    },
+    "special_configuration_clippy": {
+      "source": "54d80a85318db944e714cda00862f949b0b245e3",
+      "outer_exit": 0,
+      "target": "aarch64-unknown-linux-musl",
+      "targets": [
+        "lib",
+        "bin"
+      ],
+      "basis": "AGENTS.md 2.1: generic Clippy explicitly skips axvisor; dedicated Axvisor CLI has no Clippy subcommand; match its actual special-target build configuration.",
+      "generated_config_sha256": "5533bd1e7d2220222814655cca37598dfd41316f318c889a9721b5e0e4b057b6",
+      "metadata": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-resolved-clippy.json",
+        "sha256": "dc93ca667f1f65ca76ba30f20a10492201a5821fe23f67bb19b909326fb4e570"
+      }
+    },
+    "final_startup_kernel_qemu": {
+      "source": "54d80a85318db944e714cda00862f949b0b245e3",
+      "arch": "aarch64",
+      "passed": 124,
+      "failed": 0,
+      "skipped": 0,
+      "outer_exit": 0,
+      "batch_count": 1,
+      "startup_count": 1,
+      "test_count_change": "obsolete wrapper getter merged into actual startup_selection journey"
+    },
+    "dev_merge": {
+      "commit": "70e2bb4fb4",
+      "dev": "93ad9be84f071b043a2a3270599b12fe0ab93dea",
+      "rust_conflicts": false,
+      "toolchain_changed": false,
+      "container_python_tests": 2
+    },
+    "logs": {
+      "link-caller-export-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-export-clippy.log",
+        "sha256": "003438f2ae7b44a324aa38ab875e911088c6750c51e8d645fc264cd226050ac9"
+      },
+      "link-caller-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-std.log",
+        "sha256": "6a99f40a8d598f972df91a05bc167f46c7922acf2748385bfb2fe69684bd1aa5"
+      },
+      "link-caller-consumer-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-consumer-clippy.log",
+        "sha256": "31a914ff44aed76877834192f0f67ba843f5e3fa40878aa71cdb8ca77b42325d"
+      },
+      "link-caller-namespace-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-namespace-clippy.log",
+        "sha256": "5ff74402a38ef825d08847c3d57ee329bb6d7b313505a03a11ec04c3e303d8e3"
+      },
+      "link-caller-test-vfs-ownership.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-test-vfs-ownership.log",
+        "sha256": "5359488be6fb04dfdf55b81d0fa5d533fa29e461d3734a846177ad117f7af97f"
+      },
+      "link-caller-test-proc-link-access.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-test-proc-link-access.log",
+        "sha256": "9342e056256dd8c78c60f34aabbb191f2df32eb122d81189e1ee3d2cdcaa54c7"
+      },
+      "proc-link-namespace-fixed.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/proc-link-namespace-fixed.log",
+        "sha256": "f32c5039fdf5c5fe4b41652892834563d3d955719e4307d51eb9a1869ae72409"
+      },
+      "saved-caller-axvisor-ktest.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/saved-caller-axvisor-ktest.log",
+        "sha256": "31f134ea186eeecd37c0a9fab67fbaba5b88cc11d5a8e6833ca2ada676ca5a48"
+      },
+      "saved-caller-axvisor-web.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/saved-caller-axvisor-web.log",
+        "sha256": "ebce50c5a938557d192baf9c634b4f632cc3308665791a9deb4042c7e6ffc1a7"
+      },
+      "axvisor-resolved-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-resolved-clippy.log",
+        "sha256": "546f6efdbc850ce24d78bceee8b727839c598aacfd1ba12c8153f53a0908c283"
+      },
+      "axvisor-resolved-clippy.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-resolved-clippy.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "axvisor-final-startup-ktest.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-final-startup-ktest.log",
+        "sha256": "21d6c045efcd476f30f711e6bad127f20f63a3cc5852768e2e15592d29b0d562"
+      },
+      "axvisor-final-startup-ktest.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-final-startup-ktest.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      }
+    },
+    "remaining_scope_unchanged": true
   }
 }
