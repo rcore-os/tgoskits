@@ -8,6 +8,10 @@ on:
     paths:
       - "container/Dockerfile"
       - "container/Dockerfile.axvisor-lvz"
+      - "container/*.sh"
+      - "apps/starry/hdl-lang/setup-hdl-toolchain.sh"
+      - ".github/actions/publish-container/action.yml"
+      - ".github/workflows/container-publish.yml"
       - "rust-toolchain.toml"
   workflow_dispatch:
     inputs:
@@ -49,6 +53,10 @@ jobs:
           filters: |
             base:
               - "container/Dockerfile"
+              - "container/*.sh"
+              - "apps/starry/hdl-lang/setup-hdl-toolchain.sh"
+              - ".github/actions/publish-container/action.yml"
+              - ".github/workflows/container-publish.yml"
               - "rust-toolchain.toml"
             axvisor:
               - "container/Dockerfile.axvisor-lvz"
@@ -90,6 +98,9 @@ jobs:
           else
             base="${FILTER_BASE:-false}"
             axvisor="${FILTER_AXVISOR:-false}"
+            if [ "$base" = "true" ]; then
+              axvisor=true
+            fi
           fi
 
           repository="${GITHUB_REPOSITORY,,}"
@@ -119,6 +130,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish base container image
+        id: base
         if: steps.plan.outputs.base == 'true'
         uses: ./.github/actions/publish-container
         with:
@@ -134,4 +146,4 @@ jobs:
           dockerfile: container/Dockerfile.axvisor-lvz
           cache_scope: container-axvisor-lvz
           build_args: |
-            BASE_IMAGE=${{ steps.plan.outputs.base_image }}:latest
+            BASE_IMAGE=${{ steps.base.outputs.image_ref || format('{0}:latest', steps.plan.outputs.base_image) }}

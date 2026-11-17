@@ -9,7 +9,7 @@ sidebar_label: "容器发布"
 
 ## 1. 输入与目标
 
-容器发布不由主 CI 的检查矩阵调用。它有自己的触发路径和发布条件，两个镜像的选择也分别计算。
+容器发布有独立的触发路径和发布条件。自动发布时，base 的输入变化也会选择依赖它的 LVZ 镜像，使派生环境同步取得新的工具链。
 
 ### 1.1 自动触发
 
@@ -17,11 +17,14 @@ push 必须位于 `main` 或 `dev`，且变更匹配下表中的路径。`Detect
 
 | 变更路径 | base 镜像 | LVZ 镜像 |
 | --- | --- | --- |
-| `container/Dockerfile` | 选择 | 不因这一项自动选择 |
+| `container/Dockerfile` | 选择 | 选择 |
 | `container/Dockerfile.axvisor-lvz` | 不因这一项自动选择 | 选择 |
+| `container/*.sh` | 选择 | 选择 |
+| `apps/starry/hdl-lang/setup-hdl-toolchain.sh` | 选择 | 选择 |
+| 发布工作流或 `publish-container` action | 选择 | 选择 |
 | `rust-toolchain.toml` | 选择 | 选择 |
 
-修改发布工作流或 composite action 本身不在该 push 路径列表中，不能假定这些改动会自动重建镜像。base Dockerfile 变化也不会自动重建派生的 LVZ 镜像；两者的选择逻辑以当前过滤器为准。
+`Resolve publish targets` 将 base 的自动重建传递给 LVZ；只有 LVZ 自身输入变化时才单独构建派生镜像。Dockerfile 引入新的准备脚本时，需要同时登记触发路径和 base 过滤器，避免源码更新后仍消费旧环境。
 
 ### 1.2 手动选择
 
@@ -37,13 +40,17 @@ push 必须位于 `main` 或 `dev`，且变更匹配下表中的路径。`Detect
 
 `container/Dockerfile` 基于 `ubuntu:24.04`，安装构建工具、用户态 QEMU、文件系统工具及交叉编译环境，并构建 `QEMU_VERSION` 指定的系统模拟器。Rust 工具链通过复制进镜像的 `rust-toolchain.toml` 准备，相关路径加入 `PATH`。
 
+镜像还准备 Node 24/npm 11、宿主 JDK 17、Go 1.26.3、Python pip、`mkimage/dtc`、`sfdisk`、`mtools`、LLD、Git LFS 和音视频工具。四种架构的 musl Rust target 与 `bpf-linker 0.13.0` 在构建时安装；HDL 工具版本复用 `setup-hdl-toolchain.sh` 的固定定义，Dockerfile 负责系统依赖。Go 的版本与校验和由 `container/install-go.sh` 维护，裸机应用准备也复用该入口。
+
+`container/check-env.sh` 在镜像构建末尾检查命令和版本，并交叉编译、运行四种架构的 C 与 Rust 程序。该检查不下载或安装软件，也可在镜像构建后断网重跑。`TGOSKITS_PREBUILT_CONTAINER=1` 标识已准备的宿主环境，供后续消费者将缺失工具视为镜像错误。
+
 镜像名为 `ghcr.io/<repository>-container`，其中 repository 被转换为小写。主仓与 fork 使用各自的仓库命名空间，不把 fork 的镜像自动发布到主仓名下。
 
 ### 2.2 LVZ 派生镜像
 
 `container/Dockerfile.axvisor-lvz` 通过 `BASE_IMAGE` 继承 base 镜像，并按固定的 `QEMU_LVZ_REF` 构建 LoongArch LVZ 模拟器。`AXBUILD_QEMU_SYSTEM_LOONGARCH64` 指向 `/opt/qemu-lvz/bin/qemu-system-loongarch64`，构建参数包含 `--disable-kvm`。
 
-工作流将 `BASE_IMAGE` 设置为当前仓库 base 镜像的 `latest`。只选择 LVZ 时，依赖 registry 中已经存在的 base；同时选择两个目标时，先完成 base 推送，再构建 LVZ。
+同时选择两个目标时，工作流先完成 base 推送，再将 action 输出的 `image_ref` 传给 `BASE_IMAGE`。该引用使用本次构建的 digest，不会因另一次发布更新 `latest` 而改变。只选择 LVZ 时，仍使用当前仓库已经发布的 base `latest`。
 
 ## 3. 发布链路
 
