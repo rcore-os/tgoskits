@@ -116,7 +116,7 @@ impl CopyPreparation {
                                 ),
                                 permission: NodePermission::from_bits_truncate(0o700),
                             },
-                            CreateIntent::Exclusive,
+                            CreateIntent::exclusive(),
                             &credentials,
                         )?;
                     }

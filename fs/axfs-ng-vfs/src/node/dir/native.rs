@@ -112,7 +112,13 @@ impl<'a> NamespaceDriverRequest<'a> {
         };
         // FAT has sampled old holders and retained this round's candidate.
         // Establish the writer boundary immediately, before any publication.
-        let change = self.command.begin_observed_change(self.context.retired());
+        let change = match self.command.begin_observed_change(self.context.retired()) {
+            Ok(change) => change,
+            Err(error) => {
+                self.context.retired().retire(observed);
+                return self.complete(driver.finish(NamespaceOutcome::unchanged(Err(error))));
+            }
+        };
         NamespaceStart::Observed(Box::new(ObservedUnlink {
             request: Some(self),
             driver: Some(driver),

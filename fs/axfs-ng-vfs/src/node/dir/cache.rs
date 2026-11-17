@@ -236,6 +236,19 @@ impl DirNode {
         change
     }
 
+    pub(super) fn begin_locked_lookup_change<'a>(
+        &self,
+        owner: DirEntry,
+        domain: usize,
+        retired: &'a MutationRetire,
+        observation: crate::PathObservation,
+    ) -> crate::VfsResult<NameChange<'a>> {
+        let publication = observation.begin_publication(domain)?;
+        let mut change = self.begin_name_change_with(owner, publication);
+        change.retired = Some(retired);
+        Ok(change)
+    }
+
     pub(super) fn canonicalize_locked(
         &self,
         name: &str,

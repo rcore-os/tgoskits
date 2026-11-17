@@ -4,7 +4,7 @@ use alloc::{collections::BTreeMap, string::String, sync::Arc};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::DirEntry;
-use crate::{RawSpinLock, VfsError, VfsResult};
+use crate::{MountObservation, RawSpinLock, VfsError, VfsResult};
 
 struct NamingTopology {
     writers: usize,
@@ -46,6 +46,40 @@ impl NameObservation {
     }
 }
 
+/// A coherent, completed observation of both naming and mount publications.
+///
+/// Capture before traversal and validate after inspecting relationships. A
+/// scoped create transfers this observation into the actual slot command.
+#[derive(Clone, Copy, Debug)]
+pub struct PathObservation {
+    name: NameObservation,
+    mount: MountObservation,
+}
+
+impl PathObservation {
+    pub fn capture() -> VfsResult<Self> {
+        let name = NameObservation::capture()?;
+        let mount = MountObservation::capture()?;
+        name.validate()?;
+        Ok(Self { name, mount })
+    }
+
+    pub fn validate(self) -> VfsResult<()> {
+        self.name.validate()?;
+        self.mount.validate()?;
+        self.name.validate()
+    }
+
+    pub(super) fn begin_publication(self, domain: usize) -> VfsResult<Arc<NamePublication>> {
+        // Atomically convert the original naming observation into this slot's
+        // publication. Recheck mounts afterwards so the two observations
+        // overlap even if a mount writer started between the checks.
+        let publication = NamePublication::begin_checked(domain, Some(self.name))?;
+        self.mount.validate()?;
+        Ok(publication)
+    }
+}
+
 pub(super) struct NamePublication {
     start_version: u64,
     closed: AtomicBool,
@@ -54,8 +88,17 @@ pub(super) struct NamePublication {
 
 impl NamePublication {
     pub fn begin(domain: usize) -> Arc<Self> {
+        Self::begin_checked(domain, None).expect("unconditional naming publication")
+    }
+
+    fn begin_checked(domain: usize, observation: Option<NameObservation>) -> VfsResult<Arc<Self>> {
         let start_version = {
             let mut topology = NAMING_TOPOLOGY.lock();
+            if observation.is_some_and(|observation| {
+                topology.writers != 0 || topology.version != observation.0
+            }) {
+                return Err(VfsError::WouldBlock);
+            }
             topology.writers += 1;
             let domain = topology.domains.entry(domain).or_insert(DomainPublication {
                 writers: 0,
@@ -64,11 +107,11 @@ impl NamePublication {
             domain.writers += 1;
             domain.version
         };
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             start_version,
             closed: AtomicBool::new(false),
             domain,
-        })
+        }))
     }
 
     pub fn close(&self, first: &[DirEntry], second: &[DirEntry]) {

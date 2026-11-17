@@ -280,7 +280,7 @@ impl NodeOps for ProbeNode {
                     backing,
                     "victim",
                     creation_attributes(),
-                    crate::CreateIntent::Open(crate::ExistingOpen {
+                    crate::CreateIntent::open(crate::ExistingOpen {
                         access: NodePermission::OTHER_READ,
                     }),
                     &MutationCredentials::root(),
@@ -702,7 +702,7 @@ fn exercise_creation() {
                         &alias,
                         "victim",
                         creation_attributes(),
-                        crate::CreateIntent::Exclusive,
+                        crate::CreateIntent::exclusive(),
                         &credentials
                     ),
                     Err(VfsError::CrossesDevices)
@@ -715,7 +715,7 @@ fn exercise_creation() {
             ] {
                 root.entry().set_name_state(name_state);
                 assert!(matches!(
-                    context.create(&root, "victim", creation_attributes(), crate::CreateIntent::Exclusive, &credentials),
+                    context.create(&root, "victim", creation_attributes(), crate::CreateIntent::exclusive(), &credentials),
                     Err(actual) if actual == error
                 ));
             }
@@ -725,7 +725,7 @@ fn exercise_creation() {
                     &backing,
                     "victim",
                     creation_attributes(),
-                    crate::CreateIntent::Open(crate::ExistingOpen {
+                    crate::CreateIntent::open(crate::ExistingOpen {
                         access: NodePermission::OTHER_READ,
                     }),
                     &credentials,
@@ -739,7 +739,7 @@ fn exercise_creation() {
                     &root,
                     "victim",
                     creation_attributes(),
-                    crate::CreateIntent::Open(crate::ExistingOpen {
+                    crate::CreateIntent::open(crate::ExistingOpen {
                         access: NodePermission::OTHER_READ,
                     }),
                     &credentials,

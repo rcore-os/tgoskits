@@ -115,11 +115,39 @@ pub struct ExistingOpen {
     pub access: NodePermission,
 }
 
-/// Ordinary creation intent; trusted archive ownership is not an open option.
+/// Ordinary creation intent, including an operation's scoped path observation.
+/// Trusted archive ownership is not an open option.
 #[derive(Clone, Copy, Debug)]
-pub enum CreateIntent {
+pub struct CreateIntent {
+    existence: CreateExistence,
+    observation: Option<crate::PathObservation>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CreateExistence {
     Exclusive,
     Open(ExistingOpen),
+}
+
+impl CreateIntent {
+    pub const fn exclusive() -> Self {
+        Self {
+            existence: CreateExistence::Exclusive,
+            observation: None,
+        }
+    }
+
+    pub const fn open(existing: ExistingOpen) -> Self {
+        Self {
+            existence: CreateExistence::Open(existing),
+            observation: None,
+        }
+    }
+
+    pub(crate) fn with_observation(mut self, observation: Option<crate::PathObservation>) -> Self {
+        self.observation = observation;
+        self
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -137,7 +165,7 @@ impl CreateSelection {
     ) -> CreateRequest<'a> {
         let (intent, restore_owner) = match self {
             Self::Ordinary(intent) => (intent, None),
-            Self::Restore(owner) => (CreateIntent::Exclusive, Some(owner)),
+            Self::Restore(owner) => (CreateIntent::exclusive(), Some(owner)),
         };
         CreateRequest::new(target, attributes, intent, restore_owner, write)
     }
@@ -377,7 +405,13 @@ impl<'request> NamespaceMutation<'request> {
             Ok(observed) => observed,
             Err(error) => return NamespaceOutcome::unchanged(Err(error)),
         };
-        let change = self.begin_observed_change(retired);
+        let change = match self.begin_observed_change(retired) {
+            Ok(change) => change,
+            Err(error) => {
+                retired.retire(observed);
+                return NamespaceOutcome::unchanged(Err(error));
+            }
+        };
         self.resume_locked(attempt, retired, observed, change)
     }
 
@@ -407,14 +441,24 @@ impl<'request> NamespaceMutation<'request> {
     pub(super) fn begin_observed_change<'a>(
         &self,
         retired: &'a MutationRetire,
-    ) -> super::cache::NameChange<'a> {
+    ) -> VfsResult<super::cache::NameChange<'a>> {
         let target = self.target();
-        target
-            .parent
-            .entry()
-            .as_dir()
-            .expect("validated parent")
-            .begin_locked_name_change(target.parent.entry().clone(), target.domain, retired)
+        let directory = target.parent.entry().as_dir().expect("validated parent");
+        if let Self::Create(request) = self
+            && let Some(observation) = request.intent.observation
+        {
+            return directory.begin_locked_lookup_change(
+                target.parent.entry().clone(),
+                target.domain,
+                retired,
+                observation,
+            );
+        }
+        Ok(directory.begin_locked_name_change(
+            target.parent.entry().clone(),
+            target.domain,
+            retired,
+        ))
     }
 
     pub(super) fn resume_locked(
@@ -542,7 +586,7 @@ impl<'slot, 'attempt, 'request> CommandSlot<'slot, 'attempt, 'request> {
                 },
             ) => {
                 if let Some(target) = target {
-                    let CreateIntent::Open(existing) = request.intent else {
+                    let CreateExistence::Open(existing) = request.intent.existence else {
                         return Err(VfsError::AlreadyExists);
                     };
                     if target.entry.node_type() != NodeType::Symlink {

@@ -125,7 +125,7 @@ impl NamespaceAttempt<'_> {
                 content: CreateContent::Node(NodeType::CharacterDevice, WHITEOUT_DEVICE),
                 permission: NodePermission::empty(),
             },
-            CreateIntent::Exclusive,
+            CreateIntent::exclusive(),
             &credentials,
         )?;
         self.child(result)
@@ -143,7 +143,7 @@ impl NamespaceAttempt<'_> {
                 content: CreateContent::Node(NodeType::RegularFile, Default::default()),
                 permission: NodePermission::from_bits_truncate(0o600),
             },
-            CreateIntent::Exclusive,
+            CreateIntent::exclusive(),
             &credentials,
         )?;
         self.child(result)
@@ -206,7 +206,7 @@ impl NamespaceAttempt<'_> {
             &upper,
             request.name(),
             attributes,
-            CreateIntent::Exclusive,
+            CreateIntent::exclusive(),
             &credentials,
         )?;
         let selected = match result.observation() {

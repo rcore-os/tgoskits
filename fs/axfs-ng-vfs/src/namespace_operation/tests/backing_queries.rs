@@ -417,7 +417,7 @@ fn request_bound_queries_relay_direct_readonly_edges_and_retire_all_candidates()
                 &a_root,
                 "victim",
                 creation_attributes(),
-                crate::CreateIntent::Open(crate::ExistingOpen {
+                crate::CreateIntent::open(crate::ExistingOpen {
                     access: NodePermission::OTHER_READ,
                 }),
                 &MutationCredentials::root(),

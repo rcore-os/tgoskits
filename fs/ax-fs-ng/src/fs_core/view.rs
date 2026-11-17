@@ -6,10 +6,10 @@ use ax_io::{Read, Write};
 use axfs_ng_vfs::{
     CreateAttributes, LinkCaller, Location, Metadata, MountNamespace, MutationCredentials,
     NativeLinkCaller, NodePermission, NodeType, PathHandle, RenameOptions, VfsError, VfsResult,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
-use super::{FsContext, FsContextSnapshot, ReadDir};
+use super::{FsContext, FsContextSnapshot, LookupPolicy, ReadDir};
 use crate::file::File;
 
 /// Frozen paths and the caller that authorizes this operation.
@@ -22,6 +22,7 @@ pub struct FsView<'caller> {
     snapshot: FsContextSnapshot,
     caller: &'caller dyn LinkCaller,
     credentials: MutationCredentials<'caller>,
+    policy: LookupPolicy,
 }
 
 impl<'caller> FsView<'caller> {
@@ -31,6 +32,7 @@ impl<'caller> FsView<'caller> {
             snapshot,
             caller,
             credentials: caller.credentials(),
+            policy: LookupPolicy::default(),
         }
     }
 
@@ -75,6 +77,18 @@ impl<'caller> FsView<'caller> {
     pub(super) fn caller(&self) -> &'caller dyn LinkCaller {
         self.caller
     }
+
+    /// Applies traversal constraints without changing the selected root/cwd.
+    pub fn with_lookup_policy(&self, policy: LookupPolicy) -> Self {
+        Self {
+            policy,
+            ..self.clone()
+        }
+    }
+
+    pub(super) fn lookup_policy(&self) -> LookupPolicy {
+        self.policy
+    }
     pub fn root_dir(&self) -> &Location {
         self.root().location()
     }
@@ -90,11 +104,12 @@ impl<'caller> FsView<'caller> {
 
     pub fn with_current_dir(&self, directory: Location) -> VfsResult<Self> {
         let snapshot = self.snapshot.clone().with_current_directory(directory)?;
-        Ok(Self::current(snapshot, self.caller))
+        Ok(Self::current(snapshot, self.caller).with_lookup_policy(self.policy))
     }
 
     pub fn with_dirfd(&self, directory: PathHandle) -> VfsResult<Self> {
         Self::at_directory(self.snapshot.clone(), self.caller, directory)
+            .map(|view| view.with_lookup_policy(self.policy))
     }
 
     pub fn resolve(&self, path: impl AsRef<Path>) -> VfsResult<Location> {
@@ -191,77 +206,6 @@ impl<'caller> FsView<'caller> {
                 }
             }
         }
-    }
-
-    /// Resolves a relative path's parent without following intermediate
-    /// symbolic links or allowing the walk to escape above `current_dir`.
-    ///
-    /// This provides the path-walk guarantees required by Linux openat2's
-    /// `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` combination.
-    pub fn resolve_parent_beneath_no_symlinks<'a>(
-        &self,
-        path: &'a Path,
-    ) -> VfsResult<(Location, Cow<'a, str>)> {
-        self.resolve_parent_beneath_no_symlinks_checked(path, |_| Ok(()))
-    }
-
-    /// Resolves the parent for `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` while
-    /// checking search permission before every directory lookup. The
-    /// no-symlink and beneath guarantees are identical to the unchecked
-    /// variant; the callback only supplies the caller's DAC policy.
-    pub fn resolve_parent_beneath_no_symlinks_checked<'a>(
-        &self,
-        path: &'a Path,
-        check_search: impl Fn(&Location) -> VfsResult<()>,
-    ) -> VfsResult<(Location, Cow<'a, str>)> {
-        let mut components = path.components().peekable();
-        let mut dir = self.current_dir().clone();
-        let mut depth = 0usize;
-
-        while let Some(component) = components.next() {
-            let is_last = components.peek().is_none();
-            match component {
-                Component::RootDir => return Err(VfsError::CrossesDevices),
-                Component::CurDir if is_last => {
-                    check_search(&dir)?;
-                    if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
-                        return Ok((parent, name.into()));
-                    }
-                    return Ok((dir, Cow::Borrowed(".")));
-                }
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    if depth == 0 {
-                        return Err(VfsError::CrossesDevices);
-                    }
-                    check_search(&dir)?;
-                    dir = dir.parent().ok_or(VfsError::CrossesDevices)?;
-                    depth -= 1;
-                    if is_last {
-                        if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
-                            return Ok((parent, name.into()));
-                        }
-                        return Ok((dir, Cow::Borrowed(".")));
-                    }
-                }
-                Component::Normal(name) if is_last => {
-                    check_search(&dir)?;
-                    return Ok((dir, Cow::Borrowed(name)));
-                }
-                Component::Normal(name) => {
-                    check_search(&dir)?;
-                    let next = dir.lookup_no_follow(name)?;
-                    if next.node_type() == NodeType::Symlink {
-                        return Err(VfsError::FilesystemLoop);
-                    }
-                    next.check_is_dir()?;
-                    dir = next;
-                    depth += 1;
-                }
-            }
-        }
-
-        Err(VfsError::NotFound)
     }
 
     /// Retrieves metadata for the file.

@@ -150,7 +150,7 @@ impl StagingNode {
                             content,
                             permission,
                         },
-                        CreateIntent::Exclusive,
+                        CreateIntent::exclusive(),
                         mounter,
                     )?;
                 }

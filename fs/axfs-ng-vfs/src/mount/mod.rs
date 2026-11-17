@@ -27,6 +27,7 @@ use crate::{
 };
 
 mod namespace;
+mod observation;
 mod pivot;
 mod propagation;
 mod publication;
@@ -49,6 +50,14 @@ static PEER_GROUP_COUNTER: AtomicU64 = AtomicU64::new(1);
 static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
 
 static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
+
+/// A completed mount topology, invalidated by a later or in-flight mutation.
+///
+/// Capture and validation only try the real topology gate, excluding partial
+/// updates that have not yet published their final version.
+#[derive(Clone, Copy, Debug)]
+pub struct MountObservation(u64);
+
 /// Serializes mount-tree and propagation-graph mutations.
 ///
 /// Callers acquire this outer guard before node-local locks. Node-local locks
@@ -97,6 +106,12 @@ impl<T> TopologyTransactionGate<T> {
 
     fn is_owned_by_current(&self) -> bool {
         MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(core::cell::Cell::get)
+    }
+
+    fn try_lock(&self) -> Option<MountTopologyGuard<'_, T>> {
+        let inner = self.inner.try_lock()?;
+        MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(|owned| owned.set(true));
+        Some(MountTopologyGuard { inner: Some(inner) })
     }
 }
 
@@ -1248,7 +1263,7 @@ impl Location {
             self.run_native_create(
                 name,
                 attributes,
-                crate::CreateIntent::Exclusive,
+                crate::CreateIntent::exclusive(),
                 credentials,
                 crate::prepared_write::PreparedView::write(&write),
             )?
@@ -1257,7 +1272,7 @@ impl Location {
             self.run_create(
                 name,
                 attributes,
-                CreateSelection::Ordinary(crate::CreateIntent::Exclusive),
+                CreateSelection::Ordinary(crate::CreateIntent::exclusive()),
                 credentials,
                 crate::CreationWrite::Ready(&write),
                 &retired,
@@ -1729,12 +1744,13 @@ impl Location {
             permission: options.permission,
         };
         let intent = if options.create_new {
-            crate::CreateIntent::Exclusive
+            crate::CreateIntent::exclusive()
         } else {
-            crate::CreateIntent::Open(crate::ExistingOpen {
+            crate::CreateIntent::open(crate::ExistingOpen {
                 access: options.access,
             })
-        };
+        }
+        .with_observation(options.observation);
         let outcome = if self.filesystem().has_native_namespace() {
             self.run_native_create(name, attributes, intent, credentials, prepared)?
         } else {

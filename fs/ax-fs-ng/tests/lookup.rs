@@ -1,8 +1,14 @@
 #![cfg(feature = "host-test")]
 
-use ax_fs_ng::{FsContext, MemoryFs, NativeLinkCaller, file::OpenOptions};
+use ax_fs_ng::{
+    FsContext, LookupPolicy, LookupRestrictions, LookupScope, MemoryFs, NativeLinkCaller,
+    file::OpenOptions,
+};
 use ax_runtime as _;
-use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission, NodeType, VfsError};
+use axfs_ng_vfs::{
+    Mountpoint, MutationCredentials, NodePermission, NodeType, PathHandle, PathObservation,
+    VfsError,
+};
 
 #[test]
 fn open_keeps_one_link_budget_through_the_final_target_and_creation() {
@@ -74,4 +80,97 @@ fn open_keeps_one_link_budget_through_the_final_target_and_creation() {
             );
         }
     }
+}
+
+#[test]
+fn scoped_lookup_rejects_a_moved_parent_and_revalidates_the_actual_create_slot() {
+    ax_block::os::task::install_test_runtime_ops();
+    let filesystem = MemoryFs::new();
+    let mount = Mountpoint::new_root(&filesystem);
+    let root = mount.root_location();
+    let credentials = MutationCredentials::root();
+    let mode = NodePermission::from_bits_truncate(0o700);
+    let scope = root
+        .create("scope", NodeType::Directory, mode, 0, 0, &credentials)
+        .unwrap();
+    root.create("outside", NodeType::Directory, mode, 0, 0, &credentials)
+        .unwrap();
+    let branch = scope
+        .create("branch", NodeType::Directory, mode, 0, 0, &credentials)
+        .unwrap();
+    let leaf = branch
+        .create("leaf", NodeType::Directory, mode, 0, 0, &credentials)
+        .unwrap();
+    let paths = FsContext::from_tree(mount, root).unwrap();
+    let caller = NativeLinkCaller::root();
+    let view = ax_fs_ng::FsView::native(paths, &caller);
+    let scoped = view
+        .with_dirfd(PathHandle::acquire(scope).unwrap())
+        .unwrap()
+        .with_lookup_policy(LookupPolicy::new(
+            LookupScope::Beneath,
+            LookupRestrictions::empty(),
+        ));
+    let moved = core::cell::Cell::new(false);
+    let mut rejected = false;
+    for _ in 0..1024 {
+        let result = scoped.resolve_checked("branch/leaf/../..", |directory| {
+            if directory.ptr_eq(&leaf) && !moved.replace(true) {
+                // The actual MemoryFs rename completes after search admission
+                // and before the same operation follows its first `..`.
+                view.rename("scope/branch", "outside/branch")?;
+            }
+            Ok(())
+        });
+        if !moved.get() && matches!(result, Err(VfsError::WouldBlock)) {
+            std::thread::yield_now();
+            continue;
+        }
+        assert!(moved.get(), "the controlled rename must execute");
+        assert!(matches!(result, Err(VfsError::WouldBlock)));
+        rejected = true;
+        break;
+    }
+    assert!(
+        rejected,
+        "the controlled lookup must reach its rename window"
+    );
+
+    view.rename("outside/branch", "scope/branch").unwrap();
+    let mut create = OpenOptions::new();
+    create.write(true).create(true);
+    let created = retry_lookup_contention(|| create.open(&scoped, "branch/created")).unwrap();
+    assert_eq!(
+        created.into_file().unwrap().location().inode(),
+        branch.lookup_no_follow("created").unwrap().inode()
+    );
+    let observation = retry_lookup_contention(PathObservation::capture).unwrap();
+    view.rename("scope/branch", "outside/branch").unwrap();
+    let result = branch.open_file_with_status(
+        "escaped",
+        &axfs_ng_vfs::OpenOptions {
+            create: true,
+            observation: Some(observation),
+            ..Default::default()
+        },
+        &credentials,
+    );
+    assert!(matches!(result, Err(VfsError::WouldBlock)));
+    assert!(matches!(
+        branch.lookup_no_follow("escaped"),
+        Err(VfsError::NotFound)
+    ));
+}
+
+fn retry_lookup_contention<T>(
+    mut operation: impl FnMut() -> Result<T, VfsError>,
+) -> Result<T, VfsError> {
+    for _ in 0..1024 {
+        let result = operation();
+        if !matches!(result, Err(VfsError::WouldBlock)) {
+            return result;
+        }
+        std::thread::yield_now();
+    }
+    Err(VfsError::WouldBlock)
 }

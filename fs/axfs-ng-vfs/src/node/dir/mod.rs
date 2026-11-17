@@ -309,6 +309,8 @@ pub struct OpenOptions {
     pub user: Option<(u32, u32)>, // (uid, gid)
     /// Final-object DAC for an existing entry, empty for a path-only handle.
     pub access: NodePermission,
+    /// Frozen path proof, revalidated in the actual create/open slot attempt.
+    pub observation: Option<crate::PathObservation>,
 }
 
 impl Default for OpenOptions {
@@ -320,6 +322,7 @@ impl Default for OpenOptions {
             permission: NodePermission::default(),
             user: None,
             access: NodePermission::empty(),
+            observation: None,
         }
     }
 }

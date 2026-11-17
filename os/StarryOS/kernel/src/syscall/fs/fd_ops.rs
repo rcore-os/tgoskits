@@ -533,15 +533,17 @@ pub fn sys_openat2(
     if how_value.mode & !0o7777 != 0 {
         return Err(StarryError::InvalidInput);
     }
-    if how_value.mode != 0 && how_value.flags & ((O_CREAT | O_TMPFILE) as u64) == 0 {
+    if how_value.mode != 0 && how_value.flags & ((O_CREAT | (O_TMPFILE & !O_DIRECTORY)) as u64) == 0
+    {
         return Err(StarryError::InvalidInput);
     }
     if how_value.resolve & !OPENAT2_VALID_RESOLVE != 0 {
         return Err(StarryError::InvalidInput);
     }
-    const NIX_RESTORE_RESOLVE: u64 = (RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS) as u64;
-    if how_value.resolve != 0 && how_value.resolve != NIX_RESTORE_RESOLVE {
-        return Err(StarryError::OperationNotSupported);
+    if how_value.resolve & RESOLVE_BENEATH as u64 != 0
+        && how_value.resolve & RESOLVE_IN_ROOT as u64 != 0
+    {
+        return Err(StarryError::InvalidInput);
     }
 
     let flags: i32 = how_value
@@ -561,6 +563,14 @@ pub fn sys_openat2(
         return Err(StarryError::InvalidInput);
     }
 
+    if how_value.resolve & RESOLVE_CACHED as u64 != 0 {
+        if uflags & (O_CREAT | O_TRUNC | (O_TMPFILE & !O_DIRECTORY)) != 0 {
+            return Err(StarryError::WouldBlock);
+        }
+        // Cache-only traversal needs its own nonblocking snapshot and final
+        // handoff. Never construct a blocking ordinary FsView for this path.
+        return Err(StarryError::OperationNotSupported);
+    }
     if how_value.resolve == 0 {
         return sys_openat(current, dirfd, path, flags, mode);
     }
@@ -569,65 +579,44 @@ pub fn sys_openat2(
     if path.is_empty() {
         return Err(StarryError::NotFound);
     }
-    if path.starts_with('/') {
-        return Err(StarryError::CrossesDevices);
-    }
-
-    let curr = current;
-    let thread = curr.as_thread();
+    use ax_fs_ng::{LookupPolicy, LookupRestrictions, LookupScope};
+    let scope = if how_value.resolve & RESOLVE_BENEATH as u64 != 0 {
+        if path.starts_with('/') {
+            return Err(StarryError::CrossesDevices);
+        }
+        LookupScope::Beneath
+    } else if how_value.resolve & RESOLVE_IN_ROOT as u64 != 0 {
+        LookupScope::InRoot
+    } else {
+        LookupScope::ProcessRoot
+    };
+    let mut restrictions = LookupRestrictions::empty();
+    restrictions.set(
+        LookupRestrictions::NO_XDEV,
+        how_value.resolve & RESOLVE_NO_XDEV as u64 != 0,
+    );
+    restrictions.set(
+        LookupRestrictions::NO_MAGICLINKS,
+        how_value.resolve & RESOLVE_NO_MAGICLINKS as u64 != 0,
+    );
+    restrictions.set(
+        LookupRestrictions::NO_SYMLINKS,
+        how_value.resolve & RESOLVE_NO_SYMLINKS as u64 != 0,
+    );
+    let policy = LookupPolicy::new(scope, restrictions);
+    let dirfd = if path.starts_with('/') && scope == LookupScope::ProcessRoot {
+        AT_FDCWD
+    } else {
+        dirfd
+    };
+    let thread = current.as_thread();
     let mode = mode & !thread.proc_data.umask();
-    let link_caller = crate::task::ProcLinkCaller::capture(thread);
-    let fs_credentials = link_caller.fs_credentials();
-    let cred = fs_credentials.credentials();
-    let mutation_cred = fs_credentials.as_mutation_credentials();
-    let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
-    let result = with_fs(dirfd, &link_caller, |fs| {
-        let path_ref = axfs_ng_vfs::path::Path::new(&path);
-        let must_be_dir = path_ref.has_trailing_slash();
-        let dot_only = path_ref
-            .components()
-            .all(|component| matches!(component, axfs_ng_vfs::path::Component::CurDir));
-
-        // A path made only of `.` components names the already-open dirfd.
-        // Resolving it directly avoids manufacturing a lookup through the
-        // dirfd's parent, which may be intentionally inaccessible. Preserve
-        // O_CREAT|O_EXCL's EEXIST precedence for this existing final entry.
-        if dot_only {
-            if uflags & (O_CREAT | O_EXCL) == (O_CREAT | O_EXCL) {
-                return Err(StarryError::AlreadyExists);
-            }
-            let (location, _) = fs
-                .resolve_with_search_checked(axfs_ng_vfs::path::Path::new(&path), |directory| {
-                    fs.check_search_path(directory, fs.permission_boundary())
-                })?;
-            options.no_follow(true);
-            return Ok(options.open_loc_with_credentials(location, &mutation_cred)?);
-        }
-        let (parent, name) = fs
-            .resolve_parent_beneath_no_symlinks_checked(path.as_ref(), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary())
-            })?;
-        match parent.lookup_no_follow(name.as_ref()) {
-            Ok(location) if location.node_type() == NodeType::Symlink => {
-                return Err(StarryError::FilesystemLoop);
-            }
-            Ok(location) => {
-                if must_be_dir && !location.is_dir() {
-                    return Err(StarryError::NotADirectory);
-                }
-            }
-            Err(VfsError::NotFound) => {
-                // A trailing slash requires a directory and must not create a
-                // regular file while preparing the final lookup.
-                if must_be_dir {
-                    options.create(false).create_new(false);
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-        let fs = fs.with_current_dir(parent)?;
-        options.no_follow(true);
-        Ok(options.open(&fs, name.as_ref())?)
+    let caller = crate::task::ProcLinkCaller::capture(thread);
+    let credentials = caller.fs_credentials().credentials();
+    let options = flags_to_options(flags, mode, (credentials.fsuid, credentials.fsgid));
+    let result = with_fs(dirfd, &caller, |fs| {
+        let view = fs.with_lookup_policy(policy);
+        Ok(options.open(&view, path.as_str())?)
     })?;
     let mount_table_namespace = mount_table_namespace(current, &result);
     add_to_fd(current, result, flags as u32, mount_table_namespace).map(|fd| fd as isize)

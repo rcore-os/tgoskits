@@ -115,7 +115,7 @@ pub(super) fn exercise() {
             .unwrap()
             .unwrap();
         assert_eq!(metadata.result(), Err(VfsError::AlreadyExists));
-        let intent = crate::CreateIntent::Open(crate::ExistingOpen {
+        let intent = crate::CreateIntent::open(crate::ExistingOpen {
             access: NodePermission::OTHER_READ,
         });
         assert_eq!(
@@ -166,7 +166,7 @@ pub(super) fn exercise() {
                 &inputs[0],
                 "new",
                 creation_attributes(),
-                crate::CreateIntent::Exclusive,
+                crate::CreateIntent::exclusive(),
                 &credentials
             ),
             Err(VfsError::NoMemory)

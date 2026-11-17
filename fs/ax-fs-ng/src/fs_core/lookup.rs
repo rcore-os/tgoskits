@@ -4,10 +4,10 @@ use alloc::{borrow::Cow, collections::VecDeque, string::String, vec::Vec};
 
 use axfs_ng_vfs::{
     LinkCaller, LinkTarget, Location, LookupStep, MutationCredentials, NodePermission, NodeType,
-    ParentStep, PathHandle, VfsError, VfsResult,
+    ParentStep, PathHandle, PathObservation, VfsError, VfsResult,
 };
 
-use super::{FsContext, FsView, SYMLINKS_MAX};
+use super::{FsView, LookupPolicy, LookupRestrictions, LookupScope, SYMLINKS_MAX};
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
 
@@ -35,7 +35,9 @@ impl LinkBudget {
 
 /// Frozen operation state; helpers borrow it instead of starting another walk.
 pub(crate) struct LookupSession<'a> {
-    context: FsContext,
+    root: PathHandle,
+    policy: LookupPolicy,
+    observation: Option<PathObservation>,
     current: PathHandle,
     pending: VecDeque<Component<'a>>,
     searched: Vec<PathHandle>,
@@ -74,10 +76,25 @@ impl<'a> LookupSession<'a> {
         if path.is_empty() {
             return Err(VfsError::NotFound);
         }
+        let policy = view.lookup_policy();
+        let scoped = policy.scope != LookupScope::ProcessRoot;
+        if policy.scope == LookupScope::Beneath && path.starts_with('/') {
+            return Err(VfsError::CrossesDevices);
+        }
+        let root = if scoped { view.cwd() } else { view.root() }.clone();
+        let mut pending = components(path);
+        let current = if matches!(pending.front(), Some(Component::Root)) {
+            pending.pop_front();
+            root.clone()
+        } else {
+            view.cwd().clone()
+        };
         Ok(Self {
-            context: view.context().clone(),
-            current: view.cwd().clone(),
-            pending: components(path),
+            root,
+            policy,
+            observation: scoped.then(PathObservation::capture).transpose()?,
+            current,
+            pending,
             searched: Vec::new(),
             caller: view.caller(),
             credentials: *view.credentials(),
@@ -94,7 +111,7 @@ impl<'a> LookupSession<'a> {
     pub(crate) fn parent(mut self) -> VfsResult<Continuation<'a>> {
         while let Some(component) = self.pending.pop_front() {
             match component {
-                Component::Root => self.current = self.context.root_handle().clone(),
+                Component::Root => self.jump_root()?,
                 Component::Current => {
                     self.check_search()?;
                     self.remember_search();
@@ -152,6 +169,7 @@ impl<'a> LookupSession<'a> {
     }
 
     fn validate_searches(&self) -> VfsResult<()> {
+        self.validate_observation()?;
         for directory in &self.searched {
             self.check_directory(directory)?;
         }
@@ -159,6 +177,18 @@ impl<'a> LookupSession<'a> {
     }
 
     fn bind(&self, location: Location) -> VfsResult<PathHandle> {
+        self.validate_observation()?;
+        if self
+            .policy
+            .restrictions
+            .contains(LookupRestrictions::NO_XDEV)
+            && !alloc::sync::Arc::ptr_eq(
+                self.current.location().mountpoint(),
+                location.mountpoint(),
+            )
+        {
+            return Err(VfsError::CrossesDevices);
+        }
         if alloc::sync::Arc::ptr_eq(self.current.location().mountpoint(), location.mountpoint()) {
             self.current.rebind(location)
         } else {
@@ -168,6 +198,7 @@ impl<'a> LookupSession<'a> {
 
     fn lookup(&self, name: &str) -> VfsResult<Option<PathHandle>> {
         loop {
+            self.validate_observation()?;
             self.check_search()?;
             match self.current.location().lookup_component(name) {
                 LookupStep::Found(location) => return self.bind(location).map(Some),
@@ -187,12 +218,17 @@ impl<'a> LookupSession<'a> {
     }
 
     fn ascend(&mut self) -> VfsResult<()> {
+        self.validate_observation()?;
         self.check_search()?;
         self.remember_search();
         let mut location = self.current.location().clone();
         loop {
-            if location.ptr_eq(self.context.root_dir()) {
-                return Ok(());
+            if location.ptr_eq(self.root.location()) {
+                return if self.policy.scope == LookupScope::Beneath {
+                    Err(VfsError::CrossesDevices)
+                } else {
+                    self.validate_observation()
+                };
             }
             match location.parent_step()? {
                 ParentStep::Parent { parent, .. }
@@ -201,15 +237,36 @@ impl<'a> LookupSession<'a> {
                     ..
                 } => {
                     self.current = self.bind(parent)?;
-                    return Ok(());
+                    return self.validate_observation();
                 }
-                ParentStep::Covered(covered) => location = covered,
-                ParentStep::Root | ParentStep::Unlinked { parent: None, .. } => return Ok(()),
+                ParentStep::Covered(covered) => {
+                    if covered.ptr_eq(self.root.location()) {
+                        location = covered;
+                    } else if self
+                        .policy
+                        .restrictions
+                        .contains(LookupRestrictions::NO_XDEV)
+                    {
+                        return Err(VfsError::CrossesDevices);
+                    } else {
+                        location = covered;
+                    }
+                }
+                ParentStep::Root | ParentStep::Unlinked { parent: None, .. } => {
+                    return self.validate_observation();
+                }
             }
         }
     }
 
     fn follow(&mut self, link: PathHandle) -> VfsResult<()> {
+        if self
+            .policy
+            .restrictions
+            .contains(LookupRestrictions::NO_SYMLINKS)
+        {
+            return Err(VfsError::FilesystemLoop);
+        }
         self.budget.charge()?;
         match link.location().entry().link_target(self.caller)? {
             LinkTarget::Text(target) => {
@@ -220,9 +277,90 @@ impl<'a> LookupSession<'a> {
                 target.append(&mut self.pending);
                 self.pending = target;
             }
-            LinkTarget::Object(target) => self.current = target,
+            LinkTarget::Object(target) => {
+                if self
+                    .policy
+                    .restrictions
+                    .contains(LookupRestrictions::NO_MAGICLINKS)
+                {
+                    return Err(VfsError::FilesystemLoop);
+                }
+                if self.policy.scope != LookupScope::ProcessRoot {
+                    return Err(VfsError::CrossesDevices);
+                }
+                if self
+                    .policy
+                    .restrictions
+                    .contains(LookupRestrictions::NO_XDEV)
+                    && !alloc::sync::Arc::ptr_eq(
+                        self.current.location().mountpoint(),
+                        target.location().mountpoint(),
+                    )
+                {
+                    return Err(VfsError::CrossesDevices);
+                }
+                self.current = target;
+            }
         }
         Ok(())
+    }
+
+    fn jump_root(&mut self) -> VfsResult<()> {
+        if self.policy.scope == LookupScope::Beneath {
+            return Err(VfsError::CrossesDevices);
+        }
+        if self
+            .policy
+            .restrictions
+            .contains(LookupRestrictions::NO_XDEV)
+            && !alloc::sync::Arc::ptr_eq(
+                self.current.location().mountpoint(),
+                self.root.location().mountpoint(),
+            )
+        {
+            return Err(VfsError::CrossesDevices);
+        }
+        self.validate_observation()?;
+        self.current = self.root.clone();
+        Ok(())
+    }
+
+    fn validate_observation(&self) -> VfsResult<()> {
+        if let Some(observation) = self.observation {
+            observation.validate()?;
+        }
+        Ok(())
+    }
+
+    fn validate_result(&self, path: &PathHandle) -> VfsResult<()> {
+        self.validate_observation()?;
+        if self.observation.is_none() {
+            return Ok(());
+        }
+        let mut current = path.location().clone();
+        let mut visited = Vec::new();
+        loop {
+            self.validate_observation()?;
+            if current.ptr_eq(self.root.location()) {
+                return self.validate_observation();
+            }
+            if visited.iter().any(|past: &Location| past.ptr_eq(&current)) {
+                return Err(VfsError::WouldBlock);
+            }
+            visited.push(current.clone());
+            match current.parent_step()? {
+                ParentStep::Parent { parent, .. }
+                | ParentStep::Unlinked {
+                    parent: Some(parent),
+                    ..
+                } => current = parent,
+                ParentStep::Covered(covered) => current = covered,
+                ParentStep::Root | ParentStep::Unlinked { parent: None, .. } => {
+                    self.validate_observation()?;
+                    return Err(VfsError::CrossesDevices);
+                }
+            }
+        }
     }
 }
 
@@ -242,6 +380,7 @@ impl<'a> Continuation<'a> {
                     if intent.node.create_new {
                         return Err(VfsError::AlreadyExists);
                     }
+                    session.validate_result(&session.current)?;
                     return Ok(ResolvedOpen {
                         path: session.current,
                         created: false,
@@ -255,10 +394,19 @@ impl<'a> Continuation<'a> {
                     let result = if intent.node.create || intent.node.create_new {
                         // Missing is never creation authority. The actual slot
                         // owner observes and authorizes this fixed command.
+                        session.validate_result(&session.current)?;
+                        let mut node = intent.node.clone();
+                        node.observation = session.observation;
                         let (location, created) = session
                             .current
                             .location()
-                            .open_file_with_status(&name, &intent.node, &credentials)?;
+                            .open_file_with_status(&name, &node, &credentials)?;
+                        // The actual slot atomically checked the original
+                        // naming observation before its own publication. Now
+                        // verify the returned path against completed topology.
+                        if session.observation.is_some() {
+                            session.observation = Some(PathObservation::capture()?);
+                        }
                         (session.bind(location)?, created)
                     } else {
                         (session.lookup(&name)?.ok_or(VfsError::NotFound)?, false)
@@ -284,6 +432,7 @@ impl<'a> Continuation<'a> {
             if directory {
                 child.location().check_is_dir()?;
             }
+            session.validate_result(&child)?;
             return Ok(ResolvedOpen {
                 path: child,
                 created,
@@ -293,6 +442,7 @@ impl<'a> Continuation<'a> {
 
     pub(crate) fn finish_parent(self) -> VfsResult<(Location, String, Vec<Location>)> {
         self.session.validate_searches()?;
+        self.session.validate_result(&self.session.current)?;
         let (directory, name) = match self.entry {
             FinalEntry::Name(name) => {
                 self.session.check_search()?;
@@ -336,6 +486,7 @@ impl<'a> Continuation<'a> {
             } = continuation;
             let FinalEntry::Name(name) = entry else {
                 session.validate_searches()?;
+                session.validate_result(&session.current)?;
                 return Ok((session.current, session.searched));
             };
             let child = session.lookup(&name)?.ok_or(VfsError::NotFound)?;
@@ -349,6 +500,7 @@ impl<'a> Continuation<'a> {
                 child.location().check_is_dir()?;
             }
             session.validate_searches()?;
+            session.validate_result(&child)?;
             return Ok((child, session.searched));
         }
     }

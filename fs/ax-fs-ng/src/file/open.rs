@@ -355,6 +355,7 @@ impl OpenOptions {
                 permission: NodePermission::from_bits_truncate(self.mode as _),
                 user: self.user,
                 access,
+                observation: None,
             },
             follow: !self.no_follow,
             path_only: self.path,
@@ -1205,6 +1206,7 @@ mod tests {
                 node_type: NodeType::RegularFile,
                 permission: NodePermission::from_bits_truncate(0o600),
                 user: Some((1000, 1000)),
+                observation: None,
             },
             &axfs_ng_vfs::MutationCredentials::root(),
         );

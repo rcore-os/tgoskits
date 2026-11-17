@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+fn mount_observation_rejects_inflight_and_completed_publication() {
+    let parent = Mountpoint::new_root(&mock_filesystem());
+    let target = Location::new(parent, make_dir_entry("observation-target"));
+    let observation = {
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        let observation = MountObservation(MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire));
+        assert!(matches!(
+            MountObservation::capture(),
+            Err(VfsError::WouldBlock)
+        ));
+        assert_eq!(observation.validate(), Err(VfsError::WouldBlock));
+        observation
+    };
+    target.mount(&mock_filesystem()).unwrap();
+    assert_eq!(observation.validate(), Err(VfsError::WouldBlock));
+}
+
 struct UseRetirementProbe {
     mount: Weak<Mountpoint>,
     retired: Arc<AtomicUsize>,
