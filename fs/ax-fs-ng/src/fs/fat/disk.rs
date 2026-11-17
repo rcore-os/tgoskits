@@ -522,6 +522,12 @@ mod tests {
 
     #[test]
     fn fat_unlink_preserves_active_identity_and_releases_closed_cache_owners() {
+        crate::os::memory::test_support::with_test_page_provider(true, |_| {
+            check_fat_unlink_cache_owners();
+        });
+    }
+
+    fn check_fat_unlink_cache_owners() {
         use axfs_ng_vfs::{
             Mountpoint, MutationCredentials, NameState, NodePermission, NodeType, VfsError,
         };

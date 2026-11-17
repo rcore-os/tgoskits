@@ -1110,6 +1110,13 @@ mod tests {
     #[cfg(feature = "host-test")]
     #[test]
     fn readonly_reconfiguration_preserves_writers_until_description_and_mapping_release() {
+        crate::os::memory::test_support::with_test_page_provider(true, |_| {
+            check_readonly_reconfiguration();
+        });
+    }
+
+    #[cfg(feature = "host-test")]
+    fn check_readonly_reconfiguration() {
         for shared in [false, true] {
             let filesystem = crate::MemoryFs::new();
             let mount = Mountpoint::new_root(&filesystem);
@@ -1232,11 +1239,7 @@ mod tests {
             drop(path_file);
         }
 
-        // Native cached I/O shares the fixture's page provider with cache
-        // tests. Own its epoch instead of consuming another test's budget.
-        crate::os::memory::test_support::with_test_page_provider(true, |_| {
-            check_backing_write_rights();
-        });
+        check_backing_write_rights();
 
         let filesystem = crate::MemoryFs::new();
         let mount = Mountpoint::new_root(&filesystem);

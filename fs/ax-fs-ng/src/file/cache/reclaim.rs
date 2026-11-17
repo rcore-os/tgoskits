@@ -1,6 +1,6 @@
 //! Registry ownership, writeback snapshots, and best-effort clean-cache reclaim.
 //!
-//! Pruning and pressure reclaim bound each scan by its initial registry length.
+//! Ordinary pruning and pressure reclaim bound each scan by its initial registry length.
 //! Concurrent removal can move an unvisited entry behind the cursor, so one
 //! pass may retain a clean, closed file. Later registration, ext4 directory
 //! operations, or writeback can retry pruning; allocator retries revisit clean
@@ -8,6 +8,9 @@
 //! Dirty or externally owned files remain registered. Explicit writeback takes
 //! an owned snapshot, and final mount retirement uses the inode index, so those
 //! durability paths do not rely on a best-effort scan reaching every entry.
+//! Namespace retirement instead excludes inode-index upgrades before scanning
+//! the registry, waits outside backend gates, and transfers owners to the
+//! original command for destruction after all outer protections have ended.
 
 use alloc::{sync::Arc, vec::Vec as AllocVec};
 #[cfg(feature = "vfs")]
