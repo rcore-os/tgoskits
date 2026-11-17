@@ -3534,6 +3534,14 @@ mod tests {
         assert_eq!(route.vector, 4);
         assert!(routing.resolve_gsi(48).is_none());
         assert!(routing.resolve_gsi(63).is_none());
+
+        // Firmware may list an input in both maps. The first parent owns it;
+        // the second parent still routes its remaining, disjoint inputs.
+        bytes[lio + 19..lio + 23].copy_from_slice(&((1u32 << 10) | (1u32 << 31)).to_le_bytes());
+        let mut routing = AcpiRouting::new();
+        super::parse_loongarch_interrupt_routing(&bytes, &mut routing).unwrap();
+        assert_eq!(routing.resolve_gsi(26).unwrap().vector, 2);
+        assert_eq!(routing.resolve_gsi(47).unwrap().vector, 4);
     }
 
     #[test]
@@ -3549,7 +3557,6 @@ mod tests {
             (13, &[1][..]),                         // active parent is not HW0..HW3
             (15, &[0; 8][..]),                      // no input wired
             (19, &[0, 8, 0, 0][..]),                // active second map has no parent
-            (14, &[4, 0, 4, 0, 0, 0, 4, 0, 0][..]), // overlapping input 10
             (14, &[2, 0, 4, 0, 0, 0, 8, 0, 0][..]), // duplicate active parent
         ] {
             let mut bytes = original.clone();
