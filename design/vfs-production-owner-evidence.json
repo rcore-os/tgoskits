@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "proc_self_and_held_link_read",
+  "latest_evidence_section": "owned_lookup_results",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -3140,5 +3140,213 @@
     "remaining_scope_unchanged": true,
     "compatibility_table": "design/vfs-syscall-compatibility.md",
     "compatibility_table_rows": 20
+  },
+  "owned_lookup_results": {
+    "negative_source": "21eaf18bd960ea81e10643fb2637b87fed464327",
+    "implementation_source": "802004f30c91d6f34cf1cf7a00f8ac5166f3b44e",
+    "fixture_source": "272141b52a8fe36af6ebc1b98f1783eb89dccea5",
+    "test_sha256": "2a626166adc9bda44641cc3920e653df4479c8ac035675b6354e9ec30448ecc7",
+    "negative": {
+      "outer_exit": 1,
+      "failed_package": "ax-fs-ng",
+      "failed_profiles": 5,
+      "failure": "ordinary unmount returns Ok while the resolved path result is alive, expected ResourceBusy"
+    },
+    "positive": {
+      "state": "passed",
+      "std_packages": 18,
+      "outer_exit": 0,
+      "mount_use_profiles_passed": 5,
+      "clippy_checks_passed": 106,
+      "clippy_outer_exit": 0
+    },
+    "new_public_compatibility_layer": false,
+    "remaining_scope_unchanged": true,
+    "same_test_across_red_green": true,
+    "qemu": {
+      "arch": "x86_64",
+      "ownership": {
+        "assertions_passed": 107,
+        "assertions_failed": 0,
+        "outer_exit": 0
+      },
+      "path": {
+        "assertions_passed": 45,
+        "assertions_failed": 0,
+        "outer_exit": 0
+      },
+      "proc": {
+        "project_passed": 1,
+        "project_failed": 0,
+        "outer_exit": 0
+      },
+      "elf_sha256": "788f7d79e76ea3086a9218ec398798a7d92ecf1fd555e058f462faf80b0c499a"
+    },
+    "axvisor": {
+      "arch": "aarch64",
+      "special_clippy_outer_exit": 0,
+      "ktest_passed": 124,
+      "ktest_failed": 0,
+      "ktest_skipped": 0,
+      "ktest_outer_exit": 0,
+      "web_cases_passed": 1,
+      "web_cases_failed": 0,
+      "web_outer_exit": 0
+    },
+    "full_system": {
+      "source": "272141b52a8fe36af6ebc1b98f1783eb89dccea5",
+      "arch": "x86_64",
+      "total": 541,
+      "passed": 534,
+      "failed": 7,
+      "outer_exit": 1,
+      "failed_programs": [
+        "bug-dir-mutation-permissions",
+        "bugfix-proc-pid-exe-readlink",
+        "cgroup-basic",
+        "syscall-test-ltp-pilot-min",
+        "test-cgroup-ns",
+        "test-devpts-newinstance",
+        "test-unix-bind-chown"
+      ],
+      "fixed_elf_sha256": "788f7d79e76ea3086a9218ec398798a7d92ecf1fd555e058f462faf80b0c499a"
+    },
+    "arceos_stack_guard_recheck": {
+      "source": "272141b52a8fe36af6ebc1b98f1783eb89dccea5",
+      "arch": "aarch64",
+      "gic_version": 2,
+      "guest_cpus": 4,
+      "outer_exit": 0,
+      "diagnostic_observed": true,
+      "old_ci_intermittent_not_claimed_fixed": true
+    },
+    "recorded_at": "2026-11-17T08:37:35.437815+00:00",
+    "source_sha256": {
+      "fs/ax-fs-ng/src/api.rs": "0905ceeacf1f5d79ff63ce05a3f45843f8940c8d77ba9e656d9c2338e0d82ff0",
+      "fs/ax-fs-ng/src/bundle.rs": "830dd86eb08a4a59a1440f9ee2960717fb3df4d395c09e5029390013272178d2",
+      "fs/ax-fs-ng/src/file/open.rs": "60be10cdb26f44c91e0e58f50c7f395cbf0daf52e1a48b3464db1c3a0e3d72b5",
+      "fs/ax-fs-ng/src/fops.rs": "280d29d73e3229105d5bb21ae5ad1844d36a3bfad51bc3827b5dd689a065e7bc",
+      "fs/ax-fs-ng/src/fs/fat/disk.rs": "411ffa406a8eef3bf4051f84006a2db3ddccf39a70a061adb10b8423fa90ee87",
+      "fs/ax-fs-ng/src/fs_core/context.rs": "60335b0f96efe09f7aaae71f9c02bbe6370bb7624432699be9f1b51be2800af0",
+      "fs/ax-fs-ng/src/fs_core/lookup.rs": "192bb00da5fd2ffafe0b16db145162e681987367e25d5ad137d8a36c44696cc0",
+      "fs/ax-fs-ng/src/fs_core/owner/mod.rs": "c0e04ba2dd0dda46fa34ac05df7b627e1b35d01c4f9bb38716545b832a069d59",
+      "fs/ax-fs-ng/src/fs_core/view.rs": "257ab941ddbbc8177e01a63b8ce6e6f3460ca46b8f6c270aabcd0457b48cef62",
+      "fs/ax-fs-ng/src/initramfs.rs": "0cf30ca04ac8e4f32dcd1369c0a313675496225f6af6d19d841121ea82d1b3a2",
+      "fs/ax-fs-ng/src/migration.rs": "14733e829bbaa8e9f9c61dbdad05f5c5f8efe722a47462311e0979ca8c4c31c6",
+      "fs/ax-fs-ng/tests/lookup.rs": "2a626166adc9bda44641cc3920e653df4479c8ac035675b6354e9ec30448ecc7",
+      "fs/ax-fs-ng/tests/ownership.rs": "0eb579fc32bed01030dac861bbf2905e21a82f3e9927fbc428a2c0518c2b7e68",
+      "os/StarryOS/kernel/src/entry.rs": "aed03cebf31c7c02bd641a023301315b5cd34cecd5efaa42cdf9266a52fbd8fc",
+      "os/StarryOS/kernel/src/file/fs.rs": "b57de541333b942f37a642e182c111824ee28a889a3d591a9619262f60b041d4",
+      "os/StarryOS/kernel/src/mm/loader.rs": "74f0c83b01e1b2dd48c029c27fcef5500dc7c8db94f532e5d4972a8066ddd462",
+      "os/StarryOS/kernel/src/pseudofs/dev/log.rs": "ef30697cebfd90821120a5ba13e0849b62e8d12bd649c57f4ea19acc97023a99",
+      "os/StarryOS/kernel/src/pseudofs/mod.rs": "c0135e3e69421544d6d12ca7ab7e27be697898d066b2f50a377d800c881ff16d",
+      "os/StarryOS/kernel/src/pseudofs/overlay/mod.rs": "0b17077d94820ae4f8d092383d3a4bf4f8e135ed552b9a5e380e6a88bd13217f",
+      "os/StarryOS/kernel/src/syscall/fs/ctl.rs": "ff96698d4c657e530a575832015bad0589049fddbdba1a7a95b6a27a8828c357",
+      "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs": "883c5dc519291172a0caf2a687e618bc7d8be5b81def80d19e6d6e6f19f16aaf",
+      "os/StarryOS/kernel/src/syscall/fs/inotify.rs": "67caa511708ac82ffecf81e994b3c4f539a6d731fcdfe4276ed476e5e7f4ac11",
+      "os/StarryOS/kernel/src/syscall/fs/io.rs": "4f19e56fc346371e3b2486e40fd206920c858a99ec7b727893014cebab6f4f09",
+      "os/StarryOS/kernel/src/syscall/fs/memfd.rs": "cae8ffe5f25faba64483e2526eb30b7a1d6989597e56f17e646012486f359d15",
+      "os/StarryOS/kernel/src/syscall/fs/metadata.rs": "407c17a309623f9816f52975181c6b301ff6cc5fc7dcfc49644a3b135710d58a",
+      "os/StarryOS/kernel/src/syscall/fs/mount.rs": "d6a365ea89fb1887fa4e8aed57f345a922d919ebfd355bf97c87077fd61c96eb",
+      "os/StarryOS/kernel/src/syscall/fs/stat.rs": "dafc83e507e1921e0dd766dc16e50a5bfe4d1be386e1f949b6fb6cef93780af3",
+      "os/StarryOS/kernel/src/syscall/fs/xattr.rs": "7eb31d99a3f2509f8bec5fe600c72235eebc4c69a3b7a8bb70d0a9a175662a0d",
+      "os/StarryOS/kernel/src/syscall/net/socket.rs": "721049fd1ae0aa99cd481736db3135d4f90039b2b6815e75ae116cef32cf5da3",
+      "os/StarryOS/kernel/src/syscall/sys.rs": "f9d31827e21ed57e94793b9c9f85dddac1b238fcc5cedc28f7bb919deb5b39c6",
+      "os/StarryOS/kernel/src/syscall/task/clone3.rs": "c312439334b3040d4c6c573b4ae4ce149f69e6b9754006a79aa8ba2559fec3dc",
+      "os/StarryOS/kernel/src/syscall/task/execve.rs": "38638eb6c1e211c6852fd20fc753def3295dd3afc164aac7e68555dab6c4f0ea",
+      "os/arceos/modules/axruntime/src/unix_ns.rs": "b72e9b85475cd040b7619ac5d5f221f4df3946519d9b008a1c380ce8c860d95f",
+      "os/axvisor/src/builtin.rs": "fd5804613f6d3bab331ead428549f80031e77bb58180987dc3937342bdfbe706",
+      "os/axvisor/src/control/web/assets.rs": "ebcfc606df1b9f1ef5ba4d9824c718923fe72b40092ef2d04895df8351caae72"
+    },
+    "logs": {
+      "owned-lookup-before-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-before-std.log",
+        "sha256": "1f05a085576fc6136fc83a038a4210ddecd30e43797b5d56ad0e3afff9256b09"
+      },
+      "owned-lookup-before-std.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-before-std.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "owned-lookup-after-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-after-std.log",
+        "sha256": "447da749f18268a01a340d8062219eef0b0051d1107d77fd67c3d99b21a5df3a"
+      },
+      "owned-lookup-after-std.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-after-std.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "owned-lookup-final-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-final-clippy.log",
+        "sha256": "b73280d0640a18c6a2f8ccf5ccdbb935cec28734fa427c2f604ce24647dd4f91"
+      },
+      "owned-lookup-final-clippy.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-final-clippy.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "owned-lookup-ownership-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-ownership-qemu.log",
+        "sha256": "ec748b8191ef67804b14fe03159f5e31ed349ae821984fca2a1c1ebdcfcdd858"
+      },
+      "owned-lookup-ownership-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-ownership-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "owned-lookup-path-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-path-qemu.log",
+        "sha256": "c7e698152c965b0ebe4ea4b0fddbd3a953d60badd9b320d493bd87cbcb1038d3"
+      },
+      "owned-lookup-path-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-path-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "owned-lookup-proc-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-proc-qemu.log",
+        "sha256": "5bc47ab582cbdf4e2929681e057afded7daae71e7e2b6832d62ac4321fa7c4fd"
+      },
+      "owned-lookup-proc-qemu.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-proc-qemu.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "axvisor-resolved-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-resolved-clippy.log",
+        "sha256": "1170bbfc592ace17ad83a0a26aff7cd943be6998a25e2831de0ce4a9f54f4cd0"
+      },
+      "axvisor-resolved-clippy.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-resolved-clippy.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "owned-lookup-axvisor-ktest.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-axvisor-ktest.log",
+        "sha256": "3889b6f6c4defa3668f8a420fbb53a397a49322cc8979d9116373648d226c523"
+      },
+      "owned-lookup-axvisor-ktest.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-axvisor-ktest.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "owned-lookup-axvisor-web.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-axvisor-web.log",
+        "sha256": "943c016621cb094938174a993eb8968e2476773415a510cfc1aeca5b0bbf51d7"
+      },
+      "owned-lookup-axvisor-web.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-axvisor-web.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "owned-lookup-full-system.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-full-system.log",
+        "sha256": "e04620b5586ed807625324f16a7ba299b249110ac0f97e9ecd5367d93e713754"
+      },
+      "owned-lookup-full-system.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/owned-lookup-full-system.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "stack-guard-baseline.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-baseline.log",
+        "sha256": "b2d3afd2367f31df77ea8653c91e75cedca408003a44bc6cd5a8fd4d7ad1f6a5"
+      },
+      "stack-guard-baseline.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-baseline.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      }
+    }
   }
 }

@@ -835,6 +835,24 @@ LinkTarget 的 Object 快照也要在原 fd、MM 或 FsContext 拥有者尚保�
 各按真实来源取得或继承权利，仍须分别执行 NO_XDEV 与 scoped 检查。
 取得 use 时发现正常卸载竞争属于拓扑重验证，不能误报为允许创建的 Missing。
 
+`FsView::resolve`、nofollow、checked、trace 和 parent 出口直接转交
+`PathHandle`，搜索记录为 `Vec<PathHandle>`；本次 dirfd 权限边界同样保留原句柄。
+查询不得把会话拥有路径降为裸 Location 返回，再由调用方取得另一份 mount use。
+`Continuation` 完成结果、Starry `ResolveAtResult::File`、目录迭代及 archive/migration
+调用方使用同一拥有契约。后端操作只在这些拥有者仍存活时借用 `.location()`，
+PathHandle 不增加 Deref、into_raw 或省略持有者的兼容出口。
+
+`create_dir`、link、symlink 和 create_node 返回值以父目录已有句柄 rebind，
+保留相同 mount 的原使用权。父名称适配在确实跨越覆盖层时先取得新的使用权，
+再结束旧拥有者；特殊末组件的类型化与父关系重验仍按第 3.2、3.4 节继续迁移。
+`ReadDir::from_path` 与原生 Directory 创建直接消费拥有路径，读状态先于最后路径
+退休。exec 的主映像、脚本解释器和 PT_INTERP 查找结果直接交给装载缓存。
+
+Overlay 接收拥有型 lower/upper/work 输入。内部图继续使用原生 Location 关系，
+文件系统保存这些实际 backing 的 PathHandle，并在图及索引节点退休后释放它们。
+普通 umount2 的目标从会话移入 `prepare_unmount`；附加缓存写回与 busy 检查通过
+不导出目标的 PathUnmount 完成，不通过丢弃目标 use 再规划来排除自身。
+
 #### 3.7.3 描述与映射
 
 打开描述、目录描述、执行文件和仍使用路径的映射须持续拥有相应句柄。

@@ -969,3 +969,42 @@ x86_64 的原完整路径程序再次为 45 pass、0 fail、外层 0，与本节
 [系统调用兼容性记录](vfs-syscall-compatibility.md) 已按本轮入口、flag 和目标记录
 20 行六列对照；其余完整 PR 范围继续补齐。精确源码与独立状态文件记录在生产证据，
 PR 仍是草稿，完整 CACHED、拥有型出口、其余 proc/SimpleFs、F1-F8 及原交付范围不变。
+
+
+### 9.33 查找结果的使用权
+
+旧 `finish_lookup_with_trace` 把已取得的 PathHandle 降为 Location，公共 resolve
+返回时 guard 已释放。公开功能旅程 `resolved_paths_hold_the_selected_mount_until_the_consumer_retires`
+保留真实 MemoryFs 挂载中的查找结果，再执行普通卸载；错误源码 `21eaf18bd9`
+在 AX 五个 profile 都得到 `Ok(())`，预期 ResourceBusy，标准库外层 1。
+测试随后释放结果并要求正常卸载成功，区分丢失使用权和永不释放的泄漏。
+
+`802004f30c` 将普通结果、nofollow、checked、trace、parent 及搜索权限边界改为
+拥有型 PathHandle，命名创建结果复用父路径使用权。目录迭代直接转交路径；
+Starry 的 ResolveAtResult、元数据/xattr、cwd/root、exec、挂载与匿名对象消费者
+保留原句柄，`.location()` 只作为拥有者仍存活时的后端借用。普通卸载消费目标，
+转入既有 PathUnmount，避免把自身租约当 busy，也不释放后重新取得。
+
+Overlay lower/upper/work 的输入及文件系统寿命保留实际 backing 路径，内部原生
+关系和 inode 索引先于这些租约退休。Axvisor 的资源校验与 Web UI 消费者读取拥有型
+结果。`272141b52a` 迁移公开创建夹具的借用表达；同一回归文件 SHA-256 保持不变，
+最终 AX 五个 profile 全部通过，完整标准库 18 包、AX/runtime/Kernel 的 106 项
+Clippy 全部通过，外层均为 0。
+
+x86_64 的 ownership 程序为 107 pass、0 fail，路径程序为 45 pass、0 fail，
+完整 proc-link-access 为 1/1；三次定向 xtask 的外层均为 0。实现源码
+`802004f30c` 与夹具提交 `272141b52a` 生成的实际内核相同，SHA-256 为
+`788f7d79e76ea3086a9218ec398798a7d92ecf1fd555e058f462faf80b0c499a`。
+Axvisor 同一专用配置 Clippy 再次通过，AArch64 内核批次 124 pass、0 fail、
+0 skip，Web UI diskless 为 1/1，全部外层 0。
+
+随后以同一固定 ELF 运行完整 x86_64 system，541 个程序中 534 通过、7 失败，
+xtask 与外层均为 1。失败为 dir-mutation-permissions、proc-pid-exe-readlink、
+cgroup-basic、ltp-pilot-min、cgroup-ns、devpts-newinstance、unix-bind-chown。
+已观察到特殊末组件错误顺序、执行文件退出后卸载仍 busy，以及 cgroup/devpts
+实例语义缺口；完整批次不记为通过。AArch64 GICv2 SMP4 的原 stack-guard 用例
+本地 1/1 通过并出现要求的诊断，但未复现旧 CI 的诊断丢失，未声称已修复。
+
+完整 CACHED、特殊末组件、跨操作数同一原始视图、其余 proc/SimpleFs 及原交付
+范围继续处理。生产证据的 `owned_lookup_results` 保留精确源码、各层终态和摘要；
+系统调用表新增拥有型根、挂载与执行消费者，不由类型迁移推断完整兼容。

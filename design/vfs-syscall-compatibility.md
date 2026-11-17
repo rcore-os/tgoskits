@@ -2,7 +2,7 @@
 
 ## 1. 基准与证据
 
-本记录随所有权迁移逐入口补齐。当前范围是接续记录第 9.31、9.32 节的 scoped 查找和 proc 自指链接，其他元数据、命名、挂载、凭据、映射与套接字入口继续按主计划核对。每行结论仅覆盖注明的参数与对象范围。
+本记录随所有权迁移逐入口补齐。当前范围是接续记录第 9.31 至 9.33 节的 scoped 查找、proc 自指链接和拥有型结果，其他元数据、命名、挂载、凭据、映射与套接字入口继续按主计划核对。每行结论仅覆盖注明的参数与对象范围。
 
 ### 1.1 固定源码
 
@@ -10,7 +10,9 @@ Linux 基准为 v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。编号�
 
 ### 1.2 运行条件
 
-当前生产源码为 `ac8e8bdd61`。x86_64 完整路径程序实际 45 pass、0 fail，完整 proc-link-access 程序 1/1；同一 proc 程序在 Linux 6.8 的私有用户、PID、挂载命名空间通过。后者提供可观察对照，固定 v7.1 源码决定语义。AArch64 的同一 proc 程序也为 1/1；AX 六项与四架构 Kernel 72 项 Clippy 全部通过。RISC-V、LoongArch64 及未直接运行的边界仍保留证据缺口。
+当前拥有型迁移源码为 `802004f30c`，测试夹具提交为 `272141b52a`。最终 18 包标准库和 AX/runtime/Kernel 的 106 项 Clippy 通过；x86_64 的 ownership、路径和 proc 程序分别为 107/107、45/45 和 1/1。以同一 ELF 运行完整 system 为 534/541，通过范围与七个失败分别保留。
+
+前一 proc 阶段 `ac8e8bdd61` 的同一完整程序在 AArch64 为 1/1，在 Linux 6.8 的私有用户、PID、挂载命名空间通过。后者提供可观察对照，固定 v7.1 源码决定语义。这些历史结果不改写为本次所有权迁移在该架构的运行证明；RISC-V、LoongArch64 及未直接运行的边界仍保留证据缺口。
 
 ## 2. 查找与打开
 
@@ -67,3 +69,29 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 | lstat；x86_64 6 | v7.1 [newlstat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L485) | 不跟随末项，观察自指链接本身 | sys_lstat → sys_fstatat(AT_SYMLINK_NOFOLLOW) → resolve_at | 无法确认 | 本阶段未直接运行 legacy lstat 入口 |
 | statx/self aliases；x86_64 332；其余三架构 291 | v7.1 [statx](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L757) | 跟随、nofollow、empty-path、mask 与同步 flags 共同决定观察 | sys_statx → resolve_at(saved caller) → LookupSession → metadata_to_kstat → statx layout | 无法确认 | 该入口的既有实现保留，本阶段没有 self/thread-self 的直接 statx 判定 |
 | getdents64/proc root；x86_64 217；其余三架构 61 | v7.1 [iterate_dir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/readdir.c) | 根目录暴露 self/thread-self，实体类型和稳定遍历由实际目录接口提供 | sys_getdents64 → Directory read state → SimpleDir → ProcFsHandler.child_names | 无法确认 | 已接入名字清单；本阶段没有直接枚举及 DT_LNK 判定，不能从 open 或 fstat 外推 |
+
+## 4. 拥有型路径消费者
+
+`802004f30c` 将查找结果、父目录和搜索记录改为 `PathHandle`，下列入口保留实际使用权直到交给状态所有者。该迁移消除解析返回时的使用权空窗；它不自动证明旧有权限、参数、缓存和命名空间语义已经与 Linux 一致。
+
+### 4.1 根目录与挂载
+
+普通卸载把本次目标消费为 `PathUnmount`，只排除该操作实际持有的使用权。完整 system 批次仍观察到 bind-mounted executable 退出后卸载返回 EBUSY，须继续区分活动消费者与内部缓存；不能通过放宽 busy 判定规避。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| umount2；x86_64 166；其余三架构 39 | v7.1 [path_umount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2035) | 普通卸载保留目标到拆树提交，其他实际使用者导致 EBUSY；expire、lazy detach 另有顺序和寿命 | sys_umount2 → FsView.resolve → PathHandle.prepare_unmount → cache flush/busy → PathUnmount.commit；挂载树为 namespace 状态 | 部分正确 | x86 path-lookup 的 tmpfs 普通卸载通过；公开 AX 旅程证明活动查找结果 busy、释放后可卸载；bind executable 退出后仍 EBUSY，expire 与 F1-F8 授权未闭合 |
+| mount；x86_64 165；其余三架构 40 | v7.1 [mount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4363) | 解析并保持来源、目标到相应 mount/bind/move 提交，按实际 namespace 解释授权 | sys_mount → FsView → owned target/source；loop Direct 与 Overlay lower/upper/work 保存原 PathHandle；MountNamespace 持拓扑 | 部分正确 | x86 私有 tmpfs 安装和跨 mount 限制通过；完整 system 中 cgroup/devpts 实例语义仍失败，F1-F8 及完整多操作数视图继续处理 |
+| pivot_root；x86_64 155；其余三架构 41 | v7.1 [pivot_root](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4759) | new_root 与 put_old 按规定顺序解析并保持到拓扑事务及 root/cwd 修订 | sys_pivot_root → one saved FsBindingSnapshot → owned directories → NamespaceChange.pivot_root → FsContextSnapshot.pivot_root | 无法确认 | 当前迁移通过类型检查；既有组件 pivot 证据不能替代本阶段直接 syscall 的并发及错误顺序证明 |
+| chdir；x86_64 80；其余三架构 49 | v7.1 [chdir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L550) | 跟随路径、检查目录及 search 后更新共享 fs 的 cwd，保留已取得目录 | sys_chdir → saved binding/FsView.resolve_checked → NamespaceChange.prepare_cwd(PathHandle) → commit；FsContextState 保存 cwd | 部分正确 | x86 path-lookup 的 cwd 切换、挂载穿越及恢复通过；共享 CLONE_FS、并发根切换与其余目标仍需直接证明 |
+| fchdir；x86_64 81；其余三架构 50 | v7.1 [fchdir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L571) | 目录 fd 的实际对象经 search 检查后成为 cwd，目录改名不改其身份 | sys_fchdir → retained Directory.path_handle.clone → NamespaceChange.prepare_cwd → commit | 无法确认 | 本阶段未新增或选择直接 fchdir 的完整旅程；拥有型迁移不能单独作为系统兼容证明 |
+| chroot；x86_64 161；其余三架构 51 | v7.1 [chroot](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L588) | 路径及 search 检查后核对 CAP_SYS_CHROOT，再更新共享 fs root，cwd 独立 | sys_chroot → saved binding/FsView → owned directory → NamespaceChange.prepare_root → commit | 无法确认 | 当前所有权转交已迁移；本阶段没有直接 chroot 的完整参数、权限及共享状态红绿证明 |
+
+### 4.2 执行映像
+
+装载入口消费拥有型路径，保持主映像、脚本解释器及 PT_INTERP 的实际对象。执行访问租约、页缓存和 MM 映射有各自寿命，完整退出与缓存退休仍需用真实 executable 卸载旅程判定。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| execve；x86_64 59；其余三架构 221 | v7.1 [do_execveat_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | 选定执行文件及解释器后，以实际 file/path 保持映像身份，退出后释放活动执行引用 | sys_execve → FsView.resolve → load_user_app(PathHandle) → ExecutableFile/ElfLoader/CachedFile → AddrSpace executable 与映射 | 部分正确 | x86 proc-pid-exe 的普通、bind 与 unlinked 对象检查通过；bind 执行文件退出后卸载仍 EBUSY，内部缓存退休继续处理 |
+| execveat；x86_64 322；其余三架构 281 | v7.1 [execveat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | dirfd、AT_EMPTY_PATH 与 nofollow 决定实际执行对象及错误，保留描述和路径至装载 | sys_execveat → resolve_at 或 retained memfd path_handle → load_user_app → loader/MM | 无法确认 | 已迁移实际 PathHandle 消费；本阶段没有直接覆盖所有 fd 类型、flags 及错误优先级的系统回归 |
