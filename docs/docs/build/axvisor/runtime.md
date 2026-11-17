@@ -168,7 +168,7 @@ management HTTP server (axum) listening on 127.0.0.1:8080
 
 ### 1.5 本地演示配置
 
-自动测试的构建和启动配置位于`normal/qemu/<arch>/<启动组>`；公共Web实现位于`normal/qemu/common/web-ui`。手动演示配方`demo-fs-build.toml`与hostfwd配置一起放在`apps/suite/axvisor/qemu/aarch64/web-ui-demo/`，不匹配自动测试构建入口命名，因此不会增加测试启动。
+自动测试的构建和启动配置位于`qemu/<arch>/<启动组>`；公共Web实现位于`qemu/common/web-ui`。手动演示配方`demo-fs-build.toml`与hostfwd配置一起放在`apps/suite/axvisor/qemu/aarch64/web-ui-demo/`，不匹配自动测试构建入口命名，因此不会增加测试启动。
 
 当前演示配置启用 `web-ui` + `web` + `ax-driver/nvme`，并且**故意不带
 `vm_configs`**：启动时不建立 builtin 客户机，页面上的每一个客户机都来自操作者

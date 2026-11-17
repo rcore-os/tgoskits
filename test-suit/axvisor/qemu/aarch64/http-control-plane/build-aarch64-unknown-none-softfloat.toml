@@ -1,0 +1,20 @@
+# Converged HTTP control-plane build for the axum management API test
+# (http-control-plane).
+# The build-time VM config is packaged into `/guest/builtin`; no guest is
+# created at boot. The HTTP start request creates the builtin VM on demand.
+# Boot files are packaged into the host initramfs, installed on the NVMe root,
+# and reused by the HTTP delete/recreate/start resource lifecycle regression.
+features = [
+    "web",
+    "ax-driver/nvme",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+    "test-suit/axvisor/qemu/aarch64/http-control-plane/guest.toml",
+]
+
+# Control-plane bind. The control plane has no authentication, so no token is
+# configured; hostfwd reachability requires binding all interfaces.
+[env]
+AXVM_HTTP_BIND = "0.0.0.0:8080"

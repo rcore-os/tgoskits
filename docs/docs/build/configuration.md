@@ -263,8 +263,8 @@ x86_64 的虚拟化后端由运行时 CPUID 选择，不在预设中选择 Cargo
 仓库中的参考配置包括：
 
 ```text
-test-suit/axvisor/normal/qemu/x86_64/vmx/smoke/build-x86_64-unknown-none-vmx.toml
-test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml
+test-suit/axvisor/qemu/x86_64/vmx/smoke/build-x86_64-unknown-none-vmx.toml
+test-suit/axvisor/qemu/build-x86_64-unknown-none-svm.toml
 scripts/axbuild/src/axvisor/config/presets/qemu_x86_64.rs
 ```
 

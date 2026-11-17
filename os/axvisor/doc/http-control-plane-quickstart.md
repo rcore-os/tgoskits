@@ -11,7 +11,7 @@ AxVisor 内置一个基于 axum 的管理控制平面：它在虚拟机监控器
 
 ## 构建与运行
 
-CI 与本地共用同一入口（用例位于 `test-suit/axvisor/normal/qemu-http-control-plane/`）：
+CI 与本地共用同一入口（用例位于 `test-suit/axvisor/qemu-http-control-plane/`）：
 
 ```bash
 # 预取 QEMU 镜像与托管 rootfs（用例的 BusyBox initramfs 由它生成）
@@ -22,7 +22,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 ```
 
 用例构建配置
-`test-suit/axvisor/normal/qemu/aarch64/http-control-plane/build-aarch64-unknown-none-softfloat.toml`
+`test-suit/axvisor/qemu/aarch64/http-control-plane/build-aarch64-unknown-none-softfloat.toml`
 打开 `web`，并通过 `vm_configs` 把 guest 资源打包到 `/guest/builtin`。启动时
 不创建任何 VM；探针通过 `POST /api/vms/1/start` 按 builtin ID 延迟创建并启动。
 需要开机启动时，把 `axvisor.vm_start=1,2` 放入宿主 QEMU/板卡 cmdline。
@@ -119,6 +119,6 @@ vCPU 与计数器字段。
 
 ## 参见
 
-- 用例与探针：`test-suit/axvisor/normal/qemu-http-control-plane/`
+- 用例与探针：`test-suit/axvisor/qemu-http-control-plane/`
 - HTTP handler：`os/axvisor/src/control/transport/api/vm.rs`、`os/axvisor/src/control/transport/server.rs`
 - owner 生命周期：`virtualization/axvm/src/control/`

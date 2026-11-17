@@ -635,6 +635,11 @@ def _discovered_selections(
     absolute_root = workspace_root / _owning_suite_root(path, os_name)
     cases = _discover_os_runtime_cases(workspace_root, os_name)
 
+    if os_name == "axvisor" and not absolute_path.exists():
+        relative = absolute_path.relative_to(absolute_root)
+        if relative.parts and relative.parts[0] == "normal":
+            absolute_path = absolute_root.joinpath(*relative.parts[1:])
+
     if os_name == "starry":
         absolute_path = _relocated_starry_path(absolute_root, absolute_path)
         if _is_prefix(absolute_path, absolute_root / "common"):
@@ -743,7 +748,7 @@ def _runtime_selections(
             )
             command = (
                 f"cargo xtask axvisor {entry} qemu --arch {runtime_case.arch} "
-                f"{'--group' if app_case else '--test-group'} normal {selector_option} {selector}"
+                f"{'--group normal ' if app_case else ''}{selector_option} {selector}"
             )
         else:
             platform = _platform_label(template)
@@ -752,12 +757,6 @@ def _runtime_selections(
                 f"cargo xtask {os_cli} test board --test-case {selector} "
                 f"--board {runtime_case.board}"
             )
-            if runtime_case.kind == "axvisor-board":
-                command = command.replace(
-                    " test board",
-                    " test board --test-group normal",
-                    1,
-                )
 
         if runtime_case.kind == "axvisor-qemu" and runtime_case.check is not None:
             selections.append(_selection(
@@ -779,7 +778,7 @@ def _runtime_selections(
         app_case = _axvisor_app_case(runtime_case)
         entry = "app" if app_case else "test"
         selector_option = "--app" if app_case else "--test-case"
-        group_option = (" --group normal" if app_case else " --test-group normal") if runtime_case.kind == "axvisor-board" else ""
+        group_option = " --group normal" if app_case and runtime_case.kind == "axvisor-board" else ""
         command = (
             f"cargo xtask {os_cli} {entry} board{group_option} "
             f"{selector_option} {selector_list} --board {runtime_case.board}"
@@ -904,8 +903,7 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             case = runtime_config.parent.relative_to(group_root).as_posix()
         references = _toml_document(runtime_config).get("axbuild", {})
         if os_name == "axvisor" and "checks" in references and root.parent.name != "apps":
-            group_root = root / runtime_config.relative_to(root).parts[0]
-            case = runtime_config.parent.relative_to(group_root).as_posix()
+            case = runtime_config.parent.relative_to(root).as_posix()
         case = references.get("id", case)
         runtime_case = _RuntimeCase(
             kind=qemu_kind,
@@ -942,7 +940,7 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
         # runtime and build configurations share a directory, as in axbuild.
         # Benchmarks already use the suite root as their normal group root.
         case_root = root
-        if os_name == "axvisor" and root.parent.name != "benchmarks":
+        if os_name == "axvisor" and root.parent.name == "apps":
             case_root = root / runtime_config.relative_to(root).parts[0]
         case = (
             relative_case.as_posix()

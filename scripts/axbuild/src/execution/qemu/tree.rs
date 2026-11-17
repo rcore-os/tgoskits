@@ -72,7 +72,11 @@ where
 {
     let mut root = CaseTreeNode::default();
     for (group, cases) in groups {
-        let group_node = root.children.entry(group.as_ref().to_string()).or_default();
+        let group_node = if group.as_ref() == "." {
+            &mut root
+        } else {
+            root.children.entry(group.as_ref().to_string()).or_default()
+        };
         for case in cases {
             let label = if case.archs.is_empty() {
                 None
@@ -98,7 +102,11 @@ where
 {
     let mut root = CaseTreeNode::default();
     for (group, cases) in groups {
-        let group_node = root.children.entry(group.as_ref().to_string()).or_default();
+        let group_node = if group.as_ref() == "." {
+            &mut root
+        } else {
+            root.children.entry(group.as_ref().to_string()).or_default()
+        };
         for (case, label) in cases {
             insert_case_tree_path_with_label(
                 group_node,

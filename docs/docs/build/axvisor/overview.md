@@ -60,7 +60,7 @@ shell 按需创建。`/guest` 下的动态池不覆盖 builtin ID，`/guest/vm_d
 
 ## 3. 虚拟化后端
 
-x86 后端由 CPUID 在运行时选择；QEMU TOML 暴露 VMX 或 SVM 扩展，Build Config 不选择同名 Cargo feature。SVM现有`smoke`和`functional`两个启动组，构建及运行配置分别位于`test-suit/axvisor/normal/qemu/x86_64/svm/<启动组>/`。`functional`将原五项功能按`checks`顺序放在同一次启动中执行，逐项准备和回收客户机。
+x86 后端由 CPUID 在运行时选择；QEMU TOML 暴露 VMX 或 SVM 扩展，Build Config 不选择同名 Cargo feature。SVM现有`smoke`和`functional`两个启动组，构建及运行配置分别位于`test-suit/axvisor/qemu/x86_64/svm/<启动组>/`。`functional`将原五项功能按`checks`顺序放在同一次启动中执行，逐项准备和回收客户机。
 
 Smoke 显式使用 NVMe 磁盘根，并验证宿主文件读写和双 VM 磁盘隔离。SVM functional从该组宿主 initramfs 加载各项客户机。没有显式 `root=` 时保持内存根，不切根；没有块设备驱动或磁盘根也可直接运行客户机。
 

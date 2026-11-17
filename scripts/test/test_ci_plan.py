@@ -856,7 +856,7 @@ command = "cargo xtask clippy --all"
     def test_axvisor_board_build_change_groups_cases_by_build_config(self) -> None:
         suite_trees = (
             "apps/axvisor/normal",
-            "test-suit/axvisor/normal",
+            "test-suit/axvisor",
             "benchmarks/axvisor",
         )
         for suite_tree, independent in itertools.product(suite_trees, (False, True)):
@@ -898,7 +898,7 @@ command = "cargo xtask clippy --all"
                 self.assertEqual(
                     selections[0].command,
                     ("cargo xtask axvisor app board --group normal --app " if app_case else
-                     "cargo xtask axvisor test board --test-group normal --test-case ")
+                     "cargo xtask axvisor test board --test-case ")
                     + f"{selector} --board demo",
                 )
 
@@ -1217,7 +1217,7 @@ command = "true"
         )
 
     def test_ovmf_guest_markers_remain_anchored_in_the_actual_check_definitions(self) -> None:
-        root = MODULE_PATH.parents[2] / "test-suit/axvisor/normal/qemu/x86_64"
+        root = MODULE_PATH.parents[2] / "test-suit/axvisor/qemu/x86_64"
         marker = "AXVISOR_X86_OVMF_ACPI_PASSED"
         for backend in ("vmx", "svm"):
             config_path = root / backend / "functional" / ("qemu-x86_64-vmx.toml" if backend == "vmx" else "qemu-x86_64.toml")
@@ -1234,10 +1234,10 @@ command = "true"
         root = MODULE_PATH.parents[2]
         configs = (
             root
-            / "test-suit/axvisor/normal/board/orangepi-5-plus/robot/dual-linux-zephyr"
+            / "test-suit/axvisor/board/orangepi-5-plus/robot/dual-linux-zephyr"
             / "board-orangepi-5-plus-dualguest-robot.toml",
             root
-            / "test-suit/axvisor/normal/board/orangepi-5-plus/robot/dual-starry-zephyr"
+            / "test-suit/axvisor/board/orangepi-5-plus/robot/dual-starry-zephyr"
             / "board-orangepi-5-plus-dualguest-robot.toml",
         )
 
@@ -1862,7 +1862,7 @@ node_version = "latest"
             row_id="suite-synthetic-board-check-synthetic-case",
             leaf_name="Board · synthetic-case",
             command=suite_command,
-            source_path="test-suit/axvisor/normal/synthetic/board-synthetic.toml",
+            source_path="test-suit/axvisor/synthetic/board-synthetic.toml",
         )
         incremental = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",

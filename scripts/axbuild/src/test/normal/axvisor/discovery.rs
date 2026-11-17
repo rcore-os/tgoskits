@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Context, bail};
 
-use super::{AXVISOR_NORMAL_GROUP, AXVISOR_TEST_SUITE_OS, AxvisorQemuCase, BoardTestGroup};
+use super::{AXVISOR_TEST_SUITE_OS, AxvisorQemuCase, BoardTestGroup};
 use crate::{
     context::resolve_axvisor_arch_and_target,
     execution::{
@@ -39,6 +39,12 @@ impl CaseSource<'_> {
             Self::Tests | Self::External(_) => "axvisor",
             Self::Apps | Self::ExternalApps(_) => "axvisor app",
         }
+    }
+
+    /// Repository tests use the suite root; external and app namespaces retain
+    /// their caller-selected groups.
+    pub(crate) fn default_group(self) -> &'static str {
+        if self == Self::Tests { "." } else { "normal" }
     }
 
     fn is_app(self) -> bool {
@@ -269,7 +275,7 @@ pub(crate) fn discover_board_test_groups(
         .collect())
 }
 
-/// Select namespace roots and retain the existing normal-group benchmark
+/// Select namespace roots and retain the existing default-group benchmark
 /// entry for test commands. Applications never cross into another namespace.
 fn board_test_group_roots(
     source: CaseSource<'_>,
@@ -284,7 +290,7 @@ fn board_test_group_roots(
             roots.push(group_dir);
         }
     }
-    if source == CaseSource::Tests && group == AXVISOR_NORMAL_GROUP {
+    if source == CaseSource::Tests && group == source.default_group() {
         let benchmark_suite_dir = benchmark_suite_root(workspace_root);
         if benchmark_suite_dir.is_dir() {
             roots.push(benchmark_suite_dir);
@@ -347,7 +353,7 @@ pub(crate) fn discover_uboot_test_group(
     let mut groups = discover_board_test_groups(
         CaseSource::Tests,
         workspace_root,
-        AXVISOR_NORMAL_GROUP,
+        CaseSource::Tests.default_group(),
         &[],
         &selected_boards,
     )?;
@@ -431,6 +437,19 @@ pub(crate) fn discover_test_group_names(
     source: CaseSource<'_>,
     workspace_root: &Path,
 ) -> anyhow::Result<Vec<String>> {
+    if source == CaseSource::Tests {
+        return Ok(
+            if source
+                .suite_roots(workspace_root)
+                .iter()
+                .any(|root| root.is_dir())
+            {
+                vec![source.default_group().to_string()]
+            } else {
+                Vec::new()
+            },
+        );
+    }
     let mut groups = BTreeSet::new();
     for root in source.suite_roots(workspace_root) {
         groups.extend(test_suite::discover_group_names_in_root(&root)?);
@@ -464,12 +483,14 @@ fn app_matches(name: &str, selected: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-/// Groups are names inside one namespace, never paths to another suite.
+/// A group is the namespace root (`.`) or one child, never another suite.
 fn validate_group_name(group: &str) -> anyhow::Result<()> {
     let mut components = Path::new(group).components();
     anyhow::ensure!(
-        matches!(components.next(), Some(std::path::Component::Normal(_)))
-            && components.next().is_none(),
+        matches!(
+            components.next(),
+            Some(std::path::Component::Normal(_) | std::path::Component::CurDir)
+        ) && components.next().is_none(),
         "invalid AxVisor group name `{group}`"
     );
     Ok(())

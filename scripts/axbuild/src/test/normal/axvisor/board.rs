@@ -8,7 +8,7 @@ use anyhow::Context;
 use ostool::{board::RunBoardOptions, build::config::Cargo, run::uboot::UbootConfig};
 
 use super::{
-    AXVISOR_NORMAL_GROUP, BoardTestGroup,
+    BoardTestGroup,
     discovery::{
         CaseSource, discover_board_test_groups, discover_test_group_names,
         discover_uboot_test_group, suite_roots_label,
@@ -147,7 +147,7 @@ impl Axvisor {
             return Ok(());
         }
 
-        let test_group = args.test_group.as_deref().unwrap_or(AXVISOR_NORMAL_GROUP);
+        let test_group = args.test_group.as_deref().unwrap_or(source.default_group());
         let groups = discover_board_test_groups(
             source,
             self.app.workspace_root(),

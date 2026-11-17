@@ -154,7 +154,7 @@ pub struct ArgsTestQemu {
         short = 'g',
         long = "test-group",
         value_name = "GROUP",
-        help = "Run Axvisor QEMU test cases from one test group"
+        help = "Select a QEMU configuration group; repository tests default to the suite root"
     )]
     pub test_group: Option<String>,
     #[arg(
@@ -191,7 +191,7 @@ pub struct ArgsTestBoard {
         short = 'g',
         long = "test-group",
         value_name = "GROUP",
-        help = "Run Axvisor board test cases from one test group"
+        help = "Select a board configuration group; repository tests default to the suite root"
     )]
     pub test_group: Option<String>,
 

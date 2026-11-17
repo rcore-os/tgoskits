@@ -10,7 +10,7 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use sha2::Digest;
 
 use super::{
-    AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
+    AxvisorQemuCase,
     assets::axvisor_case_asset_config,
     discovery::{
         CaseSource, discover_qemu_cases, discover_test_group_names, list_all_qemu_cases,
@@ -87,7 +87,7 @@ impl Axvisor {
             return Ok(());
         }
 
-        let test_group = args.test_group.as_deref().unwrap_or(AXVISOR_NORMAL_GROUP);
+        let test_group = args.test_group.as_deref().unwrap_or(source.default_group());
         if args.list && args.arch.is_none() && args.target.is_none() {
             let mut case_names = std::collections::BTreeSet::new();
             for selector in &selectors {
@@ -98,7 +98,17 @@ impl Axvisor {
                     *selector,
                 )?);
             }
-            println!("{}", test_qemu::render_case_tree(test_group, case_names));
+            println!(
+                "{}",
+                test_qemu::render_case_tree(
+                    if test_group == "." {
+                        source.label()
+                    } else {
+                        test_group
+                    },
+                    case_names
+                )
+            );
             return Ok(());
         }
 
@@ -145,7 +155,17 @@ impl Axvisor {
                         .map(|name| format!("{}/{name}", case.case.name)),
                 );
             }
-            println!("{}", test_qemu::render_case_tree(test_group, case_names));
+            println!(
+                "{}",
+                test_qemu::render_case_tree(
+                    if test_group == "." {
+                        source.label()
+                    } else {
+                        test_group
+                    },
+                    case_names
+                )
+            );
             return Ok(());
         }
 

@@ -3,7 +3,7 @@
 //!
 //! After every mutating operation this polls the VM detail until the assertion holds
 //! or it times out. The assertion discipline matches `http_probe.py` in
-//! `test-suit/axvisor/normal/qemu-http-control-plane`: start/resume require
+//! `test-suit/axvisor/qemu-http-control-plane`: start/resume require
 //! `guest_entry_count` to strictly increase (a vCPU really entered the guest), pause
 //! requires `guest_park_count` to strictly increase (a vCPU really parked, not just a
 //! status flip), stop requires `stopped`, create requires `ready`, and delete requires

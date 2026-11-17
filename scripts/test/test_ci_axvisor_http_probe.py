@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 PROBE_PATH = (
     Path(__file__).resolve().parents[2]
-    / "test-suit/axvisor/normal/qemu/aarch64/general/probes/pool.py"
+    / "test-suit/axvisor/qemu/aarch64/general/probes/pool.py"
 )
 SPEC = importlib.util.spec_from_file_location("pool_http_probe", PROBE_PATH)
 probe = importlib.util.module_from_spec(SPEC)
@@ -20,7 +20,7 @@ SPEC.loader.exec_module(probe)
 
 WEB_SPEC = importlib.util.spec_from_file_location(
     "dashboard_http_probe",
-    Path(__file__).resolve().parents[2] / "test-suit/axvisor/normal/qemu/common/web-ui/http_probe.py",
+    Path(__file__).resolve().parents[2] / "test-suit/axvisor/qemu/common/web-ui/http_probe.py",
 )
 dashboard = importlib.util.module_from_spec(WEB_SPEC)
 WEB_SPEC.loader.exec_module(dashboard)

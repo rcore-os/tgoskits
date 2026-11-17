@@ -1,6 +1,6 @@
 # AArch64 控制台回归检查
 
-从 `test-suit/axvisor/normal/qemu/aarch64/general` 迁入 `interleave`、`atomic-output`。未加入普通CI、夜间或benchmark；命令由用户触发，后续步骤自动执行。
+从 `test-suit/axvisor/qemu/aarch64/general` 迁入 `interleave`、`atomic-output`。未加入普通CI、夜间或benchmark；命令由用户触发，后续步骤自动执行。
 
 ## 组织与顺序
 

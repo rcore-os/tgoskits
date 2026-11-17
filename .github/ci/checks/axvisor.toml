@@ -118,11 +118,11 @@ echo "==> axvisor aarch64 minimal-web HTTP control-plane and browser console"
 # Keep all cases in one axbuild invocation. The QEMU runner groups cases by
 # Cargo identity before building, so equal AxVisor kernels are compiled once
 # and their per-case initramfs/runtime inputs are still prepared independently.
-cargo xtask axvisor test qemu --arch aarch64 --test-group normal \
+cargo xtask axvisor test qemu --arch aarch64 \
   --test-case qemu/aarch64/http-control-plane
 # Disabled until the Linux IVC guest image matches the v2 publisher protocol.
 # echo "==> axvisor aarch64 IVC"
-# cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu/aarch64/ivc
+# cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/ivc
 '''
 
 [[check.suite]]
@@ -267,15 +267,15 @@ resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 echo "==> build the StarryOS guest from this checkout"
-cargo xtask starry build --config test-suit/axvisor/normal/board/orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1 &&
+cargo xtask starry build --config test-suit/axvisor/board/orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1 &&
 echo "==> axvisor OrangePi 5 Plus all-virtualized triple guest" &&
-cargo xtask axvisor test board --test-group normal --test-case board/orangepi-5-plus/triple-guest-functional --board orangepi-5-plus-triple-guest-functional
+cargo xtask axvisor test board --test-case board/orangepi-5-plus/triple-guest-functional --board orangepi-5-plus-triple-guest-functional
 '''
 pull_request_command = '''
 echo "==> build the StarryOS guest from this checkout"
-cargo xtask starry build --config test-suit/axvisor/normal/board/orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1 &&
+cargo xtask starry build --config test-suit/axvisor/board/orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1 &&
 echo "==> axvisor OrangePi 5 Plus all-virtualized triple guest" &&
-cargo xtask axvisor test board --test-group normal --test-case board/orangepi-5-plus/triple-guest-functional --board orangepi-5-plus-triple-guest-functional
+cargo xtask axvisor test board --test-case board/orangepi-5-plus/triple-guest-functional --board orangepi-5-plus-triple-guest-functional
 '''
 
 [[check.suite]]
@@ -358,7 +358,7 @@ kind = "axvisor-board"
 board = "orangepi-5-plus-robot-linux"
 
 # The dual-guest board route `orangepi-5-plus-dualguest-robot` is declared by
-# both test-suit/axvisor/normal/board/orangepi-5-plus/robot/dual-linux-zephyr and
+# both test-suit/axvisor/board/orangepi-5-plus/robot/dual-linux-zephyr and
 # .../dual-starry-zephyr, so this single check runs the Linux+Zephyr and the
 # StarryOS+Zephyr robot variants sequentially. The runner releases and
 # reacquires the physical board for each case.
@@ -371,7 +371,7 @@ cache_key = ""
 resource_group = "orangepi-5-plus-robot-uart6"
 timeout_minutes = 30
 command = '''
-cargo xtask starry build --config test-suit/axvisor/normal/board/orangepi-5-plus/robot/dual-starry-zephyr/starry-guest-build.toml --smp 1
+cargo xtask starry build --config test-suit/axvisor/board/orangepi-5-plus/robot/dual-starry-zephyr/starry-guest-build.toml --smp 1
 cargo xtask axvisor test board --board orangepi-5-plus-dualguest-robot
 '''
 

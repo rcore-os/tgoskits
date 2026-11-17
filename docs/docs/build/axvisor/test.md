@@ -25,14 +25,19 @@ Axvisor 测试资产位于：
 
 ```text
 test-suit/axvisor/
-└── normal/
-    └── <case>/
-        └── qemu-{arch}.toml
+├── qemu/<架构>/<启动组>/
+│   ├── build-*.toml
+│   ├── qemu-*.toml
+│   └── tests/<用途>.toml
+└── board/<板型>/<启动组>/
+    ├── build-*.toml
+    ├── board-*.toml
+    └── tests/<用途>.toml
 ```
 
-与 StarryOS 的平铺结构不同，Axvisor 用 `normal` 测试组目录组织用例。发现算法统一通过 `build-{target}.toml` 定位构建组、`qemu-{arch}.toml` 定位用例。
+AxVisor直接按QEMU架构和板型组织启动组，不再增加normal物理目录。发现算法统一通过 `build-{target}.toml` 定位构建组、`qemu-{arch}.toml` 定位用例。
 
-普通功能用例位于 `test-suit/axvisor/`，应用及部分 Nightly 场景位于 `apps/axvisor/`。`axvisor/test/discovery.rs::CaseSource` 将两者分开：`test qemu` 和 `test board` 使用 `Tests`，`app qemu` 和 `app board` 使用 `Apps`，不会跨命名空间扫描。板卡测试的 `normal` 组另保留 `benchmarks/axvisor/` 的兼容入口。应用入口与选择规则见第 8 节。
+普通功能用例位于 `test-suit/axvisor/`，应用及部分 Nightly 场景位于 `apps/axvisor/`。`axvisor/test/discovery.rs::CaseSource` 将两者分开：`test qemu` 和 `test board` 使用 `Tests`，`app qemu` 和 `app board` 使用 `Apps`，不会跨命名空间扫描。板卡默认测试入口另保留 `benchmarks/axvisor/` 的兼容入口。应用入口与选择规则见第 8 节。
 
 ## 3. 运行模式
 
@@ -51,7 +56,7 @@ test-suit/axvisor/
 ```mermaid
 flowchart TD
     A["test_qemu(CLI args)"] --> B["parse_target<br/>解析 arch/target"]
-    B --> C["discover_qemu_cases<br/>发现 normal 组用例"]
+    B --> C["discover_qemu_cases<br/>从测试根发现用例"]
     C --> D["prepare_qemu_cases<br/>逐 case 加载 QEMU config + 校验"]
     D --> E["prepare_case_build_groups<br/>按 build config 分组"]
     E --> F["Phase 1: 编译全部 build group"]
@@ -150,16 +155,16 @@ pipeline 类型、检测优先级、资产准备、rootfs 缓存和 grouped runn
 
 ## 5. x86 嵌套 OVMF/ACPI 验证
 
-`normal` 组提供两条对称的 x86 嵌套 OVMF 用例：
+QEMU下的VMX/SVM functional分别提供x86嵌套OVMF检查：
 
 ```bash
-cargo xtask axvisor test qemu --arch x86_64 --test-group normal \
-  --test-case ovmf-acpi-vmx
-cargo xtask axvisor test qemu --arch x86_64 --test-group normal \
-  --test-case ovmf-acpi-svm
+cargo xtask axvisor test qemu --arch x86_64 \
+  --test-case qemu/x86_64/vmx/functional/ovmf-acpi
+cargo xtask axvisor test qemu --arch x86_64 \
+  --test-case qemu/x86_64/svm/functional/ovmf-acpi
 ```
 
-两者共用 `test-suit/axvisor/normal/qemu/x86_64/common/guests/acpi-ovmf/guest.toml`、同一 BusyBox initramfs 和同一 4 MiB guest firmware 输出。build config 不选择 `vmx` 或 `svm` Cargo feature；唯一的 backend 差异是外层 QEMU 的 `-cpu` 能力：VMX 暴露 EPT、unrestricted guest 和 flexpriority，SVM 暴露 SVM、NPT 和 NRIP save。因此应分别在 Intel/VMX 与 AMD/SVM KVM 宿主上运行对应 case。
+两者共用 `test-suit/axvisor/qemu/x86_64/common/guests/acpi-ovmf/guest.toml`、同一 BusyBox initramfs 和同一 4 MiB guest firmware 输出。build config 不选择 `vmx` 或 `svm` Cargo feature；唯一的 backend 差异是外层 QEMU 的 `-cpu` 能力：VMX 暴露 EPT、unrestricted guest 和 flexpriority，SVM 暴露 SVM、NPT 和 NRIP save。因此应分别在 Intel/VMX 与 AMD/SVM KVM 宿主上运行对应 case。
 
 两个 case 均已加入 CI 运行：`ovmf-acpi-vmx` 在 self-hosted Intel/KVM 宿主上运行（见 `.github/workflows/ci.yml` 中 "Test axvisor x86_64 ACPI direct and OVMF boot (vmx)" 任务），`ovmf-acpi-svm` 在 self-hosted AMD/KVM 宿主上运行（见单个 `kvm-amd` SVM 任务）。
 
@@ -190,7 +195,7 @@ cargo xtask axvisor test qemu --arch x86_64 \
 
 ## 7. SVM 合并任务
 
-六个 SVM 用例共用 `normal/qemu-svm/build-x86_64-unknown-none.toml`，启用 `ax-driver/nvme`。`host-initramfs.toml` 分别声明 VM 配置、BusyBox 和 OVMF 输入。`test_qemu()` 按 Cargo 身份合并 build group 并复用内核，每个用例再恢复自己的 build TOML 路径读取运行时输入；各次启动打印相同内核哈希和各自的归档哈希。
+六个 SVM 用例共用 `qemu-svm/build-x86_64-unknown-none.toml`，启用 `ax-driver/nvme`。`host-initramfs.toml` 分别声明 VM 配置、BusyBox 和 OVMF 输入。`test_qemu()` 按 Cargo 身份合并 build group 并复用内核，每个用例再恢复自己的 build TOML 路径读取运行时输入；各次启动打印相同内核哈希和各自的归档哈希。
 
 ### 6.1 连续运行
 

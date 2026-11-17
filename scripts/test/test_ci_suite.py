@@ -480,7 +480,7 @@ class ExplicitAxvisorCheckRoutingTests(unittest.TestCase):
     def test_member_registration_preserves_one_boot_and_excludes_manual_checks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            group = root / 'test-suit/axvisor/normal/qemu/aarch64/fixture'
+            group = root / 'test-suit/axvisor/qemu/aarch64/fixture'
             (group / 'tests').mkdir(parents=True)
             build = group / 'build-aarch64-unknown-none-softfloat.toml'
             build.write_text("target='aarch64-unknown-none-softfloat'\n")
@@ -497,6 +497,10 @@ class ExplicitAxvisorCheckRoutingTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertIn('--test-case ' + identity + '/first,' + identity + '/second', rows[0].command)
             self.assertNotIn('/manual', rows[0].command)
+            self.assertNotIn('--test-group', rows[0].command)
+            old_build = 'test-suit/axvisor/normal/qemu/aarch64/fixture/' + build.name
+            migrated = ci_suite.resolve_suite_selections(root, checks, [old_build])
+            self.assertEqual([row.command for row in migrated], [row.command for row in rows])
             first = group / 'tests/first.toml'
             rows = ci_suite.resolve_suite_selections(root, checks, [first.relative_to(root).as_posix()])
             self.assertEqual(len(rows), 1)
@@ -514,7 +518,7 @@ class ExplicitAxvisorCheckRoutingTests(unittest.TestCase):
         import os
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            shared = root / 'test-suit/axvisor/normal/common'
+            shared = root / 'test-suit/axvisor/common'
             shared.mkdir(parents=True)
             guest = shared / 'guest.toml'
             guest.write_text('[base]\nid=1\n')
@@ -524,10 +528,10 @@ class ExplicitAxvisorCheckRoutingTests(unittest.TestCase):
             preparation.write_text("[[shell_check_steps]]\nshell_cmd='prepare'\n")
             checks = []
             for identity in ('behavior-a', 'behavior-b'):
-                group = root / 'test-suit/axvisor/normal/qemu/aarch64' / identity
+                group = root / 'test-suit/axvisor/qemu/aarch64' / identity
                 (group / 'operation').mkdir(parents=True)
                 (group / 'build-aarch64-unknown-none-softfloat.toml').write_text(
-                    "target='aarch64-unknown-none-softfloat'\nvm_configs=['test-suit/axvisor/normal/common/guest.toml']\n")
+                    "target='aarch64-unknown-none-softfloat'\nvm_configs=['test-suit/axvisor/common/guest.toml']\n")
                 (group / 'qemu-aarch64.toml').write_text(
                     f"args=[]\nuefi=false\nfail_regex=[]\n[axbuild]\nid='{identity}'\nchecks=['operation/test.toml']\n")
                 relative = os.path.relpath(probe, group / 'operation')

@@ -442,7 +442,7 @@ exit
 
 ## 配置维护
 
-本目录直接验证标准镜像中的客户机；[三客户机 CI 配置](../../../../../test-suit/axvisor/normal/board/orangepi-5-plus/triple-guest-functional/build-aarch64-unknown-none-softfloat.toml)
+本目录直接验证标准镜像中的客户机；[三客户机 CI 配置](../../../../../test-suit/axvisor/board/orangepi-5-plus/triple-guest-functional/build-aarch64-unknown-none-softfloat.toml)
 验证工作区构建的 StarryOS，并使用独立的 Linux、Zephyr 固件路径，因此保留两套配置。
 修改公共资源时同步核对 VM ID、CPU 绑定、内存范围、两份根盘；
 Zephyr 的控制台型号、UART6 后端及 BIN/DTB 必须按各自固件匹配，不能直接互换。

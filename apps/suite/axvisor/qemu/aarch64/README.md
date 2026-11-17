@@ -12,7 +12,7 @@
 
 | 场景 | 构建输入 | 运行输入 | 人工检查 |
 | --- | --- | --- | --- |
-| http-control-plane | normal/http-control-plane的构建配置 | 本目录hostfwd配置 | API响应、启动与删除客户机后的状态 |
+| http-control-plane | test-suit/axvisor/qemu/aarch64/http-control-plane的构建配置 | 本目录hostfwd配置 | API响应、启动与删除客户机后的状态 |
 | web-ui-demo | demo-fs-build.toml | 本目录hostfwd配置 | 网页加载、动态池、客户机与终端交互 |
 
 API配方中的BusyBox initramfs等资产仍须按自动套件的构建条件准备；这里只移动手动入口，没有复制或重写那条准备链路。当前默认管理地址是`http://localhost:8080/`。
@@ -34,7 +34,7 @@ API入口显式选择现有构建配方；网页和三客户机场景使用本�
 ```sh
 # 手动访问API，构建与客机资源复用现有配方。
 cargo xtask axvisor qemu --arch aarch64 \
-  -c test-suit/axvisor/normal/qemu/aarch64/http-control-plane/build-aarch64-unknown-none-softfloat.toml \
+  -c test-suit/axvisor/qemu/aarch64/http-control-plane/build-aarch64-unknown-none-softfloat.toml \
   --qemu-config apps/suite/axvisor/qemu/aarch64/http-control-plane/qemu-aarch64-hostfwd.toml
 
 # 完整网页演示，不预置客户机。

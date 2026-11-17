@@ -1,11 +1,11 @@
 # AxVisor 测试
 
-`normal` 保留自动化功能测试；交互演示与手动启动配置位于 `apps/suite/axvisor`。目录整理和共享启动不改变原测试步骤、断言、压力参数及未登记项目的状态。
+`qemu/`与`board/`直接承接自动化功能测试；交互演示与手动启动配置位于 `apps/suite/axvisor`。目录整理和共享启动不改变原测试步骤、断言、压力参数及未登记项目的状态。
 
 ## 目录与启动边界
 
 ```text
-normal/
+axvisor/
 ├── qemu/
 │   ├── aarch64/<启动组>/
 │   ├── riscv64/<启动组>/
@@ -53,9 +53,9 @@ axbuild先展开引用。纯串口组沿用ostool，混合组由上层串口适�
 ## 如何看已登记测试
 
 ```sh
-cargo xtask axvisor test qemu --arch aarch64 --test-group normal --list
-cargo xtask axvisor test qemu --arch x86_64 --test-group normal --list
-cargo xtask axvisor test board --test-group normal --list
+cargo xtask axvisor test qemu --arch aarch64 --list
+cargo xtask axvisor test qemu --arch x86_64 --list
+cargo xtask axvisor test board --list
 cargo xtask axvisor app qemu --app-root apps/suite/axvisor --group qemu --arch aarch64 --list
 ```
 
@@ -70,7 +70,7 @@ cargo xtask axvisor app qemu --app-root apps/suite/axvisor --group qemu --arch a
 | AMD SVM | 2 | 2 |
 | 合计 | 11 | 10 |
 
-AArch64 `memory-web`以一次SMP1无盘启动承接原`qemu-host-initramfs`及`web-ui-diskless`两项检查；原90秒日志期限和180秒probe预算保留，整组270秒。`--test-case qemu/aarch64/memory-web`执行整组；追加`/memory-root`或`/dashboard`可单独选择其中一项，同时选择两项仍只启动一次。当前27项normal功能检查，其中25项主CI检查由10个启动组承接。具体分组、单项命令和不能合并的边界见[qemu/README.md](normal/qemu/README.md)。
+AArch64 `memory-web`以一次SMP1无盘启动承接原`qemu-host-initramfs`及`web-ui-diskless`两项检查；原90秒日志期限和180秒probe预算保留，整组270秒。`--test-case qemu/aarch64/memory-web`执行整组；追加`/memory-root`或`/dashboard`可单独选择其中一项，同时选择两项仍只启动一次。当前27项normal功能检查，其中25项主CI检查由10个启动组承接。具体分组、单项命令和不能合并的边界见[qemu/README.md](qemu/README.md)。
 
 未进入主CI的QEMU检查仍是AArch64 `ivc`和RISC-V的`smoke/smp-ipi`；IVC混合客机仍保留原协议不匹配停用边界。manual的两个三ArceOS控制台变体保持手动。
 
@@ -95,7 +95,7 @@ axbuild是独立宿主库，测试成员、目录策略和完成条件属于这�
 
 ## 公共资源归属
 
-QEMU专用共享资源放`normal/qemu/common`；跨板型共享放`normal/board/common`；仅在QEMU与板卡实际共同使用时建立`normal/common`。没有消费者就不创建空common。架构/板型专用入口留在对应功能目录，手动配置留`apps/suite/axvisor`。
+QEMU专用共享资源放`qemu/common`；跨板型共享放`board/common`；仅在QEMU与板卡实际共同使用时建立`common`。没有消费者就不创建空common。架构/板型专用入口留在对应功能目录，手动配置留`apps/suite/axvisor`。
 
 当前`qemu/common/web-ui/http_probe.py`由ARM web-ui直接执行，并被VMX web-ui-vmx入口导入。VMX入口位于`qemu/x86_64/vmx/web-ui/dashboard/default_guest_probe.py`，其asset_dir显式声明公共辅助目录，同时用于运行时导入和CI共享变更路由。手动demo配方与hostfwd位于`apps/suite/axvisor/qemu/aarch64/web-ui-demo`；API与三客机演示同属apps/suite，使用直接QEMU命令交互，不作为自动测试通过。详见[手动QEMU场景](../../apps/suite/axvisor/qemu/aarch64/README.md)。
 
@@ -139,7 +139,7 @@ success_regex = ["本项成功标记"]
 
 ## OrangePi板卡与机器人分区
 
-`normal/board/orangepi-5-plus`保留标准板卡的Linux/Starry启动、三客户机功能和24客户机网络场景；`robot/`单独组织两个单客户机机器人和两个双客户机机器人，专属Zephyr共用配置归`robot/common/`。所有board配置文件名保持，场景路径增加robot这一层。
+`board/orangepi-5-plus`保留标准板卡的Linux/Starry启动、三客户机功能和24客户机网络场景；`robot/`单独组织两个单客户机机器人和两个双客户机机器人，专属Zephyr共用配置归`robot/common/`。所有board配置文件名保持，场景路径增加robot这一层。
 
 普通Linux启动场景通过`AXVISOR_GUEST_ASSETS`指定资产根，例如已准备好`/guest/linux/orangepi-5-plus`与initramfs的板卡可显式传`AXVISOR_GUEST_ASSETS=/guest`。该环境变量是资产输入，不应通过改全局配置修复缺失资产。
 
@@ -150,3 +150,5 @@ success_regex = ["本项成功标记"]
 OrangePi模拟机器人场景使用`robot/robot-virtual-linux`与`robot/robot-virtual-starry`目录名，`virtual`仅指执行器模拟。三客户机场景的配置直接放在场景根目录：`guest-linux.toml`、`guest-starry.toml`、`guest-zephyr.toml`；不再增加guests或角色子目录层。其他场景不因此强制改名。
 
 原两项控制台检查interleave/atomic-output已迁入[apps/suite](../../apps/suite/axvisor/qemu/aarch64/console/README.md)，不再由test-suit发现；普通CI的25项功能保持，general整组就是原五项CI检查。
+
+测试数据直接从本目录根发现，不再有normal物理分组，也无需传`--test-group normal`。仓库内场景仍以`qemu/...`和`board/...`选择；外部项目原有命名分组保持，平铺自定义根可显式使用`--test-group .`。应用的命名分组和SDK内部`test/normal`执行方式目录不受影响。
