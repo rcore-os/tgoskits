@@ -75,15 +75,15 @@ static int open_at(int dirfd, const char *path, int flags)
 static void close_fd(int fd)
 {
     if (fd >= 0)
-        close(fd);
+        syscall(SYS_close, fd);
 }
 
 /* CACHED may transiently ask for a retry while the held fixture stays pinned. */
-static int cached_open(int dirfd, const char *path, int flags)
+static int cached_open(int dirfd, const char *path, int flags, uint64_t resolve)
 {
     for (int attempt = 0; attempt < 8; attempt++) {
         errno = 0;
-        int fd = open2(dirfd, path, flags, RESOLVE_CACHED);
+        int fd = open2(dirfd, path, flags, RESOLVE_CACHED | resolve);
         if (fd >= 0 || errno != EAGAIN)
             return fd;
     }
@@ -302,6 +302,73 @@ out:
     close_fd(file);
 }
 
+static void cached_links(int rootfd, int file)
+{
+    int fd = -1;
+    struct stat st;
+    char name[40], target[40];
+    REQUIRE(syscall(SYS_symlinkat, "file", rootfd, "cached-relative") == 0);
+    REQUIRE(syscall(SYS_symlinkat, "/file", rootfd, "cached-absolute") == 0);
+    REQUIRE(mkdirat(rootfd, "cached-dir", 0700) == 0);
+    REQUIRE(syscall(SYS_symlinkat, "cached-dir/", rootfd,
+                    "cached-directory") == 0);
+    expect_same(cached_open(rootfd, "cached-relative", O_PATH, 0), file,
+                "CACHED follows an in-memory relative link");
+    expect_same(cached_open(rootfd, "cached-absolute", O_PATH, RESOLVE_IN_ROOT),
+                file, "CACHED IN_ROOT applies to an absolute link target");
+    expect_open(cached_open(rootfd, "cached-absolute", O_PATH, RESOLVE_BENEATH),
+                EXDEV, "CACHED BENEATH rejects an absolute link target");
+    expect_same(cached_open(rootfd, "cached-relative", O_PATH,
+                            RESOLVE_NO_MAGICLINKS), file,
+                "CACHED NO_MAGICLINKS permits a cached text link");
+    expect_open(cached_open(rootfd, "cached-relative", O_PATH,
+                            RESOLVE_NO_SYMLINKS), ELOOP,
+                "CACHED NO_SYMLINKS rejects text-link traversal");
+    fd = cached_open(rootfd, "cached-relative", O_PATH | O_NOFOLLOW,
+                     RESOLVE_NO_SYMLINKS);
+    CHECK(fd >= 0 && fstat(fd, &st) == 0 && S_ISLNK(st.st_mode),
+          "CACHED NO_SYMLINKS nofollow retains the link itself fd=%d errno=%d",
+          fd, errno);
+    close_fd(fd);
+    fd = -1;
+    expect_open(cached_open(rootfd, "cached-relative/", O_PATH, 0), ENOTDIR,
+                "CACHED link traversal preserves a trailing directory requirement");
+    fd = cached_open(rootfd, "cached-directory", O_PATH, 0);
+    CHECK(fd >= 0 && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode),
+          "CACHED follows a directory link with a trailing slash fd=%d errno=%d",
+          fd, errno);
+    close_fd(fd);
+    fd = -1;
+    expect_same(cached_open(rootfd, "../../file", O_PATH, RESOLVE_IN_ROOT),
+                file, "CACHED IN_ROOT clamps parent traversal");
+    /* follow_dotdot_rcu returns ECHILD here; CACHED refuses unlazy as EAGAIN. */
+    expect_open(cached_open(rootfd, "../file", O_PATH, RESOLVE_BENEATH), EAGAIN,
+                "CACHED BENEATH cannot unlazy a parent escape");
+    expect_open(cached_open(rootfd, "..", O_PATH | O_DIRECTORY,
+                            RESOLVE_NO_XDEV), EAGAIN,
+                "CACHED NO_XDEV cannot unlazy upward mount crossing");
+
+    for (int count = 1; count <= 41; count++) {
+        snprintf(name, sizeof(name), "cached-chain-%d", count);
+        if (count == 1)
+            snprintf(target, sizeof(target), "file");
+        else
+            snprintf(target, sizeof(target), "cached-chain-%d", count - 1);
+        REQUIRE(syscall(SYS_symlinkat, target, rootfd, name) == 0);
+    }
+    /* Prime every target and atime: pick_link cannot touch atime in CACHED. */
+    expect_same(open_at(rootfd, "cached-chain-40", O_PATH), file,
+                "ordinary lookup primes the complete cached link chain");
+    expect_open(open_at(rootfd, "cached-chain-41", O_PATH), ELOOP,
+                "ordinary lookup primes the front link of the excessive chain");
+    expect_same(cached_open(rootfd, "cached-chain-40", O_PATH, 0), file,
+                "CACHED permits the complete 40-link budget");
+    expect_open(cached_open(rootfd, "cached-chain-41", O_PATH, 0), ELOOP,
+                "CACHED rejects a path exceeding the shared link budget");
+out:
+    close_fd(fd);
+}
+
 static void mount_boundary(int rootfd)
 {
     int mountfd = -1, file = -1, cached = -1, mounted = 0;
@@ -331,15 +398,16 @@ static void mount_boundary(int rootfd)
     expect_open(open2(mountfd, "cold", O_PATH, RESOLVE_CACHED), EAGAIN,
                 "CACHED cannot reuse a discarded tmpfs negative");
     REQUIRE(fstat(file, &original) == 0);
-    cached = cached_open(mountfd, "file", O_PATH | O_CLOEXEC);
+    cached = cached_open(mountfd, "file", O_PATH | O_CLOEXEC, 0);
     CHECK(cached >= 0, "CACHED opens the pinned positive entry fd=%d errno=%d",
           cached, errno);
     if (cached < 0)
         goto out;
+    cached_links(mountfd, file);
     CHECK(fstat(cached, &retained) == 0 && retained.st_dev == original.st_dev
               && retained.st_ino == original.st_ino,
           "CACHED descriptor retains the actual inode");
-    int descriptor_flags = fcntl(cached, F_GETFD);
+    int descriptor_flags = (int)syscall(SYS_fcntl, cached, F_GETFD, 0);
     CHECK(descriptor_flags >= 0 && (descriptor_flags & FD_CLOEXEC) != 0,
           "CACHED installs descriptor close-on-exec state");
     REQUIRE(unlinkat(mountfd, "file", 0) == 0);
