@@ -105,7 +105,7 @@ impl VmDevicePlan {
             }) => {
                 let requests = builder.requests().map_err(DeviceManagerError::from)?;
                 if pci_host_is_referenced(&requests, provider.key()) {
-                    pools.add_auto_mmio(auto_mmio_extension)?;
+                    pools.add_auto_mmio_for_owner(provider.node_id(), auto_mmio_extension)?;
                     builder
                         .register_pci_host(provider)
                         .map_err(DeviceManagerError::from)?;

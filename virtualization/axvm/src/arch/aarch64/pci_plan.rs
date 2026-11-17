@@ -207,7 +207,9 @@ mod tests {
     };
 
     struct TestEndpointModel;
-    struct TestAutoMmioModel;
+    struct TestAutoMmioModel {
+        size: u64,
+    }
     struct TestFunction;
 
     impl DeviceModel for TestEndpointModel {
@@ -239,7 +241,7 @@ mod tests {
         fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
             DeviceRequirements::new().with_mmio(
                 ResourceSlot::new("registers")?,
-                0x1000,
+                self.size,
                 0x1000,
                 ResourceRequest::Auto,
             )
@@ -350,7 +352,7 @@ mod tests {
             config,
             std::vec![DeviceNodeSpec::virtual_device(
                 DeviceNodeId::new("auto-mmio0").unwrap(),
-                Arc::new(TestAutoMmioModel),
+                Arc::new(TestAutoMmioModel { size: 0x1000 }),
             )],
             reservations,
         )
@@ -456,6 +458,59 @@ mod tests {
         };
         assert!(detail.contains("mmio auto pool is exhausted"));
         assert!(detail.contains("slot registers for auto-mmio0"));
+    }
+
+    #[test]
+    fn ordinary_auto_mmio_exhausts_the_pci_low_pool_without_using_extension() {
+        const ORDINARY_AUTO_MMIO_SIZE: u64 = 0x0100_0000;
+
+        // This is a planning-layer regression rather than a provided-DTB test.
+        // Retained static `reg` conflicts belong to the later FDT stage. Here
+        // the ordinary device sorts after pci-host, whose ECAM and memory
+        // aperture leave less than 16 MiB in the default low pool.
+        let controller = DeviceNodeId::new("vgic").unwrap();
+        let nodes = std::vec![
+            DeviceNodeSpec::firmware_only(controller.clone()),
+            DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new("endpoint0").unwrap(),
+                Arc::new(TestEndpointModel),
+            ),
+            DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new("zz-auto-mmio0").unwrap(),
+                Arc::new(TestAutoMmioModel {
+                    size: ORDINARY_AUTO_MMIO_SIZE,
+                }),
+            ),
+        ];
+        let pools = super::super::resource_pools::create_auto_mmio_pools().unwrap();
+
+        let plan = VmDevicePlan::with_optional_pci_host_for_vm(
+            &config(true),
+            nodes,
+            &[],
+            pools,
+            provider(&controller).unwrap(),
+            super::super::resource_pools::PCI_AUTO_MMIO_SEARCH_EXTENSION.clone(),
+        );
+        let error = match plan {
+            Ok(devices) => {
+                let resources = devices
+                    .graph()
+                    .resources_for(&DeviceNodeId::new("zz-auto-mmio0").unwrap())
+                    .unwrap();
+                let (base, _) = resources
+                    .mmio(&ResourceSlot::new("registers").unwrap())
+                    .unwrap();
+                panic!("ordinary auto MMIO was allocated at {base:#x} from the PCI host extension");
+            }
+            Err(error) => error,
+        };
+
+        let AxVmError::Device { detail, .. } = error else {
+            panic!("unexpected error: {error:?}");
+        };
+        assert!(detail.contains("mmio auto pool is exhausted"));
+        assert!(detail.contains("slot registers for zz-auto-mmio0"));
     }
 
     #[test]

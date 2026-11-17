@@ -14,8 +14,8 @@ pub(crate) use range::ranges_overlap;
 
 /// Resources available to one architecture-owned VM plan.
 ///
-/// Automatic pools, fixed allowlists, and reservations are independent so a
-/// fixed machine ABI cannot accidentally enlarge an automatic pool.
+/// Automatic pools, owner-specific automatic extensions, fixed allowlists, and
+/// reservations are independent so one cannot accidentally enlarge another.
 #[derive(Clone, Debug, Default)]
 pub struct ResourcePools {
     addresses: AddressPools,
@@ -27,6 +27,7 @@ pub struct ResourcePools {
 #[derive(Clone, Debug, Default)]
 struct AddressPools {
     automatic: AddressRanges,
+    automatic_mmio_for_owner: BTreeMap<String, Vec<Range<u64>>>,
     fixed: AddressRanges,
     reserved: AddressReservations,
 }
@@ -101,6 +102,7 @@ impl ResourcePools {
                     mmio: Vec::new(),
                     pio: Vec::new(),
                 },
+                automatic_mmio_for_owner: BTreeMap::new(),
                 fixed: AddressRanges {
                     mmio: Vec::new(),
                     pio: Vec::new(),

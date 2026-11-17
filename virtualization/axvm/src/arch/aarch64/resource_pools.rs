@@ -6,10 +6,10 @@ use axdevice_base::*;
 
 use crate::AxVmResult;
 
-/// Default automatic MMIO window for VMs without a referenced PCI host.
+/// Default automatic MMIO window available to every requester.
 pub(super) const AUTO_MMIO_SEARCH: core::ops::Range<u64> = 0x0b00_0000..0x1000_0000;
 
-/// Additional 32-bit MMIO window enabled only by typed AArch64 PCI requests.
+/// Additional 32-bit MMIO window available only to the referenced typed PCI host.
 pub(super) const PCI_AUTO_MMIO_SEARCH_EXTENSION: core::ops::Range<u64> = 0x1000_0000..0x1_0000_0000;
 const AUTO_MSI_ID_END: u32 = 0x1_0000;
 
