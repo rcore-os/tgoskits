@@ -127,7 +127,7 @@ fn mount_background(
 #[test]
 fn boot_directory_exchange_replaces_assets_and_preserves_open_old_files() {
     crate::os::memory::test_support::with_test_page_provider(true, |_| {
-        use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission};
+        use axfs_ng_vfs::{Mountpoint, NodePermission};
 
         use crate::{MemoryFs, highlevel::FsContext};
 

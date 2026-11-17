@@ -491,7 +491,7 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
         ),
     ]
     .map(|(path, kind, device)| {
-        let result = context
+        let result = capable_context
             .create_node(
                 path,
                 CreateAttributes {
