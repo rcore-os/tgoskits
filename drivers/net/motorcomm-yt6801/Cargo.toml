@@ -1,0 +1,19 @@
+[package]
+name = "motorcomm-yt6801"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Motorcomm YT6801 Ethernet controller with owned DMA queues"
+categories = ["embedded", "hardware-support", "no-std"]
+keywords = ["ethernet", "motorcomm", "yt6801", "driver"]
+
+[dependencies]
+dma-api.workspace = true
+log.workspace = true
+mbarrier.workspace = true
+mmio-api.workspace = true
+rdif-eth.workspace = true
+thiserror.workspace = true
+

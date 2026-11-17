@@ -134,6 +134,8 @@ rdif-clk.workspace = true
 acpi_tables.workspace = true
 
 [dev-dependencies]
+ax-percpu = { workspace = true, features = ["host-test"] }
+trait-ffi.workspace = true
 acpi_tables.workspace = true
 rdif-clk = { path = "../../drivers/interface/rdif-clk" }
 

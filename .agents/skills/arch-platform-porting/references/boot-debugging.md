@@ -487,6 +487,9 @@ timer 退出。旧入口必然执行到 HVCL 并在退出类别断言失败；�
 AxVM 在 `wait_for_event()` 的任务上下文以保存的剩余时间武装现有 run-bound
 宿主注册；回调只发布 TI 并唤醒同一 run。等待因截止、外部中断或停止返回后，
 先通过完成屏障撤销注册，再允许下一次硬件进入；已发布的 TI 仍由 run 队列拥有。
+`prepare_vcpu()` 在任务阶段再次退休恢复的注册，才交给硬件绑定。
+`TCFG/TVAL` 写入只更新保存的硬件状态并撤销旧休眠回调，不另注册宿主定时器；
+`TICLR` 只确认 TI，不能重装周期初值或重新使能已过期的一次性定时器。
 不在 CPU 绑定、关抢占或 IRQ-off 路径调用注册与取消服务，不用轮询代替休眠。
 
 LVZ 缺目录不能直接把旧 `ESTAT/BADI` 当成本次访问返回 Rust。按
@@ -621,12 +624,12 @@ RAII 生命周期；CPU 迭代器持有 MADT 映射直到遍历结束，不能�
 默认龙芯板卡 CI 使用 `cargo xtask axvisor test board --board loongson-3a6000-ll --test-case smoke`，
 原 ArceOS Hello 入口保留为手动诊断。Linux 与 BusyBox 来自受管理的发布镜像，
 `image pull` 复用自托管宿主的持久下载缓存并校验 SHA-256；不要每轮清空缓存或
-改为编译本地 Linux。发布 initramfs 内还包含客户机内核，板测的 `prepare-board.py`
-只提取 BusyBox 和原 `/init` 后重新打包，减少重复传输。HTTP 上传默认上限为
-64 MiB，可用服务的 `upload_limits.session_file_max_mib` 动态配置调整；不要将
-默认值误认为硬件限制。
-精简归档由 `resources/init` 挂载 devtmpfs、重开控制台后执行发布初始化脚本，
-不能依赖构建机创建设备节点。缓存命中和上传成功都不替代实际客户机命令断言。
+改为编译本地 Linux。`linux.toml` 直接使用完整发布 initramfs，通用镜像准备和
+builtin 打包负责传输，不做板级裁剪或替换 `/init`。`prepare-board.py` 只生成
+独立磁盘夹具及其宿主基底归档；损坏的 manifest 视为未命中，输出符号链接仍拒绝。
+HTTP 上传默认上限为 64 MiB，是服务的 `upload_limits.session_file_max_mib`
+策略，当前龙芯服务配置为 128 MiB；不要将默认值误认为硬件限制，也不要为绕过
+旧上限保留镜像专用流程。缓存命中和上传成功都不替代实际客户机命令断言。
 
 龙芯宿主网卡枚举还依赖 MCFG 的访问布局。`pcie::ConfigSpaceLayout` 统一维护
 标准 ECAM 与 Loongson CFG1 的寄存器地址，`rdrive::AcpiPciEcam` 按 MCFG OEM
@@ -636,6 +639,12 @@ RAII 生命周期；CPU 迭代器持有 MADT 映射直到遍历结束，不能�
 网卡驱动。客户机 Linux 板测不覆盖宿主实体网卡；Web 验收还要证明真实 IP、
 HTTP 和终端连接。设计和 Linux 7.1 对照见
 [`design/loongson-pci-config-space.md`](../../../../design/loongson-pci-config-space.md)。
+
+实际端点 `1f0a:6801` 使用 `ax-driver/motorcomm-yt6801`，不是 Realtek。
+YT6801 的原生 INTx 需将 `DMA_MODE.INTM` 设为电平模式；复位的脉冲模式会使
+收包完成后没有后续唤醒。PCH-PIC 同时要初始化 HTMSI 转换、HT0 路由与向量，
+不能依赖固件遗留状态。网络仍使用固定 CPU 的已有 IRQ/轮询组，不增加定时轮询。
+
 
 更新固定 Rust 工具链时，比较旧、新 rustc 的 LoongArch 裸机与 musl
 `--print target-spec-json`。从 `nightly-2026-09-04` 到 `nightly-2026-11-13`，

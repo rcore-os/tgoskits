@@ -156,13 +156,24 @@ cases = ["smoke"]
 [[check]]
 id = "test-axvisor-loongarch64-qemu"
 impact_targets = ["axvisor:loongarch64"]
-name = "QEMU loongarch64 · Suites"
+name = "QEMU loongarch64 · Linux, IOCSR and timers"
 runner = "ubuntu-axvisor-lvz"
 cache_key = "test-axvisor-loongarch64"
 download_xtask_bin_artifact = true
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
+echo "==> axvm loongarch64 guest timer ownership"
+output="$(target/debug/tg-xtask cross-test --arch loongarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib guest_csr 2>&1)" || {
+  printf '%s\n' "$output"
+  exit 1
+}
+printf '%s\n' "$output"
+printf '%s\n' "$output" | grep -Eq 'test result: ok\. [1-9][0-9]* passed;' || {
+  echo "guest timer filter matched no passing test" >&2
+  exit 1
+}
 echo "==> axvisor loongarch64 Linux guests"
 target/debug/tg-xtask axvisor test qemu --arch loongarch64
 echo "==> axvm loongarch64 IOCSR isolation axtest"

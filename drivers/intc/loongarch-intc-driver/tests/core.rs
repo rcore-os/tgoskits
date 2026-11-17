@@ -97,6 +97,9 @@ fn pch_detects_identity_configures_input_and_maps_external_vector() {
     let config = PchPicConfig::detect(&mmio, 64, 7).unwrap();
     assert_eq!(config.input_count(), 64);
     let mut parts = PchPicParts::new(mmio.clone(), config).unwrap();
+    assert_eq!(mmio.read::<u32>(0x40), u32::MAX);
+    assert_eq!(mmio.read::<u32>(0x44), u32::MAX);
+    assert_eq!(mmio.read::<u8>(0x100 + 33), 1);
     assert_eq!(mmio.read::<u32>(PCH_EDGE), 0);
     assert_eq!(mmio.read::<u32>(PCH_EDGE + 4), 0);
     assert_eq!(mmio.read::<u32>(PCH_POLARITY), 0);

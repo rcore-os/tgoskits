@@ -28,18 +28,18 @@ impl Controller for TwoRootPorts {
                 _ => 0,
             };
         }
-        if address.bus() != 0 && address.device() == 0 {
-            if let Some(port) = self
+        if address.bus() != 0
+            && address.device() == 0
+            && let Some(port) = self
                 .buses
                 .iter()
                 .position(|buses| ((buses >> 8) & 0xff) == u32::from(address.bus()))
-            {
-                return match offset {
-                    0 => ((0x1000 + port as u32) << 16) | 0x1234,
-                    8 => 0x0200_0000,
-                    _ => 0,
-                };
-            }
+        {
+            return match offset {
+                0 => ((0x1000 + port as u32) << 16) | 0x1234,
+                8 => 0x0200_0000,
+                _ => 0,
+            };
         }
         u32::MAX
     }

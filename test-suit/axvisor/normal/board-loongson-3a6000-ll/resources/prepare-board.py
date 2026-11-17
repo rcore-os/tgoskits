@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Prepare a small published BusyBox initrd and the independent ext4 fixture."""
+"""Prepare the independent ext4 fixture and its host initramfs."""
 
 import fcntl
-import gzip
 import hashlib
 import json
 import os
@@ -17,8 +16,7 @@ import uuid
 FIXTURE = b"AXVISOR_LOONGSON_BLOCK_FIXTURE_V1\n"
 FIXTURE_NAME = "axvisor-board-fixture.txt"
 IMAGE_BYTES = 16 * 1024 * 1024
-BUSYBOX_IMAGE = "initramfs-loongarch64-busybox.cpio.gz"
-ARTIFACTS = ("block.img", "block-host.cpio.gz", "busybox.cpio.gz")
+ARTIFACTS = ("block.img", "block-host.cpio.gz")
 
 
 def require(condition, message):
@@ -38,33 +36,6 @@ def run(argv, *, env, capture=False):
     result = subprocess.run([str(arg) for arg in argv], env=env, check=True,
                             stdout=subprocess.PIPE if capture else None)
     return result.stdout if capture else None
-
-
-def prepare_busybox(resources, workspace, output, source, env):
-    with tempfile.TemporaryDirectory(prefix=".busybox-", dir=output) as temporary:
-        archive = Path(temporary) / "published.cpio"
-        with gzip.open(source, "rb") as compressed, archive.open("wb") as unpacked:
-            shutil.copyfileobj(compressed, unpacked)
-        root = Path(temporary) / "root"
-        for directory in ("bin", "dev", "etc", "etc/init.d", "proc", "root", "sbin", "sys",
-                          "tmp", "usr", "usr/bin", "usr/sbin"):
-            path = root / directory
-            path.mkdir(parents=True, exist_ok=True)
-            path.chmod(0o755)
-        # Extract only regular payloads; never unpack devices or embedded guest kernels.
-        for member, destination in [("bin/busybox", "bin/busybox"), ("init", "init.busybox")]:
-            with archive.open("rb") as stream:
-                contents = subprocess.run(["cpio", "--extract", "--to-stdout", "--quiet", member],
-                                          stdin=stream, stdout=subprocess.PIPE, env=env,
-                                          check=True).stdout
-            require(contents, f"published initramfs is missing {member}")
-            (root / destination).write_bytes(contents)
-            (root / destination).chmod(0o755)
-        (root / "bin/sh").symlink_to("busybox")
-        shutil.copyfile(resources / "init", root / "init")
-        (root / "init").chmod(0o755)
-        subprocess.run(["cargo", "xtask", "image", "pack-initramfs", root,
-                        output / "busybox.cpio.gz", "--gzip"], cwd=workspace, check=True)
 
 
 def prepare_block(output, env, input_hash):
@@ -101,7 +72,7 @@ def prepare_block(output, env, input_hash):
         image.replace(output / "block.img")
 
 
-def prepare(resources, workspace, output, source):
+def prepare(resources, workspace, output):
     # A positive epoch also fixes e2fsprogs' superblock creation timestamps.
     epoch = os.environ.get("SOURCE_DATE_EPOCH", "1")
     require(epoch.isdigit() and 0 < int(epoch) <= 0x7FFFFFFF, "invalid SOURCE_DATE_EPOCH")
@@ -109,21 +80,24 @@ def prepare(resources, workspace, output, source):
            "SOURCE_DATE_EPOCH": epoch, "E2FSPROGS_FAKE_TIME": epoch,
            "MKE2FS_CONFIG": str(resources / "mke2fs.conf")}
     tools = {}
-    for name in ("mke2fs", "debugfs", "cpio"):
+    for name in ("mke2fs", "debugfs"):
         path = shutil.which(name, path=env["PATH"])
         require(path, f"required tool not found: {name}")
         tools[name] = sha256(Path(path))
-    inputs = {"schema": 2, "source_date_epoch": int(epoch), "tools": tools,
+    inputs = {"schema": 3, "source_date_epoch": int(epoch), "tools": tools,
               "prepare_sha256": sha256(Path(__file__).resolve()),
-              "busybox_source_sha256": sha256(source),
-              "init_sha256": sha256(resources / "init"),
               "mke2fs_config_sha256": sha256(resources / "mke2fs.conf"),
               "fixture_sha256": hashlib.sha256(FIXTURE).hexdigest(), "block_bytes": IMAGE_BYTES}
     input_hash = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
     manifest_path = output / "board-manifest.json"
     for path in [manifest_path, *(output / name for name in ARTIFACTS)]:
         require(not path.is_symlink(), f"refusing output symlink: {path}")
-    previous = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+    try:
+        previous = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+    except (ValueError, UnicodeError):
+        previous = {}
+    if not isinstance(previous, dict) or not isinstance(previous.get("artifacts"), dict):
+        previous = {}
     if previous.get("input_sha256") == input_hash and all(
         (output / name).is_file()
         and sha256(output / name) == previous.get("artifacts", {}).get(name)
@@ -133,7 +107,6 @@ def prepare(resources, workspace, output, source):
         artifacts = previous["artifacts"]
     else:
         manifest_path.unlink(missing_ok=True)
-        prepare_busybox(resources, workspace, output, source, env)
         prepare_block(output, env, input_hash)
         root = output / "host-root"
         guest = root / "guest"
@@ -169,14 +142,9 @@ def main():
             "board host_prepare requires AXBUILD_TARGET_DIR as an absolute target root")
     output = Path(target).resolve() / "axbuild/loongson-3a6000"
     output.mkdir(parents=True, exist_ok=True)
-    images = Path(target).resolve() / "axbuild/images"
-    # The shared image manager verifies and reuses its persistent archive cache.
-    subprocess.run(["cargo", "xtask", "image", "--extract-dir", images, "pull", BUSYBOX_IMAGE],
-                   cwd=workspace, check=True)
-    source = images / BUSYBOX_IMAGE / BUSYBOX_IMAGE
     with (output / ".prepare.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        prepare(resources, workspace, output, source)
+        prepare(resources, workspace, output)
 
 
 if __name__ == "__main__":

@@ -371,6 +371,7 @@ pub const fn has_pci_endpoint_drivers() -> bool {
         feature = "ahci",
         feature = "intel-net",
         feature = "realtek-rtl8125",
+        feature = "motorcomm-yt6801",
         feature = "nvme",
         feature = "intel-hda",
         feature = "xhci-pci",

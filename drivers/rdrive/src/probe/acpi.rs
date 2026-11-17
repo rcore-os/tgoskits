@@ -1605,7 +1605,7 @@ fn read_loongarch_lio_pic_entry(
         )));
     }
     let [first, second] = lio.cascade_map;
-    if first | second == 0 || first & second != 0 {
+    if first | second == 0 {
         return Err(DriverError::Unknown(format!(
             "invalid LIOPIC cascade maps: {lio:?}"
         )));

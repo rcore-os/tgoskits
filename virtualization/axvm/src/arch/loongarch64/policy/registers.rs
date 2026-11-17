@@ -111,10 +111,6 @@ pub fn guest_tcfg_enabled(value: usize) -> bool {
     value & guest_tcfg_enable_mask() != 0
 }
 
-pub fn guest_tcfg_periodic(value: usize) -> bool {
-    value & TCFG::PERIODIC::SET.value != 0
-}
-
 pub fn guest_tcfg_initval(value: usize) -> usize {
     LocalRegisterCopy::<usize, TCFG::Register>::new(value).read(TCFG::INITVAL) << 2
 }

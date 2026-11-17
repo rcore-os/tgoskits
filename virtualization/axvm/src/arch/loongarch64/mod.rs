@@ -223,6 +223,11 @@ impl ArchOps for LoongArch64Arch {
     }
 
     fn prepare_vcpu(vcpu: &mut Self::VCpu, entry: &Self::Entry) -> AxVmResult {
+        // Retire any resumed IDLE callback before binding hardware on this CPU.
+        // Cancellation may wait, so it belongs to this unpinned task phase.
+        vcpu.backend
+            .quiet_timer()
+            .map_err(|error| AxVmError::vcpu("retire LoongArch idle timer before entry", error))?;
         vcpu.backend.set_run_port(entry.run.clone());
         Ok(())
     }

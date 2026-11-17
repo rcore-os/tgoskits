@@ -82,6 +82,26 @@ impl Endpoint {
         self.header.capabilities(self.access()).collect()
     }
 
+    /// Disables message-signaled delivery before a driver selects INTx.
+    /// Returns whether either MSI or MSI-X was enabled by the previous owner.
+    pub fn disable_message_signaled_interrupts(&mut self) -> bool {
+        let mut was_enabled = false;
+        for capability in self.capabilities() {
+            match capability {
+                PciCapability::Msi(msi) => {
+                    was_enabled |= msi.is_enabled(self.access());
+                    msi.set_enabled(false, self.access());
+                }
+                PciCapability::MsiX(mut msix) => {
+                    was_enabled |= msix.enabled(self.access());
+                    msix.set_enabled(false, self.access());
+                }
+                _ => {}
+            }
+        }
+        was_enabled
+    }
+
     pub fn msix_capability(&self) -> Option<pci_types::capability::MsixCapability> {
         self.capabilities().into_iter().find_map(|capability| {
             if let PciCapability::MsiX(msix) = capability {

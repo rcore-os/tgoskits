@@ -13,7 +13,7 @@ use super::{
         crmd_exception_clear_mask, crmd_interrupt_enable_value, crmd_saved_state,
         crmd_with_direct_addressing, ecfg_vs_value_from, estat_exception_mask,
         estat_exception_value, guest_tcfg_enable_mask, guest_tcfg_enabled, guest_tcfg_initval,
-        guest_tcfg_periodic, guest_ticlr_has_timer_interrupt_clear, prmd_saved_state_mask,
+        guest_ticlr_has_timer_interrupt_clear, prmd_saved_state_mask,
     },
     trap::{
         INT_TIMER, LOCAL_INTERRUPT_MASK, TIMER_BIT, advance_guest_pc, decode_interrupt_vector,
@@ -69,7 +69,6 @@ const CSR_TLBREHI_VPPN_MASK: usize = 0x0000_ffff_ffff_e000;
 const DEFAULT_TLB_PAGE_SHIFT: usize = 12;
 
 static IDLE_EXIT_LOGS: AtomicUsize = AtomicUsize::new(0);
-static GUEST_TIMER_LOGS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) struct GuestTimerRegistration<H: LoongArchHostOps> {
     handle: Option<H::TimerHandle>,
@@ -361,15 +360,13 @@ pub(crate) fn emulate_cpucfg(
 pub(crate) fn emulate_csrx<H: LoongArchHostOps>(
     ctx: &mut LoongArchContextFrame,
     ins: usize,
-    vm_id: LoongArchVmId,
-    vcpu_id: LoongArchVcpuId,
     guest_timer: &mut GuestTimerRegistration<H>,
 ) -> LoongArchVcpuResult<LoongArchVmExit> {
     let rd = extract_field(ins, 0, 5);
     let rj = extract_field(ins, 5, 5);
     let csr = extract_field(ins, 10, 14);
 
-    emulate_guest_csr::<H>(ctx, rd, rj, csr, vm_id, vcpu_id, guest_timer)?;
+    emulate_guest_csr::<H>(ctx, rd, rj, csr, guest_timer)?;
     advance_guest_pc(ctx);
     Ok(LoongArchVmExit::Nothing)
 }
@@ -448,8 +445,6 @@ fn write_guest_csr<H: LoongArchHostOps>(
     ctx: &mut LoongArchContextFrame,
     csr: usize,
     value: usize,
-    vm_id: LoongArchVmId,
-    vcpu_id: LoongArchVcpuId,
     guest_timer: &mut GuestTimerRegistration<H>,
 ) -> LoongArchVcpuResult {
     match csr {
@@ -499,7 +494,7 @@ fn write_guest_csr<H: LoongArchHostOps>(
         0x3f => ctx.gcsr_save15 = value,
         CSR_TID => ctx.gcsr_tid = value,
         CSR_TCFG | CSR_TVAL | CSR_TICLR => {
-            write_guest_timer_csr::<H>(ctx, csr, value, vm_id, vcpu_id, guest_timer)?
+            write_guest_timer_csr::<H>(ctx, csr, value, guest_timer)?
         }
         CSR_LLBCTL => ctx.gcsr_llbctl = value,
         CSR_TLBRENTRY => ctx.gcsr_tlbrentry = value,
@@ -523,102 +518,51 @@ fn write_guest_csr<H: LoongArchHostOps>(
     Ok(())
 }
 
-fn guest_timer_periodic(ctx: &LoongArchContextFrame) -> bool {
-    guest_tcfg_periodic(ctx.gcsr_tcfg)
-}
-
-fn guest_timer_init_ticks(ctx: &LoongArchContextFrame) -> u64 {
-    guest_tcfg_initval(ctx.gcsr_tcfg) as u64
-}
-
-fn register_guest_timer<H: LoongArchHostOps>(
+/// Reloads the saved hardware timer without creating a host callback.
+/// Only the IDLE wait path may arm the task-context timer producer.
+fn reload_guest_timer<H: LoongArchHostOps>(
     ctx: &mut LoongArchContextFrame,
-    vm_id: LoongArchVmId,
-    vcpu_id: LoongArchVcpuId,
     guest_timer: &mut GuestTimerRegistration<H>,
 ) -> LoongArchVcpuResult {
     guest_timer.cancel()?;
-
-    if !guest_tcfg_enabled(ctx.gcsr_tcfg) {
-        return Ok(());
-    }
-
-    let init_ticks = guest_timer_init_ticks(ctx);
-    ctx.timer_counter = ax_cpu::timer::read_counter();
-    if init_ticks == 0 {
-        ctx.gcsr_tval = 0;
-        ctx.gcsr_estat |= TIMER_BIT;
-        if GUEST_TIMER_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
-            log::trace!(
-                "LoongArch guest timer immediate: tcfg={:#x}, estat={:#x}",
-                ctx.gcsr_tcfg,
-                ctx.gcsr_estat
-            );
+    if guest_tcfg_enabled(ctx.gcsr_tcfg) {
+        let init_ticks = guest_tcfg_initval(ctx.gcsr_tcfg);
+        ctx.timer_counter = ax_cpu::timer::read_counter();
+        ctx.gcsr_tval = init_ticks;
+        if init_ticks == 0 {
+            ctx.gcsr_estat |= TIMER_BIT;
         }
-        return Ok(());
     }
-
-    ctx.gcsr_tval = init_ticks as usize;
-    let delay_ns = H::ticks_to_nanos(init_ticks);
-    let deadline_ns = H::current_time_nanos().saturating_add(delay_ns);
-    if GUEST_TIMER_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
-        log::trace!(
-            "LoongArch guest timer arm: tcfg={:#x}, init_ticks={}, delay_ns={}, deadline_ns={}",
-            ctx.gcsr_tcfg,
-            init_ticks,
-            delay_ns,
-            deadline_ns
-        );
-    }
-    guest_timer.arm(deadline_ns, vm_id, vcpu_id)
+    Ok(())
 }
 
 fn write_guest_timer_csr<H: LoongArchHostOps>(
     ctx: &mut LoongArchContextFrame,
     csr: usize,
     value: usize,
-    vm_id: LoongArchVmId,
-    vcpu_id: LoongArchVcpuId,
     guest_timer: &mut GuestTimerRegistration<H>,
 ) -> LoongArchVcpuResult {
     match csr {
         CSR_TCFG => {
             ctx.gcsr_tcfg = value;
-            if let Err(error) = register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer) {
+            if let Err(error) = reload_guest_timer::<H>(ctx, guest_timer) {
                 ctx.gcsr_tcfg &= !guest_tcfg_enable_mask();
                 ctx.gcsr_tval = 0;
                 return Err(error);
             }
         }
         CSR_TVAL => {
+            guest_timer.cancel()?;
             ctx.gcsr_tval = value;
             ctx.timer_counter = ax_cpu::timer::read_counter();
         }
         CSR_TICLR => {
             ctx.gcsr_ticlr = value;
             if guest_ticlr_has_timer_interrupt_clear(value) {
+                guest_timer.cancel()?;
+                // Acknowledge TI without reloading a periodic timer or
+                // re-enabling an expired one-shot.
                 ctx.gcsr_estat &= !TIMER_BIT;
-                if GUEST_TIMER_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
-                    log::warn!(
-                        "LoongArch guest timer clear: tcfg={:#x}, ticlr={:#x}, periodic={}, \
-                         estat={:#x}",
-                        ctx.gcsr_tcfg,
-                        value,
-                        guest_timer_periodic(ctx),
-                        ctx.gcsr_estat
-                    );
-                }
-                if guest_timer_periodic(ctx) {
-                    if let Err(error) = register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer)
-                    {
-                        ctx.gcsr_tcfg &= !guest_tcfg_enable_mask();
-                        ctx.gcsr_tval = 0;
-                        return Err(error);
-                    }
-                } else {
-                    ctx.gcsr_tcfg &= !guest_tcfg_enable_mask();
-                    guest_timer.cancel()?;
-                }
             }
         }
         _ => {}
@@ -631,8 +575,6 @@ fn emulate_guest_csr<H: LoongArchHostOps>(
     rd: usize,
     rj: usize,
     csr: usize,
-    vm_id: LoongArchVmId,
-    vcpu_id: LoongArchVcpuId,
     guest_timer: &mut GuestTimerRegistration<H>,
 ) -> LoongArchVcpuResult {
     let old_value = read_guest_csr(ctx, csr);
@@ -646,7 +588,7 @@ fn emulate_guest_csr<H: LoongArchHostOps>(
             return_value &= mask;
             (old_value & !mask) | (ctx.x[rd] & mask)
         };
-        write_guest_csr::<H>(ctx, csr, new_value, vm_id, vcpu_id, guest_timer)?;
+        write_guest_csr::<H>(ctx, csr, new_value, guest_timer)?;
     }
 
     ctx.set_gpr(rd, return_value);
@@ -713,12 +655,21 @@ mod tests {
     use super::{
         super::{LoongArchHostPhysAddr, LoongArchHostVirtAddr, types::LoongArchVcpuError},
         GuestTimerRegistration, LoongArchContextFrame, LoongArchHostOps, LoongArchVcpuResult,
-        claim_guest_timer_generation, guest_tcfg_enable_mask, register_guest_timer,
+        claim_guest_timer_generation, guest_tcfg_enable_mask, reload_guest_timer,
     };
 
     const NOW_NS: u64 = 1_000;
     const INIT_TICKS: u64 = 400;
     const ARMED_DEADLINE_NS: u64 = NOW_NS + INIT_TICKS;
+
+    struct HostBootTrap;
+
+    #[trait_ffi::impl_extern_trait]
+    impl ax_cpu::trap::boot::BootTrapHandler for HostBootTrap {
+        fn handle(_exception: &ax_cpu::trap::boot::BootException) {
+            panic!("a host timer-state test must not enter a privileged boot trap");
+        }
+    }
 
     /// Deterministic host timer with no shared mutable state.
     ///
@@ -864,14 +815,59 @@ mod tests {
         (((init_ticks >> 2) as usize) << 2) | guest_tcfg_enable_mask()
     }
 
-    /// Arms the guest timer through the real CSR path, so the deadline math of
-    /// `register_guest_timer` is exercised as well.
+    #[test]
+    fn guest_timer_csr_changes_leave_hardware_as_the_only_running_producer() {
+        let mut ctx = LoongArchContextFrame::default();
+        let mut timer = GuestTimerRegistration::<TestHost>::new();
+        super::write_guest_timer_csr::<TestHost>(
+            &mut ctx,
+            super::CSR_TCFG,
+            enabled_tcfg(INIT_TICKS),
+            &mut timer,
+        )
+        .unwrap();
+        assert!(
+            timer.handle.is_none(),
+            "TCFG must not arm a host callback during execution"
+        );
+        assert_eq!(ctx.gcsr_tval, INIT_TICKS as usize);
+
+        timer.arm(ARMED_DEADLINE_NS, 1, 0).unwrap();
+        super::write_guest_timer_csr::<TestHost>(&mut ctx, super::CSR_TVAL, 123, &mut timer)
+            .unwrap();
+        assert!(
+            timer.handle.is_none(),
+            "TVAL must retire the previous idle deadline"
+        );
+        assert_eq!(ctx.gcsr_tval, 123);
+
+        ctx.gcsr_tcfg = enabled_tcfg(INIT_TICKS) | 2;
+        ctx.gcsr_tval = 200;
+        ctx.gcsr_estat |= super::TIMER_BIT;
+        super::write_guest_timer_csr::<TestHost>(&mut ctx, super::CSR_TICLR, 1, &mut timer)
+            .unwrap();
+        assert!(
+            timer.handle.is_none(),
+            "acknowledgement must not create a second producer"
+        );
+        assert_eq!(
+            ctx.gcsr_tval, 200,
+            "periodic acknowledgement preserves its phase"
+        );
+        assert_eq!(ctx.gcsr_estat & super::TIMER_BIT, 0);
+    }
+
+    /// Supplies an IDLE registration to exercise host timer retirement and
+    /// suspend/resume ownership independently of privileged guest execution.
     fn arm_guest_timer<H: LoongArchHostOps>(
         ctx: &mut LoongArchContextFrame,
         timer: &mut GuestTimerRegistration<H>,
     ) -> LoongArchVcpuResult {
         ctx.gcsr_tcfg = enabled_tcfg(INIT_TICKS);
-        register_guest_timer::<H>(ctx, 1, 0, timer)
+        reload_guest_timer::<H>(ctx, timer)?;
+        let deadline =
+            H::current_time_nanos().saturating_add(H::ticks_to_nanos(ctx.gcsr_tval as u64));
+        timer.arm(deadline, 1, 0)
     }
 
     #[test]

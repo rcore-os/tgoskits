@@ -119,7 +119,7 @@ fn emulate_gspr<H: LoongArchHostOps>(
         }
         Some(GsprOp::Cacop) => Ok(emulate_cacop(ctx, ins)),
         Some(GsprOp::Idle) => Ok(emulate_idle(ctx, ins)),
-        Some(GsprOp::Csrx) => emulate_csrx::<H>(ctx, ins, vm_id, vcpu_id, guest_timer),
+        Some(GsprOp::Csrx) => emulate_csrx::<H>(ctx, ins, guest_timer),
         Some(GsprOp::Iocsr) => emulate_iocsr(state, ctx, ins, vm_id, vcpu_id),
         None => Ok(LoongArchVmExit::EmulationFault(
             LoongArchEmulationFault::InvalidGspr {

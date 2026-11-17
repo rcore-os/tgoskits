@@ -57,19 +57,19 @@ QEMU 用例使用相同发布包；BusyBox 复用 `initramfs-loongarch64-busybox
 LoongArch 架构判定。`ensure_guest_image_bundles()` 校验镜像摘要与所需文件，
 builtin bundle 按内容打包；CI 不依赖本地 Linux 源码或额外内核编译工具链。
 
-`resources/prepare-board.py` 沿用 `image pull` 的持久归档缓存和 SHA-256 校验。
-自托管宿主的 `/tmp/tgosimages` 不随 checkout 清理；缺失或与 registry 摘要不符时
-才重新下载，也可通过 `TGOS_IMAGE_DOWNLOAD_DIR` 选择持久目录。脚本从发布 initramfs
-提取 BusyBox 和原 `/init`，剔除内嵌的重复 Linux 镜像；`resources/init` 先挂载
-devtmpfs 并重开控制台，再执行原脚本。精简后的 initrd 减少重复传输，也能满足
-板卡服务默认 64 MiB 的上传上限。该上限由 `upload_limits.session_file_max_mib`
-动态配置，可调整为 128 等值；客户机运行不需要修改板卡原系统分区。
+`linux.toml` 直接引用发布 initramfs 的受管理路径，不做板级解包、裁剪或改写
+`/init`。镜像由通用 `ensure_guest_image_bundles()` 准备，`Storage::pull_image()`
+复用自托管宿主的 `/tmp/tgosimages` 持久归档，并校验 registry 的 SHA-256；
+仅缺失或摘要不符时下载，也可用 `TGOS_IMAGE_DOWNLOAD_DIR` 选择持久目录。
+板卡服务的 `upload_limits.session_file_max_mib` 是上传策略，当前实板服务已配置
+为 128 MiB，足以传输完整发布镜像及宿主归档，不是客户机内存或硬件限制。
 
-块设备夹具由同一脚本独立生成，仅包含已知内容。`board-manifest.json` 绑定
-发布 initramfs、脚本、夹具、ext4 配置、工具及产物摘要；`SOURCE_DATE_EPOCH`
-使用正整数，缺省为 1。`guest_build::prepare()` 中的
-`host_prepare` 必须成功后，才允许构建并打包宿主。缺失镜像、夹具工具或校验
-失败时应报告真实失败，不回退到本地源码构建或未标明来源的内核。
+`resources/prepare-board.py` 只生成独立块设备夹具及其宿主基底归档。
+`board-manifest.json` 绑定脚本、夹具、ext4 配置、工具及产物摘要；损坏、截断或
+结构无效的 manifest 视为缓存未命中并重新生成。输出符号链接仍明确拒绝，不能
+借恢复缓存写入其他路径。`SOURCE_DATE_EPOCH` 使用正整数，缺省为 1。
+`guest_build::prepare()` 的 `host_prepare` 必须成功后才允许构建并打包宿主；
+缺失镜像、夹具工具或摘要不符均报告真实失败。
 
 内核与 initrd 由既有 builtin bundle 按内容摘要打包；设备的文件后端路径不属于
 启动镜像字段，不由该 bundle 展开或重写。块夹具通过现有

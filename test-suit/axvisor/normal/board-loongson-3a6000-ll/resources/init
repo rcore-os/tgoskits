@@ -1,4 +1,0 @@
-#!/bin/busybox sh
-# Reopen the console after devtmpfs supplies device nodes in this small archive.
-/bin/busybox mount -t devtmpfs devtmpfs /dev || exit 1
-exec /bin/busybox sh /init.busybox </dev/console >/dev/console 2>&1

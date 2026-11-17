@@ -265,6 +265,7 @@ sg200x-pwm = { version = "0.1", path = "drivers/pwm/sg200x-pwm" }
 rockchip-pwm = { version = "0.2", path = "drivers/pwm/rockchip-pwm" }
 k230-kpu = { version = "0.1", path = "drivers/npu/k230-kpu" }
 realtek-rtl8125 = { version = "0.3", path = "drivers/net/realtek-rtl8125" }
+motorcomm-yt6801 = { version = "0.1", path = "drivers/net/motorcomm-yt6801" }
 rockchip-pm = { version = "0.4", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.4", path = "drivers/soc/rockchip/rockchip-soc" }
 sg2002-tpu = { version = "0.4", path = "drivers/tpu/sg2002-tpu" }
