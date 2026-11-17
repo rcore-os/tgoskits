@@ -489,8 +489,14 @@ static void check_vblank_disable_reenable(int fd, uint32_t crtc_id,
 static int vblank_advance_matches_active_time(uint64_t before, uint64_t after,
                                              uint64_t elapsed_ns, uint64_t period_ns)
 {
-    return period_ns != 0 && after >= before &&
-           after - before <= 1 + elapsed_ns / period_ns;
+    if (period_ns == 0 || after < before)
+        return 0;
+    /* Linux adds one on modeset and rounds timestamp-derived active frames
+     * to nearest. The first query can enable vblank partway through a frame. */
+    uint64_t active_frames = elapsed_ns / period_ns;
+    active_frames += elapsed_ns % period_ns >= period_ns / 2 + period_ns % 2;
+    uint64_t advance = after - before;
+    return advance == 0 || advance - 1 <= active_frames;
 }
 
 int main(void)

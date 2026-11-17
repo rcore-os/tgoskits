@@ -54,3 +54,23 @@ Starry 的 `sys_ioctl()` 经 `Card0File::ioctl()`、`drm_ioctl()` 进入
 验证应区分两种风险：受控的慢诊断输出不能使正确的等待结果失败；真实回包序列或时间戳
 错误仍必须使同一个系统用例及最外层任务失败。测试程序非零退出经
 `starry-run-system-tests` 和分组失败标记传播到 `cargo xtask starry test qemu`。
+
+### 2.3 重新启用
+
+`drm_crtc_vblank_on_config()` 通过 `drm_reset_vblank_timestamp()` 为新模式显式增加
+一个序号并建立时间锚。没有引用时，第一次 `CRTC_GET_SEQUENCE` 才可能通过
+`drm_crtc_vblank_get()` 启用计时器；无硬件计数器的 `drm_update_vblank_count()`
+按时间戳差四舍五入补算活动帧数。固定 Linux 的
+[模式切换增量](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L274)
+和[时间戳取整](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L335)
+共同决定重新启用后的上界。
+
+`vblank_advance_matches_active_time()` 保留序号不能后退的判据，将模式切换之外的
+增量与活动时间的最近帧数比较。关闭期间不进入活动时间。若关闭 100 个周期，
+重新启用到查询经过 3/4 个周期，合法增量为模式切换的 1 加四舍五入的 1。
+原先向下取整的上界会错误拒绝该结果。
+
+既有引用生命周期测试使用每个夹具独立的驱动时间戳，经过真实共享核心的
+off/on/get 路径，精确检查增量 2 及其时间戳；系统测试判据还须拒绝把关闭期间
+100 个周期补入计数的结果。宿主夹具验证共享核心规则，Starry 定向 QEMU 继续
+验证实际 ioctl、计时器、事件边沿与最外层失败传播。
