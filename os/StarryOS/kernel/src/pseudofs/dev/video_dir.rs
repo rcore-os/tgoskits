@@ -2,7 +2,7 @@
 
 use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec::Vec};
 
-use axfs_ng_vfs::{DeviceId, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, NodePermission, NodeType, VfsError, VfsResult};
 
 use super::{uvc_camera, video};
 use crate::pseudofs::{
@@ -59,6 +59,9 @@ struct CameraSlot {
 pub(super) struct UvcVideoDir {
     fs: SimpleFsContext,
     slots: ax_sync::Mutex<Vec<Option<CameraSlot>>>,
+    // USB construction may sleep. Its callbacks never enter this gate, and
+    // it keeps the existing initialization order without holding the index.
+    construction: ax_sync::Mutex<()>,
 }
 
 impl UvcVideoDir {
@@ -66,6 +69,7 @@ impl UvcVideoDir {
         Self {
             fs,
             slots: ax_sync::Mutex::new(Vec::new()),
+            construction: ax_sync::Mutex::new(()),
         }
     }
 
@@ -131,6 +135,7 @@ impl SimpleDirOps for UvcVideoDir {
             .and_then(|value| value.parse::<usize>().ok())
             .ok_or(VfsError::NotFound)?;
         self.refresh(&uvc_camera::collect_uvc_snapshots());
+        let construction = self.construction.lock();
         let snapshot = {
             let slots = self.slots.lock();
             let slot = slots
@@ -142,17 +147,19 @@ impl SimpleDirOps for UvcVideoDir {
             }
             slot.snapshot.clone()
         };
+        let inode = self
+            .fs
+            .allocate_inode(NodeType::CharacterDevice, NodePermission::default())?;
         let camera = uvc_camera::create_camera_driver(&snapshot).map_err(VfsError::from)?;
         let events = camera.event_source();
         let driver: Arc<ax_sync::Mutex<dyn ax_media::V4L2DriverOps>> =
             Arc::new(ax_sync::Mutex::new(camera));
         let video = ax_media::VideoDevice::new(driver, "uvc");
-        let device = DeviceBacking::new(
-            self.fs.clone(),
-            NodeType::CharacterDevice,
+        let device = DeviceBacking::from_inode(
+            inode,
             DeviceId::new(81, index as u32),
             Arc::new(video::V4l2DevNode::from_input(video, events)),
-        )?;
+        );
         let result = {
             let mut slots = self.slots.lock();
             match slots.get_mut(index).and_then(Option::as_mut) {
@@ -168,7 +175,8 @@ impl SimpleDirOps for UvcVideoDir {
                 _ => Err(VfsError::NotFound),
             }
         };
-        // Failed or losing candidates may clean up drivers; the slot guard is gone.
+        // Failed or losing candidates may clean up drivers after both guards.
+        drop(construction);
         drop(device);
         result
     }

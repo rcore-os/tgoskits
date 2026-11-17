@@ -901,7 +901,7 @@ fn builder(fs: SimpleFsContext, root_mount_device: u64) -> VfsResult<DirMaker> {
     }
     #[cfg(feature = "uvc")]
     {
-        SimpleDir::new_maker(fs.clone(), Arc::new(video_dir::UvcDevRoot::new(root, fs)))?
+        SimpleDir::new_maker(fs.clone(), Arc::new(video_dir::UvcDevRoot::new(root, fs)))
     }
 
     #[cfg(not(feature = "uvc"))]
