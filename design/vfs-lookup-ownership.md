@@ -4245,6 +4245,15 @@ bind 别名共享 filesystem 身份，缓存退休因此覆盖同一后端的别
 回退会恢复退出后无法卸载的问题。完整原 executable 旅程验证存活时 busy、退出
 后可卸载及 proc 对象身份；其余错误、并发与性能边界继续由验收范围约束。
 
+`ProcessMemoryShare::synchronize_retirement` 在退出的 zombie 发布之前，以及 exec
+切换硬件并退出 process publication 之后，等待无用户、无内核 pin 的旧 MM 完成
+既有退休协议。它复用缓存失效路径的同一等待条件，只有 `Freed` 证明映射已经
+释放；`NeedsRepair` 保留真实修复所有者并报告错误。已有内核 pin 或 CLONE_VM
+用户不进入等待，继续由原生命周期持有文件。ProcessData 的兜底 Drop 仍只发起
+异步退休，不在任意析构上下文等待。等待期间不持 publication、MM、文件系统或
+IRQ guard；后台 reclaimer 完成映射销毁后发布状态并唤醒，不能先发布可 wait 的
+退出，再让无活动使用者的映射占用阻止紧随的普通卸载。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。

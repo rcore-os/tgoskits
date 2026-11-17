@@ -26,14 +26,14 @@ use crate::{
     task::{TidNumber, future::block_on, zap_thread},
 };
 
-fn commit_address_space_handoff<OldAddressSpace>(
+fn commit_address_space_handoff<OldAddressSpace, Retirement>(
     publish_new: impl FnOnce() -> OldAddressSpace,
     install_new: impl FnOnce(),
-    release_old: impl FnOnce(OldAddressSpace),
-) {
+    release_old: impl FnOnce(OldAddressSpace) -> Retirement,
+) -> Retirement {
     let old_address_space = publish_new();
     install_new();
-    release_old(old_address_space);
+    release_old(old_address_space)
 }
 
 fn charge_exec_arg_bytes(total: &mut usize, bytes: usize) -> StarryResult {
@@ -368,10 +368,13 @@ fn do_execve(
 
     // Publish only this process's new MM. CLONE_VM peers keep their owner.
     let security_publication = proc_data.namespace_update();
-    commit_address_space_handoff(
+    let retired_memory = commit_address_space_handoff(
         || proc_data.stage_memory_replacement(prepared_memory),
         || curr.switch_address_space(scheduler_address_space),
-        |old_memory| old_memory.retire(),
+        |old_memory| {
+            old_memory.retire();
+            old_memory
+        },
     );
 
     // PR_SET_KEEPCAPS is deliberately not inherited by a new executable
@@ -384,6 +387,7 @@ fn do_execve(
         security_publication.set_process_cred(thr, new_cred);
     }
     drop(security_publication);
+    retired_memory.synchronize_retirement();
 
     curr.set_name(&new_name);
     proc_data.set_exe_path(new_exe_path);

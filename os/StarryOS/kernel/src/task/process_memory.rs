@@ -158,6 +158,16 @@ impl ProcessMemoryShare {
             crate::mm::enqueue_retire(permit);
         }
     }
+
+    /// Completes discardable mappings after all caller publication guards end.
+    pub(crate) fn synchronize_retirement(&self) {
+        match self.0.mm.synchronize_retired_contents() {
+            Ok(()) | Err(crate::mm::ReclaimError::NotRetired) => {}
+            Err(crate::mm::ReclaimError::Backend) => {
+                warn!("retired process MM needs backend repair before releasing mappings");
+            }
+        }
+    }
 }
 
 pub(crate) fn scheduler_address_space(
@@ -192,8 +202,20 @@ impl ProcessMemoryState {
 impl ProcessData {
     /// Ends process ownership; pins and CPU activations defer actual reclaim.
     pub fn retire_mm_owner(&self) {
+        self.detach_mm_owner();
+    }
+
+    /// Releases completed mappings before the process becomes waitable.
+    /// An existing foreign kernel pin keeps its normal deferred ownership.
+    pub(crate) fn complete_mm_exit(&self) {
+        self.detach_mm_owner().synchronize_retirement();
+    }
+
+    fn detach_mm_owner(&self) -> ProcessMemoryShare {
         let _publication = self.namespace_update();
-        self.memory_share().retire();
+        let memory = self.memory_share();
+        memory.retire();
+        memory
     }
 
     pub fn clone_aspace_user_ref(&self) -> Result<MmHandle, crate::mm::CloneUserRefError> {

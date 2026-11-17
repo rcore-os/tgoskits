@@ -735,7 +735,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // Release the process owner before publishing the zombie.  The typed
         // MM lifecycle defers reclaim until all kernel pins and activations
         // have quiesced, so this path cannot clear a root still in use.
-        thr.proc_data.retire_mm_owner();
+        thr.proc_data.complete_mm_exit();
 
         publish_zombie(
             &thr.proc_data,

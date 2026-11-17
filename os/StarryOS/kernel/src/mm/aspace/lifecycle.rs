@@ -719,20 +719,38 @@ pub(crate) fn pin_mm_for_cache_invalidation(
                 Err(PinError::Retired) => continue,
                 Err(PinError::Overflow) => return Err(RmapMmLookupError::Busy),
             },
-            state @ (MmState::Retiring | MmState::Retired | MmState::Reclaiming) => {
-                if state == MmState::Retiring && inner.kernel_pins.load(Ordering::Acquire) != 0 {
-                    return Err(RmapMmLookupError::Busy);
-                }
-                inner
-                    .reclaim_done
-                    .try_wait_until(|| {
-                        matches!(inner.state(), MmState::Freed | MmState::NeedsRepair)
-                    })
-                    .map_err(|_| RmapMmLookupError::Busy)?;
+            MmState::Retiring | MmState::Retired | MmState::Reclaiming => {
+                wait_for_retired_contents(&inner).map_err(|_| RmapMmLookupError::Busy)?;
+                return Ok(None);
             }
             MmState::Freed => return Ok(None),
             MmState::NeedsRepair => return Err(RmapMmLookupError::Busy),
         }
+    }
+}
+
+// Retiring forbids new pins. An existing kernel continuation may still need
+// this MM, so only wait once its last pin has drained. No caller lock may be
+// needed by that continuation or by the sleepable reclaimer.
+fn wait_for_retired_contents(inner: &Arc<MmInner>) -> Result<(), ReclaimError> {
+    match inner.state() {
+        MmState::Live => return Err(ReclaimError::NotRetired),
+        MmState::Retiring if inner.kernel_pins.load(Ordering::Acquire) != 0 => {
+            return Err(ReclaimError::NotRetired);
+        }
+        MmState::Freed => return Ok(()),
+        MmState::NeedsRepair => return Err(ReclaimError::Backend),
+        MmState::Retiring | MmState::Retired | MmState::Reclaiming => {}
+    }
+    inner.request_lazy_cpu_reclaim();
+    inner
+        .reclaim_done
+        .try_wait_until(|| matches!(inner.state(), MmState::Freed | MmState::NeedsRepair))
+        .map_err(|_| ReclaimError::NotRetired)?;
+    if inner.state() == MmState::Freed {
+        Ok(())
+    } else {
+        Err(ReclaimError::Backend)
     }
 }
 
@@ -908,6 +926,15 @@ impl MmHandle {
             ActivationMode::Exclusive,
             ActivationAuthority::UserOwner(&self.owner),
         )
+    }
+
+    /// Waits for an ownerless, unpinned MM to release its mappings.
+    /// Shared users or an in-flight kernel continuation return `NotRetired`;
+    /// failed teardown returns `Backend` and remains owned by the repair queue.
+    /// Call only after the hardware handoff, outside MM, filesystem, process
+    /// publication, and IRQ guards. No new pin is admitted after retirement.
+    pub(crate) fn synchronize_retired_contents(&self) -> Result<(), ReclaimError> {
+        wait_for_retired_contents(&self.inner)
     }
 
     /// Transitions the last user owner to `Retiring` without reclaiming data.
