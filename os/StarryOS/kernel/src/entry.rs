@@ -64,7 +64,7 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
             new_user_image_builder().expect("Failed to create unpublished user address space");
         let mut args = alloc::vec![candidate.clone()];
         args.extend_from_slice(init_args);
-        match load_user_app(&mut builder, loc.clone(), candidate, &args, envs, &caller) {
+        match load_user_app(&mut builder, loc.clone(), candidate, &args, envs, &view) {
             Ok(image) => {
                 selected = Some((loc, builder, image, args));
                 break;

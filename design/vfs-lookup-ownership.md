@@ -4343,6 +4343,31 @@ Filesystem 状态和 writer 检查下，readonly remount 因此返回 EBUSY。�
 比较。Linux 上同一 remount 程序在原运行器失败、匿名捕获运行器通过，另外通过
 真实 clone、PID/mount namespace 和 exec 检查失败回放、LTP 成功回放与状态汇总。
 
+### 6.23 执行链的路径视图
+
+execve 与 execveat 在入口保存调用者后，选择一个 FsView。普通主程序、dirfd 或
+空路径得到的对象，与后续 shebang 和 PT_INTERP 装载共同借用该视图；装载器不再
+重新读取当前任务的 root/cwd/namespace。load_user_app 接收 FsView，启动候选与
+两个系统调用直接迁移到这一参数。执行权限从 view.credentials 取得，路径解释与
+权限投影来自同一次选择；入口选择之后发生的 FS 状态变化不会重新选择解释器根。
+
+/proc/self/fd 与 /dev/fd 的文字必须经实际 LookupSession 与 proc 链接授权解析。
+遮住 procfs 时，保留的文件描述符仍可供显式 execveat AT_EMPTY_PATH 使用，但不能
+让字符串前缀绕过新挂载。既有 devfs 的 fd 标准链接和 descriptor_path 对 memfd
+的真实 PathHandle 已提供所需能力，删除 self_fd_number 和直接 resolve_fd 分流。
+不增加路径别名或另一个执行文件登记表。
+
+resolve_at_from_view 复用原 *at 核心，供已保存视图的调用方解析其操作数；其他
+入口的当前视图便利函数仍经同一核心，删除无其他调用者的旧 boundary 包装。
+显示名称仅用于 comm、exe_path 和脚本 argv，不重新解释为授权路径。链接预算、
+递归上限、参数预算和 UserImageBuilder 的显式失败清理保持原协议。
+
+原 exec family 程序加入描述路径的成功与遮盖拒绝，同一程序在 Linux 通过，旧
+Starry 的遮盖分支失败。私有装载测试使用真实 MemoryFs、独立 FsView 和未安装
+地址空间：脚本解释器只能在给定视图发现，拒绝执行后脚本可再次写入，以核对执行
+访问租约退休。它不伪造后端，也不替代 CLONE_FS 并发改根的直接系统调用证明。
+没有持久状态迁移；同条件性能仍未测量，不由减少重复快照推断性能提升。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。

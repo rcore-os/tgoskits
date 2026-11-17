@@ -3,7 +3,10 @@
 use alloc::{borrow::ToOwned, collections::VecDeque, string::String, sync::Arc, vec, vec::Vec};
 use core::{ffi::CStr, iter, mem::size_of};
 
-use ax_fs_ng::vfs::{CachedFile, FileBackend};
+use ax_fs_ng::{
+    FsView,
+    vfs::{CachedFile, FileBackend},
+};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
 use axfs_ng_vfs::{FilesystemId, NodeType, PathHandle};
@@ -692,7 +695,7 @@ type LoadResult = Result<(VirtAddr, Vec<AuxEntry>), Vec<u8>>;
 fn load_elf(
     uspace: &mut AddrSpace,
     loc: PathHandle,
-    caller: &dyn axfs_ng_vfs::LinkCaller,
+    view: &FsView<'_>,
 ) -> StarryResult<LoadResult> {
     let elf = match cached_elf(loc)? {
         Ok(elf) => elf,
@@ -738,9 +741,8 @@ fn load_elf(
     // PT_INTERP is protected while loading, but is not mm->exe_file.
     let _interpreter_access;
     let ldso = if let Some(ldso) = ldso {
-        let fs = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), caller);
-        let loc = fs.resolve(ldso)?;
-        check_executable_access(&loc, caller)?;
+        let loc = view.resolve(ldso)?;
+        check_executable_access(&loc, view.credentials())?;
         _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
         Some(cached_elf(loc)?.map_err(|_| StarryError::InvalidInput)?)
     } else {
@@ -879,6 +881,8 @@ pub fn clear_elf_cache() {
 ///   name an interpreter receives in `argv`.
 /// - `args`: The arguments of the user app.
 /// - `envs`: The environment variables of the user app.
+/// - `view`: The frozen paths and identity used to resolve the main executable;
+///   every interpreter reuses it without reading the current task scope.
 ///
 /// # Returns
 /// - The entry point of the user app.
@@ -889,10 +893,10 @@ pub fn load_user_app(
     path: &str,
     args: &[String],
     envs: &[String],
-    caller: &dyn axfs_ng_vfs::LinkCaller,
+    view: &FsView<'_>,
 ) -> StarryResult<LoadedUserImage> {
     let result = validate_exec_arg_size(args, envs).and_then(|()| {
-        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, caller, 0)
+        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, view, 0)
     });
     match result {
         Ok((entry, stack, auxv)) => Ok(LoadedUserImage {
@@ -924,7 +928,7 @@ pub fn load_user_app(
 /// Checks each executable and interpreter even when its ELF image is cached.
 fn check_executable_access(
     loc: &PathHandle,
-    caller: &dyn axfs_ng_vfs::LinkCaller,
+    credentials: &axfs_ng_vfs::MutationCredentials<'_>,
 ) -> StarryResult<()> {
     let metadata = loc.location().metadata()?;
     if metadata.node_type != NodeType::RegularFile
@@ -932,17 +936,18 @@ fn check_executable_access(
     {
         return Err(StarryError::PermissionDenied);
     }
-    let caller = caller.credentials();
     let mode = metadata.mode.bits();
-    let selected = if caller.fsuid == metadata.uid {
+    let selected = if credentials.fsuid == metadata.uid {
         mode >> 6
-    } else if caller.fsgid == metadata.gid || caller.supplementary_gids.contains(&metadata.gid) {
+    } else if credentials.fsgid == metadata.gid
+        || credentials.supplementary_gids.contains(&metadata.gid)
+    {
         mode >> 3
     } else {
         mode
     };
     // CAP_DAC_OVERRIDE may bypass DAC only if some execute bit is set.
-    if selected & 1 != 0 || (mode & 0o111 != 0 && caller.cap_dac_override) {
+    if selected & 1 != 0 || (mode & 0o111 != 0 && credentials.cap_dac_override) {
         Ok(())
     } else {
         Err(StarryError::PermissionDenied)
@@ -955,13 +960,13 @@ fn load_user_app_with_depth(
     path: &str,
     args: &[String],
     envs: &[String],
-    caller: &dyn axfs_ng_vfs::LinkCaller,
+    view: &FsView<'_>,
     interpreter_depth: usize,
 ) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
-    check_executable_access(&loc, caller)?;
+    check_executable_access(&loc, view.credentials())?;
     let executable_file = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
 
-    let (entry, auxv) = match load_elf(uspace, loc, caller)? {
+    let (entry, auxv) = match load_elf(uspace, loc, view)? {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
@@ -982,8 +987,7 @@ fn load_user_app_with_depth(
                     .collect();
                 // Open the interpreter by path (Linux's `open_exec` on the
                 // shebang interpreter) and load it as the new executable.
-                let fs = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), caller);
-                let interp = fs.resolve(&new_args[0])?;
+                let interp = view.resolve(&new_args[0])?;
                 // A script stops being the executable when its interpreter takes over.
                 drop(executable_file);
                 return load_user_app_with_depth(
@@ -992,7 +996,7 @@ fn load_user_app_with_depth(
                     &new_args[0],
                     &new_args,
                     envs,
-                    caller,
+                    view,
                     interpreter_depth + 1,
                 );
             }
@@ -1036,4 +1040,62 @@ fn load_user_app_with_depth(
     )?;
 
     Ok((entry, user_sp, auxv))
+}
+
+#[cfg(all(test, axtest))]
+mod tests {
+    use ax_fs_ng::{FsContext, MemoryFs, NativeLinkCaller, file::OpenOptions};
+    use axfs_ng_vfs::Mountpoint;
+
+    use super::*;
+
+    #[axtest::axtest]
+    fn script_interpreter_uses_the_supplied_view_and_releases_failed_exec_access() {
+        const SCRIPT: &str = "/__loader_view_script";
+        const INTERPRETER: &str = "/__loader_view_interpreter";
+        let caller = NativeLinkCaller::root();
+        let filesystem = MemoryFs::new();
+        let mount = Mountpoint::new_root(&filesystem);
+        let root = mount.root_location();
+        let view = FsView::native(FsContext::from_tree(mount, root).unwrap(), &caller);
+        for (name, mode, contents) in [
+            (SCRIPT, 0o755, b"#!/__loader_view_interpreter\n".as_slice()),
+            (INTERPRETER, 0, b"not executable".as_slice()),
+        ] {
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(mode)
+                .open(&view, name)
+                .unwrap()
+                .into_file()
+                .unwrap();
+            assert_eq!(file.write_at(contents, 0).unwrap(), contents.len());
+        }
+        let mut builder = new_user_image_builder().unwrap();
+        let error = load_user_app(
+            &mut builder,
+            view.resolve(SCRIPT).unwrap(),
+            SCRIPT,
+            &[SCRIPT.into()],
+            &[],
+            &view,
+        )
+        .err();
+        assert!(
+            matches!(error, Some(StarryError::PermissionDenied)),
+            "the private interpreter must be found and checked in the supplied view: {error:?}"
+        );
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&view, SCRIPT)
+            .unwrap()
+            .into_file()
+            .unwrap();
+        assert_eq!(
+            file.write_at(b"reusable".as_slice(), 0).unwrap(),
+            8,
+            "a failed image must release its executable lease before returning"
+        );
+    }
 }

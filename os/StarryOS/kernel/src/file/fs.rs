@@ -162,15 +162,15 @@ fn resolve_at_with_search(
     }
 }
 
-pub(crate) fn resolve_at_with_boundary(
-    caller: &crate::task::ProcLinkCaller,
+/// Resolves an `*at` operand from paths already selected for this operation.
+/// The current task's filesystem scope is never consulted again.
+pub(crate) fn resolve_at_from_view(
+    base: &FsView<'_>,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
-) -> StarryResult<(ResolveAtResult, Option<PathHandle>, Vec<PathHandle>)> {
-    with_fs(AT_FDCWD, caller, |base| {
-        resolve_at_with_search(base, dirfd, path, flags, None)
-    })
+) -> StarryResult<ResolveAtResult> {
+    resolve_at_with_search(base, dirfd, path, flags, None).map(|(result, ..)| result)
 }
 
 /// Resolves an `*at` path with a credential-aware search check while retaining
@@ -191,7 +191,9 @@ pub(crate) fn resolve_at(
     path: Option<&str>,
     flags: u32,
 ) -> StarryResult<ResolveAtResult> {
-    resolve_at_with_boundary(caller, dirfd, path, flags).map(|(result, ..)| result)
+    with_fs(AT_FDCWD, caller, |base| {
+        resolve_at_from_view(base, dirfd, path, flags)
+    })
 }
 
 pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {

@@ -9,7 +9,7 @@ use core::{
     mem::size_of,
 };
 
-use ax_fs_ng::vfs::current_fs_context;
+use ax_fs_ng::{FsView, vfs::current_fs_context};
 use ax_runtime::hal::cpu::user::UserContext;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
@@ -17,7 +17,7 @@ use starry_vm::VmError;
 
 use crate::{
     StarryError, StarryResult,
-    file::{ResolveAtResult, memfd::Memfd, resolve_at, resolve_fd},
+    file::{ResolveAtResult, memfd::Memfd, resolve_at_from_view},
     mm::{
         MAX_EXEC_ARG_BYTES, MmHandle, load_user_app, new_user_image_builder,
         validate_exec_arg_size, vm_load_string, vm_load_until_nul,
@@ -96,29 +96,9 @@ pub fn sys_execve(
 ) -> crate::StarryResult<isize> {
     let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let path = vm_load_string(current, path)?;
-    let loc = if let Some(fd) = self_fd_number(&path) {
-        match resolve_fd(fd)? {
-            ResolveAtResult::File(loc) => loc,
-            ResolveAtResult::Other(file) => file
-                .downcast_ref::<Memfd>()
-                .ok_or(StarryError::PermissionDenied)?
-                .inner()
-                .inner()
-                .path_handle()
-                .clone(),
-        }
-    } else {
-        ax_fs_ng::FsView::current(current_fs_context(), &link_caller).resolve(&path)?
-    };
-    do_execve(&link_caller, current, uctx, loc, path, argv, envp)
-}
-
-fn self_fd_number(path: &str) -> Option<c_int> {
-    ["/proc/self/fd/", "/dev/fd/"]
-        .into_iter()
-        .find_map(|prefix| path.strip_prefix(prefix))?
-        .parse()
-        .ok()
+    let view = FsView::current(current_fs_context(), &link_caller);
+    let loc = view.resolve(&path)?;
+    do_execve(&view, current, uctx, loc, path, argv, envp)
 }
 
 /// execveat(2) — like execve, but the program is identified by `dirfd` plus
@@ -139,13 +119,14 @@ pub fn sys_execveat(
     }
 
     let path = vm_load_string(current, path)?;
+    let view = FsView::current(current_fs_context(), &link_caller);
 
     // Resolve dirfd + path to the `PathHandle` the loader reads from. A regular
     // file yields its filesystem path as the display name; an anonymous memfd
     // has no path but wraps a tmpfs-backed `PathHandle` we can still load — this
     // is systemd's `execveat(memfd, "", AT_EMPTY_PATH)` path. Other anonymous
     // fds (sockets, eventfd, …) are not executable.
-    let (loc, disp_path) = match resolve_at(&link_caller, dirfd, Some(path.as_str()), flags)? {
+    let (loc, disp_path) = match resolve_at_from_view(&view, dirfd, Some(path.as_str()), flags)? {
         ResolveAtResult::File(loc) => {
             let disp = loc
                 .location()
@@ -165,7 +146,7 @@ pub fn sys_execveat(
         }
     };
 
-    do_execve(&link_caller, current, uctx, loc, disp_path, argv, envp)
+    do_execve(&view, current, uctx, loc, disp_path, argv, envp)
 }
 
 /// Shared execve core (Linux's `do_execveat_common` equivalent): both
@@ -174,7 +155,7 @@ pub fn sys_execveat(
 /// `path` is the display name (used for argv0-independent `comm`/`exe_path` and
 /// the loader's shebang handling), not re-resolved against the FS.
 fn do_execve(
-    link_caller: &crate::task::ProcLinkCaller,
+    view: &FsView<'_>,
     current: &crate::task::UserTaskRef,
     uctx: &mut UserContext,
     loc: axfs_ng_vfs::PathHandle,
@@ -256,7 +237,7 @@ fn do_execve(
     // the pathname (the FS could change while siblings are being reaped).
     let mut image_builder = new_user_image_builder()?;
     image_builder.set_user_namespace(proc_data.namespace_snapshot().user_ns.clone());
-    let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, link_caller)?;
+    let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, view)?;
     let prepared_image = image_builder.finish(loaded_image)?;
     let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
 
