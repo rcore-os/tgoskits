@@ -25,8 +25,8 @@ use linux_raw_sys::{
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
-        Directory, FileLike, current_fd_table, get_file_like, resolve_at_with_boundary_checked,
-        with_fs,
+        Directory, File, FileLike, current_fd_table, get_file_like,
+        resolve_at_with_boundary_checked, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
     task::{NamespaceChange, UserTaskRef, current_user_task},
@@ -815,19 +815,38 @@ pub fn sys_readlinkat(
     buf: *mut u8,
     size: usize,
 ) -> StarryResult<isize> {
-    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
-    if size == 0 {
+    let size = size as i32;
+    if size <= 0 {
         return Err(StarryError::InvalidInput);
     }
+    let size = size as usize;
 
     let path = vm_load_path_string(current, path)?;
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
 
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
-    let link = with_fs(dirfd, &link_caller, |fs| {
-        let entry = fs.resolve_no_follow(path)?;
-        Ok(entry.read_link(&link_caller)?)
-    })?;
+    let link = if path.is_empty() {
+        if dirfd == AT_FDCWD {
+            return Err(StarryError::NotFound);
+        }
+        let description = get_file_like(dirfd)?;
+        // A valid non-link description produces ENOENT for an empty pathname,
+        // unlike EINVAL for an explicitly named non-link. Keep the description
+        // and its existing mount use alive through the dynamic link callback.
+        let file = description
+            .downcast_ref::<File>()
+            .filter(|file| file.inner().location().node_type() == NodeType::Symlink)
+            .ok_or(StarryError::NotFound)?;
+        file.inner().location().read_link(&link_caller)?
+    } else {
+        let dirfd = if path.starts_with('/') {
+            AT_FDCWD
+        } else {
+            dirfd
+        };
+        with_fs(dirfd, &link_caller, |fs| Ok(fs.read_link(path.as_str())?))?
+    };
     let read = size.min(link.len());
     vm_write_slice(current, buf, &link.as_bytes()[..read])?;
     Ok(read as isize)

@@ -476,7 +476,10 @@ impl<'a> Continuation<'a> {
         ))
     }
 
-    fn lookup_with_trace(self, follow: bool) -> VfsResult<(PathHandle, Vec<PathHandle>)> {
+    pub(super) fn lookup_with_trace(
+        self,
+        follow: bool,
+    ) -> VfsResult<(PathHandle, Vec<PathHandle>)> {
         let mut continuation = self;
         loop {
             let Self {

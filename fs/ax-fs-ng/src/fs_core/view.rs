@@ -213,6 +213,18 @@ impl<'caller> FsView<'caller> {
         self.resolve(path)?.metadata()
     }
 
+    /// Reads a link using this operation's caller while retaining its path use.
+    /// Intermediate links are followed, but the final link itself is displayed.
+    pub fn read_link(&self, path: impl AsRef<Path>) -> VfsResult<String> {
+        let (path, _searched) = super::LookupSession::new(self, path.as_ref().as_str())?
+            .parent()?
+            .lookup_with_trace(false)?;
+        if path.location().node_type() != NodeType::Symlink {
+            return Err(VfsError::InvalidInput);
+        }
+        path.location().read_link(self.caller)
+    }
+
     /// Reads the entire contents of a file into a bytes vector.
     pub fn read(&self, path: impl AsRef<Path>) -> VfsResult<Vec<u8>> {
         let mut buf = Vec::new();
