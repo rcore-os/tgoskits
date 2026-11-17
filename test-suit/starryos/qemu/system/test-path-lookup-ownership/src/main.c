@@ -26,6 +26,7 @@
 #define RESOLVE_NO_SYMLINKS   0x04
 #define RESOLVE_BENEATH       0x08
 #define RESOLVE_IN_ROOT       0x10
+#define RESOLVE_CACHED        0x20
 
 struct open_how {
     uint64_t flags;
@@ -75,6 +76,18 @@ static void close_fd(int fd)
 {
     if (fd >= 0)
         close(fd);
+}
+
+/* CACHED may transiently ask for a retry while the held fixture stays pinned. */
+static int cached_open(int dirfd, const char *path, int flags)
+{
+    for (int attempt = 0; attempt < 8; attempt++) {
+        errno = 0;
+        int fd = open2(dirfd, path, flags, RESOLVE_CACHED);
+        if (fd >= 0 || errno != EAGAIN)
+            return fd;
+    }
+    return -1;
 }
 
 static void expect_open(int fd, int expected_errno, const char *name)
@@ -291,7 +304,8 @@ out:
 
 static void mount_boundary(int rootfd)
 {
-    int mountfd = -1, file = -1, mounted = 0;
+    int mountfd = -1, file = -1, cached = -1, mounted = 0;
+    struct stat original, retained;
     REQUIRE(mkdirat(rootfd, "mount", 0700) == 0);
     /* The suite gives each program a private mount namespace. */
     REQUIRE(syscall(SYS_mount, "none", "mount", "tmpfs", 0, NULL) == 0);
@@ -308,7 +322,50 @@ static void mount_boundary(int rootfd)
                 "NO_XDEV rejects downward mount crossing");
     expect_open(open2(mountfd, "..", O_RDONLY | O_DIRECTORY, RESOLVE_NO_XDEV),
                 EXDEV, "NO_XDEV rejects upward mount crossing");
+
+    expect_open(open2(mountfd, "cold", O_PATH, RESOLVE_CACHED), EAGAIN,
+                "CACHED does not infer a negative from an unobserved name");
+    expect_open(open_at(mountfd, "cold", O_PATH), ENOENT,
+                "ordinary tmpfs lookup confirms the name is absent");
+    /* Linux simple_lookup marks tmpfs negatives DCACHE_DONTCACHE. */
+    expect_open(open2(mountfd, "cold", O_PATH, RESOLVE_CACHED), EAGAIN,
+                "CACHED cannot reuse a discarded tmpfs negative");
+    REQUIRE(fstat(file, &original) == 0);
+    cached = cached_open(mountfd, "file", O_PATH | O_CLOEXEC);
+    CHECK(cached >= 0, "CACHED opens the pinned positive entry fd=%d errno=%d",
+          cached, errno);
+    if (cached < 0)
+        goto out;
+    CHECK(fstat(cached, &retained) == 0 && retained.st_dev == original.st_dev
+              && retained.st_ino == original.st_ino,
+          "CACHED descriptor retains the actual inode");
+    int descriptor_flags = fcntl(cached, F_GETFD);
+    CHECK(descriptor_flags >= 0 && (descriptor_flags & FD_CLOEXEC) != 0,
+          "CACHED installs descriptor close-on-exec state");
+    REQUIRE(unlinkat(mountfd, "file", 0) == 0);
+    CHECK(fstat(cached, &retained) == 0 && retained.st_nlink == 0,
+          "CACHED descriptor observes live metadata after unlink");
+    close_fd(file);
+    file = -1;
+    close_fd(mountfd);
+    mountfd = -1;
+    errno = 0;
+    int unmounted = (int)syscall(SYS_umount2, "mount", 0);
+    CHECK(unmounted == -1 && errno == EBUSY,
+          "CACHED descriptor alone keeps the actual mount busy errno=%d", errno);
+    if (unmounted == 0) {
+        mounted = 0;
+        goto out;
+    }
+    close_fd(cached);
+    cached = -1;
+    unmounted = (int)syscall(SYS_umount2, "mount", 0);
+    CHECK(unmounted == 0, "closing CACHED descriptor releases mount errno=%d",
+          errno);
+    if (unmounted == 0)
+        mounted = 0;
 out:
+    close_fd(cached);
     close_fd(file);
     if (mountfd >= 0)
         unlinkat(mountfd, "file", 0);
