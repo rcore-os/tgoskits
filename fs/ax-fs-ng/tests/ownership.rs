@@ -437,7 +437,7 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
                 permission,
             },
         )
-        .and_then(|location| location.metadata())
+        .and_then(|location| location.location().metadata())
         .map(|metadata| {
             (
                 metadata.rdev,
@@ -499,7 +499,7 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
                     permission,
                 },
             )
-            .and_then(|location| location.metadata())
+            .and_then(|location| location.location().metadata())
             .map(|metadata| {
                 (
                     metadata.rdev,
@@ -541,7 +541,7 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
     let restored = context.resolve("/devices/whiteout").unwrap();
     axfs_ng_vfs::TrustedInitialization::kernel()
         .restore_metadata(
-            &restored,
+            restored.location(),
             axfs_ng_vfs::MetadataUpdate {
                 mode: Some(NodePermission::from_bits_truncate(0o6750)),
                 owner: Some((77, 88)),
@@ -550,7 +550,7 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
             },
         )
         .unwrap();
-    let metadata = restored.metadata().unwrap();
+    let metadata = restored.location().metadata().unwrap();
     assert_eq!(
         (
             metadata.uid,
