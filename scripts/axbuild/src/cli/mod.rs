@@ -129,3 +129,66 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Starry { command } => Starry::new()?.execute(command).await,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starry_qemu_requires_one_complete_run_mode() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(
+                ["xtask", "starry", "test", "qemu"]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            )
+        };
+        assert!(parse(&["--arch", "x86_64", "--list"]).is_ok());
+        assert!(
+            parse(&[
+                "--build-config",
+                "build.toml",
+                "--qemu-config",
+                "qemu.toml",
+                "--rootfs",
+                "rootfs.img",
+                "--fixed-elf",
+                "kernel.elf",
+            ])
+            .is_ok()
+        );
+        for args in [
+            vec!["--build-config", "build.toml", "--rootfs", "rootfs.img"],
+            vec![
+                "--arch",
+                "x86_64",
+                "--build-config",
+                "build.toml",
+                "--qemu-config",
+                "qemu.toml",
+                "--rootfs",
+                "rootfs.img",
+            ],
+            vec![
+                "--build-config",
+                "build.toml",
+                "--qemu-config",
+                "qemu.toml",
+                "--rootfs",
+                "rootfs.img",
+                "--list",
+            ],
+            vec!["--arch", "x86_64", "--list", "--fixed-elf", "kernel.elf"],
+            vec![
+                "--arch",
+                "x86_64",
+                "--test-case",
+                "synthetic-case",
+                "--fixed-elf",
+                "kernel.elf",
+            ],
+        ] {
+            assert!(parse(&args).is_err(), "incompatible run inputs: {args:?}");
+        }
+    }
+}
