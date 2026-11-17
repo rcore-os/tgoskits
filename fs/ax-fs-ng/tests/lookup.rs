@@ -1,6 +1,6 @@
 #![cfg(feature = "host-test")]
 
-use ax_fs_ng::{FsContext, MemoryFs, file::OpenOptions};
+use ax_fs_ng::{FsContext, MemoryFs, NativeLinkCaller, file::OpenOptions};
 use ax_runtime as _;
 use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission, NodeType, VfsError};
 
@@ -41,7 +41,7 @@ fn open_keeps_one_link_budget_through_the_final_target_and_creation() {
         .unwrap();
     }
     let context = FsContext::from_tree(mount, root).unwrap();
-    let context_caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let context_caller = NativeLinkCaller::root();
     let context = ax_fs_ng::FsView::native(context, &context_caller);
     let mut read = OpenOptions::new();
     read.read(true);

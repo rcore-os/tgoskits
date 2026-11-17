@@ -34,7 +34,8 @@ mod fs_core;
 /// Task filesystem ownership and its actual VFS namespace/path contracts.
 pub mod fs_context {
     pub use axfs_ng_vfs::{
-        Location, MountNamespace, Mountpoint, NamespaceClone, NamespaceRootSnapshot, PathHandle,
+        LinkCaller, Location, MountNamespace, Mountpoint, NamespaceClone, NamespaceRootSnapshot,
+        NativeLinkCaller, PathHandle,
     };
 
     pub use crate::fs_core::{
