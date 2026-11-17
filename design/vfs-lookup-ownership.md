@@ -4420,6 +4420,34 @@ Starry 的实际失败；通用分派的中间版本用于暴露截断和匿名 
 Linux 单 lower 准备失败单独保留，不能用作内核语义红证据。文件系统实例回收、
 per-open 数据端点及同条件性能仍受原验收计划约束。
 
+### 6.26 目标准备夹具的执行
+
+`ensure_target_with_rustup` 接收宿主命令，预装容器只查询完整匹配的已安装目标，
+普通宿主仍执行 target add。测试通过 /bin/sh 读取临时脚本，避免并行子进程在
+fork 与 exec 之间保留写句柄时直接执行脚本触发 ETXTBSY。原功能测试显式保持
+写句柄，旧执行方式稳定失败，修复后 512/0，axbuild Clippy 1/1。既有 CI 未输出
+底层错误，因此受控证明仅确定夹具缺陷，不将其写成该 CI 的唯一根因。
+
+### 6.27 栈保护页的终止诊断
+
+`panic_on_current_stack_guard_page_fault()` 在本地 IRQ 保护内借用 CPU pin，
+从当前 runtime context 的 `RuntimeStack` 核对保护页边界。缺页慢路径可以先恢复
+父上下文 IRQ，检查自身负责排除迁移；普通地址返回前恢复 IRQ，命中后直接进入
+主 panic 记录。Starry 与 ArceOS 都调用同一运行时入口。
+
+保护页原因和地址范围随主 panic 记录一起输出。独立的 panic 前紧急输出可能因
+串口声明失败而返回零字节，将原因放入该尝试会留下只有通用缺页错误的终止信息。
+已有保护页用例保留完整地址判据，并用受控输出失败与 IRQ 契约检查取得修前失败、
+修后通过的证据。临时注入逐字恢复，四架构按正常配置再次验证。
+
+### 6.28 显示序号的运行判据
+
+无硬件 vblank 计数器时，共享核心按时间戳差补算活动帧数。Linux 的 modeset
+显式增加一个序号，随后使用最近整数取整。关闭 100 个周期再启用，活动 3/4 个
+周期时得到增量 2；关闭时间仍被排除。既有核心引用旅程使用独立夹具时间戳验证
+该过程，系统测试判据据此处理模式切换和活动帧数，继续拒绝序号回退与关闭期间
+的错误计数。实际 ioctl 和事件旅程由原 DRM QEMU 用例负责。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
@@ -4567,11 +4595,3 @@ Linux 行为以固定提交源码为准；Rust 与其他 VFS 资料用于解释�
 - [Embedded Rust Book：类型状态](https://docs.rust-embedded.org/book/static-guarantees/typestate-programming.html)
 - [Rustonomicon：析构泄漏](https://doc.rust-lang.org/nomicon/leaking.html)
 - [标准库文件同步与析构错误](https://doc.rust-lang.org/std/fs/struct.File.html#method.sync_all)
-
-### 6.26 目标准备夹具的执行
-
-`ensure_target_with_rustup` 接收宿主命令，预装容器只查询完整匹配的已安装目标，
-普通宿主仍执行 target add。测试通过 /bin/sh 读取临时脚本，避免并行子进程在
-fork 与 exec 之间保留写句柄时直接执行脚本触发 ETXTBSY。原功能测试显式保持
-写句柄，旧执行方式稳定失败，修复后 512/0，axbuild Clippy 1/1。既有 CI 未输出
-底层错误，因此受控证明仅确定夹具缺陷，不将其写成该 CI 的唯一根因。

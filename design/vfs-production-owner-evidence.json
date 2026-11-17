@@ -4932,7 +4932,8 @@
       "SimpleFs owner cycles, per-open endpoints and other original VFS scope remain incomplete",
       "same-condition performance and independent design/implementation review remain required",
       "CI on prior 822838d283 has separate std, stack-guard diagnostic, DRM vblank and board APK failures; this local stage does not mark those checks passed"
-    ]
+    ],
+    "followup_remote_ci": "ci_3dfc6f4a42_terminal: same statfs implementation and C in all four actual Starry architecture suites"
   },
   "rustup_fixture_execution": {
     "test_source_before": "68ce4b0dddb3a66019e00c91f71c343328bd7858",
@@ -4980,5 +4981,337 @@
       "original 822838d283 CI assertion did not expose its underlying error; the controlled ETXTBSY proof does not establish the unique cause of that run",
       "ArceOS guard diagnostic, LoongArch DRM vblank and board APK failures remain under investigation"
     ]
+  },
+  "stack_guard_terminal_diagnostics": {
+    "implementation_source": "d0a5c3a63253db8086a9c91ea307fc7bbf6959f0",
+    "starry_consumer_source": "9a755ee18745365c1acd8d66db46fce13306d0c3",
+    "runtime_source": "9b8e29fd84684e61ace646007c0043f95f56c206",
+    "ownership": "a local IRQ guard excludes migration for the complete borrowed CPU-pin scope; current RuntimeStack owns the guard bounds; matched faults enter the primary panic record",
+    "primary_record_regression": {
+      "before_source": "3dfc6f4a42e5c966ad06f9308ccee2bfcd4cdeb6",
+      "after_source": "eafb3fa498200c2426acb8f6cbbce28d412a1801",
+      "injection": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-prefatal-drop.json",
+      "logs": {
+        "before": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-drop-before.log",
+          "sha256": "7f77fa6bbecf225c53917a9e2b63db7ed6774b008ff0ead1772b02129ae6eb6c",
+          "outer_exit": 1
+        },
+        "after": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-drop-after.log",
+          "sha256": "b46882f36f424cd21ea568641a2c44a99bfdcb59100408fca7bc9b041b3df032",
+          "outer_exit": 0
+        }
+      }
+    },
+    "irq_scope_regression": {
+      "before_source": "9a755ee18745365c1acd8d66db46fce13306d0c3",
+      "after_source": "d0a5c3a63253db8086a9c91ea307fc7bbf6959f0",
+      "injection": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-pin-contract.json",
+      "logs": {
+        "before": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-pin-before.log",
+          "sha256": "86ba5667e9ced4c116893b89e88f5d3ce375cc5f6a4e4632cddbf860c0f37cf1",
+          "outer_exit": 1
+        },
+        "after": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-pin-after.log",
+          "sha256": "011fe8bdc289d762f67229138efc71e98b1c39cb82c50a0c48a44ee5cb1b1833",
+          "outer_exit": 0
+        }
+      }
+    },
+    "clean_runtime": {
+      "aarch64": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-final-aarch64.log",
+        "sha256": "18ae14dbe5143b73152f36fd713e190b1f62b7aca96e5805888ec750027e0b9e",
+        "outer_exit": 0
+      },
+      "x86_64": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-final-x86_64.log",
+        "sha256": "3577f3551b18c137e6e88c995085167023f5b35adb5e432d3f62428cec97ba09",
+        "outer_exit": 0
+      },
+      "riscv64": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-final-riscv64.log",
+        "sha256": "4fd50a3b54b35f835a70a350f72ec9ca564a2412644ade7912a00937c48f42ec",
+        "outer_exit": 0
+      },
+      "loongarch64": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-final-loongarch64.log",
+        "sha256": "df1ecc13b40d112e5e90ff53f1e033edd84e6dde8134ed6481c887e601f1d036",
+        "outer_exit": 0
+      }
+    },
+    "validation": {
+      "std_source": "9b8e29fd84684e61ace646007c0043f95f56c206",
+      "clippy_source": "a8cc3944a10277f30c3ab666bb498a95dafe2c45",
+      "std": {
+        "packages_passed": 19,
+        "core_tests_passed": 118,
+        "command": "PATH=<task-e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since 3dfc6f4a42",
+        "outer_exit": 0
+      },
+      "clippy": {
+        "checks_passed": 104,
+        "checks_failed": 0,
+        "targets": 4,
+        "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package ax-runtime --package starry-kernel --package kdrm-core",
+        "outer_exit": 0
+      },
+      "logs": {
+        "stack-guard-final-std": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-final-std.log",
+          "sha256": "be778b55c5027ffbdef2aed1b53852e1b8b7b72a9ed50297b2c488ac042a4754",
+          "outer_exit": 0
+        },
+        "stack-guard-final-clippy": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-final-clippy.log",
+          "sha256": "74377bd95f001bd22207ea8da64a69036dd3a9064cb8953abad663e9c383aeb5",
+          "outer_exit": 0
+        },
+        "guard-drm-format": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/guard-drm-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "outer_exit": 0
+        }
+      }
+    },
+    "source_sha256": {
+      "os/arceos/modules/axruntime/src/thread/context.rs": "3db66d3ad0585f7a5d022086f7480ab0a87a3ccfbf20ebdc902efbc388c45603",
+      "os/arceos/modules/axruntime/src/bootstrap.rs": "656d8a89ea401b4482209da2fb1b8469a012a235c9072ac1eef19a38fe53b107",
+      "os/arceos/modules/axruntime/src/diagnostics.rs": "26d2f9e3ea439f3253e417d926665ab10891bc89be4e2b1a7df23baad47169d9",
+      "os/StarryOS/kernel/src/mm/access.rs": "2d5afd1e49d268878f631d3a512373c1738ff9162df0d3d3f2c7659968beccd0"
+    },
+    "incomplete_attempts": {
+      "std_with_old_mkfs_and_unmigrated_starry_consumer": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-std-incomplete.log",
+        "sha256": "e7dbc357e5d03048a8ca5fa256e7938c1d4733fae0f15cb73a1d31e0df049afb",
+        "outer_exit": 1
+      },
+      "starry_build_with_unmigrated_consumer": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-reenable-build-missing-consumer.log",
+        "sha256": "a259c06ef12a83b65fa42cb2ce12a77fdd82c37751e66c6d20da1dcae006b058",
+        "outer_exit": 1
+      },
+      "pre_pin_clippy_interrupted_before_completion": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-clippy-pre-pin-interrupted.log",
+        "sha256": "55c6c039a72be26c9509aba7477840313d05c3dbc8f8cef24ad3916b3b995fc7",
+        "outer_exit": 130
+      }
+    },
+    "limitations": [
+      "controlled failures establish the independent output and CPU-pin defects; the exact interleaving of the original CI failure was not observed",
+      "boot, IRQ/overflow/double-fault stacks remain outside the dynamic RuntimeStack guard capability"
+    ]
+  },
+  "vblank_resume_observation": {
+    "core_test_source": "9b8e29fd84684e61ace646007c0043f95f56c206",
+    "system_test_source": "a8cc3944a10277f30c3ab666bb498a95dafe2c45",
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "source": "/home/zhourui/.codex/artifacts/pr2800-continuation/linux-8cd9520d/drm_vblank.c",
+      "sha256": "f216ff479e59b9ef287604294ac284ee9ca6435024d06183da95c1073d34e3c8",
+      "deciding_functions": [
+        "drm_reset_vblank_timestamp:+1",
+        "drm_update_vblank_count:DIV_ROUND_CLOSEST_ULL",
+        "drm_crtc_vblank_on_config",
+        "drm_crtc_get_sequence_ioctl"
+      ]
+    },
+    "controlled_core_trace": {
+      "disabled_frames": 100,
+      "period_ns": 4000000,
+      "active_ns": 3000000,
+      "observed_sequence_increase": 2,
+      "old_floor_bound": 1,
+      "linux_nearest_bound": 2,
+      "evidence": "existing core reference-lifecycle test asserts actual count and timestamp through off/on/get; std log proves that exact test ran"
+    },
+    "oracle_regression": {
+      "before_source": "8d412dbfe7e5c5a904a0528a755d56f3f9bd4f86",
+      "after_source": "a8cc3944a10277f30c3ab666bb498a95dafe2c45",
+      "harness": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-reenable-oracle.c",
+      "harness_sha256": "303eb39cbfb1bdb438f3eb9e51c9fd06b48857a0210f46bfebe2ccae8f8085f2",
+      "scope": "same host C harness includes the actual system test and replays the verified real-core trace; additionally rejects disabled-time accumulation and counter regression; this is oracle evidence, not a native kernel run",
+      "before": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-reenable-oracle-before.log",
+        "sha256": "e0f5bd46f8935dc2fe787f5d6540b581168956c5e4125abdee9efcd501b72cdf",
+        "outer_exit": 1
+      },
+      "after": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-reenable-oracle-after.log",
+        "sha256": "80faf847b3e6d350ef76d2196c9cb6366844150e38e007dea42b3f53a3215ce6",
+        "outer_exit": 0
+      }
+    },
+    "loongarch64": {
+      "programs_passed": 1,
+      "outer_exit": 0,
+      "command": "cargo xtask starry test qemu --arch loongarch64 -c qemu/system/drm-test-drm-modeset",
+      "logs": {
+        "before_oracle_fix_normal_run": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-reenable-before.log",
+          "sha256": "7c9ee2a534258bce54760564edb6e25f52f4233fed203861321a55e28f547aad",
+          "outer_exit": 0
+        },
+        "after": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-reenable-after.log",
+          "sha256": "ffdfdd97bb6aab64434c08fa9183190c694a066238b96c51e9bc90b4c45ab869",
+          "outer_exit": 0
+        }
+      }
+    },
+    "validation": {
+      "std_source": "9b8e29fd84684e61ace646007c0043f95f56c206",
+      "clippy_source": "a8cc3944a10277f30c3ab666bb498a95dafe2c45",
+      "std": {
+        "packages_passed": 19,
+        "core_tests_passed": 118,
+        "command": "PATH=<task-e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since 3dfc6f4a42",
+        "outer_exit": 0
+      },
+      "clippy": {
+        "checks_passed": 104,
+        "checks_failed": 0,
+        "targets": 4,
+        "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package ax-runtime --package starry-kernel --package kdrm-core",
+        "outer_exit": 0
+      },
+      "logs": {
+        "stack-guard-final-std": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-final-std.log",
+          "sha256": "be778b55c5027ffbdef2aed1b53852e1b8b7b72a9ed50297b2c488ac042a4754",
+          "outer_exit": 0
+        },
+        "stack-guard-final-clippy": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-final-clippy.log",
+          "sha256": "74377bd95f001bd22207ea8da64a69036dd3a9064cb8953abad663e9c383aeb5",
+          "outer_exit": 0
+        },
+        "guard-drm-format": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/guard-drm-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "outer_exit": 0
+        }
+      }
+    },
+    "source_sha256": {
+      "components/kdrm-core/src/drm_vblank_upstream.rs": "08f1fffd4469cdc65e24fdfb66341b528efc8125be87b3dd3a09697480329c0a",
+      "test-suit/starryos/qemu/system/drm-test-drm-modeset/src/main.c": "3b91de4b66577e155ba6e2da4ce5d8645b859a763033809a5dc1bffb3270abfa"
+    },
+    "test_layout": "enhanced and renamed an existing core test; retained the existing DRM system journey; no discovered case, batch or default CI boot added",
+    "limitations": [
+      "host driver timestamps prove shared-core accounting and cannot prove real timer/IRQ timing",
+      "the normal old LoongArch run also passed; it is not claimed as a deterministic native reproduction of the original CI",
+      "successful system programs are captured by the existing --capture-failures runner; no per-assert count is inferred from visible output",
+      "current publication still requires its own terminal CI on all required targets"
+    ],
+    "elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/loongarch64-a8cc3944a1.elf",
+      "sha256": "0f263dcbb4e3b3a0764e2fd86efe9d0f8316727c77efe75c03cf7d8c014de122"
+    }
+  },
+  "ci_3dfc6f4a42_terminal": {
+    "source": "3dfc6f4a42e5c966ad06f9308ccee2bfcd4cdeb6",
+    "run_id": 44110394343,
+    "counts": {
+      "success": 43,
+      "failure": 1,
+      "skipped": 5,
+      "pending": 0
+    },
+    "failure": "ArceOS AArch64 task-stack-guard-page: expected guard diagnostic absent before local fixes",
+    "starry": {
+      "x86_64": {
+        "job_id": 134139675537,
+        "job_url": "https://github.com/rcore-os/tgoskits/actions/runs/44110394343/job/134139675537",
+        "system_summaries": [
+          {
+            "total": 1,
+            "passed": 1,
+            "failed": 0
+          },
+          {
+            "total": 541,
+            "passed": 541,
+            "failed": 0
+          }
+        ],
+        "native_suite_marker": true,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-3dfc6f4a42-starry-x86_64.log",
+        "sha256": "99fcce86d55ca70b4d6c2fd99b0223a8b6a9e7a8886158bd58d5c3ff159afb87"
+      },
+      "aarch64": {
+        "job_id": 134139675504,
+        "job_url": "https://github.com/rcore-os/tgoskits/actions/runs/44110394343/job/134139675504",
+        "system_summaries": [
+          {
+            "total": 513,
+            "passed": 513,
+            "failed": 0
+          },
+          {
+            "total": 23,
+            "passed": 23,
+            "failed": 0
+          },
+          {
+            "total": 1,
+            "passed": 1,
+            "failed": 0
+          },
+          {
+            "total": 1,
+            "passed": 1,
+            "failed": 0
+          }
+        ],
+        "native_suite_marker": true,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-3dfc6f4a42-starry-aarch64.log",
+        "sha256": "3a76c3525d054b9f96dd326c9498567ff8982128c0590c23f3de97597c7d0b41"
+      },
+      "riscv64": {
+        "job_id": 134139675188,
+        "job_url": "https://github.com/rcore-os/tgoskits/actions/runs/44110394343/job/134139675188",
+        "system_summaries": [
+          {
+            "total": 538,
+            "passed": 538,
+            "failed": 0
+          }
+        ],
+        "native_suite_marker": true,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-3dfc6f4a42-starry-riscv64.log",
+        "sha256": "daf75e56cfe02b240d0198865f89110b07e1d2dca5f98d9c1ae35d07084ed70b"
+      },
+      "loongarch64": {
+        "job_id": 134139675405,
+        "job_url": "https://github.com/rcore-os/tgoskits/actions/runs/44110394343/job/134139675405",
+        "system_summaries": [
+          {
+            "total": 538,
+            "passed": 538,
+            "failed": 0
+          }
+        ],
+        "native_suite_marker": true,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-3dfc6f4a42-starry-loongarch64.log",
+        "sha256": "85bf6f585809769676457920a9c8faeee635cfb7b65a0ae3586440b971fb401f"
+      }
+    },
+    "std": {
+      "job_id": 134139675119,
+      "axbuild_main_tests_passed": 512,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-3dfc6f4a42-std.log",
+      "sha256": "4715e7d426cd87f1478ab67e694e45dad262275b448e225e3c27f0b0af6e9a6e"
+    },
+    "uvc": {
+      "job_id": 134139676418,
+      "frames": 5,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-3dfc6f4a42-axvisor-board-uvc.log",
+      "sha256": "6de4b7282c775922e90647539c07134466e6a09cf8340a4a8fb77d518628e2db",
+      "claim": "actual task passed; no causal claim for prior APK download failure"
+    }
   }
 }

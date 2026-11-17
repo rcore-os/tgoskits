@@ -3,7 +3,7 @@
 ## 1. 等待语义
 
 `DRM_IOCTL_WAIT_VBLANK` 等待的是显示序列，不是调用者可观察的固定睡眠时长。
-Starry 的 `sys_ioctl()` 经 `Card0File::ioctl()`、`drm_ioctl()` 进入
+Starry 的 `sys_ioctl()` 经 `KapiFile::ioctl()`、`drm_ioctl()` 进入
 `drm_wait_vblank_ioctl()`；共享核心拥有每个 CRTC 的 vblank 计数和对应边沿时间戳。
 分层及定时器精度限制沿用[共享 DRM 核心接入](../docs/design/shared-drm.md)。
 
@@ -61,8 +61,8 @@ Starry 的 `sys_ioctl()` 经 `Card0File::ioctl()`、`drm_ioctl()` 进入
 一个序号并建立时间锚。没有引用时，第一次 `CRTC_GET_SEQUENCE` 才可能通过
 `drm_crtc_vblank_get()` 启用计时器；无硬件计数器的 `drm_update_vblank_count()`
 按时间戳差四舍五入补算活动帧数。固定 Linux 的
-[模式切换增量](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L274)
-和[时间戳取整](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L335)
+[模式切换增量](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L278)
+和[时间戳取整](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L339)
 共同决定重新启用后的上界。
 
 `vblank_advance_matches_active_time()` 保留序号不能后退的判据，将模式切换之外的

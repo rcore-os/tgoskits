@@ -1270,3 +1270,53 @@ vblank 序号判据失败，以及板卡预构建下载 linux-headers 的 I/O �
 测试都保持打开写句柄，继续验证精确 argv、完整目标匹配和非零状态传播。标准库
 512/0、axbuild Clippy 1/1、格式化通过。原始日志、受控红绿源码和摘要记录于
 `rustup_fixture_execution`；其他 CI 失败继续按各自责任边界处理。
+
+### 9.43 栈保护页终止记录
+
+`eafb3fa498` 将保护页原因直接放入主 panic 记录。原先的独立紧急写入可能返回
+零字节，检测函数忽略结果后继续通用缺页 panic。相同 AArch64 用例与相同的
+panic 前输出故障注入，在 3dfc6f4a42 失败、eafb3fa498 通过；注入只控制
+panic 前 write_fmt 的零字节返回，实际主记录仍走真实紧急输出。
+
+`d0a5c3a632` 补齐本地 IRQ 保护。缺页慢路径可以恢复父 IRQ，trap 本身不能
+作为排除迁移的证明。实际 guard 命中后的临时契约检查确认旧代码 IRQ 仍开启，
+9a755ee187 失败、d0a5c3a632 通过。检查范围内没有休眠、分配或任务锁。
+Starry mm/access.rs 与 ArceOS bootstrap 都迁移新入口，文档同步删除旧名。
+Starry 漏迁移导致的 E0425、旧 mkfs.ext4 与漏迁移并存的首次标准库失败，以及
+为补充 IRQ 保护而中断的 Clippy 分别保留，不记作完整通过或 DRM 语义红证据。
+
+临时注入恢复后，9b8e29fd84 的原栈保护页用例在四架构均 1/1；同一 Rust
+实现与核心测试的 19 包标准库全过，核心 118 项，a8cc3944a1 的 runtime、
+Kernel、kdrm-core 四目标 104 项 Clippy 与格式检查通过。精确源码、注入、
+原文件摘要和退出状态记录于 stack_guard_terminal_diagnostics。boot、独立
+IRQ、overflow 与 double-fault 栈仍不由动态 RuntimeStack guard 覆盖。
+
+### 9.44 重新启用的显示序号
+
+固定 Linux 在 modeset 增加一个序号，并对无硬件计数器的活动时间按最近整数
+补算。9b8e29fd84 增强原引用生命周期测试，使用每个夹具独立的驱动时间戳，
+经真实核心 off/on/get 验证关闭 100 个周期后，活动 3/4 周期得到总增量 2
+与对应时间戳。没有新增核心用例、发现项、批次或默认持续集成启动。
+
+8d412dbfe7 将系统测试原先向下取整的判据提取为原样函数。同一宿主 C 回放
+包含实际系统测试源码，重放已由真实核心断言验证的样本，旧判据稳定拒绝合法
+增量 2，外层 1。a8cc3944a1 按 Linux 最近整数取整后，同一回放外层 0，
+并继续拒绝把关闭 100 个周期计入的增量 102，以及序号回退。
+这是测试判据的受控红绿，不能写成 DRM 内核实现的修前失败。
+
+9a755ee187 的旧判据正常 LoongArch 运行也通过，不能当作原 CI 的确定性
+复现。a8cc3944a1 的原完整 DRM ioctl 旅程 1/1，外层 0；仍使用既有
+capture-failures，不由隐藏的成功输出猜测逐断言数量。ELF 摘要为
+0f263dcbb4e3b3a0764e2fd86efe9d0f8316727c77efe75c03cf7d8c014de122。
+系统调用表扩展至 87 行，源码、共享验证和独立证据层见 vblank_resume_observation。
+
+3dfc6f4a42 的远端标准库 512/0、LoongArch 完整 system 538/538 与 UVC
+采集 5 帧均已从原始日志确认，但 ArceOS AArch64 再次缺失保护页诊断。
+原 APK 下载 I/O 错误没有对应源码、镜像或超时修改，不能把后次成功归因于
+本轮实现；后续发布仍须核实自身精确 head 的全部要求检查终态。
+
+3dfc6f4a42 的完整 CI 已终态为 43 成功、1 失败、5 个既有重复工作流跳过。
+四架构 Starry 完整 system 与 native suite 全部实际通过；x86 541/541，
+RISC-V 和 LoongArch 各 538/538，AArch64 四组 513/23/1/1。原 statfs
+和 procfd 程序在每个目标均实际执行，统计实现和 C 与 a960991962 逐字相同。
+原始任务和证据索引为 ci_3dfc6f4a42_terminal，不能把该轮 ArceOS 失败改为成功。

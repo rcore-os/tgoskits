@@ -230,7 +230,7 @@ gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条�
 | openat/procfd 与管道；x86_64 257；其余三架构 56 | v7.1 [fifo_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L1121) | 绝对描述路径遵守实际挂载，保留目录 fd 可继续访问旧 proc 对象；重开允许新访问模式并遵守 nofollow、exclusive 与 directory | `sys_openat` → one `FsView`/`OpenOptions` → proc Object link → `add_to_fd` → `Pipe::open_fifo` → `ObjectNode<Arc<Shared>>` | 部分正确 | d788254e65 的原 procfd 完整程序通过；18ef129e76 的同一 C 错误绕过挂载与 flags，跨模式 EACCES；其他目标等待本版 CI |
 | openat2/procfd；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1190) | how 先严格校验，再对同一对象执行普通或受限解析，不能由描述字符串前缀改变行为 | `sys_openat2` → flag/resolve 校验 → `sys_openat` 或 `FsView` policy → `add_to_fd` with saved view → `Pipe::open_fifo` | 部分正确 | 同一完整程序对 openat/openat2 分别验证；x86 541/541，CACHED、完整 how 边界及其他目标仍有缺口 |
 | fstat/重开管道；x86_64 5；其余三架构 80 | v7.1 [vfs_fstat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L257) | 重开改变描述状态，不改变同一管道 inode、device 和类型 | sys_fstat → resolve_fd → `backing_file`/`PathHandle` 或 Pipe.stat → shared ObjectInode | 部分正确 | 原 procfd 程序比较两端、不同访问模式和别名重开的 device/inode/FIFO 类型；完整属性及其他目标仍待证明 |
-| fstatfs/原生伪对象；x86_64 138；其余三架构 44 | v7.1 [fd_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/statfs.c#L116) | 按保留描述的实际 file path 返回 pipefs、sockfs、nsfs 信息，关闭原 fd 不使副本失去该来源 | sys_fstatfs → get_file_like → descriptor_path → owned PathHandle → actual SimpleFs.stat → user output | 部分正确 | b5b8baf659 的同一程序中原始 pipe/socket/namespace fd EINVAL；a960991962 在 x86 67/0，Linux 同一 C 67/0；未提供路径能力的其他匿名描述与其余目标仍待补 |
+| fstatfs/原生伪对象；x86_64 138；其余三架构 44 | v7.1 [fd_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/statfs.c#L116) | 按保留描述的实际 file path 返回 pipefs、sockfs、nsfs 信息，关闭原 fd 不使副本失去该来源 | sys_fstatfs → get_file_like → descriptor_path → owned PathHandle → actual SimpleFs.stat → user output | 部分正确 | b5b8baf659 的同一程序中原始 pipe/socket/namespace fd EINVAL；a960991962 在 x86 67/0，Linux 同一 C 67/0；3dfc6f4a42 的相同实现和 C 已在四架构完整 CI 实际执行，其他匿名描述的路径能力仍待补 |
 
 ### 9.2 描述与端点
 
@@ -263,8 +263,8 @@ gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| statfs/伪对象几何信息；x86_64 137；其余三架构 43 | v7.1 [simple_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/libfs.c#L43) | 原生伪文件系统使用页大小和名称上限，磁盘容量与文件计数为零；proc 对象链接指向实际原生 FS | sys_statfs → FsView.resolve/proc Object link → selected mount filesystem → SimpleFs.stat | 部分正确 | 旧版页几何与零容量判据失败；a960991962 的原 pipe/socket/namespace 程序及 Linux 同一 C 通过；其他伪文件系统属性和目标继续核对 |
-| fstatfs/memfd；x86_64 138；其余三架构 44 | v7.1 [fd_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/statfs.c#L116) | memfd 查询其 tmpfs 文件系统，proc 路径与副本观察同一 fsid 和几何信息 | sys_fstatfs → descriptor_path → Memfd.inner PathHandle → MemoryFs.stat | 部分正确 | 原完整 C 验证 type、fd/path fsid 和关闭原 fd 后副本，x86 通过；完整容量记账与其余目标尚未证明 |
+| statfs/伪对象几何信息；x86_64 137；其余三架构 43 | v7.1 [simple_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/libfs.c#L43) | 原生伪文件系统使用页大小和名称上限，磁盘容量与文件计数为零；proc 对象链接指向实际原生 FS | sys_statfs → FsView.resolve/proc Object link → selected mount filesystem → SimpleFs.stat | 部分正确 | 旧版页几何与零容量判据失败；a960991962 的原 pipe/socket/namespace 程序及 Linux 同一 C 通过；3dfc6f4a42 的四架构 CI 已执行同一 C，其他伪文件系统属性继续核对 |
+| fstatfs/memfd；x86_64 138；其余三架构 44 | v7.1 [fd_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/statfs.c#L116) | memfd 查询其 tmpfs 文件系统，proc 路径与副本观察同一 fsid 和几何信息 | sys_fstatfs → descriptor_path → Memfd.inner PathHandle → MemoryFs.stat | 部分正确 | 原完整 C 验证 type、fd/path fsid 和关闭原 fd 后副本，x86 通过；3dfc6f4a42 的四架构 CI 已执行；完整容量记账尚未证明 |
 
 ### 10.2 分层来源
 
@@ -272,6 +272,30 @@ gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| statfs/Overlay；x86_64 137；其余三架构 43 | v7.1 [ovl_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L276) | 有 upper 时使用实际 upper 容量，否则使用首个 lower；保留 Overlay 类型和层名称上限 | sys_statfs → selected logical mount → OverlayFs.stat → retained upper/first lower filesystem.stat；logical mount flags | 部分正确 | b5b8baf659 的两个来源判据均失败；a960991962 同一 C 在 x86 与 Linux 通过，upper/lower 几何信息可区分；fsid/UUID 与完整其他目标范围未闭合 |
+| statfs/Overlay；x86_64 137；其余三架构 43 | v7.1 [ovl_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L276) | 有 upper 时使用实际 upper 容量，否则使用首个 lower；保留 Overlay 类型和层名称上限 | sys_statfs → selected logical mount → OverlayFs.stat → retained upper/first lower filesystem.stat；logical mount flags | 部分正确 | b5b8baf659 的两个来源判据均失败；a960991962 同一 C 在 x86 与 Linux 通过，upper/lower 几何信息可区分；3dfc6f4a42 的四架构 CI 已执行；fsid/UUID 与全部统计字段仍未闭合 |
 | fstatfs/Overlay；x86_64 138；其余三架构 44 | v7.1 [ovl_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L276) | 打开描述按其实际 Overlay filesystem 查询，名称变化不改该统计来源 | sys_fstatfs → descriptor_path → retained logical path → OverlayFs.stat | 无法确认 | 本阶段直接 Overlay 判据使用 statfs；未单独覆盖 Overlay fd 的改名、卸载和统计寿命 |
 | mount/Overlay 名称能力；x86_64 165；其余三架构 40 | v7.1 [ovl_check_namelen](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L397) | 构造时核对层统计，名称上限取层最大值，统计失败阻止发布 | sys_mount → resolved layer PathHandles → new_overlayfs layer stat/maximum → Filesystem construction → mount publication | 部分正确 | 同一 C 的 upper-backed 与双 lower-only 装配和结果通过；本轮没有底层 stat EIO 的受控失败及不同名称上限的独立运行证明 |
+
+## 11. 显示序号观察
+
+本轮持续集成跟进修正 DRM 系统测试对既有序号行为的判定，并保留共享核心的
+真实 off/on/get 调用。主机驱动时间戳夹具、实际 C 判据和 Starry 运行分别证明
+计数规则、错误判定与 ioctl 旅程，不能将其中任一层扩写为全部硬件时序支持。
+
+### 11.1 模式切换
+
+`DrmVblankCrtc` 在重新启用时建立新时间锚，显式增加一次序号，关闭期间不由
+新纪元补算。系统测试使用实际关闭事件保留的序号作为起点。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| ioctl/MODE_SETCRTC 重新启用；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_vblank_on_config](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L1482) | 模式切换重设时间锚并增加一个序号；关闭到启用之间的时间不纳入新纪元计数 | sys_ioctl → retained KapiFile → FileOperations.unlocked_ioctl → drm_ioctl → drm_mode_setcrtc → atomic simple CRTC enable → drm_crtc_vblank_on_config → DrmVblankCrtc count/time | 部分正确 | 9b8e29fd84 的真实核心夹具关闭 100 个周期后验证 reset 增量 1；a8cc3944a1 的 LoongArch 原完整 DRM 程序 1/1；其余目标和真实 Linux DRM 运行对照未在本阶段闭合 |
+
+### 11.2 首次查询
+
+`CRTC_GET_SEQUENCE` 可以为没有引用的活动 CRTC 启用计时器，返回一致的序号与
+边沿时间。无硬件计数器时，补算活动帧数采用最近整数取整。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| ioctl/CRTC_GET_SEQUENCE 首次活动查询；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_get_sequence_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L2006) 与 [drm_update_vblank_count](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L339) | 按实际 CRTC 取得引用并读取一致的 count/time；时间戳推导帧数四舍五入，不能用向下取整的耗时上界拒绝合法结果 | sys_ioctl → KapiFile.ioctl → drm_ioctl → drm_crtc_get_sequence_ioctl → vblank_get/enable → drm_update_vblank_count → DrmVblankCrtc seqlock | 部分正确 | 原引用旅程精确断言 3/4 周期的活动时间得到总增量 2 及对应时间戳；实际 C 判据同一回放在 8d412dbfe7 失败、a8cc3944a1 通过，修后仍拒绝增量 102 和序号回退；LoongArch ioctl 程序 1/1，其他目标和真实 Linux DRM 运行对照仍有缺口 |
