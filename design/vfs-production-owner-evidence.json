@@ -4017,7 +4017,8 @@
       "os/StarryOS/kernel/src/pseudofs/dev/mod.rs": "85f1ac42a8fb8ae0be9fc51206000a80b01ef8c740e66059692df38cb8898e5d",
       "os/StarryOS/kernel/src/pseudofs/dev/tty/mod.rs": "874296984d535da79e7e9b58b5c842231c76fd446801d79cc30761bc49285c12",
       "os/StarryOS/kernel/src/syscall/fs/mount.rs": "8ce99cee7e4e71a7100ab42ae817010d20d286877ecf8bb9416e3c27b9f83343",
-      "test-suit/starryos/qemu/system/common/starry_system_test_runner.c": "bb965dc5f012a4a45e9889760622b8d687087c4f1139e6ffd7137059e5dc060b"
+      "test-suit/starryos/qemu/system/common/starry_system_test_runner.c": "bb965dc5f012a4a45e9889760622b8d687087c4f1139e6ffd7137059e5dc060b",
+      "os/StarryOS/kernel/src/pseudofs/dev/tty/pts.rs": "0db5aa3e3b067d224f179a90974fda850d04ceebaa055f8c62fc5314d8e56ff8"
     },
     "before": {
       "source": "628a87d49694f5c70954683b1b7efb5f2412c37b",
@@ -4201,6 +4202,52 @@
       "readonly-capture-linux/capture-contract.log": {
         "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/readonly-capture-linux/capture-contract.log",
         "sha256": "3d3d00ad992dc9085087d45834e04be4f40044be8e05159c41cfbb17979ee6b1"
+      }
+    },
+    "followup_mainline_merge": {
+      "recorded_at": "2026-11-17T12:26:31.832208+00:00",
+      "upstream": "9bc2ee14117539dffc82e6c65f66be69f78f252d",
+      "merge_commit": "06b39a18bfe497bfa801519c5969598499e5eef5",
+      "content_conflicts": false,
+      "runtime_kernel_toolchain_lock_unchanged_from": "77d42086c9",
+      "scope": "prepared container checks, host dependency consumption, and rustup target preparation",
+      "std": {
+        "packages_passed": 1,
+        "unit_tests_passed": 512,
+        "outer_exit": 0
+      },
+      "clippy": {
+        "checks_passed": 1,
+        "outer_exit": 0
+      },
+      "host_dependency_tests": {
+        "tests_passed": 3,
+        "outer_exit": 0
+      },
+      "format_exit": 0,
+      "source_sha256": {
+        "scripts/axbuild/src/execution/build/rust.rs": "e0b754f7eb42a6e18853814762015dc5a90443a47a8039f670c62e7c7c067be3",
+        "scripts/axbuild/src/support/mod.rs": "1f33293b54fab2475f10c0a4b41c1b3b591b490832fb4e56b0e6eb6c52731af5",
+        "scripts/axbuild/src/support/rustup.rs": "34dcf2042d8d2fac10780b97155ece70be993e2794a15727f39cf75277548b83",
+        "scripts/axbuild/src/test/cross.rs": "d7cf7a3d9fd121b8daa4b5657e20cffd331c115881b0eaacfd54792eb3be8222"
+      },
+      "logs": {
+        "std": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mainline-9bc2-std.log",
+          "sha256": "b671d77d58662f547ade74a00961853abb65d3d115997d551ba9d060025e4054"
+        },
+        "clippy": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mainline-9bc2-clippy.log",
+          "sha256": "55816d256a0d3f1acfe34acd42b43fc4f430175055ddcab18e24cee2495c60fc"
+        },
+        "host-dependencies": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mainline-9bc2-host-dependencies.log",
+          "sha256": "239573c1665ba0d20880d981ec7058ee3d44a42932e841724fdcee3ca672055d"
+        },
+        "format": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mainline-9bc2-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
       }
     }
   }
