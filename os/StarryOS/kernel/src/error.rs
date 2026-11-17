@@ -107,6 +107,8 @@ pub enum StarryError {
     InvalidData,
     #[error("invalid executable image")]
     InvalidExecutable,
+    #[error("invalid ELF interpreter")]
+    InvalidElfInterpreter,
     #[error("malformed executable image")]
     MalformedExecutable,
     #[error("invalid kernel input")]
@@ -235,6 +237,7 @@ impl StarryError {
             Self::Interrupted | Self::InterruptedNoRestart => Errno::EINTR,
             Self::InvalidData | Self::InvalidInput => Errno::EINVAL,
             Self::InvalidExecutable | Self::MalformedExecutable => Errno::ENOEXEC,
+            Self::InvalidElfInterpreter => Errno::ELIBBAD,
             Self::Io | Self::UnexpectedEof | Self::WriteZero => Errno::EIO,
             Self::IsADirectory => Errno::EISDIR,
             Self::NameTooLong => Errno::ENAMETOOLONG,
@@ -783,6 +786,7 @@ fn leaf_errno_mappings_hold() -> bool {
         (StarryError::InterruptedNoRestart, Errno::EINTR),
         (StarryError::InvalidData, Errno::EINVAL),
         (StarryError::InvalidExecutable, Errno::ENOEXEC),
+        (StarryError::InvalidElfInterpreter, Errno::ELIBBAD),
         (StarryError::MalformedExecutable, Errno::ENOEXEC),
         (StarryError::InvalidInput, Errno::EINVAL),
         (StarryError::Io, Errno::EIO),
