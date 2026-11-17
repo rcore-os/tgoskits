@@ -628,6 +628,15 @@ RAII 生命周期；CPU 迭代器持有 MADT 映射直到遍历结束，不能�
 精简归档由 `resources/init` 挂载 devtmpfs、重开控制台后执行发布初始化脚本，
 不能依赖构建机创建设备节点。缓存命中和上传成功都不替代实际客户机命令断言。
 
+龙芯宿主网卡枚举还依赖 MCFG 的访问布局。`pcie::ConfigSpaceLayout` 统一维护
+标准 ECAM 与 Loongson CFG1 的寄存器地址，`rdrive::AcpiPciEcam` 按 MCFG OEM
+兼容项选择布局；AML PCI operation region 与控制器枚举必须使用同一布局。
+原生布局使用总线位 16、设备功能号位 8、扩展寄存器位 24 和非根总线位 28。
+如果 USB、显示和 SATA 被枚举为 `00:00.x`，先检查布局和配置窗口映射，再检查
+网卡驱动。客户机 Linux 板测不覆盖宿主实体网卡；Web 验收还要证明真实 IP、
+HTTP 和终端连接。设计和 Linux 7.1 对照见
+[`design/loongson-pci-config-space.md`](../../../../design/loongson-pci-config-space.md)。
+
 更新固定 Rust 工具链时，比较旧、新 rustc 的 LoongArch 裸机与 musl
 `--print target-spec-json`。从 `nightly-2026-09-04` 到 `nightly-2026-11-13`，
 裸机目标不变；musl 新增的 `-Wl,--no-rosegment` 属于 CC 驱动参数。

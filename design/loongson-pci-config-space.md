@@ -36,9 +36,9 @@ Axvisor Web 后台还需要宿主发现真实网卡并取得网络地址。两�
 
 ### 2.1 分层与选择
 
-拟由 `pcie::ConfigSpaceLayout` 保存 ECAM 与龙芯 CAM 的地址计算、访问限制和窗口
+`pcie::ConfigSpaceLayout` 保存 ECAM 与龙芯 CAM 的地址计算、访问限制和窗口
 范围，由 `read_pci_ecam_regions()` 根据 MCFG 元数据生成 `AcpiPciEcam`。
-`AcpiHandler::pci_config_ptr()` 和 `PcieGeneric` 消费同一布局。
+`AcpiHandler::pci_register()` 和 `PcieGeneric` 消费同一布局。
 这属于同一 CPU 架构内不同固件描述的硬件差异，不能用 `target_arch` 替代选择。
 
 公共契约仍是 `rdif_pcie::Interface` 的配置寄存器读写，枚举、BAR、INTx 路由、

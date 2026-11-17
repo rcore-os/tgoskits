@@ -24,17 +24,18 @@ use acpi::{
     platform::{
         AcpiPlatform,
         interrupt::{InterruptModel, Polarity, TriggerMode},
-        pci::PciConfigRegions,
     },
     sdt::{
-        SdtHeader,
+        SdtHeader, Signature,
         facs::Facs,
         fadt::Fadt,
+        mcfg::Mcfg,
         spcr::{Spcr, SpcrInterfaceType},
     },
 };
 use ax_lazyinit::OnceLock;
 use ax_sync::RawSpinLock;
+pub use pcie::ConfigSpaceLayout;
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 
 use crate::{
@@ -93,6 +94,8 @@ pub struct AcpiPciEcam {
     pub bus_start: u8,
     pub bus_end: u8,
     pub base_address: u64,
+    /// One layout shared by AML accesses and the PCI controller driver.
+    pub layout: ConfigSpaceLayout,
     /// Firmware-declared cache coherency for the matching ACPI PCI root.
     /// `None` means that `_CCA` was not present.
     pub dma_coherent: Option<bool>,
@@ -100,8 +103,8 @@ pub struct AcpiPciEcam {
 
 impl AcpiPciEcam {
     pub fn size(&self) -> usize {
-        let buses = usize::from(self.bus_end.saturating_sub(self.bus_start)) + 1;
-        buses << 20
+        self.layout
+            .window_size(self.bus_end.saturating_sub(self.bus_start))
     }
 }
 
@@ -639,6 +642,12 @@ struct AcpiHandler {
     pci_ecam_regions: Rc<Vec<AcpiPciEcam>>,
 }
 
+enum PciRegisterAccess {
+    Mapped(NonNull<u8>),
+    Legacy,
+    Unavailable,
+}
+
 impl AcpiHandler {
     fn new(root: AcpiRoot, pci_ecam_regions: Vec<AcpiPciEcam>) -> Self {
         Self {
@@ -651,30 +660,38 @@ impl AcpiHandler {
         (self.root.phys_to_virt)(physical_address) as usize
     }
 
-    fn pci_config_ptr(
-        &self,
-        address: acpi::PciAddress,
-        offset: u16,
-        width: usize,
-    ) -> Option<*mut u8> {
-        let offset = usize::from(offset);
-        if offset.checked_add(width)? > 4096 {
-            return None;
+    fn pci_register(&self, address: acpi::PciAddress, offset: u16) -> PciRegisterAccess {
+        if offset >= 4096 {
+            return PciRegisterAccess::Unavailable;
         }
 
         let bus = address.bus();
-        let region = self.pci_ecam_regions.iter().find(|region| {
+        let Some(region) = self.pci_ecam_regions.iter().find(|region| {
             address.segment() == region.segment_group
                 && bus >= region.bus_start
                 && bus <= region.bus_end
-        })?;
-        let bus_offset = usize::from(bus - region.bus_start) << 20;
-        let device_offset = usize::from(address.device()) << 15;
-        let function_offset = usize::from(address.function()) << 12;
-        let physical_address =
-            region.base_address as usize + bus_offset + device_offset + function_offset + offset;
-
-        Some((self.root.phys_to_virt)(physical_address))
+        }) else {
+            return PciRegisterAccess::Legacy;
+        };
+        let local_address = PciAddress::new(
+            address.segment(),
+            bus - region.bus_start,
+            address.device(),
+            address.function(),
+        );
+        let physical_address = region
+            .layout
+            .register_offset(local_address, offset)
+            .and_then(|offset| {
+                usize::try_from(region.base_address)
+                    .ok()?
+                    .checked_add(offset)
+            });
+        let Some(physical_address) = physical_address else {
+            return PciRegisterAccess::Unavailable;
+        };
+        NonNull::new((self.root.phys_to_virt)(physical_address))
+            .map_or(PciRegisterAccess::Unavailable, PciRegisterAccess::Mapped)
     }
 }
 
@@ -751,10 +768,15 @@ impl Handler for AcpiHandler {
     }
 
     fn read_pci_u8(&self, address: acpi::PciAddress, offset: u16) -> u8 {
-        if let Some(ptr) = self.pci_config_ptr(address, offset, 1) {
-            return unsafe { ptr.read_volatile() };
+        match self.pci_register(address, offset) {
+            PciRegisterAccess::Mapped(ptr) => {
+                // SAFETY: The region owns a permanent firmware mapping, and
+                // pci_register checked the byte's layout and address range.
+                unsafe { ptr.as_ptr().read_volatile() }
+            }
+            PciRegisterAccess::Legacy => pci_legacy_read_u8(address, offset).unwrap_or(u8::MAX),
+            PciRegisterAccess::Unavailable => u8::MAX,
         }
-        pci_legacy_read_u8(address, offset).unwrap_or(u8::MAX)
     }
 
     fn read_pci_u16(&self, address: acpi::PciAddress, offset: u16) -> u16 {
@@ -772,11 +794,15 @@ impl Handler for AcpiHandler {
     }
 
     fn write_pci_u8(&self, address: acpi::PciAddress, offset: u16, value: u8) {
-        if let Some(ptr) = self.pci_config_ptr(address, offset, 1) {
-            unsafe { ptr.write_volatile(value) };
-            return;
+        match self.pci_register(address, offset) {
+            PciRegisterAccess::Mapped(ptr) => {
+                // SAFETY: The permanent firmware mapping contains this byte;
+                // no Rust reference to the device register is constructed.
+                unsafe { ptr.as_ptr().write_volatile(value) };
+            }
+            PciRegisterAccess::Legacy => pci_legacy_write_u8(address, offset, value),
+            PciRegisterAccess::Unavailable => {}
         }
-        pci_legacy_write_u8(address, offset, value);
     }
 
     fn write_pci_u16(&self, address: acpi::PciAddress, offset: u16, value: u16) {
@@ -1358,15 +1384,32 @@ fn spcr_resource_device_id(system: &System, spcr: &Spcr) -> Option<DeviceId> {
 fn read_pci_ecam_regions(
     tables: &AcpiTables<AcpiHandler>,
 ) -> Result<Vec<AcpiPciEcam>, DriverError> {
-    let regions = PciConfigRegions::new(tables).map_err(acpi_error)?;
-    Ok(regions
-        .regions
+    let mcfg = tables
+        .find_table::<Mcfg>()
+        .ok_or_else(|| acpi_error(AcpiError::TableNotFound(Signature::MCFG)))?;
+    let header = mcfg.header;
+    let oem_revision = header.oem_revision;
+    info!(
+        "ACPI MCFG: OEM {:?}/{:?}, revision {oem_revision:#x}",
+        header.oem_id, header.oem_table_id,
+    );
+    Ok(mcfg
+        .entries()
         .iter()
         .map(|region| AcpiPciEcam {
             segment_group: region.pci_segment_group,
             bus_start: region.bus_number_start,
             bus_end: region.bus_number_end,
             base_address: region.base_address,
+            layout: if mcfg.header.oem_id == *b"LOONGS"
+                && (mcfg.header.oem_table_id == *b"LOONGSON" || mcfg.header.oem_table_id == [0; 8])
+                && mcfg.header.oem_revision == 1
+                && region.pci_segment_group < 8
+            {
+                ConfigSpaceLayout::Loongson
+            } else {
+                ConfigSpaceLayout::Ecam
+            },
             dma_coherent: None,
         })
         .collect())
@@ -3230,6 +3273,7 @@ mod tests {
             bus_start: 0,
             bus_end: 0xff,
             base_address: 0x3000_0000,
+            layout: super::ConfigSpaceLayout::Ecam,
             dma_coherent: None,
         }];
         let pci = AcpiPciNamespace {
@@ -3256,6 +3300,7 @@ mod tests {
             bus_start: 0,
             bus_end: 0xff,
             base_address: 0x3000_0000,
+            layout: super::ConfigSpaceLayout::Ecam,
             dma_coherent: None,
         }];
         let root = |bus, dma_coherent| AcpiPciRoot {
