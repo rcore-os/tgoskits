@@ -11,6 +11,34 @@ use axfs_ng_vfs::{
 };
 
 #[test]
+fn resolved_paths_hold_the_selected_mount_until_the_consumer_retires() {
+    ax_block::os::task::install_test_runtime_ops();
+    let filesystem = MemoryFs::new();
+    let mount = Mountpoint::new_root(&filesystem);
+    let root = mount.root_location();
+    let credentials = MutationCredentials::root();
+    let mode = NodePermission::from_bits_truncate(0o700);
+    let target = root
+        .create("mounted", NodeType::Directory, mode, 0, 0, &credentials)
+        .unwrap();
+    let mounted = target.mount(&MemoryFs::new()).unwrap();
+    mounted
+        .root_location()
+        .create("file", NodeType::RegularFile, mode, 0, 0, &credentials)
+        .unwrap();
+    let paths = FsContext::from_tree(mount, root).unwrap();
+    let caller = NativeLinkCaller::root();
+    let view = ax_fs_ng::FsView::native(paths, &caller);
+    let selected = view.resolve("mounted/file").unwrap();
+    assert_eq!(
+        mounted.root_location().unmount(),
+        Err(VfsError::ResourceBusy)
+    );
+    drop(selected);
+    mounted.root_location().unmount().unwrap();
+}
+
+#[test]
 fn open_keeps_one_link_budget_through_the_final_target_and_creation() {
     ax_block::os::task::install_test_runtime_ops();
     let filesystem = MemoryFs::new();
