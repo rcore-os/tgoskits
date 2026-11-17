@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-11-17T03:46:02.223678+08:00",
+  "recorded_at": "2026-11-17T09:10:57.274783+08:00",
   "repository": "rcore-os/tgoskits",
   "pull_request": 2800,
   "scope": "Owner/Snapshot production migration, paired Kernel FS/MNT bindings, open paths and mappings; syscall compatibility remains unverified",
@@ -2188,5 +2188,186 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "writable_open_runtime"
+  "latest_evidence_section": "lookup_component_runtime",
+  "lookup_component_runtime": {
+    "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
+    "source_hashes": {
+      "fs/ax-block/src/os/task.rs": "8a193f6b4c28455ce0f1413b6d72a8da3a47ef0f5b6f6019ac99d3debbb1cb69",
+      "fs/ax-fs-ng/src/file/cache/prefetch.rs": "749ef44bad44ef75491ea553dfe24c591ce167bb66aef9d75c64dc4cb02e6eb4",
+      "fs/ax-fs-ng/src/file/cache/reclaim.rs": "11f017a6dec0fd7d72fa05ffca34f6161d628620e74a66f91b16a98aec6efedb",
+      "fs/ax-fs-ng/src/file/cache/writeback_worker.rs": "5854c855ac040d6305fa1c46fd365bf89e263b37303d40146fd4054563321ad2",
+      "fs/ax-fs-ng/src/file/open.rs": "33392a1c2a4a99bd01a2c4710df3962bac2eb75489143d16cb3c27e98213a28e",
+      "fs/ax-fs-ng/src/fs/fat/disk.rs": "727b33bed81c367cdf76cfec06610efa796e86b1ce286fff82f951e4c03c3aec",
+      "fs/ax-fs-ng/src/fs_core/context.rs": "4023350ccf2e7ab367c9794421b0c363419eeac47250a63a4e6903a4af96d1b9",
+      "fs/ax-fs-ng/tests/ownership.rs": "7e43a95b165594928abc7760f6b7fd9343801988d32def9bcfc977f592e6c465",
+      "fs/ax-fs-ng/tests/staging.rs": "6783994e5ca25a6850df535c95b3ef5d54e515e01d0be03e37ca35af7116b294",
+      "fs/axfs-ng-vfs/src/mount/mod.rs": "f5ce9bf44beed9144be70a113cd634abc95409decdac033438676c9dd000a5c2",
+      "fs/axfs-ng-vfs/src/node/dir/cache.rs": "acee45d16f930272e70e3134c25de40a9d2618d7134afe3a2bd20a76dc0489f9",
+      "fs/axfs-ng-vfs/src/node/dir/lookup.rs": "446eeb60ef3fadaadb6bb38a494d95ba44dc3f937b3f467812dfaca0cb5cea9e",
+      "fs/axfs-ng-vfs/src/node/dir/mod.rs": "1a9918ba202fbd11bda59741f8c6289218c7e0c4410feb3debda22f3315637c6",
+      "fs/axfs-ng-vfs/src/node/dir/tests.rs": "7f381c41c4cbd255072f27c4e810ca4b1c7fad5b50f8b8f377a70c78785b3b85",
+      "os/arceos/modules/axruntime/src/fs/block.rs": "90e4ca30ad16a9a2560569b4d2cf44a93e3fd5627cbf3aa2d429f0570890035b"
+    },
+    "scope": "类型化普通组件查询与合作让出、命名操作缓存退休和完整验证夹具；统一查找会话继续实施。",
+    "standard_tests": {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask test --since 5e04fc35fb748ee2e969185e8a52338f96628b6e",
+      "selected_packages": 18,
+      "outer_exit_code": 0,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-final-green-std.log",
+        "sha256": "b61220caa9edff6139fccf4437eda69bbcca887124a9fdd7169a2fa583c9ac54",
+        "bytes": 311002,
+        "required_markers": [
+          "running std tests for 18 package(s)",
+          "all std tests passed"
+        ]
+      }
+    },
+    "initial_component_clippy": {
+      "source_commit": "560c8565f43a0a979ac069f1c2cd0be7a1f7c1b9",
+      "command": "cargo xtask clippy --package axfs-ng-vfs --package ax-block --package ax-fs-ng --package ax-runtime",
+      "passed": 43,
+      "outer_exit_code": 0,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-conflict-clippy.log",
+        "sha256": "f617a88ee3a41886ae7344f30e3efb89a5de2303bec89181cbbde6779c3bab12",
+        "bytes": 18935,
+        "required_markers": [
+          "passed checks: 43, failed checks: 0",
+          "all clippy checks passed"
+        ]
+      }
+    },
+    "final_ax_clippy": {
+      "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
+      "command": "cargo xtask clippy --package ax-fs-ng",
+      "passed": 6,
+      "outer_exit_code": 0,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-final-ax-clippy.log",
+        "sha256": "a8bce5b6be41f2b4f51ce13a8b7a1b9baad31947f5c4c094477b3aecc5bb40f7",
+        "bytes": 3523,
+        "required_markers": [
+          "passed checks: 6, failed checks: 0",
+          "all clippy checks passed"
+        ]
+      }
+    },
+    "deterministic_regressions": [
+      {
+        "source_commit": "988ff8a97f7c3f0cbed8a577856b396a77af9e54",
+        "mutation": "关闭候选、负观察及父命名发布校验",
+        "failed_package": "axfs-ng-vfs",
+        "failed_tests": 4,
+        "outer_exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-conflict-mutant-std.log",
+          "sha256": "a6befbd3e5c036da67b5a3d5b3808d635cdab7ed408b52e36706c0de43a8b1a2",
+          "bytes": 311887,
+          "required_markers": [
+            "68 passed; 4 failed",
+            "std tests failed for 1 package(s): axfs-ng-vfs"
+          ]
+        }
+      },
+      {
+        "source_commit": "2c7e6170d16906aec84209e7143d90270b72bc78",
+        "mutation": "真实索引 try-lock 失败后直接返回，跳过已关闭缓存的退休",
+        "failed_package": "ax-fs-ng",
+        "outer_exit_code": 1,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-retirement-mutant-std.log",
+          "sha256": "38f0e7a80298a92531990abb420c299c62ff1926948ad1c896e596f205415731",
+          "bytes": 308557,
+          "required_markers": [
+            "namespace preparation skipped a closed cache",
+            "std tests failed for 1 package(s): ax-fs-ng"
+          ]
+        }
+      }
+    ],
+    "x86_64_ownership": {
+      "source_commit": "52fc53e9256c04e13628d17d789053db91c04b13",
+      "command": "cargo xtask starry test qemu --arch x86_64 -c qemu/system/test-vfs-ownership",
+      "passed_assertions": 107,
+      "failed_assertions": 0,
+      "outer_exit_code": 0,
+      "kernel": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-52fc53e925.elf",
+        "sha256": "49981a8192388903adf9e7a508fec5b9341476cdb30e1e75c71d8be3bf6e63c2"
+      },
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/lookup-retirement-qemu-x86_64.log",
+        "sha256": "42bb59a2f3f56f0defeb0c2139e8bf04d1f7c9b15c7b9b98fe2d05224ec0c184",
+        "bytes": 48775,
+        "required_markers": [
+          "DONE: 107 pass, 0 fail",
+          "result: 1/1 case(s) passed",
+          "all starry qemu tests passed"
+        ]
+      },
+      "source_boundary": "52fc53e925 之后仅修改 cfg(test) 范围和模块说明，已逐文件核实；运行内核仍按实际源码记录。"
+    },
+    "allocation_diagnostic": {
+      "source_commit": "21652ca6f7b3eaf9c8aa3465ff539f2d76559e73",
+      "production_ancestor": false,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/unscoped-page-allocations.log",
+        "sha256": "8ddfd0c30d61ae0200209acac7b0b9b16c50b86a6d5f66b1a638486bc393d1ff",
+        "bytes": 430786,
+        "required_markers": [
+          "readonly_reconfiguration_preserves_writers_until_description_and_mapping_release",
+          "fat_unlink_preserves_active_identity_and_releases_closed_cache_owners"
+        ]
+      },
+      "resolution": "完整测试旅程取得现有页面提供者独占范围，保留 EOF 零分配断言；使用路径查找的宿主集成夹具显式安装 runtime adapter。"
+    },
+    "previous_head_ci": {
+      "head": "5e04fc35fb748ee2e969185e8a52338f96628b6e",
+      "run": "https://github.com/rcore-os/tgoskits/actions/runs/43984389259",
+      "state": "completed",
+      "job_conclusions": {
+        "success": 35,
+        "failure": 6,
+        "cancelled": 1
+      },
+      "failed_jobs": [
+        {
+          "name": "Workspace / std tests",
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/43984389259/job/133712651406"
+        },
+        {
+          "name": "Starry / QEMU riscv64 · Suites",
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/43984389259/job/133712652089"
+        },
+        {
+          "name": "Starry / QEMU x86_64 · Suites",
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/43984389259/job/133712652275"
+        },
+        {
+          "name": "Starry / QEMU aarch64 · Suites",
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/43984389259/job/133712652339"
+        },
+        {
+          "name": "Starry / QEMU loongarch64 · Suites",
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/43984389259/job/133712652345"
+        },
+        {
+          "name": "AxVisor / QEMU aarch64 · Smoke + virtio-blk guest + axtest",
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/43984389259/job/133712653434"
+        }
+      ],
+      "pull_request_check_rollup": {
+        "SUCCESS": 37,
+        "SKIPPED": 5,
+        "CANCELLED": 1,
+        "FAILURE": 6
+      }
+    },
+    "remaining_limitations": [
+      "尚未构造 LookupSession/Continuation；scoped 约束、统一 40 次链接预算、真正非阻塞的 CACHED 和末组件副作用仍待迁移。",
+      "typed proc link、proc/SimpleFs、动态只读端点、旧 raw hook、FAT merged holder 及其余既定迁移保持完整范围。",
+      "完整逐系统调用表、性能与资源比较、独立领域审查以及最终精确 head 的全部要求 CI 仍待完成；PR 保持草稿。"
+    ]
+  }
 }

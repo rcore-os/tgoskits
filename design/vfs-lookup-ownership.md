@@ -703,6 +703,11 @@ device open、fd 安装或通知之后，结果归原操作的 typed outcome/com
 查找会话，也不把已经 applied 的副作用清零。最终作用域重验证仍在原
 实际槽位尝试中完成，不拿早期 trace 或快照当作永久授权。
 
+组件结果与合作让出接口已在 `e828831525` 接入普通 FsContext helper，后端真实
+WouldBlock 不会触发组件重查。该阶段尚未构造 LookupSession/Continuation，
+scoped 约束、总链接预算和末组件副作用继续按本节方案迁移，验证边界见
+[接续记录第 9.23 节](vfs-lookup-ownership-handoff.md#923-组件查询与合作重查)。
+
 ### 3.7 路径使用权与只读视图
 
 会话的稳定引用还需要参加普通卸载的忙碌判定。现有 `MountUseGuard` 已表达

@@ -39,6 +39,11 @@ ownership 子用例均为最外层 1/1 通过；前三个架构打印 103 pass�
 `df0536aae1` 随后修复已删除 cwd 的 getcwd 判定，Kernel 增量标准库、72 项
 Clippy 以及 x86_64/LoongArch 的完整 unshare 子用例通过，见第 9.22 节。
 
+组件查询阶段 `e828831525` 区分候选发布冲突、父命名冲突与真实后端错误，普通
+FsContext helper 只对前两种结果合作重查。18 包标准库通过，初始四包的 43 项
+Clippy 及最终 AX 的 6 项检查通过。缓存退休与夹具修复见第 9.23、9.24 节；
+统一查找会话、末组件续走和 scoped/CACHED 仍待迁移。
+
 动态只读描述、旧数据 hook 的其余消费者、FAT 合并 holder 分类、统一查找与 proc/SimpleFs
 完整迁移、挂载授权、逐系统调用表、性能及独立审查继续按原计划实施。原交接的
 编译失败和局部批准只描述其明确版本，不能据此判断当前源码或完整计划已经完成。
@@ -689,3 +694,54 @@ ENOENT。同一原始程序在宿主 Linux 也于该断言失败。固定 Linux 
 namespace、clone(CLONE_FS) 隔离及无效 flags。Kernel 增量标准库选中并通过一包，
 四目标共 72 项 Clippy 全部通过；VFS 与 AX Rust 源码保持上一节通过时的内容。
 其他 getcwd 并发路径、完整 syscall 表及最终 head 完整 CI 仍按原计划核实。
+
+### 9.23 组件查询与合作重查
+
+`DirNode::lookup_component` 返回 `LookupStep`，将 Found、通过负观察的 Missing、
+Revalidate 和真实 Failed 分开。缓存 generation 或 provider 版本失效属于候选发布
+冲突；目录 namespace generation、writer 及 `NameObservation` 失效要求父命名
+重验证，并优先保留较强分类。普通无 identity 的动态结果也必须经过接受检查。
+后端 WouldBlock 始终保留为 Failed，不由错误码猜测是否重试。固定 backing 的
+单次查询保留原边界，不采集可能与外层 publication 冲突的全局命名观察。
+
+`Location::lookup_component` 保留分类及覆盖挂载转换；普通 FsContext helper
+在候选退休后重新检查原目录搜索权限，只在接受结果后追加搜索记录。
+`BlockRuntimeOps::yield_now` 是必需接口，原生适配先拒绝 atomic context，再检查
+当前线程并保留调度失败；宿主适配执行实际 thread yield，writeback 和 prefetch
+的测试实现同步迁移。`with_fs` 使用冻结 binding，后端调用及让出发生在任务状态
+短锁之外。原生启动顺序已核实为调度器建立、解除启动期抢占限制、安装 FS runtime。
+
+错误候选 `988ff8a97f` 关闭发布校验，同一受控交错使 VFS 四项回归失败，
+标准库最外层退出 1，其余 17 包通过。恢复后 `e828831525` 的 18 包全部通过。
+`560c8565f4` 的 VFS、AX、ax-block、runtime 共 43 项 Clippy 通过；后续缓存改动
+在最终源码上补跑 AX 全部 6 项检查并通过。证据保留各自源码和覆盖边界。
+
+本阶段尚未构造 LookupSession/Continuation，没有完成 scoped 父路径约束重验证、
+总链接预算、真正非阻塞的 CACHED 或末组件副作用接入。现有 open 的父路径和
+末链接仍分开解析，不能将本节视为完整查找迁移。
+
+### 9.24 退休准备与验证资源
+
+命名操作原先复用压力回收的尽力扫描，索引锁繁忙时会跳过已关闭缓存。
+`prune_retiring_with_contention` 现在先在后端 gate 外取得 inode index 排他权，
+再扫描 registry，冻结 Weak 升级并按当前 owner、持久化及脏页状态选择缓存。
+临时容器在锁外预留，registry 增长时先退出两把锁再扩容；移出的 owner 交给
+原命名命令的 MutationRetire，在外层保护结束后析构。普通压力回收保留非阻塞
+try-lock，不借用命名操作的可等待策略。
+
+原缓存所有权旅程增加受控索引争用：确认 try-lock 已失败后，另一线程才释放
+索引。错误候选 `2c7e6170d1` 在该分支直接返回，稳定因已关闭缓存仍被持有而失败，
+标准库最外层退出 1；正确实现及既有 Ext4 两次 unlink 回收断言通过。该旅程
+继续检查重新打开、脏页与外层退休寿命，没有放宽原判定。
+
+远端 `5e04fc35fb` 的 std 失败还暴露共享页面提供者的计数污染。临时分配栈确认
+写打开旅程后半段及 FAT 生命周期旅程在独占夹具之外分配页面。现在两个完整
+旅程都拥有 `with_test_page_provider` 范围，EOF 零分配断言保持原值。使用路径
+查找的宿主集成夹具显式安装 runtime adapter。临时诊断及错误候选未进入生产
+分支；最终标准库检查包含 AX 全部五个 feature profile。
+
+`52fc53e925` 的 x86_64 ownership 程序为 107 pass、0 fail，最外层 1/1、退出 0。
+此后 Rust 差异仅为测试夹具及模块说明，实际内核仍按 `52fc53e925` 记录。
+`5e04fc35fb` 的 PR 检查汇总已终态：37 项成功、6 项失败、1 项取消及 5 项跳过；
+失败包含 std、四架构 Starry suite 及 Axvisor AArch64 的 Arm 下载 HTTP 503。
+后续 head 仍须逐项取得要求检查的终态，完整系统调用表及其余计划保持原范围。
