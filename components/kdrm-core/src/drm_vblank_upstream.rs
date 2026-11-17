@@ -2858,21 +2858,21 @@ mod tests {
 
             // Enabling publishes a clock sample after the timer was armed.
             // Until its first expiry, expiry - interval precedes that sample.
-            store_vblank(dev, 0, 0, FRAME_NS / 4, 0);
+            store_vblank(dev, 0, 0, 3 * FRAME_NS / 4, 0);
             assert!(drm_handle_vblank(dev, 0));
             let mut timestamp = 0;
             assert_eq!(drm_crtc_vblank_count_and_time(crtc, &mut timestamp), 0);
-            assert_eq!(timestamp, FRAME_NS / 4);
+            assert_eq!(timestamp, 3 * FRAME_NS / 4);
 
             // A forwarded deadline contributes its real completed edge once.
-            drm_kapi::timer::hrtimer_start_range_ns(timer, 2 * FRAME_NS, 0, 0);
+            drm_kapi::timer::hrtimer_start_range_ns(timer, 3 * FRAME_NS, 0, 0);
             drm_kapi::timer::hrtimer_cancel(timer);
             assert!(drm_handle_vblank(dev, 0));
             assert_eq!(drm_crtc_vblank_count_and_time(crtc, &mut timestamp), 1);
-            assert_eq!(timestamp, FRAME_NS);
+            assert_eq!(timestamp, 2 * FRAME_NS);
             assert!(drm_handle_vblank(dev, 0));
             assert_eq!(drm_crtc_vblank_count_and_time(crtc, &mut timestamp), 1);
-            assert_eq!(timestamp, FRAME_NS);
+            assert_eq!(timestamp, 2 * FRAME_NS);
         }
     }
 
