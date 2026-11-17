@@ -891,24 +891,6 @@ impl Pipe {
         (read_end, write_end)
     }
 
-    /// Opens another file description for the same pipe endpoint.
-    ///
-    /// Unlike `dup`, reopening `/proc/self/fd/<n>` creates independent file
-    /// status flags while retaining the same underlying pipe buffer. The
-    /// endpoint count must therefore be incremented so closing either file
-    /// description cannot prematurely report EOF or a broken pipe.
-    pub(crate) fn reopen(&self, non_blocking: bool) -> Pipe {
-        debug_assert!(self.named.is_none());
-        self.shared
-            .update_state(|state| state.add_endpoint(self.access));
-        Pipe {
-            access: self.access,
-            shared: self.shared.clone(),
-            non_blocking: AtomicBool::new(non_blocking),
-            named: None,
-        }
-    }
-
     pub const fn is_read(&self) -> bool {
         self.access.reads()
     }

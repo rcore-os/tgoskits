@@ -5,7 +5,10 @@ use core::{
     ops::DerefMut,
 };
 
-use ax_fs_ng::vfs::{FileBackend, MountNamespace, OpenOptions, OpenResult};
+use ax_fs_ng::{
+    FsView,
+    vfs::{FileBackend, MountNamespace, OpenOptions, OpenResult},
+};
 use ax_memory_addr::PAGE_SIZE_4K;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
 use bitflags::bitflags;
@@ -77,11 +80,11 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
 
 fn add_to_fd(
     current: &crate::task::UserTaskRef,
+    view: &FsView<'_>,
     result: OpenResult,
     flags: u32,
     mount_table_namespace: Option<Arc<MountNamespace>>,
 ) -> StarryResult<i32> {
-    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let mut controlling_terminal = None;
     let f: Arc<dyn FileLike> = match result {
         OpenResult::File(mut file) => {
@@ -148,11 +151,7 @@ fn add_to_fd(
                     // Opening /dev/ptmx creates a new pseudo-terminal
                     let (master, pty_number) = ptmx.create_pty()?;
                     // TODO: this is cursed
-                    let pts = ax_fs_ng::FsView::current(
-                        ax_fs_ng::vfs::current_fs_context(),
-                        &link_caller,
-                    )
-                    .resolve("/dev/pts")?;
+                    let pts = view.resolve("/dev/pts")?;
                     let entry = DirEntry::new_file(
                         FileNode::new(master),
                         NodeType::CharacterDevice,
@@ -181,11 +180,7 @@ fn add_to_fd(
                         tty::TerminalDevice::Location(location) => {
                             axfs_ng_vfs::PathHandle::acquire(location)?
                         }
-                        tty::TerminalDevice::Path(path) => ax_fs_ng::FsView::current(
-                            ax_fs_ng::vfs::current_fs_context(),
-                            &link_caller,
-                        )
-                        .resolve(&path)?,
+                        tty::TerminalDevice::Path(path) => view.resolve(&path)?,
                     };
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
@@ -247,88 +242,6 @@ fn mount_table_namespace(
     let task = get_user_task_by_number(tid).ok()?;
     let binding = task.as_thread().snapshot_fs_binding().ok()??;
     Some(binding.mnt.core().clone())
-}
-
-fn self_fd_number(path: &str) -> Option<c_int> {
-    ["/proc/self/fd/", "/dev/fd/"]
-        .into_iter()
-        .find_map(|prefix| path.strip_prefix(prefix))?
-        .parse()
-        .ok()
-}
-
-/// Reopens anonymous pipe endpoints reached through the current process's
-/// descriptor namespace.
-///
-/// Procfs represents pipe links as `pipe:[inode]`, which is descriptive rather
-/// than a pathname that the regular VFS resolver can follow. Linux handles
-/// these entries as procfs magic links and creates a new file description for
-/// the same pipe endpoint. Keep ordinary filesystem-backed descriptors on the
-/// normal resolver path so reopening them still applies pathname permissions
-/// and filesystem open semantics.
-fn try_reopen_self_pipe(path: &str, flags: u32) -> Option<StarryResult<isize>> {
-    let fd = self_fd_number(path)?;
-    let file = match get_file_like(fd) {
-        Ok(file) => file,
-        Err(_) => return Some(Err(StarryError::NotFound)),
-    };
-    let pipe = file.downcast_ref::<Pipe>()?;
-
-    if pipe.named_file().is_some() {
-        return None;
-    }
-    let requested_access = flags & O_ACCMODE;
-    let expected_access = if pipe.is_read() { O_RDONLY } else { O_WRONLY };
-    if requested_access != expected_access {
-        return Some(Err(StarryError::PermissionDenied));
-    }
-
-    let pipe = Arc::new(pipe.reopen(flags & O_NONBLOCK != 0));
-    Some(add_file_like(pipe, flags & O_CLOEXEC != 0).map(|fd| fd as isize))
-}
-
-/// Reopens a filesystem-backed file through `/proc/self/fd/<n>`.
-///
-/// Proc fd entries are magic links to the referenced inode, not ordinary
-/// pathname symlinks. Reopening must therefore keep working after unlink or
-/// mount-tree changes make the file's former pathname unresolvable.
-fn try_reopen_self_file(
-    current: &crate::task::UserTaskRef,
-    path: &str,
-    flags: u32,
-) -> Option<StarryResult<isize>> {
-    if flags & O_NOFOLLOW != 0 {
-        return None;
-    }
-
-    let fd = self_fd_number(path)?;
-    let file_like = match get_file_like(fd) {
-        Ok(file) => file,
-        Err(_) => return Some(Err(StarryError::NotFound)),
-    };
-    let file = file_like.downcast_ref::<File>().or_else(|| {
-        file_like
-            .downcast_ref::<Pipe>()?
-            .named_file()
-            .map(Arc::as_ref)
-    })?;
-    let location = file.inner().location();
-    if !matches!(location.node_type(), NodeType::RegularFile | NodeType::Fifo) {
-        return None;
-    }
-
-    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
-    let fs_credentials = link_caller.fs_credentials();
-    let cred = fs_credentials.credentials();
-    let mutation_cred = fs_credentials.as_mutation_credentials();
-    let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
-    Some(
-        options
-            .open_loc_with_credentials(location.clone(), &mutation_cred)
-            .map_err(StarryError::from)
-            .and_then(|result| add_to_fd(current, result, flags, None))
-            .map(|fd| fd as isize),
-    )
 }
 
 #[repr(C)]
@@ -459,13 +372,6 @@ pub fn sys_openat(
         return Err(StarryError::InvalidInput);
     }
 
-    if let Some(result) = try_reopen_self_pipe(&path, uflags) {
-        return result;
-    }
-    if let Some(result) = try_reopen_self_file(current, &path, uflags) {
-        return result;
-    }
-
     // Absolute path: man "If pathname is absolute, then dirfd is ignored."
     // starry with_fs() unconditionally calls Directory::from_fd(dirfd),
     // so invalid dirfd would EBADF before the abs-path shortcut applies.
@@ -483,20 +389,19 @@ pub fn sys_openat(
     let fs_credentials = link_caller.fs_credentials();
     let cred = fs_credentials.credentials();
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
-    let should_notify_create = uflags & O_CREAT != 0
-        && uflags & O_PATH == 0
-        && with_fs(dirfd, &link_caller, |fs| {
-            match fs.resolve_no_follow(&path) {
-                Ok(_) => Ok(false),
-                Err(VfsError::NotFound) => Ok(true),
-                Err(err) => Err(err.into()),
-            }
-        })?;
-
-    // Open first, then install the file so filesystem errors propagate unchanged.
-    let result = with_fs(dirfd, &link_caller, |fs| Ok(options.open(fs, path)?))?;
-    let mount_table_namespace = mount_table_namespace(current, &result);
-    let fd = add_to_fd(current, result, flags as _, mount_table_namespace)?;
+    let (fd, should_notify_create) = with_fs(dirfd, &link_caller, |view| {
+        let should_notify_create = uflags & O_CREAT != 0
+            && uflags & O_PATH == 0
+            && match view.resolve_no_follow(&path) {
+                Ok(_) => false,
+                Err(VfsError::NotFound) => true,
+                Err(err) => return Err(err.into()),
+            };
+        let result = options.open(view, path.as_str())?;
+        let mount_table_namespace = mount_table_namespace(current, &result);
+        let fd = add_to_fd(current, view, result, flags as _, mount_table_namespace)?;
+        Ok((fd, should_notify_create))
+    })?;
     if should_notify_create {
         let file = get_file_like(fd)?;
         crate::file::inotify::notify_create_path(file.path().as_ref(), false);
@@ -616,12 +521,13 @@ pub fn sys_openat2(
     let caller = crate::task::ProcLinkCaller::capture(thread);
     let credentials = caller.fs_credentials().credentials();
     let options = flags_to_options(flags, mode, (credentials.fsuid, credentials.fsgid));
-    let result = with_fs(dirfd, &caller, |fs| {
+    with_fs(dirfd, &caller, |fs| {
         let view = fs.with_lookup_policy(policy);
-        Ok(options.open(&view, path.as_str())?)
-    })?;
-    let mount_table_namespace = mount_table_namespace(current, &result);
-    add_to_fd(current, result, flags as u32, mount_table_namespace).map(|fd| fd as isize)
+        let result = options.open(&view, path.as_str())?;
+        let mount_table_namespace = mount_table_namespace(current, &result);
+        add_to_fd(current, &view, result, flags as u32, mount_table_namespace)
+    })
+    .map(|fd| fd as isize)
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.
