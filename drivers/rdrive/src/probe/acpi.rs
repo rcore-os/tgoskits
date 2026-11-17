@@ -2859,6 +2859,8 @@ fn write_io_u32(_port: u16, _value: u32) {}
 
 #[cfg(test)]
 mod tests {
+    mod pci_config;
+
     use alloc::{
         string::{String, ToString},
         sync::Arc,
