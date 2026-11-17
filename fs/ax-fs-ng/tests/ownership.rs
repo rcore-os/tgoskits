@@ -258,6 +258,35 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
     assert_eq!(source.name_state(), NameState::Linked);
     assert_eq!(alias.name_state(), NameState::Linked);
 
+    #[cfg(feature = "vfs")]
+    {
+        let exchange = create(&mount, &root, "exchange", NodeType::Directory);
+        let paths = ax_fs_ng::FsContext::from_tree(mount.clone(), mount.root_location()).unwrap();
+        let caller = ax_fs_ng::NativeLinkCaller::root();
+        let view = ax_fs_ng::FsView::native(paths, &caller);
+        // Linux permits the mixed-type exchange with a directory suffix.
+        // MemoryFs currently rejects exchange at its capability boundary;
+        // preflight must preserve that refusal and both original identities.
+        assert_eq!(
+            view.rename_with_options("target", "exchange/", RenameOptions::EXCHANGE),
+            Err(VfsError::OperationNotSupported)
+        );
+        assert!(
+            view.resolve("target")
+                .unwrap()
+                .location()
+                .entry()
+                .ptr_eq(&source)
+        );
+        assert!(
+            view.resolve("exchange")
+                .unwrap()
+                .location()
+                .entry()
+                .ptr_eq(&exchange)
+        );
+    }
+
     let directory = create(&mount, &root, "deleted", NodeType::Directory);
     axfs_ng_vfs::Location::new(mount.clone(), root.clone())
         .unlink("deleted", true, &axfs_ng_vfs::MutationCredentials::root())
