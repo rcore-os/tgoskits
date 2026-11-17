@@ -15,10 +15,7 @@ use crate::{
     mm::{VmPtr, vm_load_string},
     pseudofs::{
         MemoryFs,
-        dev::{
-            new_devptsfs,
-            tty::{DevPtsMount, DevPtsOptions},
-        },
+        dev::{new_devptsfs, tty::DevPtsOptions},
         overlay::OverlayOptions,
     },
     sync::Mutex,
@@ -79,27 +76,19 @@ fn parse_devpts_mode(value: &str) -> StarryResult<NodePermission> {
     NodePermission::from_bits(mode).ok_or(StarryError::InvalidInput)
 }
 
-enum DevPtsInstanceKind {
-    Legacy,
-    New,
-}
-
 fn parse_devpts_options(
     current: &crate::task::UserTaskRef,
     data: *const c_void,
-) -> crate::StarryResult<DevPtsMount> {
+) -> crate::StarryResult<DevPtsOptions> {
     let mut options = DevPtsOptions::mounted();
-    let mut instance = DevPtsInstanceKind::Legacy;
     if data.is_null() {
-        return Ok(DevPtsMount::Legacy(options));
+        return Ok(options);
     }
 
     for item in vm_load_string(current, data.cast())?.split(',') {
-        if item.is_empty() {
-            continue;
-        }
-        if item == "newinstance" {
-            instance = DevPtsInstanceKind::New;
+        // Linux v7.1 creates a private instance for every mount. The historical
+        // newinstance flag is accepted without changing that selection.
+        if item.is_empty() || item == "newinstance" {
             continue;
         }
         let (key, value) = item.split_once('=').ok_or(StarryError::InvalidInput)?;
@@ -112,10 +101,7 @@ fn parse_devpts_options(
             _ => return Err(StarryError::InvalidInput),
         }
     }
-    Ok(match instance {
-        DevPtsInstanceKind::Legacy => DevPtsMount::Legacy(options),
-        DevPtsInstanceKind::New => DevPtsMount::NewInstance(options),
-    })
+    Ok(options)
 }
 
 fn parse_overlay_options(
@@ -404,9 +390,7 @@ pub fn sys_fsconfig(
                     .tmpfs_size_limit
                     .map_or_else(MemoryFs::new, MemoryFs::new_with_size_limit),
                 MountContextKind::Ramfs => MemoryFs::new_ramfs(),
-                MountContextKind::DevPts => {
-                    new_devptsfs(DevPtsMount::NewInstance(state.devpts_options))
-                }
+                MountContextKind::DevPts => new_devptsfs(state.devpts_options),
             });
         }
         command if command == fsconfig_command::FSCONFIG_CMD_RECONFIGURE as u32 => {

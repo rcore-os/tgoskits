@@ -4286,6 +4286,25 @@ remount 继续作用于实际实例；新挂载的局部 readonly 由 mount flag
 旅程和 cgroup 系统程序分别验证普通重复挂载身份、不同 FS 区分、同层级跨命名
 空间身份、根目录可见性与 root pin 退休。
 
+### 6.20 伪终端的实例边界
+
+devpts 与 cgroup2 的实例规则不同。固定 Linux 的 `devpts_get_tree` 每次调用
+`get_tree_nodev`，历史 `newinstance` 参数只被识别并忽略。每次新 devpts mount
+拥有自己的 SimpleFs、PtsInstance 和编号表；不能把不同 FS 的 slave 节点放进
+共享的全局表，再由 lookup 返回属于另一 owner 的对象。
+
+`new_devptsfs` 直接接收不可变 DevPtsOptions，每次创建 PtsInstance。启动 devfs
+构造器只在自身内部将 Ptmx 与 PtsDir 绑定到同一实例，不保留供后续 mount
+复用的全局 initial instance。删除 Legacy/NewInstance 选择层和可变 options
+更新入口；默认 mount 与显式 newinstance 都创建私有实例。
+
+原 devpts 程序同时验证编号空间、实际 slave 可见性、mode/gid 和控制终端。
+打开 slave 前通过 TIOCSPTLCK 解锁；控制终端用 foreground group 与实际 master
+收到的字节判断，不能把 /dev/tty 的元数据当成 slave inode 的元数据。Linux 对照
+因本机单 GID 映射，将测试 gid 从 5 改为 0，其他旅程保持一致；Starry 默认仍
+验证 gid=5。PTY 锁状态、创建者 fsuid、完整 remount 和其余终端语义不由本次
+实例修正推断为兼容。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
