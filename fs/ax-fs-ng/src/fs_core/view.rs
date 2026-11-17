@@ -415,7 +415,7 @@ impl<'caller> FsView<'caller> {
         if options.no_replace() && destination_type.is_some() {
             return Err(VfsError::AlreadyExists);
         }
-        if (source.directory_required || destination.directory_required)
+        if (source.directory_required || destination.directory_required && !options.exchange())
             && source_type != NodeType::Directory
             || destination.directory_required
                 && destination_type.is_some_and(|ty| ty != NodeType::Directory)
