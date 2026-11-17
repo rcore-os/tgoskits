@@ -46,7 +46,7 @@ token 的普通 `Drop` 只发布退休状态。显式 `release()` 或 `retry_ker
 
 ## 2. 保护范围与诊断
 
-诊断属于 runtime stack owner，调用方不需要查找第二个全局栈登记表。`panic_on_current_stack_guard_page_fault()` 从当前线程的 `RuntimeStack` 读取 reservation 和 usable 边界，命中时直接进入主 panic 记录，其他地址正常返回。
+诊断属于 runtime stack owner，调用方不需要查找第二个全局栈登记表。`panic_on_current_stack_guard_page_fault()` 在短暂的本地 IRQ 保护内借用 CPU pin，从当前线程的 `RuntimeStack` 读取 reservation 和 usable 边界，命中时直接进入主 panic 记录，其他地址恢复原 IRQ 状态后返回。缺页慢路径可以恢复调用者中断状态，因此检查不能假定 trap 本身一直排除迁移。
 
 ### 2.1 覆盖边界
 

@@ -33,8 +33,9 @@ use super::{
 pub fn panic_on_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) {
     #[cfg(feature = "paging")]
     {
-        // SAFETY: trap execution cannot migrate before returning through its
-        // architecture epilogue.
+        let _irq_guard = ax_task::sync::IrqSaveGuard::new();
+        // SAFETY: the raw local-IRQ guard excludes scheduler migration for
+        // the complete CPU-pin callback, including restored-IRQ fault paths.
         unsafe {
             with_current_cpu_pin(|cpu_pin| {
                 let Ok(context) = current_runtime_context(cpu_pin) else {
