@@ -96,7 +96,8 @@ fn cache_only_observation_never_falls_back_and_rejects_expired_negatives() {
         directory.cached_child("missing"),
         Err(VfsError::NotFound)
     ));
-    *backend.generation.lock() = Ok(Some(1));
+    let alias = TestDirectory::new(backend.clone());
+    let created = create_directory(&alias, "missing");
     assert!(matches!(
         directory.cached_child("missing"),
         Err(VfsError::WouldBlock)
@@ -117,6 +118,7 @@ fn cache_only_observation_never_falls_back_and_rejects_expired_negatives() {
         Err(VfsError::WouldBlock)
     ));
     assert_eq!(backend.lookups.load(Ordering::Relaxed), before);
+    assert!(directory.lookup("missing").unwrap().ptr_eq(&created));
 }
 
 #[test]
