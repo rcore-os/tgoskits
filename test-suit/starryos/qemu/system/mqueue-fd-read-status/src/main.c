@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <mqueue.h>
 #include <signal.h>
 #include <stdio.h>
@@ -9,6 +10,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -50,6 +52,88 @@ cleanup:
     if (mounted) syscall(SYS_umount2, directory, MNT_DETACH);
     rmdir(directory);
     return result;
+}
+
+static int check_positioned_status(int descriptor, const char *expected)
+{
+    char status[128] = { 0 };
+    off_t position = lseek(descriptor, 0, SEEK_CUR);
+    struct iovec vectors[2] = {
+        { .iov_base = status, .iov_len = 8 },
+        { .iov_base = status + 8, .iov_len = sizeof(status) - 9 },
+    };
+    int failures = 0;
+
+    if (syscall(SYS_pread64, descriptor, status, 8, 0) != 8
+        || memcmp(status, expected, 8) != 0
+        || lseek(descriptor, 0, SEEK_CUR) != position) {
+        fputs("positioned scalar status read changed the shared offset\n", stderr);
+        failures++;
+    }
+    memset(status, 0, sizeof(status));
+    if (syscall(SYS_preadv, descriptor, vectors, 2, 0, 0) != (long)strlen(expected)
+        || strcmp(status, expected) != 0
+        || lseek(descriptor, 0, SEEK_CUR) != position) {
+        fputs("positioned vector status read lost content or changed the offset\n", stderr);
+        failures++;
+    }
+
+    const struct timespec times[2] = {
+        { .tv_sec = 123456, .tv_nsec = 123 },
+        { .tv_sec = 654321, .tv_nsec = 456 },
+    };
+    struct stat before, after;
+    if (syscall(SYS_utimensat, descriptor, NULL, times, 0) != 0
+        || fstat(descriptor, &before) != 0) {
+        fputs("prepare failed status-copy observation\n", stderr);
+        return -1;
+    }
+    errno = 0;
+    long copied = syscall(SYS_pread64, descriptor, (void *)1, 8, 0);
+    if (copied != -1 || errno != EFAULT || fstat(descriptor, &after) != 0
+        || before.st_atim.tv_sec != after.st_atim.tv_sec
+        || before.st_atim.tv_nsec != after.st_atim.tv_nsec
+        || before.st_ctim.tv_sec != after.st_ctim.tv_sec
+        || before.st_ctim.tv_nsec != after.st_ctim.tv_nsec
+        || lseek(descriptor, 0, SEEK_CUR) != position) {
+        fputs("failed positioned status copy committed time or offset\n", stderr);
+        failures++;
+    }
+    vectors[1].iov_base = (void *)1;
+    vectors[1].iov_len = 8;
+    if (syscall(SYS_preadv2, descriptor, vectors, 2, 0, 0, 0) != 8
+        || memcmp(status, expected, 8) != 0
+        || lseek(descriptor, 0, SEEK_CUR) != position) {
+        fputs("partial vector status copy lost completed bytes\n", stderr);
+        failures++;
+    }
+    errno = 0;
+    if (syscall(SYS_pwrite64, descriptor, (void *)1, 1, 0) != -1 || errno != EINVAL) {
+        fputs("positioned queue write did not reject before user copy\n", stderr);
+        failures++;
+    }
+    errno = 0;
+    if (syscall(SYS_pwritev2, descriptor, (void *)1, 1, 0, 0, 0) != -1
+        || errno != EINVAL) {
+        fputs("positioned queue vector write did not reject before iovec import\n", stderr);
+        failures++;
+    }
+    if (lseek(descriptor, LLONG_MAX, SEEK_SET) != LLONG_MAX) {
+        fputs("prepare queue seek overflow\n", stderr);
+        failures++;
+    } else {
+        errno = 0;
+        if (lseek(descriptor, 1, SEEK_CUR) != -1 || errno != EINVAL
+            || lseek(descriptor, 0, SEEK_CUR) != LLONG_MAX) {
+            fputs("rejected queue seek changed offset or returned the wrong error\n", stderr);
+            failures++;
+        }
+    }
+    if (lseek(descriptor, position, SEEK_SET) != position) {
+        fputs("restore queue status offset\n", stderr);
+        failures++;
+    }
+    return failures == 0 ? 0 : -1;
 }
 
 static int check_path_descriptor(int queue, const char *expected)
@@ -125,6 +209,21 @@ static int check_path_descriptor(int queue, const char *expected)
             failures++;
         }
         syscall(SYS_mq_notify, queue, NULL);
+    }
+
+    if (check_positioned_status(descriptor, expected) != 0) failures++;
+    if (check_positioned_status(queue, expected) != 0) failures++;
+
+    int status_flags = (int)syscall(SYS_fcntl, descriptor, F_GETFL);
+    attributes.mq_flags = O_NONBLOCK;
+    if (status_flags < 0
+        || syscall(SYS_fcntl, descriptor, F_SETFL, status_flags | O_APPEND) != 0
+        || syscall(SYS_mq_getsetattr, descriptor, &attributes, NULL) != 0
+        || (syscall(SYS_fcntl, descriptor, F_GETFL) & (O_APPEND | O_NONBLOCK))
+            != (O_APPEND | O_NONBLOCK)
+        || syscall(SYS_fcntl, descriptor, F_SETFL, status_flags) != 0) {
+        fputs("mq_setattr overwrote another file status flag\n", stderr);
+        failures++;
     }
 
     if (lseek(descriptor, 0, SEEK_END) != 80) {
@@ -261,10 +360,17 @@ int main(void)
         fprintf(stderr, "read(O_WRONLY mqd_t) did not return EBADF (errno=%d)\n", errno);
         goto cleanup;
     }
+    int positioned_access = 0;
+    errno = 0;
+    if (syscall(SYS_preadv, (int)write_only, (void *)1, 1, 0, 0) != -1
+        || errno != EBADF) {
+        fprintf(stderr, "positioned O_WRONLY status read lost EBADF precedence (errno=%d)\n", errno);
+        positioned_access = -1;
+    }
 
     int path_result = check_path_descriptor((int)queue, expected);
     int inode_result = check_shared_inode((int)queue);
-    result = path_result == 0 && inode_result == 0 ? 0 : 1;
+    result = positioned_access == 0 && path_result == 0 && inode_result == 0 ? 0 : 1;
 
 cleanup:
     if (write_only != (mqd_t)-1) {
