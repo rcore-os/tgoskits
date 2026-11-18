@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <sys/mount.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -421,27 +422,33 @@ static int redirect_interpreter(int fd, const char *replacement,
 
 /* Reject an invalid native header, then execute after repairing the same inode. */
 static void check_header_recovery(const char *image, const char *target,
-                                  off_t offset, Elf64_Half invalid, int expected)
+                                  off_t offset, const void *invalid,
+                                  size_t field_size, int expected)
 {
-    printf("ELF_HEADER_REJECTION target=%s offset=%lld value=%u errno=%d\n",
-           target, (long long)offset, (unsigned)invalid, expected);
+    printf("ELF_HEADER_REJECTION target=%s offset=%lld size=%zu errno=%d\n",
+           target, (long long)offset, field_size, expected);
     fflush(stdout);
     int fd = open(target, O_RDWR);
     CHECK(fd >= 0, "open the private ELF header for mutation");
     if (fd < 0) {
         return;
     }
-    Elf64_Half original;
-    ssize_t read = pread(fd, &original, sizeof(original), offset);
-    CHECK(read == (ssize_t)sizeof(original), "read the original ELF header field");
-    if (read != (ssize_t)sizeof(original)) {
+    unsigned char original[sizeof(Elf64_Off)];
+    CHECK(field_size <= sizeof(original), "ELF field fits the recovery buffer");
+    if (field_size > sizeof(original)) {
         close(fd);
         return;
     }
-    ssize_t written = pwrite(fd, &invalid, sizeof(invalid), offset);
-    CHECK(written == (ssize_t)sizeof(invalid), "write the invalid ELF header field");
+    ssize_t read = pread(fd, original, field_size, offset);
+    CHECK(read == (ssize_t)field_size, "read the original ELF header field");
+    if (read != (ssize_t)field_size) {
+        close(fd);
+        return;
+    }
+    ssize_t written = pwrite(fd, invalid, field_size, offset);
+    CHECK(written == (ssize_t)field_size, "write the invalid ELF header field");
     close(fd);
-    if (written != (ssize_t)sizeof(invalid)) {
+    if (written != (ssize_t)field_size) {
         return;
     }
 
@@ -453,13 +460,101 @@ static void check_header_recovery(const char *image, const char *target,
     if (fd < 0) {
         return;
     }
-    written = pwrite(fd, &original, sizeof(original), offset);
-    CHECK(written == (ssize_t)sizeof(original), "repair the same ELF header inode");
+    written = pwrite(fd, original, field_size, offset);
+    CHECK(written == (ssize_t)field_size, "repair the same ELF header inode");
     close(fd);
-    if (written == (ssize_t)sizeof(original)) {
+    if (written == (ssize_t)field_size) {
         check_execveat_ran(execveat_success_status(AT_FDCWD, image, 0),
                           "repaired native headers execute the shell image");
     }
+}
+
+/* Native code for a minimal ELF that has no interpreter or libc dependency. */
+#if defined(__x86_64__)
+#define NATIVE_EXIT_CODE "mov $42, %edi\nmov $60, %eax\nsyscall\n"
+#elif defined(__aarch64__)
+#define NATIVE_EXIT_CODE "mov x0, #42\nmov x8, #93\nsvc #0\n"
+#elif defined(__riscv)
+#define NATIVE_EXIT_CODE "li a0, 42\nli a7, 93\necall\n"
+#elif defined(__loongarch__)
+#define NATIVE_EXIT_CODE "li.w $a0, 42\nli.w $a7, 93\nsyscall 0\n"
+#else
+#error "Native exit code is unknown for this architecture"
+#endif
+__asm__(".pushsection .rodata\n"
+        ".balign 4\n"
+        ".global exec_native_exit_start, exec_native_exit_end\n"
+        "exec_native_exit_start:\n"
+        NATIVE_EXIT_CODE
+        "exec_native_exit_end:\n"
+        ".popsection\n");
+extern const unsigned char exec_native_exit_start[], exec_native_exit_end[];
+
+/* File offsets need not have the alignment required by host Rust references. */
+static void check_unaligned_program_table(const char *image, const char *target)
+{
+    int source = open(image, O_RDONLY);
+    Elf64_Ehdr header;
+    int ready = source >= 0
+        && pread(source, &header, sizeof(header), 0) == (ssize_t)sizeof(header);
+    CHECK(ready, "read the native ABI for the standalone ELF");
+    if (source >= 0) {
+        close(source);
+    }
+    if (!ready) {
+        return;
+    }
+    header.e_type = ET_EXEC;
+    header.e_entry = 0x400000 + 128;
+    header.e_phoff = sizeof(header) + 1;
+    header.e_phnum = 1;
+    header.e_shoff = 0;
+    header.e_shnum = 0;
+    header.e_shstrndx = SHN_UNDEF;
+    size_t code_size = (uintptr_t)exec_native_exit_end - (uintptr_t)exec_native_exit_start;
+    Elf64_Phdr ph = {
+        .p_type = PT_LOAD,
+        .p_flags = PF_R | PF_X,
+        .p_vaddr = 0x400000,
+        .p_filesz = 128 + code_size,
+        .p_memsz = 128 + code_size,
+        .p_align = 4096,
+    };
+    int fd = open(target, O_CREAT | O_EXCL | O_WRONLY, 0755);
+    CHECK(fd >= 0, "create the standalone native ELF");
+    if (fd < 0) {
+        return;
+    }
+    ready = pwrite(fd, &header, sizeof(header), 0) == (ssize_t)sizeof(header)
+        && pwrite(fd, &ph, sizeof(ph), header.e_phoff) == (ssize_t)sizeof(ph)
+        && pwrite(fd, exec_native_exit_start, code_size, 128) == (ssize_t)code_size;
+    CHECK(ready, "stage the unaligned program table and native entry");
+    close(fd);
+    if (ready) {
+        printf("ELF_UNALIGNED_PROGRAM_TABLE offset=%llu\n",
+               (unsigned long long)header.e_phoff);
+        fflush(stdout);
+        for (int api = 0; api < 2; api++) {
+            pid_t pid = fork();
+            CHECK(pid >= 0, "fork before executing the standalone native ELF");
+            if (pid == 0) {
+                char *const argv[] = {(char *)target, NULL};
+                if (api == 0) {
+                    syscall(SYS_execve, target, argv, environ);
+                } else {
+                    syscall(SYS_execveat, AT_FDCWD, target, argv, environ, 0);
+                }
+                _exit(126);
+            }
+            if (pid > 0) {
+                int status = 0;
+                CHECK(waitpid(pid, &status, 0) == pid, "collect the native ELF child");
+                check_exited_with(status, EXECVEAT_OK_STATUS,
+                                  "a legal unaligned program table executes its image");
+            }
+        }
+    }
+    CHECK(unlink(target) == 0, "remove the standalone native ELF");
 }
 
 /* A failed interpreter load must preserve the caller and release both leases. */
@@ -539,12 +634,50 @@ static void test_interpreter_format_recovery(void)
     interpreter_fd = -1;
     check_execveat_ran(execveat_success_status(AT_FDCWD, image, 0),
                       "repaired interpreter executes the original shell image");
+    Elf64_Half invalid = EM_NONE;
     check_header_recovery(image, image, offsetof(Elf64_Ehdr, e_machine),
-                          EM_NONE, ENOEXEC);
+                          &invalid, sizeof(invalid), ENOEXEC);
     check_header_recovery(image, interpreter, offsetof(Elf64_Ehdr, e_machine),
-                          EM_NONE, ELIBBAD);
+                          &invalid, sizeof(invalid), ELIBBAD);
+    invalid = ET_REL;
     check_header_recovery(image, image, offsetof(Elf64_Ehdr, e_type),
-                          ET_REL, ENOEXEC);
+                          &invalid, sizeof(invalid), ENOEXEC);
+
+    const struct {
+        off_t offset;
+        Elf64_Half value;
+    } invalid_tables[] = {
+        {offsetof(Elf64_Ehdr, e_phentsize), 0},
+        {offsetof(Elf64_Ehdr, e_phentsize), sizeof(Elf64_Phdr) - 1},
+        {offsetof(Elf64_Ehdr, e_phnum), 0},
+        {offsetof(Elf64_Ehdr, e_phnum), 65536 / sizeof(Elf64_Phdr) + 1},
+    };
+    for (size_t i = 0; i < sizeof(invalid_tables) / sizeof(invalid_tables[0]); i++) {
+        const void *value = &invalid_tables[i].value;
+        size_t size = sizeof(invalid_tables[i].value);
+        check_header_recovery(image, image, invalid_tables[i].offset,
+                              value, size, ENOEXEC);
+        check_header_recovery(image, interpreter, invalid_tables[i].offset,
+                              value, size, ELIBBAD);
+    }
+    const char *targets[] = {image, interpreter};
+    for (size_t i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        struct stat st;
+        int ready = stat(targets[i], &st);
+        CHECK(ready == 0, "inspect the original ELF table extent");
+        if (ready != 0) {
+            continue;
+        }
+        const Elf64_Off offsets[] = {UINT64_MAX - 27, st.st_size - 1};
+        for (size_t j = 0; j < sizeof(offsets) / sizeof(offsets[0]); j++) {
+            check_header_recovery(image, targets[i], offsetof(Elf64_Ehdr, e_phoff),
+                                  &offsets[j], sizeof(offsets[j]),
+                                  i == 0 ? ENOEXEC : ELIBBAD);
+        }
+    }
+    char standalone[64];
+    snprintf(standalone, sizeof(standalone), "%s/unaligned", directory);
+    check_unaligned_program_table(image, standalone);
 
 cleanup:
     if (image_fd >= 0) {
@@ -774,6 +907,7 @@ static void test_multithread_exec_keeps_retiring_page_table_roots_alive(void)
 
 int main(void)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
     TEST_START("execve/execveat family semantics");
 
     test_fork_child_exit_wait4();
