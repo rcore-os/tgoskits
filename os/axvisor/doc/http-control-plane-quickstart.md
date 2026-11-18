@@ -11,14 +11,14 @@ AxVisor 内置一个基于 axum 的管理控制平面：它在虚拟机监控器
 
 ## 构建与运行
 
-CI 与本地共用同一入口（用例位于 `test-suit/axvisor/qemu-http-control-plane/`）：
+CI 与本地共用同一入口（用例位于 `test-suit/axvisor/qemu/aarch64/http-control-plane/`）：
 
 ```bash
 # 预取 QEMU 镜像与托管 rootfs（用例的 BusyBox initramfs 由它生成）
 cargo xtask image pull
 
-# 运行 http-control-plane 用例（aarch64，默认 test-group = normal）
-cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
+# 运行 http-control-plane 用例（aarch64，默认 test-group = .，单选 control-plane 成员）
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/http-control-plane/control-plane
 ```
 
 用例构建配置
@@ -32,9 +32,9 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 AXVM_HTTP_BIND = "0.0.0.0:8080"
 ```
 
-`qemu-aarch64.toml` 中的 `[host_http_probe]` 让 runner 追加 hostfwd 与
-virtio-net-pci，并在转发端口可达后执行 `http-control-plane/http_probe.py`；
-该脚本的退出码即用例判定（0 通过，非 0 失败），QEMU 串口输出不是判定来源。
+`tests/control-plane.toml` 中的 `[host_http_probe]` 让 runner 追加 hostfwd 与
+virtio-net-pci，并在转发端口可达后执行 `control-plane/http_probe.py`；
+该脚本的退出码即用例判定（0 通过，非 0 失败），QEMU 串口的全局失败模式也会使检查失败。
 
 ## 路由与返回
 
@@ -119,6 +119,6 @@ vCPU 与计数器字段。
 
 ## 参见
 
-- 用例与探针：`test-suit/axvisor/qemu-http-control-plane/`
+- 用例与探针：`test-suit/axvisor/qemu/aarch64/http-control-plane/`
 - HTTP handler：`os/axvisor/src/control/transport/api/vm.rs`、`os/axvisor/src/control/transport/server.rs`
 - owner 生命周期：`virtualization/axvm/src/control/`

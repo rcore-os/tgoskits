@@ -1,4 +1,4 @@
-# The `qemu-http-control-plane` case's builtin guest: the fs-read machine
+# The `qemu/aarch64/http-control-plane/control-plane` case's builtin guest: the fs-read machine
 # model with the memory, pinning and PCI exclusions that case's management
 # network needs. The HTTP probe creates and starts it lazily through the API.
 #

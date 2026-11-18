@@ -472,18 +472,14 @@ UART、SMP kick 与真实 manager/runtime 的 `notify_vm()` 组合。
 
 ```bash
 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
-cargo xtask axvisor test qemu --arch aarch64 --test-case atomic-output
-cargo xtask axvisor test qemu --arch aarch64 --test-case qemu-console-interleave/interleave
-cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
+cargo xtask axvisor app qemu --app-root apps/suite/axvisor --group qemu --arch aarch64 --app aarch64/console --test-case atomic-output
+cargo xtask axvisor app qemu --app-root apps/suite/axvisor --group qemu --arch aarch64 --app aarch64/console --test-case interleave
+cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/vmx/functional/direct-acpi
 ```
 
 第一条在受支持的 aarch64 target 上运行带 `axtest` 标记的 Axvisor 控制台测试。
-`atomic-output` 先在禁止抢占区填满 runtime ingress，再通过固定 host transport 提交成功标记，
-直接验证 atomic producer 不进入可睡眠 output；真实 `GuestSerialBackend` 的 active
-generation/identity admission 与格式化边界由 mux/axtest 覆盖。`qemu-console-interleave` 经
-公共任务态 output 固定构造 `rm` 片段与以 `:` 开头的宿主日志，验证 task output 与完整日志不会
-拼成失败标记。最后一条使用包含一台 x86 Linux
-guest 的 `direct-acpi-vmx` 配置：guest 通过 `console=ttyS0` 输出成功标记，因此可观察 VM 启动、
+两项控制台检查已迁到 `apps/suite/axvisor/qemu/aarch64/console`，由用户触发，未登记普通 CI。`atomic-output` 保留连续输出、控制台切换与原失败签名，`interleave` 保留任务输出和宿主日志交错检查；它们使用同一应用启动和必要准备，不声称主动强制进入原子上下文。具体步骤和限制见该场景 README。最后一条使用包含一台 x86 Linux
+guest 的 `qemu/x86_64/vmx/functional/direct-acpi` 检查：guest 通过 `console=ttyS0` 输出成功标记，因此可观察 VM 启动、
 虚拟串口 TX 和宿主控制台输出组合路径；它不验证输入快捷键、foreground 切换或 4096 字节
-队列边界。AMD/SVM 宿主上的对应 case 是 `direct-acpi-svm`。VMX/SVM 用例依赖 KVM 和相应的
+队列边界。AMD/SVM 宿主上的对应 case 是 `qemu/x86_64/svm/functional/direct-acpi`。VMX/SVM 用例依赖 KVM 和相应的
 CPU 能力。

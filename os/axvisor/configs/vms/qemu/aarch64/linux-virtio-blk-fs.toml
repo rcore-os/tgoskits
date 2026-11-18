@@ -1,5 +1,5 @@
 # A Linux guest whose kernel and root disk are read from the guest
-# filesystem (a filesystem-backed `kernel_path`): the machine model the `qemu-web-ui`
+# filesystem (a filesystem-backed `kernel_path`): the machine model the `general/dashboard`
 # case packages as its builtin catalog entry. The HTTP probe creates it lazily.
 #
 # Everything this guest needs is read from the Axvisor host filesystem, which is

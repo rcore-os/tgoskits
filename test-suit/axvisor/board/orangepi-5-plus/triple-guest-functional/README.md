@@ -14,7 +14,7 @@ Linux 与 StarryOS 的 `virtio-net` 接在 AxVisor 内部二层交换机上，�
 
 ### 1.2 判定原则
 
-这套检查是失败关闭的。板卡入口 `functional/board-orangepi-5-plus-triple-guest-functional.toml` 按顺序注入 `shell_check_steps`，每一步只在输出中匹配约定标记；看到客户机登录提示符、内核启动日志或某个中间标记都不算通过，只有完整标记序列成立才算通过。三个客户机的检查相互独立，某一客户机失败不会因为另一客户机通过而被掩盖。网络检查把枚举、接口名、链路状态、地址、路由和 ping 拆成独立步骤，各自计时分开，停顿归到导致停顿的那一步。Zephyr 的 benchmark 或 sample 镜像会跑完并打印 `PROJECT EXECUTION SUCCESSFUL`、永远不给 `zephyr:~$` 提示符，因此该 banner 被列入顶层 `fail_regex` 立即判失败，避免错误部署一直挂到整体超时。
+这套检查是失败关闭的。板卡入口 `board-orangepi-5-plus-triple-guest-functional.toml` 引用 `tests/guest-functional.toml`，按顺序注入其中的 `shell_check_steps`，每一步只在输出中匹配约定标记；看到客户机登录提示符、内核启动日志或某个中间标记都不算通过，只有完整标记序列成立才算通过。三个客户机的检查相互独立，某一客户机失败不会因为另一客户机通过而被掩盖。网络检查把枚举、接口名、链路状态、地址、路由和 ping 拆成独立步骤，各自计时分开，停顿归到导致停顿的那一步。Zephyr 的 benchmark 或 sample 镜像会跑完并打印 `PROJECT EXECUTION SUCCESSFUL`、永远不给 `zephyr:~$` 提示符，因此该 banner 被列入顶层 `fail_regex` 立即判失败，避免错误部署一直挂到整体超时。
 
 ## 2. 客户机与资源划分
 
@@ -109,14 +109,12 @@ tgoskits 的 CI 只运行板卡入口，不会构建 Zephyr 镜像，也不会�
 ```bash
 # 发现
 cargo xtask axvisor test board --list \
-  \
-  --test-case functional \
+  --test-case board/orangepi-5-plus/triple-guest-functional \
   --board orangepi-5-plus-triple-guest-functional
 
 # 执行
 cargo xtask axvisor test board \
-  \
-  --test-case functional \
+  --test-case board/orangepi-5-plus/triple-guest-functional \
   --board orangepi-5-plus-triple-guest-functional \
   --server <board-service> --port <port>
 ```
@@ -157,7 +155,7 @@ sync
 
 ## 7. 文件职责
 
-下表汇总本目录文件在用例中的角色。板卡入口 `functional/board-orangepi-5-plus-triple-guest-functional.toml` 是唯一的判定来源，放在 `functional/` 子目录里，使 `--test-case functional` 在 AxVisor 板卡发现和 CI 规划器里得到同一个用例名。
+下表汇总本目录文件在用例中的角色。场景根的 `board-orangepi-5-plus-triple-guest-functional.toml` 通过 `[axbuild].checks` 引用 `tests/guest-functional.toml`；前者声明板卡启动，后者保存有序串口检查，运行器和CI共同使用根相对选择器 `board/orangepi-5-plus/triple-guest-functional`。
 
 | 文件 | 角色 |
 | --- | --- |
@@ -167,8 +165,8 @@ sync
 | `guest-zephyr.toml` | VM3 全虚拟化 Zephyr（`zephyr-triple-guest-functional`）：部署的 `zephyr-triple-guest-functional` 二进制与同批 DTB、合成 vGIC 跟随宿主板级 GIC 地址 |
 | `starry-guest-build.toml` | 板卡测试前手工构建 StarryOS 客户机内核的配置（`cargo xtask starry build`，`max_cpu_num = 1`） |
 | `prepare-guest-apt-repo.sh` | 在板卡原生 Linux 上把缓存的 `hello` 包变成隔离 `file:` 仓库，预热客户机 APT |
-| `functional/board-orangepi-5-plus-triple-guest-functional.toml` | 板卡入口：按顺序注入 `shell_check_steps`，是唯一的判定来源 |
+| `board-orangepi-5-plus-triple-guest-functional.toml`、`tests/guest-functional.toml` | 板卡启动入口与按序执行的 `shell_check_steps` |
 
 ## 8. CI 注册
 
-本目录的用例已注册为 `.github/ci/checks/axvisor.toml` 中 `normal` 分组的自托管板卡持续集成检查 `test-axvisor-self-hosted-board-orangepi-5-plus-triple-guest-functional`，与直接运行 `cargo xtask axvisor test board` 使用同一套 `shell_check_steps` 判定。CI 项在同一个 `command` 里先用 `cargo xtask starry build --config test-suit/axvisor/board/orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1` 构建客户机内核，成功（`&&`）后才运行板卡入口；`pull_request_command` 是同一条带前置构建的命令，供增量 PR 与套件精确路由使用。
+本目录的用例已注册为 `.github/ci/checks/axvisor.toml` 中 AxVisor 测试组的自托管板卡持续集成检查 `test-axvisor-self-hosted-board-orangepi-5-plus-triple-guest-functional`，与直接运行 `cargo xtask axvisor test board` 使用同一套 `shell_check_steps` 判定。CI 项在同一个 `command` 里先用 `cargo xtask starry build --config test-suit/axvisor/board/orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1` 构建客户机内核，成功（`&&`）后才运行板卡入口；`pull_request_command` 是同一条带前置构建的命令，供增量 PR 与套件精确路由使用。

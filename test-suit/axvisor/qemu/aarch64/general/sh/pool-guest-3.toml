@@ -4,7 +4,7 @@
 # file is a candidate exactly as written.
 #
 # All three entries share the guest physical layout and the ArceOS kernel the
-# `qemu-ivc` case boots; only id, name and pinned host CPU differ, so the case
+# `general/ivc` check boots; only id, name and pinned host CPU differ, so the case
 # can start them side by side on one machine.
 [base]
 id = 14

@@ -6,7 +6,7 @@
 # produce (the shell line buffer holds 256 bytes and TOML needs one key-value
 # pair per line). The case copies it into the pool directory and starts it.
 #
-# The kernel is the ArceOS IVC publisher the `qemu-ivc` case already boots, and
+# The kernel is the ArceOS IVC publisher the `general/ivc` check already boots, and
 # the device layout mirrors its config so this entry boots under the same
 # hypervisor build.
 [base]

@@ -83,8 +83,7 @@ GICv2/SMP4启动检查已并入ARM OpenRC；旧`qemu/gicv2-boot`选择仅在aarc
 
 ## qemu/system 聚合
 
-`qemu/system/qemu-*.toml` 共用一次 StarryOS 启动，在 SMP4 配置下运行所有系统类
-子测例。子测例目录直接放在 `system/` 下，每个子测例只保留自己的资产目录：
+公开 `qemu/system` 选择器指向 `qemu/standard/system/qemu-*.toml`，在 SMP4 普通 profile 中聚合系统类子测例；ARM额外profile保持显式启动。项目按功能分类存放，每个项目保留自己的CMake与实现：
 
 ```text
 qemu/standard/system/<功能分类>/<subcase>/

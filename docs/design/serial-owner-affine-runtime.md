@@ -345,6 +345,8 @@ Starry grouped 回归新增 `test-tty-termios-transaction`，并保留
 loongarch64 上串行运行 SMP=4 QEMU 用例；当前是否满足以对应 PR head 的终态 CI 为准，
 设计文档不把历史运行结果当成新 head 的验证证据。
 
+以下两段保留 #2108 时的测试名与故障证据；当前入口已迁到 `apps/suite/axvisor/qemu/aarch64/console` 的 `interleave`、`atomic-output` 应用成员，现有步骤与覆盖边界以该目录 README 为准，不能用历史描述扩展当前验收结论。
+
 Axvisor 的 `qemu-console-interleave/interleave` 是 #2108 的确定性红灯：先经公共任务态 output
 直接输出 `rm`，
 再发布以 `:` 开头的宿主完整日志，最后结束交互片段。旧平台轮询/early UART 路径稳定形成

@@ -97,7 +97,7 @@ axbuild是独立宿主库，测试成员、目录策略和完成条件属于这�
 
 QEMU专用共享资源放`qemu/common`；跨板型共享放`board/common`；仅在QEMU与板卡实际共同使用时建立`common`。没有消费者就不创建空common。架构/板型专用入口留在对应功能目录，手动配置留`apps/suite/axvisor`。
 
-当前`qemu/common/web-ui/http_probe.py`由ARM web-ui直接执行，并被VMX web-ui-vmx入口导入。VMX入口位于`qemu/x86_64/vmx/web-ui/dashboard/default_guest_probe.py`，其asset_dir显式声明公共辅助目录，同时用于运行时导入和CI共享变更路由。手动demo配方与hostfwd位于`apps/suite/axvisor/qemu/aarch64/web-ui-demo`；API与三客机演示同属apps/suite，使用直接QEMU命令交互，不作为自动测试通过。详见[手动QEMU场景](../../apps/suite/axvisor/qemu/aarch64/README.md)。
+当前`qemu/common/web-ui/http_probe.py`由ARM general及memory-web的dashboard检查执行，并被VMX web-ui入口导入。VMX入口位于`qemu/x86_64/vmx/web-ui/dashboard/default_guest_probe.py`，其asset_dir显式声明公共辅助目录，同时用于运行时导入和CI共享变更路由。手动demo配方与hostfwd位于`apps/suite/axvisor/qemu/aarch64/web-ui-demo`；API与三客机演示同属apps/suite，使用直接QEMU命令交互，不作为自动测试通过。详见[手动QEMU场景](../../apps/suite/axvisor/qemu/aarch64/README.md)。
 
 ### 仅声明文件的检查命名
 

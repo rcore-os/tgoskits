@@ -29,29 +29,27 @@ cargo xtask starry test board --board <type> --server <host> --port <port> [--te
 
 ## 2. 目录结构
 
-StarryOS 的测试目录组织为**平铺 + build wrapper**：
+StarryOS 的测试目录按运行环境和功能分类，构建配置仍由最近的 build wrapper 提供；公开 case ID 不要求与物理目录相同。
 
 ```text
 test-suit/starryos/
-├── qemu-smp1/                    ← build wrapper（含 build-riscv64gc-unknown-none-elf.toml）
-│   ├── build-riscv64gc-unknown-none-elf.toml
-│   └── system/
-│       └── qemu-riscv64.toml     ← 子 case（继承 wrapper 的 build config）
-├── qemu-smp4/                    ← 另一个 build wrapper（不同 SMP 配置）
-│   ├── build-riscv64gc-unknown-none-elf.toml
-│   └── system/
-│       └── qemu-riscv64.toml
-└── board-*/                      ← 板级 build wrapper
-    └── <case>/board-{board}.toml
+├── qemu/
+│   ├── standard/
+│   │   ├── build-*.toml
+│   │   ├── system/<功能分类>/<项目>/
+│   │   └── openrc/
+│   └── x86_64/{ahci-single,e1000,timer-preemption}/
+├── board/<板型>/<场景>/
+└── common/{runner,cmake,include,network}/
 ```
 
 与 [ArceOS 测试](../arceos/test)（区分 `rust/` 和 `c/` 子目录）不同，StarryOS 从 `test-suit/starryos/` 根目录直接发现 QEMU/board 用例，不按语言分子目录。
 
 ### 2.1 Build Wrapper 的意义
 
-`qemu-smp1` 和 `qemu-smp4` 分别测试单核和多核场景，它们的构建配置不同（SMP 核数不同），因此必须分别编译；每个 wrapper 下的 `system` 聚合用例使用完全相同的内核，只需编译一次并启动一次。发现算法通过识别 `build-{target}.toml` 文件来自动划分构建边界，build wrapper 是含 `build-{target}.toml` 的目录，定义一组共享相同构建配置的用例。
+`qemu/standard/build-*.toml` 提供通用内核构建配置；system 根 CMake 递归收集分类下的项目，按稳定项目ID构建和安装。`qemu/system` 等公开选择器由 `scripts/axbuild/src/test/normal/starry/layout.rs` 映射到物理目录。AHCI、E1000及timer专用场景保留各自运行配置；是否复用编译取决于实际 Cargo 身份，不由分类目录名决定。
 
-x86_64 的 QEMU wrapper 统一启用四组用例可能使用的驱动 feature（AHCI、Intel E1000、NVMe、VirtIO 和 PCI XHCI），并使用同一 `max_cpu_num`，因此 `qemu`、`qemu-e1000`、`timer-preemption-x86` 和 `ahci-single` 共用一次内核构建。驱动注册仍由 PCI/FDT probe 根据 QEMU 实际提供的设备完成；没有对应设备时不会创建驱动实例，所以合并 feature 不会改变各用例的设备语义。
+运行 profile 继续决定启动边界：ARM 的 perf/icount、根扩容和只读挂载使用显式配置；OpenRC 与 TTY 共用启动，ARM 同组额外检查 GICv2，普通 system 仍使用 GICv3。功能分类不增加启动，也不意味着所有场景都合成一次启动。
 
 ## 3. QEMU 测试执行流程
 

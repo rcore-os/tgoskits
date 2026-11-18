@@ -72,8 +72,8 @@ pub(crate) fn suite_root(workspace_root: &Path, os_name: &str) -> PathBuf {
 | 系统 | group 布局 |
 |------|-----------|
 | ArceOS | `rust/`、`c/` 是预定义 group，也支持自定义 group 目录 |
-| StarryOS | `test-suit/starryos/` 根目录直接平铺 build wrapper（如 `qemu-smp1/`） |
-| Axvisor | `normal/` 作为主测试组 |
+| StarryOS | `qemu/standard/` 共享构建与通用场景、`qemu/x86_64/` 专用场景、`board/<板型>/` 板测，公开项目ID保持 |
+| Axvisor | 默认从 `test-suit/axvisor/` 根（`.`）发现 `qemu/<架构>/` 与 `board/<板型>/`；应用分组仍默认 `normal` |
 
 ## 4. 用例发现与 build wrapper
 

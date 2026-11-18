@@ -7,7 +7,7 @@ sidebar_label: "测试"
 
 Axvisor 复用了与 [StarryOS 测试](../starry/test) 相同的用例发现、资产准备和结果判定基础设施，但不支持 `test_commands` 分组命令。需要执行命令的 Axvisor 用例使用 `shell_check_steps`，明确指定提示符、命令和完成条件。
 
-测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **OS 只构建一次，逐 case 运行**。共享框架的完整说明见 [测试基础设施](../test_infra)；本文描述 Axvisor 特有的测试目录结构、三种测试模式（QEMU / U-Boot / Board）的差异，以及 Axvisor 独有的 `test uboot` 模式。
+测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **按 Cargo 身份复用构建，按启动组运行，组内按声明顺序检查**。共享框架的完整说明见 [测试基础设施](../test_infra)；本文描述 Axvisor 特有的测试目录结构、三种测试模式（QEMU / U-Boot / Board）的差异，以及 Axvisor 独有的 `test uboot` 模式。
 
 ## 1. 测试接口
 
@@ -37,7 +37,7 @@ test-suit/axvisor/
 
 AxVisor直接按QEMU架构和板型组织启动组，不再增加normal物理目录。发现算法统一通过 `build-{target}.toml` 定位构建组、`qemu-{arch}.toml` 定位用例。
 
-普通功能用例位于 `test-suit/axvisor/`，应用及部分 Nightly 场景位于 `apps/axvisor/`。`axvisor/test/discovery.rs::CaseSource` 将两者分开：`test qemu` 和 `test board` 使用 `Tests`，`app qemu` 和 `app board` 使用 `Apps`，不会跨命名空间扫描。板卡默认测试入口另保留 `benchmarks/axvisor/` 的兼容入口。应用入口与选择规则见第 8 节。
+普通功能用例位于 `test-suit/axvisor/`，应用及部分 Nightly 场景位于 `apps/axvisor/`。`scripts/axbuild/src/test/normal/axvisor/discovery.rs::CaseSource` 将两者分开：`test qemu` 和 `test board` 使用 `Tests`，`app qemu` 和 `app board` 使用 `Apps`，不会跨命名空间扫描。板卡默认测试入口另保留 `benchmarks/axvisor/` 的兼容入口。应用入口与选择规则见第 8 节。
 
 ## 3. 运行模式
 
@@ -51,7 +51,7 @@ AxVisor直接按QEMU架构和板型组织启动组，不再增加normal物理目
 
 ### 3.1 QEMU 测试
 
-最常用的测试模式，在 QEMU 中启动 Axvisor 和配置的 Guest VM。执行链位于 `axvisor/test/qemu.rs::test_qemu()`，采用**两阶段**策略：先编译所有 build group，再运行所有 QEMU 用例。`vm_configs` 只构建 `/guest/builtin` catalog；每个需要开机客户机的 QEMU case 都必须在 host `cmdline`/`-append` 中显式写入 `axvisor.vm_start=<id>[,<id>...]`，没有 selector 的 case 应验证零启动或通过 shell/HTTP 按需启动。
+最常用的测试模式，在 QEMU 中启动 Axvisor 和配置的 Guest VM。执行链位于 `scripts/axbuild/src/test/normal/axvisor/qemu/mod.rs::test_qemu()`，采用**两阶段**策略：先编译所有 build group，再运行所有 QEMU 用例。`vm_configs` 只构建 `/guest/builtin` catalog；每个需要开机客户机的 QEMU case 都必须在 host `cmdline`/`-append` 中显式写入 `axvisor.vm_start=<id>[,<id>...]`，没有 selector 的 case 应验证零启动或通过 shell/HTTP 按需启动。
 
 ```mermaid
 flowchart TD
@@ -67,7 +67,7 @@ flowchart TD
     I --> J["prepare_case_assets + 客户机资源打包<br/>rootfs 副本/overlay + 宿主 cpio"]
     J --> K["patch_qemu_rootfs_path(Discard)"]
     K --> L["run_qemu_with_prepared_case_assets"]
-    L --> M{"success_regex?"}
+    L --> M{"有序检查、HTTP探针及宿主退出均成功?"}
     M -->|是| N["ok: case_name"]
     M -->|否| O["failed: case_name"]
     N --> P["QemuTestSummary"]
@@ -80,9 +80,9 @@ flowchart TD
 
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
-| 用例发现 | `discovery.rs::discover_qemu_cases()` | 按 `CaseSource` 扫描 `test-suit/axvisor/<group>/` 或 `apps/axvisor/<group>/`，默认 group 为 `normal` |
-| VM 配置 | `qemu_group_build_context()` | 从用例 `host-initramfs.toml` 读取 VM 打包输入，缺省时使用构建配置的列表；只产生 builtin catalog |
-| rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 根据每个用例的宿主根盘接线准备磁盘；纯 initramfs 用例不下载宿主根盘 |
+| 用例发现 | `discovery.rs::discover_qemu_cases()` | 仓库测试默认从 `test-suit/axvisor/` 根（group 为 `.`）发现；应用与外部命名分组默认仍为 `normal` |
+| VM 配置 | `qemu_case_build_context()` | 从用例 `host-initramfs.toml` 读取 VM 打包输入，缺省时使用构建配置的列表；只产生 builtin catalog |
+| rootfs 准备 | `rootfs::ensure_qemu_assets_ready()` | 根据每个用例的宿主根盘接线准备磁盘；纯 initramfs 用例不下载宿主根盘 |
 | 分组命令校验 | `discovery.rs::load_qemu_case()` | 在构建前拒绝非空 `test_commands`，提示改用 `shell_check_steps` |
 | 结果判定 | `QemuTestSummary` | 收集所有 case 的 pass/fail，最终 `finish_with_total_detail()` 统一判定退出码 |
 
@@ -90,7 +90,7 @@ flowchart TD
 
 ### 3.2 U-Boot 测试
 
-Axvisor 是唯一支持 U-Boot 测试模式的子系统。`cargo xtask axvisor test uboot --board <TYPE>` 在远程板卡上通过 U-Boot 引导 Axvisor 和 Guest。执行链位于 `axvisor/test/board.rs::test_uboot()`。
+Axvisor 是唯一支持 U-Boot 测试模式的子系统。`cargo xtask axvisor test uboot --board <TYPE>` 在远程板卡上通过 U-Boot 引导 Axvisor 和 Guest。执行链位于 `scripts/axbuild/src/test/normal/axvisor/board.rs::test_uboot()`。
 
 ```mermaid
 flowchart TD
@@ -118,21 +118,16 @@ flowchart TD
 关键步骤：
 
 - **用例定位**：`discover_uboot_test_group()` 按 board 名和 guest 名定位唯一的 board test group。
-- **U-Boot config 合并**：`merge_board_test_uboot_config()` 把 base config（来自 `--uboot-config` 或自动发现）与 board test config（来自 `board-test-*.toml`）合并。合并策略：board test 的 `fail_regex`、`uboot_cmd` 以及有序 `shell_check_steps` **整体覆盖** base；步骤内使用可选的 `shell_prefix`、`shell_cmd` 和成功/失败判定，无命令步骤可只检查自行产生的输出。地址类字段（`kernel_load_addr`、`fit_load_addr`、`bootm_addr`）仅在 board test 提供时覆盖；base 的 `local`（串口、波特率）和 `dtb_file` **保留**。`cmdline` 同样整体覆盖：board test 的 `cmdline`（或 `uboot_cmd` 中的 `setenv bootargs`）是宿主 bootargs 的**唯一来源**，用例必须写入该板卡所需的全部宿主启动参数和 `axvisor.vm_start`（接磁盘根的板卡含 `root=`、`console=`、`earlycon` 等；纯 initramfs、无磁盘根切换的板卡（如 ASUS NUC15CRH 的 x86_64 httpboot 用例）可以只含 selector），不存在向板卡环境 `${bootargs}` 或 base preset 的隐式追加；远端 `test board` 路径不经合并，行为与此一致。
+- **U-Boot config 合并**：`merge_board_test_uboot_config()` 把 base config（来自 `--uboot-config` 或自动发现）与 board test config（来自 `board-<name>.toml`）合并。合并策略：board test 的 `fail_regex`、`uboot_cmd` 以及有序 `shell_check_steps` **整体覆盖** base；步骤内使用可选的 `shell_prefix`、`shell_cmd` 和成功/失败判定，无命令步骤可只检查自行产生的输出。地址类字段（`kernel_load_addr`、`fit_load_addr`、`bootm_addr`）仅在 board test 提供时覆盖；base 的 `local`（串口、波特率）和 `dtb_file` **保留**。`cmdline` 同样整体覆盖：board test 的 `cmdline`（或 `uboot_cmd` 中的 `setenv bootargs`）是宿主 bootargs 的**唯一来源**，用例必须写入该板卡所需的全部宿主启动参数和 `axvisor.vm_start`（接磁盘根的板卡含 `root=`、`console=`、`earlycon` 等；纯 initramfs、无磁盘根切换的板卡（如 ASUS NUC15CRH 的 x86_64 httpboot 用例）可以只含 selector），不存在向板卡环境 `${bootargs}` 或 base preset 的隐式追加；远端 `test board` 路径不经合并，行为与此一致。
 - **编译与运行**：`app.uboot()` 一次性完成编译和 U-Boot 运行，由合并后的 U-Boot config 判定结果。
 
 该模式验证完整的"U-Boot → Axvisor → Guest"引导链路，覆盖真实硬件上 U-Boot 加载 Axvisor ELF、Axvisor 初始化硬件虚拟化扩展、再启动 Guest 的全流程。
 
 ### 3.3 板卡测试
 
-板级测试通过 `board-{board_name}.toml` 配置文件定义。执行链位于 `axvisor/test/board.rs::test_board()`，使用 `BoardTestRunState` 逐 group 运行并收集结果（与 QEMU 测试的 `QemuTestSummary` 类似）。
+板级测试通过 `board-{board_name}.toml` 配置文件定义。执行链位于 `scripts/axbuild/src/test/normal/axvisor/board.rs::test_board()`，使用 `BoardTestRunState` 逐 group 运行并收集结果（与 QEMU 测试的 `QemuTestSummary` 类似）。
 
-每个 board test group 的处理：
-
-1. `prepare_request()` 加载 build config（`SnapshotPersistence::Discard`）
-2. `load_cargo_config()` 装配 Cargo
-3. `load_board_config()` 加载 board test config（`board-test-*.toml`）
-4. `app.board()` 编译 + 部署到远程板卡，由 board config 的正则判定结果
+板卡运行先完成 guest 准备并按实际 Cargo 身份复用宿主构建，再由 `load_selected_board_config()` 展开当前场景选择的 `[axbuild].checks`。`prepare_guest_payload()` 为该场景准备资源，`app.board_prepared_elf()` 将保存的宿主产物部署到远程板卡并按完整检查序列判定；某项检查通过不能替代整组通过。
 
 `--test-case` 和 `--board` 支持按用例名和板卡名过滤；`--list` 列出所有 board test group。发现算法通过 `discover_board_test_groups()` 递归扫描，board 配置按板卡名命名（`board-{name}.toml`），通过 `nearest_build_wrapper()` 向上查找最近的构建配置。
 
@@ -166,7 +161,7 @@ cargo xtask axvisor test qemu --arch x86_64 \
 
 两者共用 `test-suit/axvisor/qemu/x86_64/common/guests/acpi-ovmf/guest.toml`、同一 BusyBox initramfs 和同一 4 MiB guest firmware 输出。build config 不选择 `vmx` 或 `svm` Cargo feature；唯一的 backend 差异是外层 QEMU 的 `-cpu` 能力：VMX 暴露 EPT、unrestricted guest 和 flexpriority，SVM 暴露 SVM、NPT 和 NRIP save。因此应分别在 Intel/VMX 与 AMD/SVM KVM 宿主上运行对应 case。
 
-两个 case 均已加入 CI 运行：`ovmf-acpi-vmx` 在 self-hosted Intel/KVM 宿主上运行（见 `.github/workflows/ci.yml` 中 "Test axvisor x86_64 ACPI direct and OVMF boot (vmx)" 任务），`ovmf-acpi-svm` 在 self-hosted AMD/KVM 宿主上运行（见单个 `kvm-amd` SVM 任务）。
+两项检查均登记在 `.github/ci/checks/axvisor.toml`：分别由 `kvm-intel` 与 `kvm-amd` 作业选择对应的 `functional` 启动组，在组内执行 `ovmf-acpi`。
 
 资产准备复用 Ostool 的 x86_64 OVMF 缓存，可先用以下命令确认来源路径：
 
@@ -184,35 +179,35 @@ Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和�
 
 ## 6. VMX 合并任务
 
-CI 使用一个 `kvm-intel` runner 运行八个 VMX 用例。原有 smoke、ACPI、PCI 枚举和 PCI block 七个用例保持同一 Cargo 编译身份，统一启用 `ax-driver/nvme` 与 `web-ui`；`vm_configs` 只作为每个用例的运行时输入。新增的 `web-ui-vmx` 使用独立的默认网页构建配置并额外启用 `ax-driver/intel-net`，因此运行器按两种 Cargo 身份分别构建，再执行各自的用例。`prepare_case_build_groups()` 会按 Cargo 身份合并前七个用例，确保 Web UI 与 NVMe 栈在无向量 x86_64 目标上的编译守卫只构建一次：
+VMX 主 CI 保留八项功能检查，由 `smoke`、`functional`、`web-ui` 三个启动组承接。`functional` 内按序执行 direct ACPI、MP fallback、OVMF ACPI、PCI 枚举及 PCI block 读写/只读六项；每项完成后恢复控制台并回收客户机。`prepare_case_build_groups()` 继续按 Cargo 身份复用编译，`[axbuild].checks` 决定同一次启动中的检查顺序。
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 \
-  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx,web-ui-vmx
+  --test-case qemu/x86_64/vmx/smoke,qemu/x86_64/vmx/functional,qemu/x86_64/vmx/web-ui
 ```
 
-`web-ui-vmx` 从空客户机登记表开始，通过 e1000 转发访问网页与 defaults 接口，复用原始镜像里的 Linux 内核和 Alpine 根盘。`default_guest_probe.py` 在 90 秒门限内验证真实 shell 算术及系统信息，再验证重连、停止删除与自动 ID 重用；成功标记为 `AXVISOR_DEFAULT_GUEST_WEB_UI_PASSED`。真实浏览器交互的操作步骤见[默认客户机运行流程](./runtime.md#16-x86_64-默认客户机)。
+`qemu/x86_64/vmx/web-ui` 从空客户机登记表开始，通过 e1000 访问网页与 defaults 接口，使用镜像中的 Linux 内核和 Alpine 根盘。`default_guest_probe.py` 在 90 秒门限内验证真实 shell 算术、系统信息、重连、停止删除与自动 ID 重用；成功标记为 `AXVISOR_DEFAULT_GUEST_WEB_UI_PASSED`。操作步骤见[默认客户机运行流程](./runtime.md#16-x86_64-默认客户机)。
 
 ## 7. SVM 合并任务
 
-六个 SVM 用例共用 `qemu-svm/build-x86_64-unknown-none.toml`，启用 `ax-driver/nvme`。`host-initramfs.toml` 分别声明 VM 配置、BusyBox 和 OVMF 输入。`test_qemu()` 按 Cargo 身份合并 build group 并复用内核，每个用例再恢复自己的 build TOML 路径读取运行时输入；各次启动打印相同内核哈希和各自的归档哈希。
+SVM 主 CI 保留六项功能检查，分为 `smoke` 与 `functional` 两次宿主启动。构建配置分别位于 `test-suit/axvisor/qemu/x86_64/svm/smoke/` 和 `functional/` 下的 `build-x86_64-unknown-none.toml`；两者均启用 `ax-driver/nvme`，具体客户机输入由场景的 `host-initramfs.toml` 声明。
 
-### 6.1 连续运行
+### 7.1 连续运行
 
-`--test-case` 支持重复参数及逗号列表；单例失败后继续其余用例，`QemuTestSummary` 汇总并返回非零。一次运行全部 SVM 的命令为：
+`--test-case` 支持重复参数及逗号列表。`functional` 内按序执行 direct ACPI、OVMF ACPI、PCI 枚举及 PCI block 读写/只读五项，任一必要步骤失败即使该启动组失败；外层继续汇总其他启动组并返回非零。一次运行全部 SVM 检查的命令为：
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 \
-  --test-case smoke-svm,direct-acpi-svm,ovmf-acpi-svm,pci-enumeration-svm,pci-block-rw-svm,pci-block-ro-svm
+  --test-case qemu/x86_64/svm/smoke,qemu/x86_64/svm/functional
 ```
 
-### 6.2 持续集成
+### 7.2 持续集成
 
-`.github/ci/checks/axvisor.toml` 只生成一个 `kvm-amd` SVM 作业，`cache_key = ""`，上限 120 分钟。Smoke 使用 `root=/dev/nvme0n1 rw`，同时检查宿主磁盘读写和双 VM 磁盘隔离；其他用例从内存根加载对应归档。不同构建组保留各自产物。
+`.github/ci/checks/axvisor.toml` 生成一个 `kvm-amd` SVM 作业，`cache_key = ""`。`smoke` 使用 `root=/dev/nvme0n1 rw`，检查宿主磁盘读写和双 VM 磁盘隔离；`functional` 使用无盘宿主及内存根，检查过程中依次接入、退出并删除客户机。VMX/SVM 分别需要 Intel/AMD KVM 环境，互不替代验收。
 
 ## 8. 应用入口
 
-`cargo xtask axvisor app` 运行 `apps/axvisor/` 下的应用，包含板卡场景与 QEMU 场景。`axvisor/app.rs::app_command()` 用 `CaseSource::Apps` 调用共享的 `run_board_cases()` 和 `run_qemu_cases()`，复用构建、部署与结果判定流程；`test` 入口不再包含这些应用。升级后，原有 `test board --board orangepi-5-plus-linux` 仍可能成功运行测试套件的 smoke，但不会执行应用目录中的 PCIe 网卡直通。
+`cargo xtask axvisor app` 运行 `apps/axvisor/` 下的应用，包含板卡场景与 QEMU 场景。`scripts/axbuild/src/app/axvisor/mod.rs` 用 `CaseSource::Apps` 调用共享的 `run_board_cases()` 和 `run_qemu_cases()`，复用构建、部署与结果判定流程；`test` 入口不再包含这些应用。升级后，原有 `test board --board orangepi-5-plus-linux` 仍可能成功运行测试套件的 smoke，但不会执行应用目录中的 PCIe 网卡直通。
 
 ### 8.1 列表与目录选择
 
@@ -245,4 +240,4 @@ cargo xtask axvisor app qemu --arch aarch64 \
   -t qemu-timer-stress/gicv3-timer-stress
 ```
 
-两类运行器都在宿主构建前调用 `axvisor/test/guest_build.rs::prepare()`，读取运行配置同目录下可选的 `guest-builds.toml`。其中 `host_prepare` 先准备共享资源，`arceos_build_configs` 再依次构建源码客户机；准备失败会阻止后续宿主构建与运行。没有该文件的应用继续使用自身配置和预先部署的镜像，运行前仍需满足各应用 README 的资源要求。
+两类运行器都在宿主构建前调用 `scripts/axbuild/src/axvisor/guest_build.rs::prepare()`，读取运行配置同目录下可选的 `guest-builds.toml`。其中 `host_prepare` 先准备共享资源，`arceos_build_configs` 再依次构建源码客户机；准备失败会阻止后续宿主构建与运行。没有该文件的应用继续使用自身配置和预先部署的镜像，运行前仍需满足各应用 README 的资源要求。

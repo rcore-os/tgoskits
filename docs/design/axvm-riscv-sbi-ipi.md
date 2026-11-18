@@ -157,7 +157,7 @@ runner 统一由 axbuild 的 `cross-test` 命令解析，不把工具链策略�
 
 ```bash
 cargo xtask cross-test --arch riscv64 --package axvm --features host-test --lib
-cargo xtask axvisor test qemu --arch riscv64 --test-case smp-ipi
+cargo xtask axvisor test qemu --arch riscv64 --test-case qemu/riscv64/smoke/smp-ipi
 ```
 
 组件中的 `legacy_ipi_completion_updates_only_a0` 和

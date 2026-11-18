@@ -1,4 +1,4 @@
-# Dashboard build for the `qemu-web-ui` case group.
+# Dashboard build for the `qemu/aarch64/memory-web` boot group.
 #
 # `web-ui` turns on the React dashboard: axbuild builds the frontend with npm
 # into the workspace target tree (no manual step, nothing lands in the source

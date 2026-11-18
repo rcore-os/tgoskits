@@ -306,5 +306,5 @@ cargo test -p arm_vgic
 AArch64 端到端 smoke 可用于验证 machine prepare、vGIC 激活和 guest 运行路径，但它依赖相应目标环境，不属于上述两项 host 测试：
 
 ```bash
-cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/smoke
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/general/shell-and-block
 ```

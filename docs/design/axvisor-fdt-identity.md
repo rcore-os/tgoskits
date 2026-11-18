@@ -2,6 +2,8 @@
 
 本文定义宿主资源与客户机固件节点的对应规则。实现位于 `virtualization/axvm/src/boot/fdt/core/`，资源归属仍由既有设备图和 VM 配置决定；phandle 转换不新增资源分配权限。本次修改需要在合入前接受虚拟化领域设计审查。
 
+以下带日期、提交号和 `--test-case smoke` 的命令是当时的验证记录，保留原样。当前仓库已迁移选择器：AArch64 的对应双客户机 shell/block 检查为 `qemu/aarch64/general/shell-and-block`，RISC-V 为 `qemu/riscv64/smoke/shell-and-block`；复验应使用这两个完整路径，旧命令不再是当前执行入口。
+
 ## 1. 节点对应
 
 DTSpec v0.3 的 [phandle 定义](https://devicetree-specification.readthedocs.io/en/stable/devicetree-basics.html#phandle)规定编号在单棵设备树内唯一。宿主和客户机可以重复使用相同数字，但不能据此认定两个节点是同一设备。

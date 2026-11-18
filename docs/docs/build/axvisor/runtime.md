@@ -213,7 +213,7 @@ cat /etc/alpine-release
 
 刷新页面后从左侧客户机名称重新打开终端即可继续输入。切换面板保留已经打开的终端；关闭终端标签只释放连接，「停止」结束客户机运行，「删除客户机」释放实例与通道且保留镜像文件。可再次使用默认值创建客户机，空 ID 由管理器自动分配。
 
-定向回归入口为 `cargo xtask axvisor test qemu --arch x86_64 --test-case web-ui-vmx`，使用 e1000 和相同默认资源，通过真实客户机 shell 证明创建、启动、算术、系统信息、重连与删除后重建。启动验收门限保持 90 秒。若 Linux 在 `virtqueue_add_split` 警告后停在根盘读取，核对 PCI block adapter 的 `seg_max` 是否为直接描述符队列预留请求头和状态两个槽；不应通过延长等待掩盖不可提交的请求。本流程本地只验证 x86_64 VMX，未将 AMD SVM 或其他架构视为已验证。
+定向回归入口为 `cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/vmx/web-ui`，使用 e1000 和相同默认资源，通过真实客户机 shell 证明创建、启动、算术、系统信息、重连与删除后重建。启动验收门限保持 90 秒。若 Linux 在 `virtqueue_add_split` 警告后停在根盘读取，核对 PCI block adapter 的 `seg_max` 是否为直接描述符队列预留请求头和状态两个槽；不应通过延长等待掩盖不可提交的请求。本流程本地只验证 x86_64 VMX，未将 AMD SVM 或其他架构视为已验证。
 
 ## 2. U-Boot 启动
 

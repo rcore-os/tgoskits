@@ -151,7 +151,7 @@ cargo xtask starry test qemu --arch aarch64 --test-case qemu/host-initramfs-swit
 cargo xtask image pack-initramfs test-suit/host-initramfs target/axbuild/host-initramfs/host-test.cpio
 cargo xtask image pull --arch aarch64
 FEATURES=block-root-smoke cargo xtask arceos qemu -p arceos-helloworld --arch aarch64 --qemu-config apps/arceos/helloworld/qemu-host-initramfs-root-aarch64.toml
-cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/http-control-plane/control-plane
 ```
 
 ArceOS 配置通过 `-device nvme,drive=disk0` 接入下载后的 Alpine 根盘，并以 `root=/dev/nvme0n1 rw` 选择该盘。应用断言根类型为块设备、`/etc/alpine-release` 非空且 `/etc/issue` 不再来自测试归档，最后输出 `HOST_DISK_ROOT_PASSED`；该完整入口已纳入 `.github/ci/checks/arceos.toml` 的 AArch64 应用与套件作业。
