@@ -4841,6 +4841,37 @@ bb479d5c40 的 qemu_state_capture.py 在 CI 模拟器旁路保存 QMP 状态、C
 该提交用于取得失败现场，尚未修复虚拟化实现。新增记录为
 ci_d2b3ee0ceb_and_loongarch_capture，保留既有 71 项生产记录。
 
+### 6.44 可执行头的原生格式准入
+
+`ElfImageKind` 明确区分主映像与 PT_INTERP。`ElfImage::load` 先沿既有
+CachedFile 读取本次头部，再校验原生机器类型；主映像还只接受 ET_EXEC 和
+ET_DYN。这些拒绝先于 ELFHeadersBuilder 的程序头范围读取、分配及映射。
+四目标在一个 cfg_select 装配点选择实际 Machine，LoongArch 使用上游枚举
+尚未命名的 EM_LOONGARCH 258。解析器没有提前暴露 header，因此对同一缓冲
+先解析固定头做准入，再交既有 builder；没有增加文件读取或跨执行头缓存。
+
+主映像被拒绝时继续通过原格式回退返回 ENOEXEC，PT_INTERP 的原生机器类型
+错误映射 ELIBBAD。解释器先要求完整原生头，所以短读仍先 EIO；短主脚本
+继续保留。原 UserImageBuilder 和 ExecutableFile 负责未发布映像及执行租约
+退休。本轮不改变对外系统调用布局，也没有增加 unsafe 转换。
+
+既有 test-execve 的私有 shell/解释器旅程增强为对同一 inode 改写机器类型
+及主映像对象类型，分别直接调用 execve 和 execveat，拒绝后重新取得 writer
+并恢复原字段，再实际执行 shell。冻结 C 在 Linux 6.8 宿主为 157/157；固定
+语义基准仍是 Linux v7.1 的 8cd9520d35。2a4fa6348b 旧内核为 151/157，
+其中 EM_NONE 被放行，ET_REL 主映像误报 ENOMEM，两入口合计稳定失败六项。
+710411b5af 的同一 C 在四架构各通过 1/1，x86 实际输出 157/157。标准库
+入口选择 Kernel 一包并通过，增量 Clippy 两包 83/83；格式及 include-backed
+loader 检查通过。原程序内增加断言，没有新增系统程序或默认启动；本地
+实际启动为旧实现一次与修后四架构各一次。证据键为 elf_native_header_admission。
+
+早期 Linux 探针还发现，PT_INTERP 的 ET_REL 在 begin_new_exec 之后才被
+load_elf_interp 拒绝，两入口实际均被 SIGSEGV 终止，不能提前返回可恢复的
+ELIBBAD 来冒充兼容。该探针在冻结最终回归、实现修复前移除，保留原始失败
+与诊断日志。解释器对象类型的不可回退点、class/字节序、程序头范围/对齐/
+短读、路径 NUL 填充以及可写主映像恢复仍须继续闭合。本阶段远端 CI 另行
+记录，前一提交的成功不能替代该源码的检查。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。

@@ -10997,5 +10997,203 @@
       }
     },
     "remaining": "This is failure-state instrumentation, not a virtual-machine progress fix. Latest published CI remains failed until new-head evidence proves its required gates. Original VFS implementation, performance and independent-review scope remains open."
+  },
+  "elf_native_header_admission": {
+    "recorded_at": "2026-11-18T08:08:05.824177+00:00",
+    "before_source": "2a4fa6348be7532343316ee4bc40f3575379e1d6",
+    "after_source": "710411b5afafd7b561f70f2c986ba2826d76548e",
+    "test_byte_identical_linux_before_after": true,
+    "test_source": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-final.c",
+      "sha256": "d33d370b6a6b3abd62d175b0c0634ca9705e63436790f2c81fd85bd4fa8236d4",
+      "bytes": 27085
+    },
+    "source_files": {
+      "test-suit/starryos/qemu/system/test-execve/src/main.c": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/test-suit/starryos/qemu/system/test-execve/src/main.c",
+        "sha256": "d33d370b6a6b3abd62d175b0c0634ca9705e63436790f2c81fd85bd4fa8236d4",
+        "bytes": 27085
+      },
+      "os/StarryOS/kernel/src/mm/loader.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/os/StarryOS/kernel/src/mm/loader.rs",
+        "sha256": "28a86549453ab7d4611a1be085bdee5d48aa46a27ccb9b48be3e155507d08641",
+        "bytes": 39970
+      }
+    },
+    "toolchain": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-toolchain.txt",
+      "sha256": "707bd0fa024016bc0a32b9067ee9a5d830f1fc223c13d361b1e287c7243ac852",
+      "bytes": 214
+    },
+    "linux": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-linux.log",
+        "sha256": "1a93f7247d4b20a8a0678ed7c0a7d2c5eca9c7c41346616278ea4e81838cfc8f",
+        "bytes": 17782
+      },
+      "outer_exit": 0,
+      "source": "2a4fa6348be7532343316ee4bc40f3575379e1d6",
+      "host": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-linux-host.txt",
+        "sha256": "1c4bd89768e455880be173c7220a3bf6f11e5c4505de66c72253ee7895f023e9",
+        "bytes": 126
+      },
+      "binary": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-linux",
+        "sha256": "0a1f2385124315c750e79bf8d7f6f8c9e2be118ece6fb05f498fce8bfcff5ec9",
+        "bytes": 44152
+      },
+      "assertions": {
+        "passed": 157,
+        "failed": 0
+      },
+      "source_baseline": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "source_urls": [
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/x86/include/asm/elf.h",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/arm64/include/asm/elf.h",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/riscv/include/asm/elf.h",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/loongarch/include/asm/elf.h"
+      ],
+      "scope": "Runtime host is Linux 6.8.0-149-generic, not v7.1; fixed v7.1 sources establish the chosen semantic baseline."
+    },
+    "before": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-before.log",
+        "sha256": "cda65910917407f902cc772038d37b5e6f6457d3003a3b17a651ee587500e5e0",
+        "bytes": 60538
+      },
+      "outer_exit": 1,
+      "source": "2a4fa6348be7532343316ee4bc40f3575379e1d6",
+      "assertions": {
+        "passed": 151,
+        "failed": 6
+      },
+      "elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-2a4fa6348b-elf-native-header-before.elf",
+        "sha256": "1d5a10420df58b8c283735cf4734dd20e6c6569837171c313139b87227792a32",
+        "bytes": 218015704
+      },
+      "observations": "Both raw exec APIs admit EM_NONE images/interpreters; the ET_REL main image returns ENOMEM instead of ENOEXEC."
+    },
+    "runtime": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-x86_64.log",
+          "sha256": "3742619b5d8289835ade1f71910229b6ac84359b8b1e865889d3b0dfa242646b",
+          "bytes": 60190
+        },
+        "outer_exit": 0,
+        "source": "710411b5afafd7b561f70f2c986ba2826d76548e",
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-710411b5af.elf",
+          "sha256": "ad4c20c33be4d7fedb31f787a0c86dd1f7671e96af7ffdd33c2f3364538d7749",
+          "bytes": 218321880
+        }
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-riscv64.log",
+          "sha256": "401b111882f50c1877d23e5a0b371f853644950e5431352c771cb0512cc71ee1",
+          "bytes": 52115
+        },
+        "outer_exit": 0,
+        "source": "710411b5afafd7b561f70f2c986ba2826d76548e",
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/riscv64-710411b5af.elf",
+          "sha256": "101d2fc14118278d6287a54a733e6b917c0fffeb3102de2379a905223cc5c29e",
+          "bytes": 284538440
+        }
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-loongarch64.log",
+          "sha256": "2632500f29d9e942b373975b07a05ab1412c469b9554dd513742e9121782b791",
+          "bytes": 24092
+        },
+        "outer_exit": 0,
+        "source": "710411b5afafd7b561f70f2c986ba2826d76548e",
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/loongarch64-710411b5af.elf",
+          "sha256": "15430e657be4d3f391a8dbaafb84183d44d8f225fbd7db526b8b2285dcb8f3c4",
+          "bytes": 259659912
+        }
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-aarch64.log",
+          "sha256": "611234957e26a4de7aec3a0070b53d0153349d526a6d254bc9c8d51229d5de8a",
+          "bytes": 48769
+        },
+        "outer_exit": 0,
+        "source": "710411b5afafd7b561f70f2c986ba2826d76548e",
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/aarch64-710411b5af.elf",
+          "sha256": "c2eaa6bc932d1330b2e04eadcd2c40b830656837bc43e1e1f58d1bfc457f6305",
+          "bytes": 231176000
+        }
+      }
+    },
+    "clippy": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-clippy.log",
+        "sha256": "b007877bc2c6a1daa3a647df1c520782353443b79afcf5db65582a67f2436dfb",
+        "bytes": 106298
+      },
+      "outer_exit": 0,
+      "source": "710411b5afafd7b561f70f2c986ba2826d76548e"
+    },
+    "std": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-std.log",
+        "sha256": "ea74ae85b3636ec2ad205ce01c8d39d1578259fb24abe25183b7bbe47a7cdba2",
+        "bytes": 38591
+      },
+      "outer_exit": 0,
+      "source": "710411b5afafd7b561f70f2c986ba2826d76548e"
+    },
+    "format": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-format.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "exit": 0,
+      "scope": "cargo fmt, cargo fmt --check, and fixed rustfmt include-backed loader format/check before committing these exact Rust bytes"
+    },
+    "initial_linux_probe": {
+      "source": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-initial.c",
+        "sha256": "c546e131f8e0a06835741c78060089e951489b54c1d9dc418b02f25796e089fb",
+        "bytes": 27185
+      },
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-initial-linux.log",
+        "sha256": "eee5a2bef6d10d0bafb007a5d545d5ee150fa9a68afeb3d79cbd58cfb5d6a1b2",
+        "bytes": 19547
+      },
+      "outer_exit": 1,
+      "diagnostic_source": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-initial-diagnostic.c",
+        "sha256": "eb4b3de4027035cd0ed9c4b4eaddb71bec8640b9a0b347df97962d63d0021fb5",
+        "bytes": 27534
+      },
+      "diagnostic_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-header-initial-diagnostic-linux.log",
+        "sha256": "bbd41162eb2a4be10aaab9b0288857c9101f3db78ba71aced77dae572082d97b",
+        "bytes": 34097
+      },
+      "diagnostic_exit": 1,
+      "observation": "An ET_REL PT_INTERP crosses begin_new_exec before load_elf_interp rejects its type. Both raw APIs terminate with SIGSEGV on the Linux host, not a recoverable ELIBBAD return. This probe was removed before freezing the final regression and before any kernel fix."
+    },
+    "scope": "Validate native e_machine for both images and PT_INTERP and ET_EXEC/ET_DYN for the main image before the existing builder reads program headers. No new dependency, I/O, cross-exec header cache, default system program, or default QEMU boot.",
+    "remaining": [
+      "ELF class, endianness, program-header size/alignment/range/short-read safety and parser failure order remain separate work.",
+      "Invalid interpreter e_type and other post-commit Linux exec failures require a point-of-no-return protocol, not an early recoverable ELIBBAD shortcut.",
+      "PT_INTERP NUL padding, writable main-image recovery and the broader VFS plan remain open.",
+      "This local source has not yet obtained its own terminal remote CI results."
+    ],
+    "six_column_rows": 240
   }
 }

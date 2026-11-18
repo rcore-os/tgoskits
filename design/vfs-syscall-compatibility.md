@@ -764,3 +764,25 @@ path_fcntl_admission。顺序准入结果不替代 F_SETFL 整体并发原子性
 `starry-run-system-tests --capture-failures`，成功程序的标准输出被抑制；实际
 程序开始、成功终态及普通未知 fcntl 控制仍可核验。其余受控竞争、未实现查询
 和具体 pipe 分支的证据缺口保留，整轮 CI 尚有独立的 Axvisor LoongArch 失败。
+
+## 21. 原生可执行头准入
+
+ElfImage 在沿程序头范围读取前拒绝错误原生机器类型及主映像对象类型。
+下表分别列出两入口、两类映像及主映像类型；每行只涵盖注明的字段，
+不据此推导 class、程序头结构或 Linux 不可回退点已经完整适配。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| execve/主映像原生机器类型；x86_64 59；其余三架构 221 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c) | 主映像 e_machine 不匹配当前原生架构时，读取程序头前返回 ENOEXEC | sys_execve → do_execve/UserImageBuilder → load_user_app → load_user_app_with_depth/ExecutableFile → load_elf → ElfImage::load/Main → fixed header machine → InvalidExecutable；原映像保留 | 正确 | 同一 test-execve C：Linux 157/157，旧 x86 六项失败，修后四目标各 1/1；本行只涵盖注明字段及原生有效程序头夹具 |
+| execve/解释器原生机器类型；x86_64 59；其余三架构 221 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c) | PT_INTERP 完整原生头的 e_machine 不匹配时返回 ELIBBAD，短头仍先 EIO | sys_execve → do_execve/UserImageBuilder → load_user_app → load_user_app_with_depth/ExecutableFile → load_elf → ElfImage::load/Interpreter → minimum native header → machine → InvalidElfInterpreter；原租约退休 | 正确 | 同一 test-execve C：Linux 157/157，旧 x86 六项失败，修后四目标各 1/1；本行只涵盖注明字段及原生有效程序头夹具 |
+| execve/主映像对象类型；x86_64 59；其余三架构 221 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c) | 主映像只接受 ET_EXEC 或 ET_DYN，ET_REL 在程序头读取和映像替换前返回 ENOEXEC | sys_execve → do_execve/UserImageBuilder → load_user_app → load_user_app_with_depth/ExecutableFile → load_elf → ElfImage::load/Main → fixed header type → InvalidExecutable；未发布映像退休 | 正确 | 同一 test-execve C：Linux 157/157，旧 x86 六项失败，修后四目标各 1/1；本行只涵盖注明字段及原生有效程序头夹具 |
+| execve/解释器对象类型晚期失败；x86_64 59；其余三架构 221 | v7.1 [load_elf_interp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c)、[exec_binprm](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | ET_REL 解释器在 begin_new_exec 之后被拒绝，调用者终止于 SIGSEGV，不能恢复原映像并返回 ELIBBAD | sys_execve → do_execve/UserImageBuilder → load_user_app → load_user_app_with_depth/ExecutableFile → load_elf → Interpreter；目前仍先完整构造新 UserImage，晚期失败协议未接入 | 无法确认 | Linux 早期探针两 API 均实际 SIGSEGV；最终回归不包含该输入，尚无 Starry 同条件晚期状态证明 |
+| execveat/主映像原生机器类型；x86_64 322；其余三架构 281 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c) | 主映像 e_machine 不匹配当前原生架构时，读取程序头前返回 ENOEXEC | sys_execveat → do_execve/UserImageBuilder → load_user_app → load_user_app_with_depth/ExecutableFile → load_elf → ElfImage::load/Main → fixed header machine → InvalidExecutable；原映像保留 | 正确 | 同一 test-execve C：Linux 157/157，旧 x86 六项失败，修后四目标各 1/1；本行只涵盖注明字段及原生有效程序头夹具 |
+| execveat/解释器原生机器类型；x86_64 322；其余三架构 281 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c) | PT_INTERP 完整原生头的 e_machine 不匹配时返回 ELIBBAD，短头仍先 EIO | sys_execveat → do_execve/UserImageBuilder → load_user_app → load_user_app_with_depth/ExecutableFile → load_elf → ElfImage::load/Interpreter → minimum native header → machine → InvalidElfInterpreter；原租约退休 | 正确 | 同一 test-execve C：Linux 157/157，旧 x86 六项失败，修后四目标各 1/1；本行只涵盖注明字段及原生有效程序头夹具 |
+| execveat/主映像对象类型；x86_64 322；其余三架构 281 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c) | 主映像只接受 ET_EXEC 或 ET_DYN，ET_REL 在程序头读取和映像替换前返回 ENOEXEC | sys_execveat → do_execve/UserImageBuilder → load_user_app → load_user_app_with_depth/ExecutableFile → load_elf → ElfImage::load/Main → fixed header type → InvalidExecutable；未发布映像退休 | 正确 | 同一 test-execve C：Linux 157/157，旧 x86 六项失败，修后四目标各 1/1；本行只涵盖注明字段及原生有效程序头夹具 |
+| execveat/解释器对象类型晚期失败；x86_64 322；其余三架构 281 | v7.1 [load_elf_interp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c)、[exec_binprm](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | ET_REL 解释器在 begin_new_exec 之后被拒绝，调用者终止于 SIGSEGV，不能恢复原映像并返回 ELIBBAD | sys_execveat → do_execve/UserImageBuilder → load_user_app → load_user_app_with_depth/ExecutableFile → load_elf → Interpreter；目前仍先完整构造新 UserImage，晚期失败协议未接入 | 无法确认 | Linux 早期探针两 API 均实际 SIGSEGV；最终回归不包含该输入，尚无 Starry 同条件晚期状态证明 |
+
+验证源码为 710411b5af，最终 C 与旧实现 2a4fa6348b 逐字一致。原私有 inode
+旅程实际拒绝输入、恢复 writer 并重新执行 shell；没有新增系统程序或默认
+QEMU 启动。标准库 Kernel 一包、两包增量 Clippy 83/83、四目标运行及格式
+检查通过，原始失败和早期 Linux 解释器类型探针分别记录。
