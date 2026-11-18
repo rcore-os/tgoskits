@@ -160,7 +160,7 @@ mod tests {
         })
         .unwrap();
         drop(fixture);
-        assert!(UdpSocket::bind(address).is_ok());
+        UdpSocket::bind(address).expect("rebind after fixture drop");
     }
 
     #[test]
