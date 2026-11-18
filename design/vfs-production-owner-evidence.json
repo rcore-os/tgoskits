@@ -11195,5 +11195,201 @@
       "This local source has not yet obtained its own terminal remote CI results."
     ],
     "six_column_rows": 240
+  },
+  "ci_eaf54f470e_and_board_uboot_diagnostics": {
+    "recorded_at": "2026-11-18T08:18:10.064476+00:00",
+    "ci_head": "eaf54f470e9cd163a335bef2116f807d85a558f4",
+    "diagnostics_source": "85e69061ef30a4e3c41654bdf99d71d5af03eb75",
+    "snapshot": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-terminal.json",
+      "sha256": "f61bc38f358808e59f17082afff203a9ee8c77f27d793ab4a4ee39476b94befc",
+      "bytes": 18654
+    },
+    "counts": {
+      "SUCCESS": 43,
+      "SKIPPED": 5,
+      "FAILURE": 1
+    },
+    "push_run": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-push-run.json",
+      "sha256": "69d912df168a40a41add0e9cf3a64e1703e253e261fe0051f2b3b6d2a91ca349",
+      "bytes": 12688
+    },
+    "pr_wrapper_run": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-pr-wrapper-run.json",
+      "sha256": "c57263134839b8ad67e2653579bd13a63ffe61df74266c5e30969405fab32a06",
+      "bytes": 12676
+    },
+    "duplicate_skips": "All five skipped checks belong to the same-head pull_request wrapper; the actual push matrix ran.",
+    "std": {
+      "selected_packages": 88,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-std.log",
+        "sha256": "758fbf8305f2136c2c442526ebd2d746d07348d881a92d52b33204edebfd8293",
+        "bytes": 1092519
+      }
+    },
+    "clippy": {
+      "selected_packages": 0,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-clippy.log",
+        "sha256": "fbbf3432ce521d2df30cb008f711d30959e406dad62a08f8e7fc3b496494152e",
+        "bytes": 24919
+      },
+      "equivalent_source_head": "d2b3ee0cebc7d4e9c78a04afa44e71df46e5c1c4",
+      "changed_paths_since_equivalent_head": [
+        ".agents/skills/arch-platform-porting/references/boot-debugging.md",
+        ".github/ci/checks/axvisor.toml",
+        "design/vfs-lookup-ownership-handoff.md",
+        "design/vfs-lookup-ownership.md",
+        "design/vfs-production-owner-evidence.json",
+        "design/vfs-syscall-compatibility.md",
+        "scripts/test/qemu_state_capture.py"
+      ],
+      "prior_executed_83_checks": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-clippy.log",
+        "sha256": "16a436e0aebad2177dc9fb16e606dcbdf66837139a7d97f282e157fa3681a91b",
+        "bytes": 327902
+      }
+    },
+    "starry": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-starry-x86_64.log",
+          "sha256": "83c926d20902ca62ed1e3b02ae9cb72ff480480beb31df45340729bd8ec415df",
+          "bytes": 2293358
+        },
+        "system_summaries": [
+          [
+            1,
+            1,
+            0
+          ],
+          [
+            541,
+            541,
+            0
+          ]
+        ]
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-starry-riscv64.log",
+          "sha256": "c946a82cb9acbee51b97962d4c79975fe08630b88d49890445b00452447f89ca",
+          "bytes": 2155226
+        },
+        "system_summaries": [
+          [
+            538,
+            538,
+            0
+          ]
+        ]
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-starry-loongarch64.log",
+          "sha256": "b1e9fc634d9aee223ddbbe49b335f4f3f09133b35cefc978dc957836b7f09014",
+          "bytes": 876640
+        },
+        "system_summaries": [
+          [
+            538,
+            538,
+            0
+          ]
+        ]
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-starry-aarch64.log",
+          "sha256": "d781add6747489cdb7388922af11d850d1ab977ec2ea3b0f5cfd1b4568af6ca6",
+          "bytes": 2188134
+        },
+        "system_summaries": [
+          [
+            513,
+            513,
+            0
+          ],
+          [
+            23,
+            23,
+            0
+          ],
+          [
+            1,
+            1,
+            0
+          ],
+          [
+            1,
+            1,
+            0
+          ]
+        ]
+      }
+    },
+    "axvisor_loongarch64": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-axvisor-loongarch64.log",
+        "sha256": "99f61d98de79983e81aadbb1c229a47088ab7e3d4af311bf190f54853a8458be",
+        "bytes": 212801
+      },
+      "result": "smoke 1/1; no failing QMP state obtained in this successful run; old stalls remain unexplained"
+    },
+    "board_failure": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-axvisor-orangepi-uvc.log",
+        "sha256": "9b2c601a8cb026e290296994756c6066396da2ddca0d03dead4d04f544c37649",
+        "bytes": 213671
+      },
+      "job": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-eaf54f470e-axvisor-orangepi-uvc.job.json",
+        "sha256": "a790fe6056466b7007851942074a4b7801d52fedb5d1f404310f0aa6d06538f4",
+        "bytes": 4583
+      },
+      "failed_board_id": "OrangePi-5-Plus-1",
+      "failed_session_id": "2a9b648f-8912-4b2f-acbd-76d54716bd49",
+      "phase": "U-Boot shell initialization, timed out after the original 900 seconds, before kernel transfer/execution",
+      "subsequent_starry_group": {
+        "board_id": "OrangePi-5-Plus-3",
+        "effective_fps": 29.88,
+        "loopback_errors": 0,
+        "result": "PASS attempts=1"
+      },
+      "scope": "Different physical boards; the succeeding group does not cover the failed Linux group."
+    },
+    "server_read_only_inspection": {
+      "board-health-after-eaf54f470e.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/board-health-after-eaf54f470e.log",
+        "sha256": "feb33731c28f9c7d55a6886a43605d62f5d0dd655e03f0a9e75c2b459ecd6910",
+        "bytes": 1231
+      },
+      "board1-runtime-after-eaf54f470e.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/board1-runtime-after-eaf54f470e.json",
+        "sha256": "509766ead926814608e9f84867cb3a4556f1cdfe966aea6b116629eff3a6b187",
+        "bytes": 154
+      },
+      "board1-power-after-eaf54f470e.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/board1-power-after-eaf54f470e.json",
+        "sha256": "96bc3bb52d6d24ca37677574487c8c26bd185e1bab6334f55a030e74425adbc3",
+        "bytes": 71
+      },
+      "board-server-eaf54f470e-root-window.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/board-server-eaf54f470e-root-window.log",
+        "sha256": "de9ba6a7ff2ae38b142f2f33a2625a0cc301f3930b1be72b771cd406545a6902",
+        "bytes": 1751
+      }
+    },
+    "new_diagnostics": {
+      "validation": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/board-uboot-debug-config-validation.log",
+        "sha256": "2b5234a2c844f15555d6e3b5181d4a92b3b883aee4109c37915b0ceebe5275bd",
+        "bytes": 129
+      },
+      "scope": "Per-command RUST_LOG=info,uboot_shell=debug only; existing runner, cache, board type, timeout, command body and assertions retained; no other active lease reset; no root cause or board runtime repair claimed."
+    },
+    "remaining": "New head remote CI, original LoongArch stalls and the pre-kernel physical-board initialization incident still need evidence; local ELF validation is separately tied to 710411b5af."
   }
 }
