@@ -231,7 +231,7 @@ fn lio_claims_only_inputs_routed_to_the_triggering_parent() {
 }
 
 #[test]
-fn lio_firmware_routes_leave_unmapped_inputs_disconnected_and_filter_claims() {
+fn lio_firmware_routes_keep_first_owner_and_leave_unmapped_inputs_disconnected() {
     let mut registers = [u64::MAX; 8];
     let mut isr_backing = [0u32; 1];
     let regs = test_mmio(0x2000_0000, &mut registers);
@@ -240,7 +240,7 @@ fn lio_firmware_routes_leave_unmapped_inputs_disconnected_and_filter_claims() {
     let line5 = CpuIrqLine::new(5).unwrap();
     let config = LioIntcConfig::from_firmware_routes(
         [None, Some(line3), None, Some(line5)],
-        [0, (1 << 5) | (1 << 31), 0, 1 << 6],
+        [0, (1 << 5) | (1 << 31), 0, (1 << 5) | (1 << 6)],
     )
     .unwrap();
     let mut parts = LioIntcParts::new(regs.clone(), isr.clone(), config).unwrap();
@@ -278,6 +278,22 @@ fn lio_firmware_routes_leave_unmapped_inputs_disconnected_and_filter_claims() {
     isr.write(0, 1u32 << 7);
     assert_eq!(parts.cpu_interface.claim(line3), None);
     assert_eq!(parts.cpu_interface.claim(line5), None);
+
+    drop(parts);
+    let line2 = CpuIrqLine::new(2).unwrap();
+    let config = LioIntcConfig::from_firmware_routes(
+        [Some(line2), Some(line3), None, None],
+        [1, 1, 0, 0],
+    )
+    .unwrap();
+    let mut parts = LioIntcParts::new(regs.clone(), isr.clone(), config).unwrap();
+    let input0 = LioInput::new(0).unwrap();
+    assert_eq!(regs.read::<u8>(0), 0x11);
+    assert_eq!(regs.read::<u8>(1), 0);
+    parts.controller.set_enabled(input0, true);
+    isr.write(0, 1u32);
+    assert_eq!(parts.cpu_interface.claim(line2), Some(input0));
+    assert_eq!(parts.cpu_interface.claim(line3), None);
 }
 
 #[test]
