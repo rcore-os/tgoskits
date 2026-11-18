@@ -319,8 +319,9 @@ impl OpenOptions {
     ///
     /// Path-only descriptions retain the original path. Readonly directories
     /// and regular memory files use explicit cached attributes and existing
-    /// inode data; writes, endpoints and missing capabilities return
-    /// `WouldBlock`. This never invokes ordinary open or creates a data cache.
+    /// inode data. Unsupported admission or missing capabilities returns
+    /// `WouldBlock`; final symlinks and sockets retain their type errors.
+    /// This never invokes ordinary open or creates a data cache.
     #[cfg(feature = "vfs")]
     pub fn open_cached_path(
         &self,
