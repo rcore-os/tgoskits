@@ -38,6 +38,7 @@ impl<'a> AddressAllocator<'a> {
         let base = match request {
             ResourceRequest::Auto => find_u64_range(
                 self.pools.auto_mmio(),
+                self.pools.auto_mmio_for_owner(requester),
                 &self.allocated.mmio,
                 size,
                 alignment,

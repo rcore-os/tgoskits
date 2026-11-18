@@ -331,6 +331,16 @@ impl PciHostProvider {
         }
     }
 
+    /// Returns the stable key selected by endpoint requirements.
+    pub const fn key(&self) -> &PciHostKey {
+        &self.key
+    }
+
+    /// Returns the runtime graph node that owns this PCI host.
+    pub const fn node_id(&self) -> &DeviceNodeId {
+        self.node.id()
+    }
+
     /// Adds one platform-owned fixed function.
     pub fn with_platform_function(mut self, function: PciFunctionSpec) -> PciResult<Self> {
         if self
