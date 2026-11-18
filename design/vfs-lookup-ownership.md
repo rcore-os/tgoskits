@@ -4872,6 +4872,32 @@ O_LARGEFILE 的直接系统调用位按 Linux UAPI 区分 AArch64 的 0400000 �
 相同最终 C 先在 Linux 和旧实现执行，再修复并核对原内容未被忽略的截断位
 修改。此阶段不新增测试程序、配置或后台状态。
 
+### 7.7 描述符的预留与发布
+
+Linux `do_sys_openat2()` 先通过 getname 复制并验证输入，再由 FD_ADD 中的
+FD_PREPARE 取得最低可用 fd，成功后才执行 do_file_open。当前缓存分支在
+完成查找后才由 CachedFileTable.install 选槽，因而在额度耗尽时可能先返回
+冷名字的 EAGAIN、无效 dirfd 的 EBADF 或 BENEATH 绝对输入的 EXDEV。
+
+计划完成既有同次 binding 捕获、退出全部保护后，从该捕获的原表尝试预留
+最低空闲 fd，再进行 pathname 相关的策略、dirfd 和缓存查找。复用既有
+FileDescriptorReservation 保持原表的 Arc 与 Reserved 槽；不使用会重新读取
+current 的构造入口。普通 FIFO 和缓存路径共用最低 fd-number 的额度校验，
+PreparedFileDescriptor 原有的 entry-count 上限保持独立。
+
+预留和最终安装都只尝试原表写锁。预留期间，现有 get/remove/ids 不暴露或
+删除 Reserved 槽，dup3 继续对替换该槽返回 EBUSY，表克隆不继承它。成功安装
+在同一短锁内消费预留；失败描述及最后引用在锁外释放。所有查找失败、最终
+安装竞争和不支持的准入都通过原 RAII 释放槽号，清理只使用原有短锁，不承诺
+整个系统调用 wait-free。binding 捕获本身的竞争 EAGAIN 仍须由受控发布阶段
+另行验证，本阶段的额度旅程不代表该类并发错误优先级已经闭合。
+
+验证继续增强原私有 tmpfs 旅程：临时将自身 RLIMIT_NOFILE soft 值降为零，
+保留 hard 值，核对输入 EFAULT/ENOENT、变更类 EAGAIN 和路径类错误之间的
+顺序。恢复额度后，通过失败查找及下一次实际打开取得原最低空闲号，证明
+预留回滚；所有描述仍在原唯一 O_PATH 卸载判据前关闭。相同 C 先取得 Linux
+及旧实现结果，再实现，不新增系统程序或默认启动。
+
 ## 8. 迁移与验收
 
 本设计改变共享 VFS 契约，迁移需要覆盖实际调用方与后端，而不是只修改 Starry syscall。

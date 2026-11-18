@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -460,6 +461,54 @@ out:
     close_fd(directory);
 }
 
+static void cached_fd_admission(int rootfd, int held)
+{
+    struct rlimit saved, limited;
+    int changed = 0, probe = -1, opened = -1;
+    REQUIRE(syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, NULL, &saved) == 0);
+    limited = saved;
+    limited.rlim_cur = 0;
+    REQUIRE(syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, &limited, NULL) == 0);
+    changed = 1;
+    expect_open(open2(rootfd, NULL, O_PATH, RESOLVE_CACHED), EFAULT,
+                "CACHED imports the pathname before fd exhaustion");
+    expect_open(open2(rootfd, "", O_PATH, RESOLVE_CACHED), ENOENT,
+                "CACHED empty pathname precedes fd exhaustion");
+    expect_open(open2(rootfd, NULL, O_CREAT | O_RDONLY, RESOLVE_CACHED),
+                EAGAIN, "CACHED mutation flags precede pathname and fd quota");
+    expect_open(open2(rootfd, "file", O_PATH, RESOLVE_CACHED), EMFILE,
+                "CACHED positive path honors the fd-number quota");
+    expect_open(open2(rootfd, "cold", O_PATH, RESOLVE_CACHED), EMFILE,
+                "CACHED fd exhaustion precedes a cold lookup");
+    expect_open(open2(-1, ".", O_PATH, RESOLVE_CACHED), EMFILE,
+                "CACHED fd exhaustion precedes invalid dirfd");
+    expect_open(open2(rootfd, "/file", O_PATH,
+                      RESOLVE_CACHED | RESOLVE_BENEATH), EMFILE,
+                "CACHED fd exhaustion precedes absolute BENEATH rejection");
+    REQUIRE(syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, &saved, NULL) == 0);
+    changed = 0;
+
+    probe = (int)syscall(SYS_dup, held);
+    REQUIRE(probe >= 0);
+    int expected = probe;
+    close_fd(probe);
+    probe = -1;
+    expect_open(open2(rootfd, "cold", O_PATH, RESOLVE_CACHED), EAGAIN,
+                "CACHED failed lookup releases its reserved fd");
+    expect_open(open2(-1, ".", O_PATH, RESOLVE_CACHED), EBADF,
+                "CACHED bad dirfd releases its reserved fd");
+    opened = cached_open(rootfd, "file", O_PATH, 0);
+    CHECK(opened == expected,
+          "CACHED rollback preserves the lowest free fd opened=%d expected=%d",
+          opened, expected);
+out:
+    if (changed)
+        CHECK(syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, &saved, NULL) == 0,
+              "restore fd quota after a failed admission check errno=%d", errno);
+    close_fd(opened);
+    close_fd(probe);
+}
+
 static void mount_boundary(int rootfd)
 {
     int mountfd = -1, file = -1, cached = -1, mounted = 0;
@@ -496,6 +545,7 @@ static void mount_boundary(int rootfd)
     if (cached < 0)
         goto out;
     cached_readonly(mountfd, file);
+    cached_fd_admission(mountfd, cached);
     cached_links(mountfd, file);
     CHECK(fstat(cached, &retained) == 0 && retained.st_dev == original.st_dev
               && retained.st_ino == original.st_ino,
