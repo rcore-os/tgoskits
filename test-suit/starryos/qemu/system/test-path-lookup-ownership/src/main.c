@@ -369,6 +369,62 @@ out:
     close_fd(fd);
 }
 
+static void cached_readonly(int rootfd, int original)
+{
+    const char payload[] = "cached-open-content";
+    char bytes[sizeof(payload)] = {0};
+    int first = -1, second = -1, shared = -1, directory = -1;
+    REQUIRE(syscall(SYS_pwrite64, original, payload, sizeof(payload) - 1, 0)
+                == (ssize_t)sizeof(payload) - 1);
+    first = cached_open(rootfd, "file", O_RDONLY | O_NONBLOCK | O_CLOEXEC, 0);
+    CHECK(first >= 0, "CACHED opens a pinned ordinary reader fd=%d errno=%d",
+          first, errno);
+    if (first < 0)
+        goto out;
+    int status = (int)syscall(SYS_fcntl, first, F_GETFL, 0);
+    CHECK(status >= 0 && (status & O_ACCMODE) == O_RDONLY
+              && (status & O_NONBLOCK) != 0,
+          "CACHED reader retains access and nonblocking flags status=%d", status);
+    int descriptor = (int)syscall(SYS_fcntl, first, F_GETFD, 0);
+    CHECK(descriptor >= 0 && (descriptor & FD_CLOEXEC) != 0,
+          "CACHED reader installs descriptor close-on-exec state");
+    second = cached_open(rootfd, "file", O_RDONLY, 0);
+    REQUIRE(second >= 0);
+    shared = (int)syscall(SYS_dup, first);
+    REQUIRE(shared >= 0);
+    CHECK(syscall(SYS_read, first, bytes, 4) == 4
+              && memcmp(bytes, payload, 4) == 0,
+          "CACHED reader uses the original inode's buffered data");
+    CHECK(syscall(SYS_read, shared, bytes, 3) == 3
+              && memcmp(bytes, payload + 4, 3) == 0,
+          "dup of a CACHED reader shares its open-description cursor");
+    CHECK(syscall(SYS_read, second, bytes, 3) == 3
+              && memcmp(bytes, payload, 3) == 0,
+          "independent CACHED reader starts with an independent cursor");
+    CHECK(syscall(SYS_pread64, first, bytes, 3, 10) == 3
+              && memcmp(bytes, payload + 10, 3) == 0,
+          "positioned CACHED read uses the original buffered data");
+    CHECK(syscall(SYS_read, first, bytes, 2) == 2
+              && memcmp(bytes, payload + 7, 2) == 0,
+          "positioned CACHED read leaves the shared cursor unchanged");
+    errno = 0;
+    CHECK(syscall(SYS_write, first, payload, 1) == -1 && errno == EBADF,
+          "CACHED readonly description rejects writes errno=%d", errno);
+out:
+    close_fd(shared);
+    close_fd(second);
+    close_fd(first);
+    directory = cached_open(rootfd, ".", O_RDONLY | O_DIRECTORY, 0);
+    CHECK(directory >= 0, "CACHED opens a pinned directory reader fd=%d errno=%d",
+          directory, errno);
+    if (directory >= 0) {
+        char entries[512];
+        CHECK(syscall(SYS_getdents64, directory, entries, sizeof(entries)) > 0,
+              "CACHED directory description enumerates its actual directory");
+    }
+    close_fd(directory);
+}
+
 static void mount_boundary(int rootfd)
 {
     int mountfd = -1, file = -1, cached = -1, mounted = 0;
@@ -403,6 +459,7 @@ static void mount_boundary(int rootfd)
           cached, errno);
     if (cached < 0)
         goto out;
+    cached_readonly(mountfd, file);
     cached_links(mountfd, file);
     CHECK(fstat(cached, &retained) == 0 && retained.st_dev == original.st_dev
               && retained.st_ino == original.st_ino,
