@@ -530,6 +530,8 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         pull_request = mapping_block(triggers, "pull_request", 2)
         paths = list_items_in_order(pull_request, "paths", 4)
 
+        self.assertEqual(paths[-2:], ["!docs/docs/**", "!docs/blog/**"])
+        self.assertNotIn("!**/*.md", paths)
         for workflow_path in (
             ".github/workflows/starry-apps.yml",
             ".github/workflows/axvisor-nightly.yml",

@@ -1,0 +1,153 @@
+name: Full Clippy matrix
+
+on:
+  workflow_call:
+    inputs:
+      shards:
+        type: number
+        default: 4
+      checkout_ref:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Prepare full Clippy plan
+    runs-on: ${{ github.repository_owner == 'rcore-os' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["self-hosted","linux","qcs"]') || 'ubuntu-latest' }}
+    container:
+      image: ${{ (github.repository_owner != 'rcore-os' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && format('ghcr.io/{0}-container:latest', github.repository) || '' }}
+      credentials:
+        username: anonymous
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      revision: ${{ steps.plan.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          fetch-depth: 1
+      - name: Build the tool and emit the full matrix
+        id: plan
+        env:
+          CLIPPY_SHARDS: ${{ inputs.shards }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/ci
+          cargo xtask clippy --all --emit-plan target/ci/clippy-plan.json --shards "$CLIPPY_SHARDS"
+          python3 scripts/test/ci_clippy.py matrix target/ci/clippy-plan.json >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          tar -cf target/ci/clippy-tool.tar -C target/debug tg-xtask
+          sha256sum target/ci/clippy-tool.tar > target/ci/clippy-tool.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: clippy-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/ci/clippy-plan.json
+            target/ci/clippy-tool.tar
+            target/ci/clippy-tool.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  checks:
+    name: Clippy shard ${{ matrix.shard }}
+    needs: plan
+    runs-on: ${{ github.repository_owner == 'rcore-os' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["self-hosted","linux","qcs"]') || 'ubuntu-latest' }}
+    container:
+      image: ${{ (github.repository_owner != 'rcore-os' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && format('ghcr.io/{0}-container:latest', github.repository) || '' }}
+      credentials:
+        username: anonymous
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision }}
+          fetch-depth: 1
+      - uses: actions/download-artifact@v8
+        with:
+          name: clippy-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci
+      - name: Verify and restore the exact tool
+        run: |
+          set -euo pipefail
+          sha256sum --check target/ci/clippy-tool.sha256
+          mkdir -p target/debug
+          tar -xf target/ci/clippy-tool.tar -C target/debug
+          test -x target/debug/tg-xtask
+      - name: Show effective resources
+        run: |
+          nproc
+          free -m
+          grep Cpus_allowed_list /proc/self/status
+          for f in /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max; do
+            if [ -f "$f" ]; then echo "$f"; cat "$f"; fi
+          done
+      - name: Run this shard
+        env:
+          CLIPPY_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          target/debug/tg-xtask clippy --execute-plan target/ci/clippy-plan.json \
+            --shard "$CLIPPY_SHARD" --result-file "target/ci/results/shard-${CLIPPY_SHARD}.json"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: clippy-result-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: target/ci/results/*.json
+          if-no-files-found: error
+          retention-days: 7
+
+  result:
+    name: Full Clippy result
+    needs: [plan, checks]
+    if: always()
+    runs-on: ${{ github.repository_owner == 'rcore-os' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["self-hosted","linux","qcs"]') || 'ubuntu-latest' }}
+    container:
+      image: ${{ (github.repository_owner != 'rcore-os' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && format('ghcr.io/{0}-container:latest', github.repository) || '' }}
+      credentials:
+        username: anonymous
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 15
+    steps:
+      - name: Require planning and all matrix jobs to succeed
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          test "$CHECKS_RESULT" = success
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision }}
+          fetch-depth: 1
+      - uses: actions/download-artifact@v8
+        with:
+          name: clippy-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: clippy-result-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: target/ci/results
+          merge-multiple: true
+      - name: Verify every planned check and shard result
+        run: |
+          set -euo pipefail
+          sha256sum --check target/ci/clippy-tool.sha256
+          mkdir -p target/debug
+          tar -xf target/ci/clippy-tool.tar -C target/debug
+          target/debug/tg-xtask clippy --verify-results target/ci/clippy-plan.json --results-dir target/ci/results

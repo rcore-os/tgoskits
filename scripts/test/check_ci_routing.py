@@ -98,8 +98,10 @@ def main() -> int:
         require_contains(errors, concurrency, fragment, message)
 
     pull_request_paths = list_items_in_order(pull_request, "paths", 4)
-    if not pull_request_paths or pull_request_paths[-1] != "!**/*.md":
-        errors.append("the Markdown exclusion must be the final pull_request path rule")
+    if pull_request_paths[-2:] != ["!docs/docs/**", "!docs/blog/**"]:
+        errors.append("only static documentation exclusions may end the pull_request path rules")
+    if "!**/*.md" in pull_request_paths:
+        errors.append("build-consumed Markdown must not be excluded by extension")
     missing_roots = sorted(
         f"{root}/**"
         for root in workspace_source_roots()

@@ -7,6 +7,8 @@ mod check;
 mod configurations;
 mod env;
 mod expand;
+mod partition;
+mod plan;
 mod report;
 mod runner;
 mod selection;
@@ -35,6 +37,17 @@ pub(super) const AX_HAL_PACKAGE: &str = "ax-hal";
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {
     validate_clippy_args(args)?;
+    if args.emit_plan.is_some() && !args.all {
+        bail!(
+            "--emit-plan requires --all; saved plans always describe the complete supported matrix"
+        );
+    }
+    if args.shards == 0 || args.shards > 256 {
+        bail!("--shards must be between 1 and 256");
+    }
+    if args.execute_plan.is_some() || args.verify_results.is_some() {
+        return plan::run_saved_plan(args);
+    }
     let started_at = Local::now();
     let timer = Instant::now();
     println!(
@@ -42,7 +55,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
         started_at.format("%Y-%m-%d %H:%M:%S %z")
     );
     let workspace_manifest = crate::context::workspace_manifest_path()?;
-    let metadata = if clippy_metadata_needs_deps(args) {
+    let metadata = if clippy_metadata_needs_deps(args) || args.emit_plan.is_some() {
         crate::context::workspace_metadata_root_manifest_with_deps(&workspace_manifest)
     } else {
         crate::context::workspace_metadata_root_manifest(&workspace_manifest)
@@ -74,6 +87,12 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
         workspace_root.display()
     );
 
+    if let Some(output) = &args.emit_plan {
+        let plan = plan::CheckPlan::create(&workspace_root, checks, args.shards)?;
+        plan::write_json(output, &plan)?;
+        println!("CLIPPY_PLAN: {}", serde_json::to_string(&plan.summary())?);
+        return Ok(());
+    }
     let mut runner = ProcessCargoRunner;
     let result = if args.jobs == 1 {
         run_clippy_checks(&mut runner, &workspace_root, &target_dir, &checks)

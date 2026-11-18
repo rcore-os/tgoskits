@@ -3,12 +3,8 @@ name: CI
 on:
   push:
     paths-ignore:
-      - "**/*.md"
-      - "**/*.rst"
-      - "**/*.adoc"
-      - "docs/**"
-      - "**/docs/**"
-      - "**/doc/**"
+      - "docs/docs/**"
+      - "docs/blog/**"
   pull_request:
     paths:
       - ".cargo/**"
@@ -20,6 +16,7 @@ on:
       - ".github/workflows/container-publish.yml"
       - ".github/workflows/ci.yml"
       - ".github/workflows/reusable-check-matrix.yml"
+      - ".github/workflows/clippy-checks.yml"
       - ".github/workflows/starry-apps.yml"
       - ".github/workflows/axvisor-nightly.yml"
       - ".github/workflows/benchmarks.yml"
@@ -42,7 +39,9 @@ on:
       - "tools/**"
       - "virtualization/**"
       - "xtask/**"
-      - "!**/*.md"
+      - "*.md"
+      - "!docs/docs/**"
+      - "!docs/blog/**"
   workflow_dispatch:
     inputs:
       since_sha:
@@ -50,6 +49,17 @@ on:
         required: false
         default: ""
         type: string
+      clippy_only:
+        description: Run only full Clippy planning, shards and result verification.
+        required: false
+        default: false
+        type: boolean
+      clippy_shards:
+        description: Number of independent Clippy jobs (1 for baseline, 4 for parallel).
+        required: false
+        default: '4'
+        type: choice
+        options: ['1', '4']
 
 permissions:
   contents: read
@@ -72,9 +82,8 @@ jobs:
   plan_ci:
     name: Plan CI
     if: >-
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request'
+      !(github.event_name == 'workflow_dispatch' && inputs.clippy_only) &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -87,6 +96,7 @@ jobs:
       static_required: ${{ steps.matrix.outputs.static_required }}
       workspace_matrix: ${{ steps.matrix.outputs.workspace_matrix }}
       workspace_required: ${{ steps.matrix.outputs.workspace_required }}
+      clippy_required: ${{ steps.clippy.outputs.required }}
       arceos_matrix: ${{ steps.matrix.outputs.arceos_matrix }}
       arceos_required: ${{ steps.matrix.outputs.arceos_required }}
       starry_matrix: ${{ steps.matrix.outputs.starry_matrix }}
@@ -359,6 +369,13 @@ jobs:
 
           echo "since_ref=${since_ref}" >> "$GITHUB_OUTPUT"
 
+      - name: Decide whether Clippy is required
+        id: clippy
+        if: steps.route.outputs.should_run == 'true'
+        env:
+          CLIPPY_SINCE: ${{ steps.since.outputs.since_ref }}
+        run: python3 scripts/test/ci_clippy.py classify --since "$CLIPPY_SINCE" >> "$GITHUB_OUTPUT"
+
       - name: Record runner trust
         if: steps.route.outputs.should_run == 'true'
         env:
@@ -511,3 +528,24 @@ jobs:
       since_ref: ${{ needs.plan_ci.outputs.since_ref }}
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+
+  clippy_experiment:
+    name: Clippy experiment
+    if: github.event_name == 'workflow_dispatch' && inputs.clippy_only
+    uses: ./.github/workflows/clippy-checks.yml
+    with:
+      shards: ${{ fromJSON(inputs.clippy_shards || '4') }}
+      checkout_ref: ${{ github.sha }}
+
+  clippy_checks:
+    name: Clippy
+    needs: [plan_ci, static_checks]
+    if: >-
+      always() && needs.plan_ci.result == 'success' &&
+      needs.plan_ci.outputs.should_run == 'true' &&
+      needs.plan_ci.outputs.clippy_required == 'true' &&
+      (needs.static_checks.result == 'success' || needs.static_checks.result == 'skipped')
+    uses: ./.github/workflows/clippy-checks.yml
+    with:
+      shards: 4
+      checkout_ref: ${{ github.sha }}
