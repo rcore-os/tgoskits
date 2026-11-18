@@ -952,7 +952,8 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         "cache_key": check.get("cache_key", ""),
         "node_version": check.get("node_version", ""),
         "resource_group": "" if fallback else check.get("resource_group", ""),
-        "apk_region": "us" if fallback else check.get("apk_region", "china"),
+        # Preserve an unspecified region until the runner environment is known.
+        "apk_region": "us" if fallback else check.get("apk_region", ""),
         "apk_mirror": "" if fallback else check.get("apk_mirror", ""),
         "wifi_secrets": check.get("wifi_secrets", False),
         "fetch_depth": fetch_depth,

@@ -231,14 +231,8 @@ jobs:
 
       - name: Run command
         env:
-          STARRY_APK_REGION: ${{ matrix.apk_region }}
-          STARRY_APK_MIRROR: ${{ matrix.apk_mirror }}
-          ALPINE_CDN: ${{ matrix.apk_mirror }}
-          ALPINE_MIRROR: ${{ matrix.apk_mirror }}
-          DNSMASQ_APK_MIRROR: ${{ matrix.apk_mirror }}
-          DROPBEAR_APK_MIRROR: ${{ matrix.apk_mirror }}
-          STARRYWRT_APK_MIRROR: ${{ matrix.apk_mirror }}
-          VISUAL_ALPINE_MIRROR: ${{ matrix.apk_mirror }}
+          MATRIX_APK_REGION: ${{ matrix.apk_region }}
+          MATRIX_APK_MIRROR: ${{ matrix.apk_mirror }}
           SINCE_REF: ${{ inputs.since_ref }}
           CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
           STARRY_WIFI_SSID: ${{ matrix.wifi_secrets && secrets.STARRY_WIFI_SSID || '' }}
@@ -249,6 +243,15 @@ jobs:
           USE_XTASK_BIN: ${{ matrix.download_xtask_bin_artifact }}
         run: |
           set -eo pipefail
+
+          export STARRY_APK_REGION="${MATRIX_APK_REGION:-${STARRY_APK_REGION:-china}}"
+          # An explicit region must not be overridden by an inherited mirror.
+          if [ -n "${MATRIX_APK_REGION}" ] || [ -n "${MATRIX_APK_MIRROR}" ]; then
+            for mirror_var in STARRY_APK_MIRROR ALPINE_CDN ALPINE_MIRROR \
+              DNSMASQ_APK_MIRROR DROPBEAR_APK_MIRROR STARRYWRT_APK_MIRROR VISUAL_ALPINE_MIRROR; do
+              export "${mirror_var}=${MATRIX_APK_MIRROR}"
+            done
+          fi
 
           if [ "${WIFI_SECRETS}" != "true" ]; then
             unset STARRY_WIFI_SSID STARRY_WIFI_PASSWORD

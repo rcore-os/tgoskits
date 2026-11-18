@@ -611,14 +611,104 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
             self.assertIn("always()", result)
 
 
-class WifiSecretRoutingTests(unittest.TestCase):
-    def test_non_wifi_matrix_rows_remove_empty_wifi_environment(self) -> None:
+class CommandEnvironmentRoutingTests(unittest.TestCase):
+    def test_matrix_environment_preserves_runner_defaults_and_explicit_overrides(self) -> None:
+        import ci_plan
+
         workflow = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
         step = named_step_block(workflow, "Run command")
-
-        self.assertIn("WIFI_SECRETS: ${{ matrix.wifi_secrets }}", step)
-        self.assertIn('if [ "${WIFI_SECRETS}" != "true" ]; then', step)
-        self.assertIn("unset STARRY_WIFI_SSID STARRY_WIFI_PASSWORD", step)
+        script = workflow_step_script_in(workflow, "Run command")
+        bindings = re.findall(
+            r"^\s+([A-Z_]+): \$\{\{ matrix\.([a-z_]+) \}\}$", step, re.M
+        )
+        mirror_vars = (
+            "STARRY_APK_MIRROR", "ALPINE_CDN", "ALPINE_MIRROR",
+            "DNSMASQ_APK_MIRROR", "DROPBEAR_APK_MIRROR",
+            "STARRYWRT_APK_MIRROR", "VISUAL_ALPINE_MIRROR",
+        )
+        tracked = ("STARRY_APK_REGION", *mirror_vars)
+        command = "printf '%s\\n' " + " ".join(
+            f'"${{{name}:-}}"' for name in tracked
+        ) + ' "${STARRY_WIFI_SSID+set}" "${STARRY_WIFI_PASSWORD+set}"'
+        runner = {name: "https://runner.example.test/alpine" for name in mirror_vars}
+        runner.update(
+            STARRY_APK_REGION="local", ALPINE_CDN="https://cdn.example.test/alpine"
+        )
+        explicit_mirror = "https://task.example.test/alpine"
+        custom_mirrors = {name: explicit_mirror for name in mirror_vars}
+        scenarios = (
+            ("unconfigured", {}, {}, {"STARRY_APK_REGION": "china"}),
+            ("runner defaults", {}, runner, runner),
+            (
+                "explicit mirror",
+                {"apk_mirror": explicit_mirror, "wifi_secrets": True},
+                runner,
+                {"STARRY_APK_REGION": "local", **custom_mirrors},
+            ),
+            (
+                "explicit region", {"apk_region": "us"}, runner,
+                {"STARRY_APK_REGION": "us"},
+            ),
+            (
+                "explicit region and mirror",
+                {"apk_region": "us", "apk_mirror": explicit_mirror},
+                runner,
+                {"STARRY_APK_REGION": "us", **custom_mirrors},
+            ),
+            (
+                "hosted fallback",
+                {
+                    "self_hosted_owner": "another-owner",
+                    "fallback_environment": "host",
+                    "apk_region": "local",
+                    "apk_mirror": explicit_mirror,
+                },
+                runner,
+                {"STARRY_APK_REGION": "us"},
+            ),
+        )
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits", repository_owner="rcore-os",
+            event_name="push",
+        )
+        common = {
+            "name": "Synthetic check", "group": "Workspace",
+            "command": command, "environment": "host", "source": "fixture.toml",
+        }
+        for name, options, inherited, expected in scenarios:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                checks = [
+                    dict(common, id="static", phase="static", runs_on=["ubuntu-latest"]),
+                    dict(
+                        common, id="probe", phase="test",
+                        runs_on=["self-hosted", "linux", "board"], **options,
+                    ),
+                ]
+                plan = ci_plan._build_main_plan(checks, context)
+                row = plan["workspace_matrix"]["include"][0]
+                environment = {key: value for key, value in os.environ.items() if key not in tracked}
+                environment.update(inherited)
+                # Apply the workflow's direct matrix bindings as Actions does,
+                # including empty values that overwrite the runner environment.
+                environment.update(
+                    (key, str(row[field]).lower() if isinstance(row[field], bool) else row[field])
+                    for key, field in bindings
+                )
+                environment.update(
+                    RUNNER_TEMP=temporary,
+                    STARRY_WIFI_SSID="fixture-ssid",
+                    STARRY_WIFI_PASSWORD="fixture-password",
+                )
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                wifi = "set" if row["wifi_secrets"] else ""
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    [expected.get(key, "") for key in tracked] + [wifi, wifi],
+                )
 
 
 class ForkCleanupPermissionTests(unittest.TestCase):
