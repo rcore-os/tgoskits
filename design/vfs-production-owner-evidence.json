@@ -10789,5 +10789,213 @@
     "format": "cargo fmt/check plus fixed Rustfmt edition2024 skip_children checks on fd_ops.rs, lock.rs and memfd.rs.",
     "table_rows": 232,
     "remaining": "Admission does not implement the preexisting missing F_CREATED_QUERY/F_DUPFD_QUERY bodies. No controlled fd-close/reuse race, whole F_SETFL multi-bit atomicity, full ordinary hint/async semantics or final-head CI claim."
+  },
+  "ci_d2b3ee0ceb_and_loongarch_capture": {
+    "ci_source": "d2b3ee0cebc7d4e9c78a04afa44e71df46e5c1c4",
+    "capture_implementation": "bb479d5c40e87370895e2b72c84b3de0be9e8dac",
+    "ci": {
+      "snapshot": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-latest.json",
+        "sha256": "7da58f49e9dde83176efa0e10120822b467e5110739f46a80590b828d7d5c32c",
+        "bytes": 15170
+      },
+      "counts": {
+        "success": 43,
+        "failure": 1,
+        "skipped": 5
+      },
+      "failed_check": {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-18T05:15:11Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/rcore-os/tgoskits/actions/runs/44240951812/job/134591984250",
+        "name": "AxVisor / QEMU loongarch64 · Suites",
+        "startedAt": "2026-11-18T05:07:43Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      "starry_runtime": {
+        "x86_64": {
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-starry-x86_64.log",
+            "sha256": "f93cd0598e7b85763e8b969bc77f50038f84d68a07f125a6b657ba1441d9c8b3",
+            "bytes": 2292973
+          },
+          "system_groups": [
+            541
+          ],
+          "qemu_cases": "11/11"
+        },
+        "riscv64": {
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-starry-riscv64.log",
+            "sha256": "148c6c93e762acec19f09cf682ccdb953b0bf82bb8ba83a722b8de6ea3a2efea",
+            "bytes": 2155477
+          },
+          "system_groups": [
+            538
+          ],
+          "qemu_cases": "7/7"
+        },
+        "loongarch64": {
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-starry-loongarch64.log",
+            "sha256": "0ede70c08d94dfbb02cf50bd8b46e02ee58b9a47bb56e024143974a1a374cdb2",
+            "bytes": 876721
+          },
+          "system_groups": [
+            538
+          ],
+          "qemu_cases": "7/7"
+        },
+        "aarch64": {
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-starry-aarch64.log",
+            "sha256": "5ee23a36b1bf98c17342314f1d5de58c8d8195016ecafe9ba1c5d87a44813e25",
+            "bytes": 2188444
+          },
+          "system_groups": [
+            513,
+            23,
+            1,
+            1
+          ],
+          "qemu_cases": "14/14"
+        }
+      },
+      "std": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-std.log",
+          "sha256": "bb43b5db4c4ab9691e879b97a7f4a31654543afe65f4e8f2cb52466409132e31",
+          "bytes": 1092446
+        },
+        "selected_packages": 88
+      },
+      "clippy": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-clippy.log",
+          "sha256": "16a436e0aebad2177dc9fb16e606dcbdf66837139a7d97f282e157fa3681a91b",
+          "bytes": 327902
+        },
+        "selected_packages": 2,
+        "passed_checks": 83
+      },
+      "push_run": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-push-run.json",
+        "sha256": "4056cac34c818ad979195cc69f927b335571a3a9eb14f428d53ffeeb293ec8aa",
+        "bytes": 184
+      },
+      "pr_wrapper_run": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-pr-wrapper-run.json",
+        "sha256": "48a6208fe6c978764f27394a165920599f46fb1231a008fa46cdc63c11072b4a",
+        "bytes": 192
+      },
+      "skipped_reason": "Same-repository PR wrapper reuses the same-head push run under ci.yml; actual push matrix ran. The remaining failure is not hidden by wrapper success.",
+      "loongarch_stdout_policy": "starry-run-system-tests --capture-failures suppresses successful program output. Program begin/success and full summary are retained; no absent PATH_LOOKUP marker was fabricated.",
+      "failure_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d2b3ee0ceb-axvisor-loongarch64.log",
+        "sha256": "fe3a876b3383a5fb9a8da2075f3bd8a2f19e672a30b8d8cc8886f0cabeb38205",
+        "bytes": 210857
+      },
+      "failure": "Both Linux guests booted; VM2 actual block read passed. Mount input echoed only m; shell_check_steps[11] exceeded its existing 60s budget. Not asserted to have the same cause as the older 300s boot timeout."
+    },
+    "capture": {
+      "kernel_source": "315b3e44373e856e4b2b186a18420c4f6d896d5f",
+      "elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/axvisor-loongarch64-315b3e4437.elf",
+        "sha256": "6c5b3928402e37f4c0f264bfed095598cb56ef2493b4b6ef8a417d860707610d",
+        "bytes": 14332280
+      },
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-loong315-ci-capture.log",
+        "sha256": "5f827d72944d728c742c36a3ce9dca1e0d3b53e08562e99238d191f7409b933c",
+        "bytes": 116879
+      },
+      "outer_exit": 0,
+      "source_file": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/scripts/test/qemu_state_capture.py",
+        "sha256": "22ba366c132885fc74749598488f7e7536db4aa41e58297a333ce7b4ad81171e",
+        "bytes": 6145
+      },
+      "qemu_command": {
+        "path": "/home/zhourui/.codex/worktrees/pr2800-loongarch-ci/tgoskits-dev/target/ci-qemu-state.LFEmUs/qemu-5ktnaxg0/command.json",
+        "sha256": "d508223e44c0707f0a53a75306b58be5500f1a286d9ecea57405970dae669e2f",
+        "bytes": 957
+      },
+      "samples": {
+        "path": "/home/zhourui/.codex/worktrees/pr2800-loongarch-ci/tgoskits-dev/target/ci-qemu-state.LFEmUs/qemu-5ktnaxg0/state.jsonl",
+        "sha256": "87c47cc462e942a952c60bc751df27f9b9e8b47f5322d45bd4de3c93887f4172",
+        "bytes": 55124
+      },
+      "sample_count": 7,
+      "checks": {
+        "qemu-capture-lifecycle": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/qemu-capture-lifecycle.log",
+          "sha256": "fb69567dcdf21ab2f7ae0d9a01bd1b325835fc4429a74ec10abac8bdb63e439b",
+          "bytes": 325
+        },
+        "qemu-capture-syntax": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/qemu-capture-syntax.log",
+          "sha256": "ead7e551bbcca576f2144c44945c8d9467e14c9254d65ae072d58b414528c061",
+          "bytes": 59
+        }
+      },
+      "contract": "Exec preserves QEMU PID, console, exit and kill ownership. Read-only QMP queries run without stop/cont. Parent-death signal retires the observer; a real paused emulator and SIGKILL prove lifetime and socket cleanup. No guest, SMP, timeout or success criterion was relaxed."
+    },
+    "additional_local_observations": {
+      "aarch64_system": {
+        "source": "d2b3ee0cebc7d4e9c78a04afa44e71df46e5c1c4",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/perf-fifo-full-debug.log",
+          "sha256": "2a02ee71ab118e1b9bbe7f2549c56cb3ce75595de1bf27f7c8d34348689ff2cc",
+          "bytes": 1473800
+        },
+        "outer_exit": null,
+        "result": "512/513 under recorded host I/O pressure. The epoll BPF wake/close stress completed 613 rounds in 30s, below its 1024 floor. This aborted before perf; not a repeated PMU failure. Original exec session handle expired and no outer-exit file exists."
+      },
+      "loongarch_debug1": {
+        "source": "315b3e44373e856e4b2b186a18420c4f6d896d5f",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-loong315-debug.log",
+          "sha256": "c1b3c6d31cca77623b6e8dae4d4e82a9080a630e60fb2b134233211a2b8892a9",
+          "bytes": 83551
+        },
+        "outer_exit": null,
+        "result": "300s total timeout during second guest early boot; first guest completed. The observer failed socket EACCES and obtained no stall stack. Missing outer-exit file was not reconstructed."
+      },
+      "loongarch_debug2": {
+        "source": "315b3e44373e856e4b2b186a18420c4f6d896d5f",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-loong315-debug2.log",
+          "sha256": "f520a74f0a0db8fa4d4dbe6583cd205e44b43672e62f36aa9293d8c5850125a7",
+          "bytes": 93827
+        },
+        "outer_exit": 0
+      },
+      "loongarch_debug3": {
+        "source": "315b3e44373e856e4b2b186a18420c4f6d896d5f",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-loong315-debug3.log",
+          "sha256": "7cd6d8464f45d87007f64a60670ab3261033d98e84491752f77db1fbd094e8bb",
+          "bytes": 93832
+        },
+        "outer_exit": 0
+      },
+      "loongarch_debug4": {
+        "source": "315b3e44373e856e4b2b186a18420c4f6d896d5f",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-loong315-debug4.log",
+          "sha256": "a8f87e925fa8db84ca9710b45a4eea66cb76f930e481d24722f64c06aa3301d5",
+          "bytes": 93832
+        },
+        "outer_exit": 0,
+        "samples": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/loong315-debug4-qemu-command.json.samples.jsonl",
+          "sha256": "6e4a13e88a3b470271cfe56ddaa67157f7435b3e496097e9910ddd15d9d93a01",
+          "bytes": 62521
+        }
+      }
+    },
+    "remaining": "This is failure-state instrumentation, not a virtual-machine progress fix. Latest published CI remains failed until new-head evidence proves its required gates. Original VFS implementation, performance and independent-review scope remains open."
   }
 }

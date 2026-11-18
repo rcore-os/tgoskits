@@ -4817,6 +4817,30 @@ Kernel 一包标准库、四目标 Clippy 72/72、格式及三处 include-backed
 F_CREATED_QUERY/F_DUPFD_QUERY 仅进入准入集，既有 dispatch 尚未实现其语义；
 受控 fd 替换竞争、多位 F_SETFL 并发提交及普通描述的其他命令继续分别验收。
 
+### 6.43 当前提交的持续集成取证
+
+d2b3ee0ceb 的远端终态为 43 成功、1 失败、5 个重复 PR 包装跳过。实际
+push 矩阵执行了四架构 Starry：x86 system 541/541，RISC-V/LoongArch 各
+538/538，AArch64 为 513/23/1/1；路径程序在四架构均返回成功，LoongArch
+按配置只回放失败程序的标准输出。标准库入口选择 88 包并通过，增量
+Clippy 为两包 83/83。AArch64 的 FIFO PMU 程序本轮通过，不据此解释上轮
+等待超时。
+
+唯一失败是 Axvisor LoongArch。与 315b3e4437 的启动等待不同，本轮两个
+Linux 客机已启动，VM2 实际块读取成功，随后挂载命令只回显 m，在 shell
+步骤 11 的 60 秒预算内未完成。原日志和两种失败位置分别保存，尚未确认
+同一原因。本地相同 ELF 与 initramfs 多次完成两客机只读挂载；一次宿主
+I/O 拥塞期间的调试运行则在第二个客机启动中触及 300 秒总限时。
+
+bb479d5c40 的 qemu_state_capture.py 在 CI 模拟器旁路保存 QMP 状态、CPU
+寄存器和中断状态，失败后回放最后三份快照。启动器直接 exec QEMU，保留
+原 PID、串口、退出状态与 kill 目标；观察者绑定父 PID 终止，不改变 SMP、
+超时或用例判据。真实暂停 QEMU 的采样、SIGKILL 后观察者退休及 socket
+清理均通过；接入后的 LoongArch smoke 1/1，保存七份状态，实际 ELF 与
+失败 CI 同为 6c5b3928402e37f4c0f264bfed095598cb56ef2493b4b6ef8a417d860707610d。
+该提交用于取得失败现场，尚未修复虚拟化实现。新增记录为
+ci_d2b3ee0ceb_and_loongarch_capture，保留既有 71 项生产记录。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。

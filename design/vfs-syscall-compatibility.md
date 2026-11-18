@@ -724,7 +724,7 @@ Linux 的 check_fcntl_cmd 在参数处理前拒绝受限命令，因此 File、D
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| fcntl/O_PATH 受限命令；x86_64 72；其余三架构 25 | v7.1 [check_fcntl_cmd 与 fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L572) | 路径描述对 F_SETFL、F_SETOWN/F_GETOWN、pipe 两命令、seals 两命令、六种 POSIX/OFD 锁、F_SETSIG/F_GETSIG、F_SETOWN_EX/F_GETOWN_EX、1035 至 1038 和未知命令，在读取参数或分派前统一 EBADF | sys_fcntl → original table/description capture → open_flags O_PATH → admission rejection；表读锁已释放 | 部分正确 | 同一 C 在普通/缓存 File/Directory 各检查这 22 个命令，参数零；旧 88 次中错 84 次，Linux/22015c0325 x86 全部 EBADF；其他目标待本轮 CI |
+| fcntl/O_PATH 受限命令；x86_64 72；其余三架构 25 | v7.1 [check_fcntl_cmd 与 fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L572) | 路径描述对 F_SETFL、F_SETOWN/F_GETOWN、pipe 两命令、seals 两命令、六种 POSIX/OFD 锁、F_SETSIG/F_GETSIG、F_SETOWN_EX/F_GETOWN_EX、1035 至 1038 和未知命令，在读取参数或分派前统一 EBADF | sys_fcntl → original table/description capture → open_flags O_PATH → admission rejection；表读锁已释放 | 部分正确 | 同一 C 在普通/缓存 File/Directory 各检查这 22 个命令，参数零；旧 88 次中错 84 次，Linux/22015c0325 x86 全部 EBADF；d2b3ee0ceb 四架构原程序均通过，受控 fd 替换仍待补 |
 | fcntl/缺失 fd 优先级；x86_64 72；其余三架构 25 | v7.1 [fd_raw lookup](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L594) | 不存在的 fd 在命令和用户参数处理前 EBADF | sys_fcntl → captured table.get → BadFileDescriptor，不进入 dispatch 或用户复制 | 部分正确 | 相同 C 的未知命令及 1035/NULL 旧为 EINVAL、EFAULT，Linux/修后 x86 均 EBADF；受控关闭重用及其他目标待补 |
 | fcntl/O_PATH F_GETFL；x86_64 72；其余三架构 25 | v7.1 [F_GETFL](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L473) | 允许读取路径描述保留的状态，不授予数据访问能力 | retained FileLike → O_PATH branch → path/directory/nofollow mask | 部分正确 | 四类路径描述的固定状态与后续原数据拒绝断言在 Linux/x86 通过；其他目标待补 |
 | fcntl/O_PATH F_GETFD；x86_64 72；其余三架构 25 | v7.1 [F_GETFD](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L466) | 允许读取 fd 表项的 FD_CLOEXEC | admission → captured table.read/get(fd).cloexec | 部分正确 | 四类路径描述读取及两种复制后的独立标志在 Linux/x86 通过；受控表项重用及其他目标待补 |
@@ -759,3 +759,8 @@ Linux 的 check_fcntl_cmd 在参数处理前拒绝受限命令，因此 File、D
 Clippy 72/72、格式与三处 include-backed 检查通过，记录为
 path_fcntl_admission。顺序准入结果不替代 F_SETFL 整体并发原子性、普通描述
 的提示/异步通知策略或全部系统调用兼容性。
+
+本节的原路径程序在 d2b3ee0ceb 四架构 CI 均返回成功。LoongArch 配置使用
+`starry-run-system-tests --capture-failures`，成功程序的标准输出被抑制；实际
+程序开始、成功终态及普通未知 fcntl 控制仍可核验。其余受控竞争、未实现查询
+和具体 pipe 分支的证据缺口保留，整轮 CI 尚有独立的 Axvisor LoongArch 失败。
