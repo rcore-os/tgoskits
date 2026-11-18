@@ -358,8 +358,8 @@ cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-cargo xtask starry test board --board orangepi-5-plus-robot
-cargo xtask axvisor test board \
+RUST_LOG=info,uboot_shell=debug cargo xtask starry test board --board orangepi-5-plus-robot
+RUST_LOG=info,uboot_shell=debug cargo xtask axvisor test board \
   --board orangepi-5-plus-robot-starry,orangepi-5-plus-robot-linux
 '''
 
