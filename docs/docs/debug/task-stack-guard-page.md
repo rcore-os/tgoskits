@@ -63,7 +63,7 @@ canary 继续检查没有触及 guard 的栈内破坏。guard 不替代 canary�
 
 ### 2.2 故障输出
 
-ArceOS 和 Starry fault handler 先检查当前任务 guard；命中后输出以下字段，再进入原有 fatal fault 路径。
+ArceOS 和 Starry fault handler 先检查当前任务 guard；命中后尝试用紧急串口输出以下字段，再进入原有 fatal fault 路径。紧急串口接管是有界的，正常 worker 或 IRQ 仍持有寄存器 gate 时可能输出零字节，因此终止式用例必须在 fault 前排空普通输出并消除本地竞争。
 
 ```text
 task stack guard page hit: fault_addr=0x..., stack=[0x.....0x...), guard=[0x.....0x...)
@@ -73,7 +73,7 @@ task stack guard page hit: fault_addr=0x..., stack=[0x.....0x...), guard=[0x....
 
 ## 3. 验证入口
 
-正式 `task-stack-guard-page` 用例属于 ArceOS Rust QEMU 套件。它先迁移任务，再主动触发保护页 fault；运行器只接受用例开始标记之后包含完整地址字段的 guard 诊断。
+正式 `task-stack-guard-page` 用例属于 ArceOS Rust QEMU 套件。多核配置先在非串口所有者核创建任务栈，再把被测线程迁移到串口所有者核；调用 `ax_console_flush()` 排空之前的说明输出后，屏蔽本地 IRQ 并触发同步保护页 fault。这样保留跨核栈创建与迁移覆盖，同时排除测例自身的普通 UART 事务与有界紧急接管竞争。运行器只接受用例开始标记之后包含完整地址字段的 guard 诊断。
 
 ### 3.1 专项回归
 

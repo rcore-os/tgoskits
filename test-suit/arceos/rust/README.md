@@ -20,7 +20,7 @@
 
 调度策略、CPU 拓扑、亲和性、IPI、IRQ、WaitQueue、内核定时器、页表、显示硬件和异常恢复使用明确的 `ax_std::os::arceos` 入口。普通 std 线程仍由 ArceOS 的 pthread 实现创建任务，可以与这些 OS 能力共同用于测试；只有需要定制任务资源或生命周期的用例才直接创建内核任务。
 
-`task/pi_mutex.rs` 和 `lockdep/baseline.rs` 保留 OS `Mutex`，因为 PI 捐赠与内核 lockdep 不是 `std::sync::Mutex` 的契约。`task/stack_guard_page.rs` 用 `spawn_raw` 明确创建被测内核栈。`task/scheduler_irq_window.rs` 用带亲和性的内核任务建立排队工作，并让 FIFO 控制器持有准备阶段，避免依赖每个 Fair 任务先取得一次时间片。该功能随四架构 `general` 批次运行，覆盖非 current 任务的亲和性更新和 IRQ 返回的分批调度窗口。`task/pi_mutex.rs` 在 owner 线程内部发布内核 `ThreadId`，不把标准库 `ThreadId` 的数值当作内核标识。
+`task/pi_mutex.rs` 和 `lockdep/baseline.rs` 保留 OS `Mutex`，因为 PI 捐赠与内核 lockdep 不是 `std::sync::Mutex` 的契约。`task/stack_guard_page.rs` 用运行时 `thread::builder().spawn()` 创建被测内核栈，在另一核创建并迁移到串口所有者核，排空输出并屏蔽本地 IRQ 后触发保护页。`task/scheduler_irq_window.rs` 用带亲和性的内核任务建立排队工作，并让 FIFO 控制器持有准备阶段，避免依赖每个 Fair 任务先取得一次时间片。该功能随四架构 `general` 批次运行，覆盖非 current 任务的亲和性更新和 IRQ 返回的分批调度窗口。`task/pi_mutex.rs` 在 owner 线程内部发布内核 `ThreadId`，不把标准库 `ThreadId` 的数值当作内核标识。
 
 CPU 拓扑测试通过 `cpu_topology_len()` 获取运行时 CPU 数；`std::thread::available_parallelism()` 表达调用者可用并行度，不能代替内核拓扑。`RunnerTaskState` 在每项任务测试后恢复原亲和性和调度策略，防止用例互相影响。
 

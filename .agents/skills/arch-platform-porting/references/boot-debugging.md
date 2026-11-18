@@ -315,6 +315,12 @@ BUSY/TXFF，且 entry/exit 仍增长，先核对重复初始化及发送使能�
 
 SMP4、ITS、NVMe 测试停滞时，先采样各核调用栈和实际中断标识，再从当前设备树或 `PRIMARY_GICR_PHYS_BASE` 确认 redistributor 地址，读取各核 `GICR_PENDBASER` 的地址字段。所有地址必须独立；不能仅凭分配指针不同或某次完整套件通过就认定正确。保留原来的测试配置，不通过改用 GICv2、关闭 ITS 或改成单核绕过缺陷。
 
+## SMP 终结式栈保护页测试
+
+`task-stack-guard-page` 保留跨核创建与迁移，但在串口所有者 CPU 上触发终结式缺页。故障前调用 `ax_console_flush()` 并屏蔽该 CPU 本地 IRQ，使普通串口 worker/IRQ 不能与有界紧急接管竞争。QEMU 用例的串口所有者是 CPU 0；只在 CPU 1 触发 fault 而不排空 CPU 0 的普通事务，可能丢失 guard 诊断，随后只剩未处理缺页 panic。
+
+排查时核对 `ARCEOS_TEST_BEGIN` 之后的完整 `fault_addr/stack/guard` 诊断与探针所在 CPU，不通过扩大接管重试、增加睡眠或放宽成功正则掩盖竞争。
+
 ## RISC-V 扁平设备树多处理器
 
 - 只枚举固件标为可用的处理器节点。没有 `status` 表示可用，`okay` 或 `ok` 表示可用，`disabled` 必须跳过。
