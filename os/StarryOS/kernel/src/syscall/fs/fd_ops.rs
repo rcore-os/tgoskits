@@ -17,8 +17,8 @@ use linux_raw_sys::general::*;
 use crate::{
     StarryError, StarryResult,
     file::{
-        Directory, FD_TABLE, File, FileDescriptor, FileLike, MountTableFile, Pipe, add_file_like,
-        close_file_like, get_file_like, memfd::Memfd, with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, FileTable, MountTableFile, Pipe,
+        add_file_like, close_file_like, get_file_like, memfd::Memfd, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
@@ -709,20 +709,19 @@ fn dup_fd(old_fd: c_int, cloexec: bool) -> StarryResult<isize> {
 
 fn dup_fd_min(
     current: &crate::task::UserTaskRef,
-    old_fd: c_int,
+    table: &RawSpinRwLock<FileTable>,
+    file: &Arc<dyn FileLike>,
     min_fd: c_int,
     cloexec: bool,
 ) -> crate::StarryResult<isize> {
     if min_fd < 0 {
         return Err(StarryError::InvalidInput);
     }
-    let f = get_file_like(old_fd)?;
     let max_nofile = current.as_thread().proc_data.rlimit_current(RLIMIT_NOFILE) as i32;
-    let current_fd_table = crate::file::current_fd_table();
-    let mut fd_table = current_fd_table.write();
+    let mut fd_table = table.write();
     for candidate in min_fd..max_nofile {
         let entry = FileDescriptor {
-            inner: f.clone(),
+            inner: file.clone(),
             cloexec,
         };
         if fd_table.add_at(candidate as _, entry).is_ok() {
@@ -799,32 +798,57 @@ pub fn sys_fcntl(
 ) -> crate::StarryResult<isize> {
     debug!("sys_fcntl <= fd: {fd} cmd: {cmd} arg: {arg}");
 
-    if let Some(r) = super::lock::dispatch_fcntl(current, fd, cmd, arg) {
+    let table = crate::file::current_fd_table();
+    let file = {
+        let descriptors = table.read();
+        descriptors
+            .get(fd as _)
+            .ok_or(StarryError::BadFileDescriptor)?
+            .inner
+            .clone()
+    };
+    // Command admission and every file operation use this retained description,
+    // even if another thread replaces the fd. Release the table guard before
+    // reading user arguments or entering any blocking file operation.
+    let command = cmd as u32;
+    if file.open_flags() & O_PATH != 0
+        && !matches!(
+            command,
+            F_CREATED_QUERY
+                | F_DUPFD
+                | F_DUPFD_CLOEXEC
+                | F_DUPFD_QUERY
+                | F_GETFD
+                | F_SETFD
+                | F_GETFL
+        )
+    {
+        return Err(StarryError::BadFileDescriptor);
+    }
+
+    if let Some(r) = super::lock::dispatch_fcntl(current, &file, cmd, arg) {
         return r;
     }
 
-    match cmd as u32 {
-        F_DUPFD => dup_fd_min(current, fd, arg as _, false),
-        F_DUPFD_CLOEXEC => dup_fd_min(current, fd, arg as _, true),
+    match command {
+        F_DUPFD => dup_fd_min(current, &table, &file, arg as _, false),
+        F_DUPFD_CLOEXEC => dup_fd_min(current, &table, &file, arg as _, true),
         F_SETFL => {
-            let f = get_file_like(fd)?;
             // linux-raw-sys exposes the O_ASYNC file status bit as FASYNC.
             let async_mode = arg & (FASYNC as usize) != 0;
-            let async_mode_changed = async_mode != f.async_mode();
-            if async_mode_changed && !f.supports_async_mode() {
+            let async_mode_changed = async_mode != file.async_mode();
+            if async_mode_changed && !file.supports_async_mode() {
                 return Err(StarryError::NotATty);
             }
-            f.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
-            f.set_append(arg & (O_APPEND as usize) > 0)?;
+            file.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            file.set_append(arg & (O_APPEND as usize) > 0)?;
             if async_mode_changed {
-                f.set_async_mode(async_mode)?;
+                file.set_async_mode(async_mode)?;
             }
             Ok(0)
         }
         F_GETFL => {
-            let f = get_file_like(fd)?;
-
-            let flags = f.open_flags();
+            let flags = file.open_flags();
             if flags & O_PATH != 0 {
                 return Ok((flags & (O_PATH | O_DIRECTORY | O_NOFOLLOW)) as _);
             }
@@ -833,13 +857,13 @@ pub fn sys_fcntl(
             // and descriptor flags stay out of the userspace projection.
             let mut ret = flags
                 & !(O_APPEND | O_NONBLOCK | O_CLOEXEC | O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
-            if f.nonblocking() {
+            if file.nonblocking() {
                 ret |= O_NONBLOCK;
             }
-            if f.append() {
+            if file.append() {
                 ret |= O_APPEND;
             }
-            if f.async_mode() {
+            if file.async_mode() {
                 // linux-raw-sys exposes the O_ASYNC file status bit as FASYNC.
                 ret |= FASYNC;
             }
@@ -847,7 +871,7 @@ pub fn sys_fcntl(
             Ok(ret as _)
         }
         F_GETFD => {
-            let cloexec = crate::file::current_fd_table()
+            let cloexec = table
                 .read()
                 .get(fd as _)
                 .ok_or(StarryError::BadFileDescriptor)?
@@ -856,34 +880,32 @@ pub fn sys_fcntl(
         }
         F_SETFD => {
             let cloexec = arg & FD_CLOEXEC as usize != 0;
-            crate::file::current_fd_table()
-                .write()
-                .set_cloexec(fd as _, cloexec)?;
+            table.write().set_cloexec(fd as _, cloexec)?;
             Ok(0)
         }
         F_SETOWN => {
-            let f = get_file_like(fd)?;
-            f.set_owner(arg as i32)?;
+            file.set_owner(arg as i32)?;
             Ok(0)
         }
-        F_GETOWN => {
-            let f = get_file_like(fd)?;
-            Ok(f.owner()? as _)
-        }
+        F_GETOWN => Ok(file.owner()? as _),
         F_GETPIPE_SZ => {
-            let pipe = Pipe::from_fd(fd)?;
+            let pipe = file
+                .downcast_arc::<Pipe>()
+                .map_err(|_| StarryError::InvalidInput)?;
             Ok(pipe.capacity() as _)
         }
         F_SETPIPE_SZ => {
-            let pipe = Pipe::from_fd(fd)?;
+            let pipe = file
+                .downcast_arc::<Pipe>()
+                .map_err(|_| StarryError::InvalidInput)?;
             set_pipe_size(&pipe, arg)
         }
         F_GET_SEALS => {
-            let memfd = Memfd::from_fd(fd)?;
+            let memfd = Memfd::from_description(file)?;
             Ok(memfd.get_seals() as _)
         }
         F_ADD_SEALS => {
-            let memfd = Memfd::from_fd(fd)?;
+            let memfd = Memfd::from_description(file)?;
             memfd.add_seals(arg as u32)?;
             Ok(0)
         }
