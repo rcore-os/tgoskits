@@ -9809,5 +9809,170 @@
       "Published 0c1743f054 CI has an axbuild UDP lifecycle test failure and an Axvisor AArch64 HTTP stop timeout; workspace Clippy was cancelled. They are not resolved by this fd result.",
       "Other cached writers/endpoints/native attributes and the rest of the VFS plan remain incomplete; PR remains draft."
     ]
+  },
+  "ci_host_fixture_lifecycle": {
+    "source": "618c16e8aff91b024f1352e8ef30a9f5af899715",
+    "merged_dev": "d130219c0e",
+    "compiler": "nightly-2026-11-13; rustc 1.102.0-nightly 8eb778d04094d3af4b26580cab327e0413eb1e02",
+    "source_files": {
+      "scripts/axbuild/src/execution/host_udp.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/scripts/axbuild/src/execution/host_udp.rs",
+        "sha256": "d48e61b9135ba3da56cc0e073194091a4fe5a536bbb0ec84bd22593e2b2097ef",
+        "bytes": 6529
+      },
+      "test-suit/axvisor/normal/qemu-http-control-plane/http-control-plane/http_probe.py": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/test-suit/axvisor/normal/qemu-http-control-plane/http-control-plane/http_probe.py",
+        "sha256": "c6bc827aef076792627328a7020af4a8309b823f006cb1bafea9e45d105d8f0d",
+        "bytes": 54507
+      }
+    },
+    "published_ci": {
+      "head": "0c1743f054d2049db94a3895a0d5f01e237eed6e",
+      "terminal_counts": {
+        "SUCCESS": 41,
+        "FAILURE": 2,
+        "CANCELLED": 1,
+        "SKIPPED": 5
+      },
+      "snapshot": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-0c1743f054-refresh.json",
+        "sha256": "c1b1223436a439f3ec9c679a5518b68ed4c145257f880886ca051510ba66e9fd",
+        "bytes": 8479
+      }
+    },
+    "checks": {
+      "udp-release-before": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/udp-release-before.log",
+          "sha256": "b3cf5ad58eaec8718362afdf2913046c552fe438a41c391ecc68b08fbab4e184",
+          "bytes": 55797
+        },
+        "outer_exit": 1,
+        "source": "bb17764877347d07537fdf255e84630ebff99690"
+      },
+      "udp-release-after": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/udp-release-after.log",
+          "sha256": "40bdc2507b44ac989a1490ecb37725d7624f8d533517720428b30149f0efbc5f",
+          "bytes": 55067
+        },
+        "outer_exit": 0,
+        "source": "23890c167c007eea1868d7ff21d67d712098bc0b"
+      },
+      "http-stop-budget-before": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/http-stop-budget-before.log",
+          "sha256": "4c788762335e360a3cf40bdc7dc7227d9ee53ca2fd048307e6fdbaef57da9eed",
+          "bytes": 348
+        },
+        "outer_exit": 1,
+        "source": "23890c167c007eea1868d7ff21d67d712098bc0b"
+      },
+      "http-stop-budget-after": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/http-stop-budget-after.log",
+          "sha256": "67d2801d419478be5c71bcc565843b5942d21f74da066b8c37e490c2d8ba5bf2",
+          "bytes": 468
+        },
+        "outer_exit": 0,
+        "source": "f20c4d17edb3ff6f74e72510a970013b28d4179e"
+      },
+      "http-stop-before": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/http-stop-before.log",
+          "sha256": "45dfc2d196afca60125817ec7ff11000fa904efc99fcf71ad75bd42f0a4ff137",
+          "bytes": 79692
+        },
+        "outer_exit": 0,
+        "source": "df9d82892ccd9d8346177ca83cc205faa3f8b7ab"
+      },
+      "http-stop-after": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/http-stop-after.log",
+          "sha256": "7d7dc0eebef4f73bd3a9199ace6d1a17d6f775c6ea5c858adbcd4c26086be87b",
+          "bytes": 65103
+        },
+        "outer_exit": 0,
+        "source": "618c16e8aff91b024f1352e8ef30a9f5af899715"
+      },
+      "ci-repair-std": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-repair-std.log",
+          "sha256": "fd1eb70699f6d427b92119c93d4bb394350214c6e4d74cab69f22a799ade5a9e",
+          "bytes": 117860
+        },
+        "outer_exit": 0,
+        "source": "618c16e8aff91b024f1352e8ef30a9f5af899715"
+      },
+      "ci-repair-clippy": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-repair-clippy.log",
+          "sha256": "5f1fe856a711014cafa793ef5d8137df76bc5fafd89c3cd3328fb05c07eaf986",
+          "bytes": 8092
+        },
+        "outer_exit": 0,
+        "source": "618c16e8aff91b024f1352e8ef30a9f5af899715"
+      },
+      "ci-repair-format": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-repair-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        "outer_exit": 0,
+        "source": "618c16e8aff91b024f1352e8ef30a9f5af899715"
+      }
+    },
+    "controlled_udp": {
+      "harness": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/udp-released-port-claim.c",
+        "sha256": "3249b749c131789484add1abd3bbf53bad4e41ad60227a6e53be010d3f930f7b",
+        "bytes": 1919
+      },
+      "interposer": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/udp-released-port-claim.so",
+        "sha256": "e228f6c7d63f6fc47186e44a8c9deda06e1e775e3d824bc4b7eaaca6c048369b",
+        "bytes": 16440
+      },
+      "scope": "Test-fixture defect proof. A legitimate owner claims the released port before the old final rebind. The guard already joined its worker. The old and repaired Rust tests differ; this is not a production resource-leak red/green claim or a confirmed diagnosis of the original CI errno.",
+      "implementation": "The worker returns its exclusive UdpSocket in the join result. finish and Drop retire it in the caller. The existing functional test preserves all datagram bytes and observes stop and exclusivity while it still owns the returned socket; no post-release port availability assertion."
+    },
+    "controlled_http": {
+      "harness": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/check-http-stop-budget.py",
+        "sha256": "69cd0e53f7411b96f5060f06c172480d265d0b8dd14ed4ab5e5350155e926fa5",
+        "bytes": 2629
+      },
+      "before_probe": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/http-stop-budget-before-probe.py",
+        "sha256": "997914ebc8c03218adf2e996807a7dc965935154cc669aea41869bd8987e50ad",
+        "bytes": 53811
+      },
+      "after_probe": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/http-stop-budget-after-probe.py",
+        "sha256": "c6bc827aef076792627328a7020af4a8309b823f006cb1bafea9e45d105d8f0d",
+        "bytes": 54507
+      },
+      "scope": "One unchanged diagnostic harness executes all four actual stop expressions against a local HTTP peer with a 0.2s response delay; REQUEST_TIMEOUT=0.02 and COMPLETION_TIMEOUT=2. It proves the omitted client budget, not Axvisor liveness.",
+      "implementation": "Use the existing completion budget for successful and idempotent pause/resume/stop calls; retain every state, counter, data and recreate assertion. Record actual VM request durations including failures.",
+      "actual_stop_seconds": [
+        0.019,
+        0.007,
+        0.009,
+        0.014
+      ],
+      "original_ci_cause": "Not reproduced locally. The unchanged original QEMU case also passed. No Axvisor runtime fix or deterministic reproduction of the original 15s timeout is claimed."
+    },
+    "before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/axvisor-aarch64-df9d82892c-http-baseline.elf",
+      "sha256": "d39619b6820a591c2526754839d0c9a2aee6e997fef016316328fd844576f4d4",
+      "bytes": 13070928
+    },
+    "after_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/axvisor-aarch64-618c16e8af-http.elf",
+      "sha256": "ec7787ba4d877b2cca0af335d97e9fc3a1227859bb31cf9a8d955cdda81fd372",
+      "bytes": 13178672
+    },
+    "coverage": "Standard tests selected axdevice, axvm, virtualization-tests and axbuild; axbuild has 512 passing units. axbuild Clippy is 1/1; format check passed. No new test program or QEMU startup was added to defaults. Final published-head CI and the remaining VFS plan are still required."
   }
 }

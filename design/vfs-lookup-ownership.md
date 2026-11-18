@@ -4751,6 +4751,33 @@ Linux fixture 的私有 tmpfs 明确使用 MS_NOATIME 并预热名称，避免�
 cached_fd_admission。没有新增系统程序、默认启动或 Rust 单元测试。
 受控 binding/表发布竞争、完整错误优先级及时间策略仍有独立缺口。
 
+### 6.40 宿主夹具的退出边界
+
+0c1743f054 的 CI 终态为 41 成功、2 失败、1 取消和 5 个既有包装跳过。
+失败项分别为 axbuild 的 UDP 退出测试和 Axvisor AArch64 HTTP 控制面，取消的
+workspace Clippy 未当作通过。618c16e8af 合入 dev 的 d130219c0e；固定工具链
+继续为 nightly-2026-11-13，未改回旧编译器或放宽静态检查。
+
+UDP guard 原本已 join 工作线程，但测试在释放端口后要求再次绑定成功。
+受控的合法竞争者在这个空窗取得端口，使旧测试稳定报 AddrInUse，整包为
+511/1；这证明测试的资源假设有误，未据此断言原 CI 的具体 errno。23890c167c
+让 echo_datagrams 通过 join 结果交回原 UdpSocket，finish 和 Drop 在调用者
+侧退休它。既有测试保留空报文、二进制及 4096 字节逐字节断言，并在仍拥有
+套接字时检查退出后的独占与接收，不再观察已释放端口的全局可用性。修后的
+整包在同一诊断器下为 512/0；Rust 测试本身已经重写，不称为产品泄漏红绿。
+
+HTTP 探针四处 stop 原先遗漏 COMPLETION_TIMEOUT，实际配置使用 15 秒请求
+预算。f20c4d17ed 与已有 start/resume 一致，给成功及幂等的 pause/resume/stop
+使用 120 秒完成预算，并记录 VM 请求的实际耗时。相同诊断脚本执行真实
+stop 调用表达式，以 0.2 秒 HTTP 响应和 0.02/2 秒两类预算得到旧 0/4、新
+4/4；它只证明客户端预算选择。原始未改 QEMU 用例本地也通过，新合并版
+完整控制面为 1/1，四次 stop 为 0.019、0.007、0.009、0.014 秒，保留全部状态、
+计数器与重建断言，没有宣称复现或修复虚拟机内部死锁。
+
+合并版的 axdevice、axvm、virtualization-tests、axbuild 四包标准库、axbuild
+Clippy 1/1 与格式检查通过；记录键为 ci_host_fixture_lifecycle。未新增默认
+测试程序或 QEMU 启动。最终发布提交的完整 CI 与 VFS 剩余计划继续单独验收。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
@@ -4897,7 +4924,7 @@ O_LARGEFILE 的直接系统调用位按 Linux UAPI 区分 AArch64 的 0400000 �
 ### 7.7 描述符的预留与发布
 
 Linux `do_sys_openat2()` 先通过 getname 复制并验证输入，再由 FD_ADD 中的
-FD_PREPARE 取得最低可用 fd，成功后才执行 do_file_open。当前缓存分支在
+FD_PREPARE 取得最低可用 fd，成功后才执行 do_file_open。6799b62256 的缓存分支在
 完成查找后才由 CachedFileTable.install 选槽，因而在额度耗尽时可能先返回
 冷名字的 EAGAIN、无效 dirfd 的 EBADF 或 BENEATH 绝对输入的 EXDEV。
 
