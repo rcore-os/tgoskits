@@ -37,8 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   17152 字节；两个 ring 的偏移为 256、8704，各占 8448 字节。region layout 版本
   从 v2 升级到 v3，与旧 v2 固定 Request/Ack slot 格式不兼容；通信双方在升级或
   回滚时必须使用一致的 region 版本和布局参数，仅版本相同不足以保证兼容。
-- 将 `cell` 类型、常量、方法和 `CellFull` 错误统一改名为 `slot`/`SlotFull`，
-  同步两个 ArceOS demo 的分片边界和满 ring 消息长度，不保留旧接口别名。
 
 ## [0.1.1](https://github.com/rcore-os/tgoskits/compare/axivc-v0.1.0...axivc-v0.1.1) - 2026-09-09
 

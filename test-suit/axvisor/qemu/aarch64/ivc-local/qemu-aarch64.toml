@@ -1,5 +1,6 @@
 args = [
     "-nographic",
+    "-snapshot",
     "-cpu",
     "cortex-a72",
     "-machine",
