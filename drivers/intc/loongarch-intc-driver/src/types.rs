@@ -237,14 +237,6 @@ pub enum IntcError {
         /// INT0..INT3 slot.
         slot: usize,
     },
-    /// A strict firmware map routes inputs already assigned to another slot.
-    #[error("LIOINTC parent slot {slot} overlaps earlier input maps on {inputs:#x}")]
-    OverlappingLioMaps {
-        /// Conflicting INT0..INT3 slot.
-        slot: usize,
-        /// Inputs already routed through an earlier slot.
-        inputs: u32,
-    },
     /// A firmware interrupt specifier contains no cells.
     #[error("{controller} interrupt specifier is empty")]
     EmptySpecifier {

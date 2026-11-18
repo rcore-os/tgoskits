@@ -75,14 +75,15 @@ impl LioIntcConfig {
 
     /// Creates routes using only the explicitly mapped firmware inputs.
     ///
-    /// Slot N must name CPU line 2+N and have a nonzero, nonoverlapping input
-    /// bitmap. Absent slots must have zero maps. Uncovered inputs remain
-    /// disconnected, including the CPU selection bits in their route bytes.
+    /// Slot N must name CPU line 2+N and have a nonzero input bitmap. Absent
+    /// slots must have zero maps. Overlapping inputs belong to the first
+    /// matching slot. Uncovered inputs remain disconnected, including the CPU
+    /// selection bits in their route bytes.
     ///
     /// # Errors
     ///
     /// Rejects an empty route set, a parent in the wrong slot, a map without
-    /// a parent, a parent without a map, or overlapping input maps.
+    /// a parent, or a parent without a map.
     pub const fn from_firmware_routes(
         parent_lines: [Option<CpuIrqLine>; LIO_PARENT_COUNT],
         parent_input_maps: [u32; LIO_PARENT_COUNT],
@@ -140,13 +141,6 @@ impl LioIntcConfig {
         slot = 0;
         while slot < LIO_PARENT_COUNT {
             if parent_lines[slot].is_some() {
-                let overlap = parent_input_maps[slot] & routed_inputs;
-                if matches!(route_policy, LioRoutePolicy::FirmwareExplicit) && overlap != 0 {
-                    return Err(IntcError::OverlappingLioMaps {
-                        slot,
-                        inputs: overlap,
-                    });
-                }
                 let selected_inputs = parent_input_maps[slot] & !routed_inputs;
                 effective_parent_input_maps[slot] = selected_inputs;
                 routed_inputs |= selected_inputs;
@@ -172,8 +166,8 @@ impl LioIntcConfig {
 
     /// Returns the firmware-provided input bitmap for each parent slot.
     ///
-    /// [`Self::new`] resolves overlaps and fallback inputs; strict firmware
-    /// routes retain these maps exactly for [`LioIntcCpuInterface::claim`].
+    /// Both constructors resolve overlaps by selecting the first matching
+    /// parent; only [`Self::new`] adds routes for uncovered inputs.
     pub const fn parent_input_maps(self) -> [u32; LIO_PARENT_COUNT] {
         self.parent_input_maps
     }

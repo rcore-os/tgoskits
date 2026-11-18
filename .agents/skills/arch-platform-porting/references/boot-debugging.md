@@ -670,7 +670,9 @@ UART GSI 不在 PCH 覆盖范围时，继续核对真实 MADT 的 LIOPIC，而�
 输入编号或猜 CPU 线。Linux LoongArch 的 GSI 16 起对应 LIO 本地输入，仍须受
 32 输入边界与固件 cascade map 覆盖约束；CPU 父线来自命中位图的 cascade。
 版本 1 的 ISR 布局是控制器基址加 `0x40 + physical_core_id * 8`，不能沿用
-LS2K FDT 的独立 ISR 默认地址。使用严格固件位图，不把未覆盖输入补到首个父线；
+LS2K FDT 的独立 ISR 默认地址。`LioIntcConfig::from_firmware_routes()` 按 slot
+顺序把重叠输入交给首个匹配父线，后续父线仍保留独有输入；ACPI 未覆盖输入保持
+断开，不沿用 FDT 补到首个父线的规则。
 核对真实启动物理核、LIO/EIO 级联冲突，以及域和 CPU interface 发布早于启用。
 只看到 `runtime console active` 或 `irq=None, polling=true` 不能证明中断输入。
 

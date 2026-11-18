@@ -281,11 +281,9 @@ fn lio_firmware_routes_keep_first_owner_and_leave_unmapped_inputs_disconnected()
 
     drop(parts);
     let line2 = CpuIrqLine::new(2).unwrap();
-    let config = LioIntcConfig::from_firmware_routes(
-        [Some(line2), Some(line3), None, None],
-        [1, 1, 0, 0],
-    )
-    .unwrap();
+    let config =
+        LioIntcConfig::from_firmware_routes([Some(line2), Some(line3), None, None], [1, 1, 0, 0])
+            .unwrap();
     let mut parts = LioIntcParts::new(regs.clone(), isr.clone(), config).unwrap();
     let input0 = LioInput::new(0).unwrap();
     assert_eq!(regs.read::<u8>(0), 0x11);
@@ -297,7 +295,7 @@ fn lio_firmware_routes_keep_first_owner_and_leave_unmapped_inputs_disconnected()
 }
 
 #[test]
-fn lio_firmware_routes_reject_missing_or_ambiguous_parent_maps() {
+fn lio_firmware_routes_reject_missing_or_mismatched_parent_maps() {
     let line2 = CpuIrqLine::new(2).unwrap();
     let line3 = CpuIrqLine::new(3).unwrap();
     assert_eq!(
@@ -319,16 +317,6 @@ fn lio_firmware_routes_reject_missing_or_ambiguous_parent_maps() {
     assert_eq!(
         LioIntcConfig::from_firmware_routes([Some(line2), Some(line3), None, None], [1, 0, 0, 0]),
         Err(IntcError::LioParentWithoutMap { slot: 1 })
-    );
-    assert_eq!(
-        LioIntcConfig::from_firmware_routes(
-            [Some(line2), Some(line3), None, None],
-            [1 << 5, (1 << 5) | (1 << 6), 0, 0]
-        ),
-        Err(IntcError::OverlappingLioMaps {
-            slot: 1,
-            inputs: 1 << 5
-        })
     );
 }
 
