@@ -6,8 +6,18 @@ use axdevice_base::*;
 
 use crate::AxVmResult;
 
-const AUTO_MMIO: core::ops::Range<u64> = 0x0b00_0000..0x1000_0000;
+/// Default automatic MMIO window available to every requester.
+pub(super) const AUTO_MMIO_SEARCH: core::ops::Range<u64> = 0x0b00_0000..0x1000_0000;
+
+/// Additional 32-bit MMIO window available only to the referenced typed PCI host.
+pub(super) const PCI_AUTO_MMIO_SEARCH_EXTENSION: core::ops::Range<u64> = 0x1000_0000..0x1_0000_0000;
 const AUTO_MSI_ID_END: u32 = 0x1_0000;
+
+pub(super) fn create_auto_mmio_pools() -> AxVmResult<ResourcePools> {
+    let mut pools = ResourcePools::new();
+    pools.add_auto_mmio(AUTO_MMIO_SEARCH.clone())?;
+    Ok(pools)
+}
 
 pub(super) fn create(vgic: &ArmVgicConfig) -> AxVmResult<ResourcePools> {
     let controller = vgic.controller_id();
@@ -19,8 +29,7 @@ pub(super) fn create(vgic: &ArmVgicConfig) -> AxVmResult<ResourcePools> {
         .checked_add(spi_count)
         .ok_or_else(|| crate::AxVmError::invalid_config("AArch64 automatic SPI range overflows"))?;
 
-    let mut pools = ResourcePools::new();
-    pools.add_auto_mmio(AUTO_MMIO)?;
+    let mut pools = create_auto_mmio_pools()?;
     pools.add_auto_controller_inputs(
         controller,
         ControllerInputId::new(32)..ControllerInputId::new(spi_end),

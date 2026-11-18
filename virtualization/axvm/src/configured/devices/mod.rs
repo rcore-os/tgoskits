@@ -2,6 +2,7 @@
 
 mod guest_cpufreq;
 mod ivc;
+mod pci_memory_test;
 mod virtio_blk;
 pub(crate) mod virtio_net;
 pub(crate) mod virtio_pci;
@@ -23,6 +24,7 @@ pub(super) fn register_devices(
 ) -> Result<(), crate::ConfiguredDeviceError> {
     ivc::register(catalog)?;
     guest_cpufreq::register(catalog)?;
+    pci_memory_test::register(catalog)?;
     virtio_blk::register(catalog)?;
     virtio_net::register(catalog)?;
     Ok(())
@@ -66,10 +68,15 @@ mod gated_visibility_tests {
     }
 
     #[test]
-    fn virtual_cpufreq_model_registers() {
+    fn configured_models_register_only_current_names() {
         assert!(probe_model_is_known("virtual-cpufreq"));
         assert!(matches!(
             unknown_model_error("not-a-model"),
+            crate::ConfiguredDeviceError::UnknownVirtualDeviceModel { .. }
+        ));
+        assert!(probe_model_is_known("pci-memory-test"));
+        assert!(matches!(
+            unknown_model_error("ivshmem-pci"),
             crate::ConfiguredDeviceError::UnknownVirtualDeviceModel { .. }
         ));
     }

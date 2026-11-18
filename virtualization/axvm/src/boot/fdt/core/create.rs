@@ -370,6 +370,8 @@ pub(crate) struct GuestFdtRuntimePatch<'a> {
     pub(crate) additional_serials: &'a [crate::machine::GuestSerialProfile],
     pub(crate) gic_profile: Option<&'a crate::machine::GuestGicProfile>,
     pub(crate) plic_profile: Option<&'a crate::machine::GuestPlicProfile>,
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) pci_host: Option<&'a crate::boot::fdt::core::pci::GuestPciHost>,
     pub(crate) timer_profile: Option<&'a crate::machine::GuestTimerProfile>,
     pub(crate) initrd_start_size: Option<(u64, u64)>,
     pub(crate) create_chosen: bool,
@@ -386,6 +388,8 @@ pub(crate) fn patch_guest_fdt_for_runtime(patch: GuestFdtRuntimePatch<'_>) -> Ax
         additional_serials,
         gic_profile,
         plic_profile,
+        #[cfg(any(target_arch = "aarch64", test))]
+        pci_host,
         timer_profile,
         initrd_start_size,
         create_chosen,
@@ -423,6 +427,8 @@ pub(crate) fn patch_guest_fdt_for_runtime(patch: GuestFdtRuntimePatch<'_>) -> Ax
     for serial in additional_serials {
         super::serial::install_additional_serial(&mut tree, *serial)?;
     }
+    #[cfg(any(target_arch = "aarch64", test))]
+    super::pci::install_pci_host(&mut tree, pci_host)?;
     super::disabled::validate_runtime(tree.inner(), crate_config)?;
     super::reserved::validate_allocated(tree.inner(), memory_regions)?;
     tree.validate_phandles()?;
@@ -1000,6 +1006,7 @@ mod tests {
             additional_serials: &[],
             gic_profile: gic.as_ref(),
             plic_profile: plic.as_ref(),
+            pci_host: None,
             timer_profile: None,
             initrd_start_size: None,
             create_chosen: false,
@@ -1019,6 +1026,7 @@ mod tests {
             additional_serials: &[],
             gic_profile: gic.as_ref(),
             plic_profile: plic.as_ref(),
+            pci_host: None,
             timer_profile: None,
             initrd_start_size: None,
             create_chosen: true,
@@ -1027,6 +1035,71 @@ mod tests {
         let reparsed = Fdt::from_bytes(&patched).unwrap();
 
         assert!(reparsed.get_by_path_id("/chosen").is_some());
+    }
+
+    #[test]
+    fn runtime_patch_installs_pci_host_before_disabled_validation() {
+        let (dtb, gic, plic) = runtime_controller_fixture();
+        let pci_host = super::super::pci::GuestPciHost::new(
+            (0x0b00_0000, 0x10_0000),
+            (0x0c00_0000, 0x0400_0000),
+        )
+        .unwrap();
+        let serial = crate::machine::GuestSerialProfile {
+            model: crate::machine::GuestSerialModel::Uart16550,
+            transport: crate::machine::GuestSerialTransport::Port {
+                base: 0x3f8,
+                length: 8,
+            },
+            irq: 4,
+            clock_hz: 1_843_200,
+        };
+        let cfg = GuestConfig::default();
+        let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
+            fdt_bytes: &dtb,
+            memory_regions: &[],
+            devices: &[],
+            crate_config: &cfg,
+            serial_profile: serial,
+            serial_identity: None,
+            additional_serials: &[],
+            gic_profile: gic.as_ref(),
+            plic_profile: plic.as_ref(),
+            pci_host: Some(&pci_host),
+            timer_profile: None,
+            initrd_start_size: None,
+            create_chosen: false,
+        })
+        .unwrap();
+        let reparsed = Fdt::from_bytes(&patched).unwrap();
+        assert!(reparsed.get_by_path_id("/pci@b000000").is_some());
+
+        let mut disabled_cfg = GuestConfig::default();
+        disabled_cfg.devices.disabled.push(PhysicalDeviceRef {
+            path: "/pci@b000000".into(),
+        });
+        let error = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
+            fdt_bytes: &dtb,
+            memory_regions: &[],
+            devices: &[],
+            crate_config: &disabled_cfg,
+            serial_profile: serial,
+            serial_identity: None,
+            additional_serials: &[],
+            gic_profile: gic.as_ref(),
+            plic_profile: plic.as_ref(),
+            pci_host: Some(&pci_host),
+            timer_profile: None,
+            initrd_start_size: None,
+            create_chosen: false,
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("machine device installation conflicts with disabled path /pci@b000000")
+        );
     }
 
     #[test]
@@ -1061,6 +1134,7 @@ mod tests {
             additional_serials: &[],
             gic_profile: gic.as_ref(),
             plic_profile: plic.as_ref(),
+            pci_host: None,
             timer_profile: None,
             initrd_start_size: None,
             create_chosen: false,

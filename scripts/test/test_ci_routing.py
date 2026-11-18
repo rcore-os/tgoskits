@@ -113,6 +113,149 @@ class RunnerTrustTests(unittest.TestCase):
         # Actions rejects an explicitly empty password before any job starts.
         self.assertNotRegex(credentials, r"(?m)^\s*password:")
 
+    def test_container_preflight_persists_exact_checkout_trust_for_later_git(
+        self,
+    ) -> None:
+        workflow = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
+        preflight_script = workflow_step_script_in(workflow, "Preflight container")
+        command_script = workflow_step_script_in(workflow, "Run command")
+        self.assertTrue(preflight_script)
+        self.assertTrue(command_script)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = root / "checkout"
+            unrelated = root / "unrelated"
+            home = root / "home"
+            runner_temp = root / "runner-temp"
+            bin_dir = root / "bin"
+            checkout.mkdir()
+            unrelated.mkdir()
+            home.mkdir()
+            runner_temp.mkdir()
+            bin_dir.mkdir()
+
+            env = os.environ.copy()
+            for name in tuple(env):
+                if name.startswith(
+                    (
+                        "GIT_CONFIG_",
+                        "GIT_TEST_ASSUME_DIFFERENT_OWNER",
+                        "XDG_CONFIG_HOME",
+                    )
+                ):
+                    env.pop(name)
+            env.update(
+                {
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "HOME": str(home),
+                }
+            )
+
+            subprocess.run(
+                ["git", "init", "--quiet", str(checkout)],
+                env=env,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "init", "--quiet", str(unrelated)],
+                env=env,
+                check=True,
+            )
+            (checkout / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(checkout), "add", "tracked.txt"],
+                env=env,
+                check=True,
+            )
+
+            emulators = sorted(
+                set(re.findall(r"\bqemu-[a-z0-9_]+-static\b", preflight_script))
+            )
+            self.assertTrue(emulators)
+            for emulator in emulators:
+                executable = bin_dir / emulator
+                executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                executable.chmod(0o755)
+
+            env.update(
+                {
+                    "CONTAINER_PREFLIGHT": "qemu-user",
+                    "GITHUB_WORKSPACE": str(checkout),
+                    "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+                    "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                    "PERFORMANCE_REPORT": "false",
+                    "REUSABLE_COMMAND": (
+                        "git ls-files --cached --others --exclude-standard"
+                    ),
+                    "RUNNER_TEMP": str(runner_temp),
+                    "USE_XTASK_BIN": "false",
+                    "WIFI_SECRETS": "false",
+                }
+            )
+
+            # GIT_TEST_ASSUME_DIFFERENT_OWNER must make this checkout untrusted
+            # before preflight, otherwise the test cannot detect a missing
+            # persistent configuration.
+            untrusted = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                cwd=checkout,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                untrusted.returncode,
+                128,
+                "fixture did not trigger different-owner protection:\n"
+                f"{untrusted.stderr}",
+            )
+
+            preflight = subprocess.run(
+                ["bash", "-e", "-c", preflight_script],
+                cwd=checkout,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                preflight.returncode,
+                0,
+                f"container preflight failed:\n{preflight.stderr}",
+            )
+
+            command = subprocess.run(
+                ["bash", "-e", "-c", command_script],
+                cwd=checkout,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                command.returncode,
+                0,
+                f"later Run command lost checkout trust:\n{command.stderr}",
+            )
+            self.assertEqual(command.stdout.splitlines(), ["tracked.txt"])
+
+            unrelated_result = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=unrelated,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                unrelated_result.returncode,
+                128,
+                "container preflight must not trust repositories other than "
+                "GITHUB_WORKSPACE",
+            )
+
     def test_cleanup_reuses_planning_runner(self) -> None:
         self.assertFalse(
             PR_CLEANUP_WORKFLOW.exists(),

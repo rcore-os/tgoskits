@@ -237,21 +237,25 @@ class CiImpactTests(unittest.TestCase):
         self.assertEqual(impact.ignored_apps, (path.as_posix(),))
         self.assertEqual(impact.test_suite_paths, ())
 
-    def test_ci_owned_app_input_selects_its_registered_target(self) -> None:
-        prefix, selection = ci_impact.CI_OWNED_APP_INPUTS[0]
-        path = prefix / "generated-input/run.sh"
-        impact = ci_impact.analyze_changed_paths(
-            self.workspace_root,
-            [path],
-            self.metadata_by_arch,
-        )
+    def test_ci_owned_app_inputs_select_axvisor_aarch64_qemu_target(self) -> None:
+        for prefix in (
+            Path("apps/arceos/virtio-blk-test"),
+            Path("apps/arceos/pci-memory-test"),
+        ):
+            with self.subTest(prefix=prefix):
+                path = prefix / "src/main.rs"
+                impact = ci_impact.analyze_changed_paths(
+                    self.workspace_root,
+                    [path],
+                    self.metadata_by_arch,
+                )
 
-        self.assertFalse(impact.full)
-        self.assertNotIn(
-            path.as_posix(),
-            impact.ignored_apps,
-        )
-        self.assertEqual(impact.input_selections, (selection,))
+                self.assertFalse(impact.full)
+                self.assertEqual(impact.ignored_apps, ())
+                self.assertEqual(
+                    impact.input_selections, ("axvisor:qemu:aarch64",)
+                )
+                self.assertEqual(impact.targets, ("axvisor:aarch64",))
 
     def test_os_specific_config_without_arch_hint_selects_all_os_arches(self) -> None:
         impact = ci_impact.analyze_changed_paths(

@@ -4,12 +4,33 @@ use alloc::string::String;
 use core::ops::Range;
 
 use super::{range::*, *};
-use crate::DeviceManagerResult;
+use crate::{DeviceManagerResult, DeviceNodeId};
 
 impl ResourcePools {
     /// Adds an MMIO range used only for automatic allocation.
     pub fn add_auto_mmio(&mut self, range: Range<u64>) -> DeviceManagerResult {
         insert_range(&mut self.addresses.automatic.mmio, range, "automatic MMIO")
+    }
+
+    /// Adds an extra automatic MMIO range available only to `owner`.
+    ///
+    /// The range extends the owner's automatic search domain without changing
+    /// the default domain or granting the same range to other requesters. It
+    /// remains subject to the pools' shared reservations and allocations.
+    pub fn add_auto_mmio_for_owner(
+        &mut self,
+        owner: &DeviceNodeId,
+        range: Range<u64>,
+    ) -> DeviceManagerResult {
+        let owner: String = owner.as_str().into();
+        insert_range(
+            self.addresses
+                .automatic_mmio_for_owner
+                .entry(owner)
+                .or_default(),
+            range,
+            "owner automatic MMIO",
+        )
     }
 
     /// Allows fixed MMIO requests inside `range`.
@@ -57,6 +78,13 @@ impl ResourcePools {
 
     pub(crate) fn auto_mmio(&self) -> &[Range<u64>] {
         &self.addresses.automatic.mmio
+    }
+
+    pub(crate) fn auto_mmio_for_owner(&self, owner: &str) -> &[Range<u64>] {
+        self.addresses
+            .automatic_mmio_for_owner
+            .get(owner)
+            .map_or(&[], |ranges| ranges.as_slice())
     }
 
     pub(crate) fn fixed_mmio(&self) -> &[Range<u64>] {
