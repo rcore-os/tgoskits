@@ -10107,5 +10107,687 @@
     "table_rows": 212,
     "retained_warnings": "The earlier cached-fd Clippy already contains Cargo unused_dependencies for axtest/sg200x-bsp in cfg-limited profiles. Upstream future-compatibility diagnostics remain visible. No lint allow or fake use was added.",
     "remaining": "This proves sequential two-bit state, not whole-command multi-bit concurrency, O_PATH fcntl command admission, FASYNC, O_DIRECT/O_NOATIME policy, specific physical device I/O, or complete current-head CI."
+  },
+  "path_fcntl_admission": {
+    "before_source": "9dbef8c480f491b2e78c0551a2948902a1d76439",
+    "after_source": "22015c032520b3200bbec915cec1d6af2a97a34b",
+    "test_byte_identical_before_and_after": true,
+    "test_source": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-main.c",
+      "sha256": "0067418e39901d415f384dfca97affb3a1cd07c38b12493abb7a3dcc9682f3e3",
+      "bytes": 33601
+    },
+    "linux_binary": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-linux",
+      "sha256": "8e03e18bd3e260c5dcd0e4b491d23f60fdee2cf4e193172bcc8eb3b38d5f869e",
+      "bytes": 944256
+    },
+    "source_files": {
+      "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c",
+        "sha256": "0067418e39901d415f384dfca97affb3a1cd07c38b12493abb7a3dcc9682f3e3",
+        "bytes": 33601
+      },
+      "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/os/StarryOS/kernel/src/syscall/fs/fd_ops.rs",
+        "sha256": "c18365efa7cd9e58e1fe6ee39520f475ac2ce18eea909e1385df847de647f402",
+        "bytes": 36489
+      },
+      "os/StarryOS/kernel/src/syscall/fs/lock.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/os/StarryOS/kernel/src/syscall/fs/lock.rs",
+        "sha256": "e637bf88b2c03bf3eb2fef51df4be516d9d7d45d9c8388459fe70d24c28bf84e",
+        "bytes": 55235
+      },
+      "os/StarryOS/kernel/src/file/memfd.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/os/StarryOS/kernel/src/file/memfd.rs",
+        "sha256": "5b0e284e2ca8332acbbe5aa886c69e09a53e6c707625731733ff85ed6bf6c6e5",
+        "bytes": 24247
+      }
+    },
+    "checks": {
+      "linux": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-linux.log",
+          "sha256": "fab9b15b1f1d62b713b9b7b815058e82907514e4d69306c99905eac0a7cfe6c3",
+          "bytes": 20756
+        },
+        "outer_exit": 0,
+        "source": "9dbef8c480f491b2e78c0551a2948902a1d76439"
+      },
+      "before": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-before.log",
+          "sha256": "bde3de563d7ead010b1cd0ecef08f2fd0f193567da51becae6026a85378550b2",
+          "bytes": 50978
+        },
+        "outer_exit": 1,
+        "source": "9dbef8c480f491b2e78c0551a2948902a1d76439"
+      },
+      "after": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-after.log",
+          "sha256": "84ac1222a53deea3c04f31cc241f238b9366be36f89a0655216d725a215bd608",
+          "bytes": 50315
+        },
+        "outer_exit": 0,
+        "source": "22015c032520b3200bbec915cec1d6af2a97a34b"
+      },
+      "dup": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-dup.log",
+          "sha256": "93325949437ae0c67216ed15ef40968eecf98a418abef3ca015f37a10f5a2ba6",
+          "bytes": 51975
+        },
+        "outer_exit": 0,
+        "source": "22015c032520b3200bbec915cec1d6af2a97a34b"
+      },
+      "seals": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-seals.log",
+          "sha256": "1c959725a1d3008ca3c4fe81c77d20e3730fd1203bb4bc415dc6b6e8a7690e23",
+          "bytes": 47319
+        },
+        "outer_exit": 0,
+        "source": "22015c032520b3200bbec915cec1d6af2a97a34b"
+      },
+      "lifecycle": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-lifecycle.log",
+          "sha256": "46a388e06c2e5c6d6634149844ba2c38a789e097394d542b27a4a00cf0ab05c6",
+          "bytes": 33663
+        },
+        "outer_exit": 0,
+        "source": "22015c032520b3200bbec915cec1d6af2a97a34b"
+      },
+      "std": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-std.log",
+          "sha256": "fafd83b508085ff7d96dea6656aa360c265e3c7f1be4e6f5a98e39f0492d0d9a",
+          "bytes": 38590
+        },
+        "outer_exit": 0,
+        "source": "22015c032520b3200bbec915cec1d6af2a97a34b"
+      },
+      "clippy": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-clippy.log",
+          "sha256": "eba49d4a3a8bc253e35b7195ac4e822344ee9e083f84c0a8927decebb2f0850c",
+          "bytes": 69366
+        },
+        "outer_exit": 0,
+        "source": "22015c032520b3200bbec915cec1d6af2a97a34b"
+      },
+      "format": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/path-fcntl-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        "outer_exit": 0,
+        "source": "22015c032520b3200bbec915cec1d6af2a97a34b"
+      }
+    },
+    "before_failure_count": 86,
+    "denied_observation_count": 88,
+    "before_wrong_denials": 84,
+    "after_wrong_denials": 0,
+    "before_denied_observations": [
+      [
+        "CACHED O_PATH file",
+        "4",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH file",
+        "8",
+        "-1",
+        "25"
+      ],
+      [
+        "CACHED O_PATH file",
+        "9",
+        "-1",
+        "25"
+      ],
+      [
+        "CACHED O_PATH file",
+        "1032",
+        "-1",
+        "22"
+      ],
+      [
+        "CACHED O_PATH file",
+        "1031",
+        "-1",
+        "22"
+      ],
+      [
+        "CACHED O_PATH file",
+        "1034",
+        "-1",
+        "9"
+      ],
+      [
+        "CACHED O_PATH file",
+        "1033",
+        "-1",
+        "9"
+      ],
+      [
+        "CACHED O_PATH file",
+        "5",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "6",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "7",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "36",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "37",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "38",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "10",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH file",
+        "11",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH file",
+        "15",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH file",
+        "16",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH file",
+        "1035",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "1036",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "1037",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "1038",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH file",
+        "2147483647",
+        "-1",
+        "22"
+      ],
+      [
+        "ordinary O_PATH file",
+        "4",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH file",
+        "8",
+        "-1",
+        "25"
+      ],
+      [
+        "ordinary O_PATH file",
+        "9",
+        "-1",
+        "25"
+      ],
+      [
+        "ordinary O_PATH file",
+        "1032",
+        "-1",
+        "22"
+      ],
+      [
+        "ordinary O_PATH file",
+        "1031",
+        "-1",
+        "22"
+      ],
+      [
+        "ordinary O_PATH file",
+        "1034",
+        "-1",
+        "9"
+      ],
+      [
+        "ordinary O_PATH file",
+        "1033",
+        "-1",
+        "9"
+      ],
+      [
+        "ordinary O_PATH file",
+        "5",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "6",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "7",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "36",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "37",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "38",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "10",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH file",
+        "11",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH file",
+        "15",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH file",
+        "16",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH file",
+        "1035",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "1036",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "1037",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "1038",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH file",
+        "2147483647",
+        "-1",
+        "22"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "4",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "8",
+        "-1",
+        "25"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "9",
+        "-1",
+        "25"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "1032",
+        "-1",
+        "22"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "1031",
+        "-1",
+        "22"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "1034",
+        "-1",
+        "22"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "1033",
+        "-1",
+        "22"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "5",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "6",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "7",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "36",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "37",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "38",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "10",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "11",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "15",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "16",
+        "0",
+        "0"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "1035",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "1036",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "1037",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "1038",
+        "-1",
+        "14"
+      ],
+      [
+        "ordinary O_PATH directory",
+        "2147483647",
+        "-1",
+        "22"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "4",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "8",
+        "-1",
+        "25"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "9",
+        "-1",
+        "25"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "1032",
+        "-1",
+        "22"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "1031",
+        "-1",
+        "22"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "1034",
+        "-1",
+        "22"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "1033",
+        "-1",
+        "22"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "5",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "6",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "7",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "36",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "37",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "38",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "10",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "11",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "15",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "16",
+        "0",
+        "0"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "1035",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "1036",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "1037",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "1038",
+        "-1",
+        "14"
+      ],
+      [
+        "CACHED O_PATH directory",
+        "2147483647",
+        "-1",
+        "22"
+      ]
+    ],
+    "before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-9dbef8c480-path-fcntl-baseline.elf",
+      "sha256": "2f7118a7e5fcc7f017305136e8dc883ab436105be0bd4c68e5733d470a3fe3f1",
+      "bytes": 218054008
+    },
+    "after_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-22015c0325.elf",
+      "sha256": "1d5a10420df58b8c283735cf4734dd20e6c6569837171c313139b87227792a32",
+      "bytes": 218015704
+    },
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "host_kernel": "6.8.0-149-generic",
+      "functions": [
+        "check_fcntl_cmd",
+        "fcntl",
+        "do_fcntl"
+      ]
+    },
+    "ownership": {
+      "capture": "sys_fcntl retains the original fd table and FileLike once; table read protection ends before admission, user argument copies, blocking operations and callbacks.",
+      "consumers": "Duplication, POSIX/OFD locks, pipe conversion and memfd seals consume the same retained description. GETFD/SETFD retain original-table slot semantics.",
+      "memfd": "from_description preserves the existing direct Memfd and File backend MemfdRef conversion. from_fd delegates after lookup; no extra registry or compatibility path."
+    },
+    "runtime": "Same C covers four ordinary/cached path-only File/Directory producers, 22 rejected commands each, five implemented allowed commands, two missing-fd controls and ordinary unknown-command EINVAL. Existing data/status/cursor/directory/mount-reference journey remains. Three existing dup/locks, seals and lock-lifecycle programs ran separately; four post-fix QEMU starts, no new default startup.",
+    "format": "cargo fmt/check plus fixed Rustfmt edition2024 skip_children checks on fd_ops.rs, lock.rs and memfd.rs.",
+    "table_rows": 232,
+    "remaining": "Admission does not implement the preexisting missing F_CREATED_QUERY/F_DUPFD_QUERY bodies. No controlled fd-close/reuse race, whole F_SETFL multi-bit atomicity, full ordinary hint/async semantics or final-head CI claim."
   }
 }

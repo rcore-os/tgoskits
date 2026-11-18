@@ -708,3 +708,54 @@ dup 和 F_GETFD 的实际链路对文件与目录相同，分别保留打开描�
 标志不含非阻塞位；Pipe 已主动去掉它；MqDescriptor、Card0File 和 DrmKapiFile
 有自己的实时标志及 getter。默认 open_flags 为零的对象没有这个原始位。
 这些事实不代替各端点 I/O、异步通知、O_PATH 命令门禁或整体并发原子性证明。
+
+## 20. 路径描述的命令准入
+
+22015c0325 的 sys_fcntl 先保留原表和打开描述，再检查 O_PATH 命令集。固定
+Linux 的 check_fcntl_cmd 在参数处理前拒绝受限命令，因此 File、Directory
+及两种打开方式共用同一准入链。相同 C 在 Linux 通过，旧实现失败 86 项，
+修后实际 x86 路径旅程为 1/1。此前阶段的调用链记录保留各自源码版本。
+
+### 20.1 路径描述的命令与错误顺序
+
+四类描述各检查 22 个拒绝命令，共 88 次观察。旧实现有 84 次返回值或错误
+不符，另有两项缺失 fd 错误顺序，修后全部通过。两个尚未实现的查询明确
+列出，不能把准入集合与具体命令能力混为一谈。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| fcntl/O_PATH 受限命令；x86_64 72；其余三架构 25 | v7.1 [check_fcntl_cmd 与 fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L572) | 路径描述对 F_SETFL、F_SETOWN/F_GETOWN、pipe 两命令、seals 两命令、六种 POSIX/OFD 锁、F_SETSIG/F_GETSIG、F_SETOWN_EX/F_GETOWN_EX、1035 至 1038 和未知命令，在读取参数或分派前统一 EBADF | sys_fcntl → original table/description capture → open_flags O_PATH → admission rejection；表读锁已释放 | 部分正确 | 同一 C 在普通/缓存 File/Directory 各检查这 22 个命令，参数零；旧 88 次中错 84 次，Linux/22015c0325 x86 全部 EBADF；其他目标待本轮 CI |
+| fcntl/缺失 fd 优先级；x86_64 72；其余三架构 25 | v7.1 [fd_raw lookup](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L594) | 不存在的 fd 在命令和用户参数处理前 EBADF | sys_fcntl → captured table.get → BadFileDescriptor，不进入 dispatch 或用户复制 | 部分正确 | 相同 C 的未知命令及 1035/NULL 旧为 EINVAL、EFAULT，Linux/修后 x86 均 EBADF；受控关闭重用及其他目标待补 |
+| fcntl/O_PATH F_GETFL；x86_64 72；其余三架构 25 | v7.1 [F_GETFL](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L473) | 允许读取路径描述保留的状态，不授予数据访问能力 | retained FileLike → O_PATH branch → path/directory/nofollow mask | 部分正确 | 四类路径描述的固定状态与后续原数据拒绝断言在 Linux/x86 通过；其他目标待补 |
+| fcntl/O_PATH F_GETFD；x86_64 72；其余三架构 25 | v7.1 [F_GETFD](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L466) | 允许读取 fd 表项的 FD_CLOEXEC | admission → captured table.read/get(fd).cloexec | 部分正确 | 四类路径描述读取及两种复制后的独立标志在 Linux/x86 通过；受控表项重用及其他目标待补 |
+| fcntl/O_PATH F_SETFD；x86_64 72；其余三架构 25 | v7.1 [F_SETFD](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L469) | 允许修改表项 FD_CLOEXEC，不修改共享打开描述 | admission → captured table.write/set_cloexec | 部分正确 | 四类路径描述切换并恢复原标志，Linux/x86 通过；并发槽号替换和其他目标待补 |
+| fcntl/O_PATH F_DUPFD；x86_64 72；其余三架构 25 | v7.1 [F_DUPFD](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L457) | 复制同一打开描述，新 fd 的 CLOEXEC 清零 | admission → dup_fd_min(original table, retained description) → FileDescriptor | 部分正确 | 四类路径描述实际复制、状态相同及新标志为零在 Linux/x86 通过；已有普通 fd 最低号用例也通过，完整限额及竞争待补 |
+| fcntl/O_PATH F_DUPFD_CLOEXEC；x86_64 72；其余三架构 25 | v7.1 [F_DUPFD_CLOEXEC](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L460) | 复制同一打开描述，新 fd 设置 CLOEXEC | admission → dup_fd_min(original table, retained description, true) | 部分正确 | 四类路径描述实际复制及 FD_CLOEXEC 在 Linux/x86 通过；完整 exec、限额和竞争矩阵待补 |
+| fcntl/O_PATH F_CREATED_QUERY；x86_64 72；其余三架构 25 | v7.1 [F_CREATED_QUERY](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L454) | 允许查询描述创建事实，返回具体查询结果 | admission allows → existing default InvalidInput；查询本体未实现 | 不正确 | 静态调用链确认既有实现缺口；本轮没有宣称查询功能通过，Linux 6.8 宿主也不作为 v7.1 新命令运行证据 |
+| fcntl/O_PATH F_DUPFD_QUERY；x86_64 72；其余三架构 25 | v7.1 [F_DUPFD_QUERY](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L463) | 允许查询另一 fd 是否共享打开描述 | admission allows → existing default InvalidInput；比较本体未实现 | 不正确 | 静态确认准入后仍走既有 EINVAL，未借用 F_DUPFD 的成功结果作为该查询证据 |
+
+### 20.2 保留描述的实际消费
+
+普通描述的锁、pipe 和 seals 在准入后使用同一个 Arc；用户复制、具体类型
+转换与等待不持有 fd 表保护。既有三个系统用例各自实际启动为 1/1，其中
+锁生命周期检查 close/exit/exec 和 OFD 最后关闭后的等待者进展。这些结果
+覆盖本次保活改动的正常使用，尚未制造查找后 fd 被重用的受控交错。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| fcntl/F_GETLK；x86_64 72；其余三架构 25 | v7.1 [fcntl_getlk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c) | 用捕获描述的 inode 查询 POSIX 冲突并回写结果 | retained Arc → dispatch_fcntl → fcntl_getlk → lockable → original inode key | 部分正确 | test-dup-fcntl 实际查询/冲突通过；控制 fd 替换及完整 ABI 边界待补 |
+| fcntl/F_SETLK；x86_64 72；其余三架构 25 | v7.1 [fcntl_setlk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c) | 对捕获描述对应 inode 提交不等待的 POSIX 锁 | retained Arc → dispatch_fcntl → fcntl_setlk → lockable → POSIX owner | 部分正确 | test-dup-fcntl 与生命周期用例通过；未把已有锁协议概括为完整 Linux 兼容 |
+| fcntl/F_SETLKW；x86_64 72；其余三架构 25 | v7.1 [fcntl_setlk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c) | 等待者保活目标，不能带 fd 表读锁等待关闭者 | retained Arc → fcntl_setlk(wait) → existing wait loop，table guard absent | 部分正确 | test-fcntl-lock-lifecycle 的 close/exit/exec 唤醒实际通过；受控 fd 重用与其他目标待补 |
+| fcntl/F_OFD_GETLK；x86_64 72；其余三架构 25 | v7.1 [fcntl_getlk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c) | OFD 查询保留打开描述身份，区别于进程锁所有者 | retained Arc → fcntl_getlk → lockable → OFD identity | 部分正确 | test-dup-fcntl 的 OFD 查询和冲突实际通过；受控描述替换待补 |
+| fcntl/F_OFD_SETLK；x86_64 72；其余三架构 25 | v7.1 [fcntl_setlk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c) | OFD 非等待锁依附原打开描述 | retained Arc → fcntl_setlk → original OFD identity | 部分正确 | 既有 OFD 冲突和 churn 判据通过，最后关闭生命周期保留；完整竞争及 ABI 待补 |
+| fcntl/F_OFD_SETLKW；x86_64 72；其余三架构 25 | v7.1 [fcntl_setlk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c) | 阻塞 OFD 锁保活原描述，最终关闭后等待者能前进 | retained Arc → fcntl_setlk(wait) → original identity/wait queue | 部分正确 | 生命周期用例实际核对 OFD 最后关闭与等待者进展；受控重用及其他目标待补 |
+| fcntl/F_GETPIPE_SZ；x86_64 72；其余三架构 25 | v7.1 [pipe_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c) | 在已捕获的 pipe 上读取容量，路径描述先 EBADF | admission → retained Arc.downcast_arc Pipe → capacity | 部分正确 | O_PATH 拒绝在同 C 通过，四目标 Clippy 覆盖类型分支；本轮未直接运行普通 pipe 容量查询 |
+| fcntl/F_SETPIPE_SZ；x86_64 72；其余三架构 25 | v7.1 [pipe_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c) | 修改捕获 pipe 的容量并返回实际容量，路径描述先 EBADF | admission → retained Arc.downcast_arc Pipe → set_pipe_size/resize | 部分正确 | O_PATH 拒绝及静态检查通过；既有容量单元未冒充本轮普通 syscall 运行，完整容量边界待补 |
+| fcntl/F_GET_SEALS；x86_64 72；其余三架构 25 | v7.1 [memfd_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/mm/memfd.c) | 从捕获的 memfd 描述读取 seal 状态 | retained Arc → Memfd::from_description → direct Memfd or original File MemfdRef → get_seals | 部分正确 | test-memfd-seals 实际状态旅程通过；路径 File/Directory 拒绝先于转换，其他目标与受控替换待补 |
+| fcntl/F_ADD_SEALS；x86_64 72；其余三架构 25 | v7.1 [memfd_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/mm/memfd.c) | seal 提交作用于捕获描述，后续写入和复制受其限制 | retained Arc → Memfd::from_description → add_seals → existing backend policy | 部分正确 | test-memfd-seals 的状态、写/复制/splice 限制和失败位置保持实际通过；完整 ABI/竞争待补 |
+| flock/保活 helper 迁移；x86_64 73；其余三架构 32 | v7.1 [flock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c) | 原 flock 操作校验后取得目标，描述身份与锁生命周期保持 | sys_flock → flock_op → existing operation validation → get_file_like → lockable(retained Arc) | 部分正确 | 只迁移共用 helper 的输入，未调整原校验顺序；test-dup-fcntl 实际 flock 与绑定挂载身份判据通过，完整 flock 协议待补 |
+
+本阶段没有新增 Rust 单元、系统程序或默认启动。Kernel 一包标准库、四目标
+Clippy 72/72、格式与三处 include-backed 检查通过，记录为
+path_fcntl_admission。顺序准入结果不替代 F_SETFL 整体并发原子性、普通描述
+的提示/异步通知策略或全部系统调用兼容性。

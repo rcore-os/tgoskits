@@ -1644,3 +1644,27 @@ Kernel 一包标准库、四目标 Clippy 72/72、格式和两处 include-backed
 实时 getter 已逐类核对，设备包装的直接运行未借用通用 File 结果冒充通过。
 F_SETFL 多位并发提交、O_PATH 命令门禁、FASYNC、O_DIRECT/O_NOATIME 以及
 完整 VFS 计划与最终发布 head 的 CI 仍按各自边界继续完成。
+
+### 9.63 路径描述的命令准入
+
+22015c0325 的 sys_fcntl 在入口保留原 fd 表与描述，释放表读锁后才做命令
+检查和用户内存访问。O_PATH 的准入集对齐固定 Linux check_fcntl_cmd，
+其余命令先为 EBADF。锁、pipe、seals 和复制分支使用原描述；Memfd 的既有
+转换接收该 Arc，F_GETFD/F_SETFD 继续读取原表的表项状态。
+
+冻结 C 在 Linux 通过，9dbef8c480 的旧 Starry 稳定失败 86 项。四类路径
+描述的 88 次拒绝命令观察中有 84 次错误，加上两项缺失 fd 的错误顺序。
+修后实际 x86 路径旅程为 1/1，允许命令及原状态、数据、位置、目录、挂载
+引用断言继续通过。实际 ELF SHA-256 为
+1d5a10420df58b8c283735cf4734dd20e6c6569837171c313139b87227792a32。
+
+既有 test-dup-fcntl、test-memfd-seals 和 test-fcntl-lock-lifecycle 各自
+实际启动并通过 1/1；后者覆盖 close/exit/exec 与 OFD 最后关闭后的等待者
+进展。Kernel 一包标准库、四目标 Clippy 72/72、格式及三处 include-backed
+检查通过。没有新增系统程序或默认启动；本地修后四次启动没有写成一次批量
+运行。path_fcntl_admission 保留此前 70 项记录，六列表为 232 行。
+
+F_CREATED_QUERY/F_DUPFD_QUERY 的准入不补齐原本缺少的实现。受控 fd 替换、
+F_SETFL 多位并发原子性、普通描述其余命令及完整 VFS 计划仍有独立交付项。
+315b3e4437 的远端终态为 42 成功、2 失败、5 个既有包装跳过；Axvisor
+LoongArch 超时和 Starry AArch64 失败按原始日志继续定位，不算当前阶段通过。

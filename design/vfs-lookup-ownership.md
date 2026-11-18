@@ -4798,6 +4798,25 @@ Kernel 一包标准库、四目标 Clippy 72/72、格式及两处 include-backed
 旧 Clippy 已有的条件依赖和上游 future-compatibility 提示保留，没有新增
 lint 放行或占位导入。
 
+### 6.42 路径描述的命令准入
+
+22015c0325 在 sys_fcntl 入口保留原 fd 表与打开描述，退出表读锁后才检查
+命令、复制用户参数或进入阻塞操作。O_PATH 的准入集对齐固定 Linux 的
+check_fcntl_cmd；其他命令先返回 EBADF。锁、pipe、seals 与复制描述符的
+分支消费同一个保留对象，Memfd 的既有转换改为接收描述，避免再次按 fd
+取得另一个对象。F_GETFD/F_SETFD 仍访问原表中的表项标志。
+
+相同 C 在 Linux 通过，9dbef8c480 的旧 Starry 稳定失败 86 项：四种普通及
+缓存路径描述的 88 次受限命令观察中有 84 次错误，另有两项缺失 fd 的错误
+顺序不符。修后真实 x86 路径旅程为 1/1；允许的查询、标志设置和两种复制
+仍通过，原状态、数据、位置、枚举和挂载引用判据保留。既有 dup/锁、memfd
+seals、锁生命周期三个系统用例分别为 1/1，覆盖阻塞锁退出和最后引用关闭。
+
+Kernel 一包标准库、四目标 Clippy 72/72、格式及三处 include-backed 检查
+通过。记录键为 path_fcntl_admission，保留此前 70 项记录，六列表为 232 行。
+F_CREATED_QUERY/F_DUPFD_QUERY 仅进入准入集，既有 dispatch 尚未实现其语义；
+受控 fd 替换竞争、多位 F_SETFL 并发提交及普通描述的其他命令继续分别验收。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
@@ -4994,6 +5013,24 @@ new_detached_mount 初始化同一个标志字，set_status_flag 只修改两种
 本阶段验证顺序设置后的状态与共享关系。整个 F_SETFL 的多位并发原子性、
 O_PATH 命令门禁、FASYNC、O_DIRECT/O_NOATIME 的权限及错误顺序和具体设备
 I/O 后置条件保持各自证据边界，不能由两位状态旅程概括为完整兼容。
+
+### 7.9 路径描述的命令边界
+
+sys_fcntl 先从一次捕获的 FileTable 取得 Arc<dyn FileLike>。缺失表项返回
+EBADF；O_PATH 随后只准入 F_CREATED_QUERY、F_DUPFD、F_DUPFD_CLOEXEC、
+F_DUPFD_QUERY、F_GETFD、F_SETFD 和 F_GETFL。受限命令不读取用户指针，
+也不进入锁或具体端点转换，File 和 Directory 共用这一检查。
+
+dup_fd_min 从保留的原描述建立新表项，复制继续共享同一个路径对象，
+FD_CLOEXEC 分别按两种命令设置。锁分派把该描述传给 lockable；seals 经
+Memfd::from_description 使用原来的直接 Memfd 或 File 后端转换。表保护
+在这些分支执行前已退出，阻塞锁不会把 fd 表读锁带入等待或回调。
+
+同一系统旅程在普通及缓存 File/Directory 上检查 22 个拒绝命令、五种已
+实现的允许命令和缺失 fd 的错误顺序。独立运行的既有锁生命周期用例确认
+close、exit、exec 和 OFD 最后引用释放后等待者继续前进。这里的顺序运行
+与生命周期结果不替代受控 fd 重用竞争证明；准入查询也不等于实现了两个
+新查询的返回语义。
 
 ## 8. 迁移与验收
 
