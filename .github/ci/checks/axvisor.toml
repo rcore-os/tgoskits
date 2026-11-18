@@ -114,11 +114,6 @@ name = "QEMU aarch64 · HTTP control-plane + browser console + IVC"
 timeout_minutes = 30
 node_version = "24"
 command = '''
-# Use matching v0.0.15 rootfs and guest image bundles throughout this check.
-mkdir -p tmp/axbuild
-printf 'registry = "%s"\ndownload_dir = "%s/tgosimages"\n' \
-  'https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.15.toml' \
-  "${TMPDIR:-/tmp}" > tmp/axbuild/.image.toml
 echo "==> axvisor aarch64 HTTP control-plane, browser console and source-built IVC peers"
 # Keep all cases in one axbuild invocation. The QEMU runner groups cases by
 # Cargo identity before building, so equal AxVisor kernels are compiled once
