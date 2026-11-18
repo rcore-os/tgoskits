@@ -63,6 +63,11 @@ ensure_host_tools() {
     command -v readelf    >/dev/null 2>&1 || missing+=(binutils)
     command -v "$qemu_runner" >/dev/null 2>&1 || missing+=(qemu-user-static)
     if [[ ${#missing[@]} -gt 0 ]]; then
+        if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+            echo "error: missing host dependencies in prepared container: ${missing[*]}" >&2
+            exit 1
+        fi
+
         if command -v apt-get >/dev/null 2>&1; then
             echo "prebuild: installing host tools: ${missing[*]}"
             apt-get update && apt-get install -y --no-install-recommends "${missing[@]}"

@@ -347,7 +347,9 @@ impl CloneArgs {
             }
         };
         let child_cgroup = cgroup_guard.cgroup();
-        let mut prepared_nsproxy = (!flags.contains(CloneFlags::THREAD)).then(|| {
+        let mut prepared_nsproxy = if flags.contains(CloneFlags::THREAD) {
+            None
+        } else {
             let mut nsproxy = old_proc_data.nsproxy.lock_irqsave().clone_all();
             if flags.contains(CloneFlags::NEWUTS) {
                 nsproxy.unshare_uts();
@@ -362,7 +364,7 @@ impl CloneArgs {
                 nsproxy.unshare_net();
             }
             if flags.contains(CloneFlags::NEWUSER) {
-                nsproxy.unshare_user();
+                nsproxy.unshare_user(curr_thread.cred().euid)?;
             }
             if flags.contains(CloneFlags::NEWCGROUP) {
                 nsproxy.unshare_cgroup(child_cgroup.clone());
@@ -370,8 +372,8 @@ impl CloneArgs {
             if flags.contains(CloneFlags::NEWPID) {
                 nsproxy.pid_ns_for_children = target_pid_ns.clone();
             }
-            nsproxy
-        });
+            Some(nsproxy)
+        };
 
         let new_proc_data = if flags.contains(CloneFlags::THREAD) {
             old_proc_data.clone()

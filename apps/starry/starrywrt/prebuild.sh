@@ -47,6 +47,11 @@ ensure_host_tools() {
     local missing=()
     for t in git cmake curl tar e2fsck resize2fs debugfs; do command -v "$t" >/dev/null 2>&1 || missing+=("$t"); done
     if [[ ${#missing[@]} -gt 0 ]]; then
+        if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+            echo "error: missing host dependencies in prepared container: ${missing[*]}" >&2
+            exit 1
+        fi
+
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update && apt-get install -y --no-install-recommends git cmake curl tar e2fsprogs
         else

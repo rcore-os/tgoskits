@@ -254,6 +254,10 @@ cache_key = ""
 timeout_minutes = 90
 command = '''
 if ! command -v mmd >/dev/null 2>&1; then
+  if [ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]; then
+    echo "error: prepared container is missing mtools; rebuild the CI image" >&2
+    exit 1
+  fi
   apt-get update
   apt-get install -y --no-install-recommends mtools
 fi

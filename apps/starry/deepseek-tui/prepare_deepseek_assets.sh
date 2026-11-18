@@ -28,6 +28,10 @@ ensure_rust_musl_target() {
         return
     fi
 
+    if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+        echo "error: prepared container is missing Rust target $rust_musl_target for $toolchain" >&2
+        exit 1
+    fi
     echo "Installing Rust target $rust_musl_target for toolchain $toolchain..."
     rustup target add --toolchain "$toolchain" "$rust_musl_target"
 }

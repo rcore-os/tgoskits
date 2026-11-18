@@ -30,15 +30,28 @@ if ! command -v rustup >/dev/null 2>&1; then
     exit 1
 fi
 read -r rust_toolchain _ < <(rustup show active-toolchain)
-echo "$(basename "$app_dir") prebuild: installing Rust target $musl_target for toolchain $rust_toolchain"
-rustup target add --toolchain "$rust_toolchain" "$musl_target"
+if ! rustup target list --installed --toolchain "$rust_toolchain" | grep -Fx "$musl_target" >/dev/null; then
+    if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+        echo "error: prepared container is missing Rust target $musl_target for $rust_toolchain" >&2
+        exit 1
+    fi
+    echo "$(basename "$app_dir") prebuild: installing Rust target $musl_target for toolchain $rust_toolchain"
+    rustup target add --toolchain "$rust_toolchain" "$musl_target"
+fi
 export RUSTUP_TOOLCHAIN="$rust_toolchain"
 
 host_tools_dir="${STARRY_WORKSPACE:-$app_dir}/tmp/axbuild/starry-host-tools"
-export PATH="$host_tools_dir/bin:${HOME:-/root}/.cargo/bin:$PATH"
+if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" != 1 ]]; then
+    export PATH="$host_tools_dir/bin:${HOME:-/root}/.cargo/bin:$PATH"
+fi
 ensure_bpf_linker() {
     if command -v bpf-linker >/dev/null 2>&1; then
         return 0
+    fi
+
+    if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+        echo "error: prepared container is missing bpf-linker; rebuild the CI image" >&2
+        exit 1
     fi
 
     if command -v apk >/dev/null 2>&1; then

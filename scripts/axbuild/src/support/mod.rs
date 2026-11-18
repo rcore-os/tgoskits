@@ -7,3 +7,4 @@ pub(crate) mod ovmf;
 pub mod process;
 pub(crate) mod qemu_output_capture;
 pub(crate) mod qemu_success;
+pub(crate) mod rustup;

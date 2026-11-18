@@ -97,7 +97,7 @@ pub struct MessageQueue {
     /// Marked for removal
     pub mark_removed: bool,
     /// IPC namespace ID that owns this queue
-    pub ns_id: u64,
+    ns_id: u64,
 }
 
 impl MessageQueue {
@@ -306,6 +306,8 @@ pub struct MsgManager {
     key_msqid: BTreeMap<(i32, u64), i32>,
     /// msqid -> message queue structure
     msqid_queues: BTreeMap<i32, Arc<Mutex<MessageQueue>>>,
+    /// Active queue count for each IPC namespace.
+    ns_queue_counts: BTreeMap<u64, usize>,
 }
 
 impl MsgManager {
@@ -313,6 +315,7 @@ impl MsgManager {
         MsgManager {
             key_msqid: BTreeMap::new(),
             msqid_queues: BTreeMap::new(),
+            ns_queue_counts: BTreeMap::new(),
         }
     }
 
@@ -350,18 +353,43 @@ impl MsgManager {
 
     /// Inserts a mapping from a message queue ID to its queue.
     pub fn insert_msqid_queues(&mut self, msqid: i32, msg_queue: Arc<Mutex<MessageQueue>>) {
+        let ns_id = msg_queue.lock().ns_id;
         self.msqid_queues.insert(msqid, msg_queue);
+        *self.ns_queue_counts.entry(ns_id).or_default() += 1;
     }
 
-    /// Returns the current number of message queues.
-    pub fn queue_count(&self) -> usize {
-        self.msqid_queues.len()
+    /// Returns the current queue count for one IPC namespace.
+    pub fn queue_count(&self, ns_id: u64) -> usize {
+        self.ns_queue_counts
+            .get(&ns_id)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Remove a message queue
     pub fn remove_msqid(&mut self, msqid: i32) {
         self.key_msqid.retain(|_, &mut v| v != msqid);
-        self.msqid_queues.remove(&msqid);
+        let Some(queue) = self.msqid_queues.remove(&msqid) else {
+            return;
+        };
+        // Removal callers release their queue guard first, preserving the
+        // manager -> queue lock order used by lookup and inspection paths.
+        let ns_id = queue.lock().ns_id;
+        // All queue insertion and removal is serialized here under the manager
+        // lock, so a removed queue must have an existing positive count.
+        let remaining = {
+            let count = self
+                .ns_queue_counts
+                .get_mut(&ns_id)
+                .expect("removed message queue has no namespace count");
+            *count = count
+                .checked_sub(1)
+                .expect("message queue namespace count must be positive");
+            *count
+        };
+        if remaining == 0 {
+            self.ns_queue_counts.remove(&ns_id);
+        }
     }
 }
 
@@ -421,13 +449,12 @@ pub fn sys_msgget(
 
     let mut msg_manager = MSG_MANAGER.lock();
 
-    // Check system limit
-    if msg_manager.queue_count() >= MSGMNI {
-        return Err(StarryError::from(Errno::ENOSPC)); // ENOSPC
-    }
-
     // Handle IPC_PRIVATE (always create new queue)
     if key == IPC_PRIVATE {
+        if msg_manager.queue_count(ns_id) >= MSGMNI {
+            return Err(StarryError::from(Errno::ENOSPC)); // ENOSPC
+        }
+
         let msqid = next_ipc_id();
         let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
             key,
@@ -475,6 +502,10 @@ pub fn sys_msgget(
     // Create new message queue
     if (msgflg & IPC_CREAT) == 0 {
         return Err(StarryError::from(Errno::ENOENT)); // ENOENT
+    }
+
+    if msg_manager.queue_count(ns_id) >= MSGMNI {
+        return Err(StarryError::from(Errno::ENOSPC)); // ENOSPC
     }
 
     let msqid = next_ipc_id();
