@@ -1574,3 +1574,25 @@ a50d1eb24c07e1a2096dfced5c0e50e1fa123295597aed5f2bddb3ed47005a47。
 默认系统程序、启动数和 Rust 单元测试没有增加。此前 readonly 的 18 包
 记录仍绑定 536b9c90af。初始状态通过不证明 F_SETFL 完整切换、所有端点及
 其他目标本轮状态读取，完整 VFS 计划和独立审查仍未完成。
+
+### 9.60 描述符额度与回滚
+
+14ad08a41a 在捕获保护结束后，从该原表尝试预留最低数字 fd，随后才执行
+BENEATH 绝对拒绝、dirfd 获取和缓存查找。复用 FileDescriptorReservation
+保持原表 Arc 与 Reserved 槽；最终 try_install 在原写锁内消费预留，失败沿
+既有 RAII 归还号码，描述及最后引用在锁外退休。普通 FIFO 共用数字上限
+检查，PreparedFileDescriptor 的 entry-count 上限没有混入。
+
+相同最终 C 在 Linux 通过，6799b62256 旧 Starry 的满额度冷名字、坏 dirfd
+和绝对 BENEATH 分别错为 EAGAIN、EBADF、EXDEV，修后实际 x86 QEMU 1/1，
+三项均为 EMFILE。输入 EFAULT/ENOENT、变更 flags 的早期 EAGAIN、恢复额度
+后的最低空闲号回收及原标志/内容/挂载引用旅程全部通过。实际 ELF SHA-256 为
+7cde0919b09a3ee51544f5383b5eda59357890d03b4102ead018c7c1c89b371d。
+
+Kernel 一包标准库、四目标 Clippy 72/72、格式及三处 include-backed 检查通过，
+六列表为 199 行，记录键为 cached_fd_admission。首次 Linux 未预热链接的六项
+EAGAIN 作为夹具失败保留；最终私有 tmpfs 设为 MS_NOATIME 并普通预热名字，
+不依赖粗粒度 atime/ctime，也不宣称 Starry 时间策略已经实现。没有新增系统
+程序、启动或 Rust 单元；受控 binding/fd 发布竞争及其完整错误优先级仍待补。
+0c1743f054 的远端 CI 另有 axbuild UDP 生命周期测试失败、Axvisor AArch64
+HTTP stop 超时与取消的 workspace Clippy，不能由本地 fd 结果写成 CI 全过。

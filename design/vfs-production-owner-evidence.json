@@ -9652,5 +9652,162 @@
       "Runtime proof covers x86_64; other targets need current-head CI. The earlier e413cffdcc CI predates this status fix.",
       "The whole VFS delivery and the independent qualified review before merge remain incomplete; PR stays draft."
     ]
+  },
+  "cached_fd_admission": {
+    "before_source": "6799b6225628c8f0c6ec16065f4e27eb3c39f4ef",
+    "after_source": "14ad08a41aad3dd722bfe62ea3e588446a35c4a8",
+    "test_byte_identical_before_and_after": true,
+    "test_source": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-fd-main.c",
+      "sha256": "724157f78959cc444d5bd89eb93d701d1509a4bd8bd13e5991fb3215bf78b2e7",
+      "bytes": 28226
+    },
+    "source_files": {
+      "os/StarryOS/kernel/src/file/mod.rs": {
+        "path": "os/StarryOS/kernel/src/file/mod.rs",
+        "sha256": "48bbf32e3759d4aa63a403bd97aa326a9824e2a7c7768c084981c3b3b0343fef",
+        "bytes": 44196
+      },
+      "os/StarryOS/kernel/src/file/cached.rs": {
+        "path": "os/StarryOS/kernel/src/file/cached.rs",
+        "sha256": "d077ce35456c8ed048f3d29be591eb5c53b939fb0ee496e321de8aca70de2176",
+        "bytes": 1727
+      },
+      "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs": {
+        "path": "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs",
+        "sha256": "89ca15c6094c4826b810ee2eb46d2b08d2b8dfad3be8609ddf1b8fb3f7976870",
+        "bytes": 35587
+      },
+      "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c": {
+        "path": "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c",
+        "sha256": "724157f78959cc444d5bd89eb93d701d1509a4bd8bd13e5991fb3215bf78b2e7",
+        "bytes": 28226
+      }
+    },
+    "checks": {
+      "linux": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-fd-linux.log",
+          "sha256": "de753c0d3852fadaee9cc890c3a4c126478a8890dd5b9f99bae2d0cf621f320f",
+          "bytes": 7865
+        },
+        "outer_exit": 0
+      },
+      "before": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-fd-before.log",
+          "sha256": "c969bd164b50492ef70def49966796d4b0b27ed2ff28c62b4bbf78f34ee62c4a",
+          "bytes": 37107
+        },
+        "outer_exit": 1,
+        "source": "6799b6225628c8f0c6ec16065f4e27eb3c39f4ef"
+      },
+      "after": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-fd-after.log",
+          "sha256": "2fd167eaa97af492c7c9d37f27d32e52359c73254c1b961fe961da61c34ede17",
+          "bytes": 37520
+        },
+        "outer_exit": 0,
+        "source": "14ad08a41aad3dd722bfe62ea3e588446a35c4a8"
+      },
+      "std": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-fd-std.log",
+          "sha256": "633c6176ac4fc3f57e53e4b56ef174af9c95e5c64803ac13379bd3c7bcdac682",
+          "bytes": 38955
+        },
+        "outer_exit": 0,
+        "source": "14ad08a41aad3dd722bfe62ea3e588446a35c4a8"
+      },
+      "clippy": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-fd-clippy.log",
+          "sha256": "1b9502dac541a9dccc9b95f283c82da61cc3aa3179170fff3f57fcaab8ae511e",
+          "bytes": 69589
+        },
+        "outer_exit": 0,
+        "source": "14ad08a41aad3dd722bfe62ea3e588446a35c4a8"
+      },
+      "format": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-fd-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        "outer_exit": 0,
+        "source": "14ad08a41aad3dd722bfe62ea3e588446a35c4a8"
+      }
+    },
+    "before_failures": [
+      "FAIL: CACHED fd exhaustion precedes a cold lookup: fd=-1 errno=11 expected=24",
+      "FAIL: CACHED fd exhaustion precedes invalid dirfd: fd=-1 errno=9 expected=24",
+      "FAIL: CACHED fd exhaustion precedes absolute BENEATH rejection: fd=-1 errno=18 expected=24"
+    ],
+    "before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-6799b62256-baseline.elf",
+      "sha256": "a50d1eb24c07e1a2096dfced5c0e50e1fa123295597aed5f2bddb3ed47005a47",
+      "bytes": 218087352
+    },
+    "after_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-14ad08a41a.elf",
+      "sha256": "7cde0919b09a3ee51544f5383b5eda59357890d03b4102ead018c7c1c89b371d",
+      "bytes": 218598744
+    },
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "host_kernel": "6.8.0-149-generic",
+      "functions": [
+        "do_sys_openat2",
+        "FD_ADD",
+        "__FD_PREPARE_INIT",
+        "path_init",
+        "nd_jump_root",
+        "pick_link",
+        "atime_needs_update"
+      ]
+    },
+    "ownership": {
+      "selection": "After the original coherent binding capture has released every guard, try-reserve in its already selected fd table and captured numeric limit. No current-table resample.",
+      "reservation": "Reuse FileDescriptorReservation with a retained original-table Arc and a private Reserved slot; choose the lowest number and enforce the numeric limit. The ordinary FIFO constructor shares this check. The different PreparedFileDescriptor entry-count bound is unchanged.",
+      "publication": "Try the original writer, consume reservation ownership while the guard excludes replacement, move the description into the slot, then unlock. Failed descriptions and last owners retire outside the guard. Normal Drop releases the unpublished slot on all lookup/admission/lock errors.",
+      "input_order": "Input errors and early mutating CACHED flags precede reservation; quota precedes pathname-dependent policy/dirfd/lookup. Absolute BENEATH remains before dirfd acquisition after the reservation."
+    },
+    "fixture": {
+      "mount_flags": "MS_NOATIME",
+      "name_priming": "Ordinary relative, IN_ROOT absolute and directory-link opens, plus the existing 40/41 chain priming.",
+      "scope": "Make Linux cache-success prerequisites explicit without depending on equal coarse atime/ctime or changing strict errno assertions. This does not implement or verify Starry link-atime/mount-time policy.",
+      "invalid_attempt": {
+        "source": "5b8afa92ff9a668b1c50b1691aca621be95947bc",
+        "c": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-fd-invalid-unprimed-links-main.c",
+          "sha256": "ca1c1e10bdcd2668add418c8ac70bf9f6c695f9b70af51a06188a70191666db6",
+          "bytes": 27639
+        },
+        "linux_log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-fd-invalid-unprimed-links-linux.log",
+          "sha256": "87a990c799cf2f6cecab5fbf23a3814bae2c8f568d8a9897188fea0218aa3005",
+          "bytes": 7523
+        },
+        "outer_exit": 1,
+        "failures": 6,
+        "reason": "Newly created symlinks under ordinary relatime can require an atime update; cached traversal cannot unlazy. Those Linux fixture failures are not Starry product regressions."
+      }
+    },
+    "validation": {
+      "std_packages": 1,
+      "clippy_checks": 72,
+      "format_exit": 0,
+      "qemu_programs": 1,
+      "new_rust_tests": 0,
+      "new_system_programs": 0,
+      "new_default_boots": 0
+    },
+    "limits": [
+      "Controlled binding-capture/fd publication races and their complete Linux error precedence remain a separate obligation; capture may still return EAGAIN before reservation.",
+      "This runtime proof covers x86_64; the new exact head requires CI and other targets.",
+      "Published 0c1743f054 CI has an axbuild UDP lifecycle test failure and an Axvisor AArch64 HTTP stop timeout; workspace Clippy was cancelled. They are not resolved by this fd result.",
+      "Other cached writers/endpoints/native attributes and the rest of the VFS plan remain incomplete; PR remains draft."
+    ]
   }
 }

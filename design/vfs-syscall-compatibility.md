@@ -31,7 +31,7 @@ Linux 基准为 v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。编号�
 | openat2/NO_XDEV；四架构 437 | v7.1 [nd_jump_root](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L1127) | 按实际 mount 身份拒绝向下、向上及对象跳转，EXDEV；初始绝对输入本身允许选择根 | sys_openat2 → LookupRestrictions → LookupSession.bind/ascend/jump_root/follow | 部分正确 | x86 same mount、向下 tmpfs 与向上 mount crossing 通过；复杂覆盖层及其他目标运行待补 |
 | openat2/NO_SYMLINKS；四架构 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 跟随任意 symlink 为 ELOOP；末链接不跟随且 O_PATH 时保留链接 | sys_openat2 → LookupSession.follow；Continuation.finish_open 保留不跟随的末项 | 部分正确 | x86 普通路径、跟随拒绝和末链接 O_PATH nofollow 通过；其他目标运行待补 |
 | openat2/NO_MAGICLINKS；四架构 437 | v7.1 [nd_jump_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L1163) | 普通文本链接允许；对象回调保留自身错误，成功对象跳转为 ELOOP；nofollow 末链接可持有 | sys_openat2 → LookupSession.follow → LinkOps.target(saved caller) → Text/Object 分派 | 部分正确 | x86 普通链接、proc fd 对象拒绝、末项 nofollow、self/thread-self 文本跟随通过；其他目标及完整错误顺序待补 |
-| openat2/CACHED O_PATH；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293)、[缓存遍历](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2678) | 只使用有效缓存；需慢路径或观察失效时 EAGAIN，不能由缓存中没有名字推断 ENOENT | sys_openat2 → try_cached_fs_binding → CachedLookup/PathObservation → OpenOptions.open_cached_path → path_only 或 Directory → captured CachedFileTable.install | 部分正确 | 同一 C 的 Linux 通过、6a4a9f23f1 三项 EOPNOTSUPP 失败、46138dd272 x86 QEMU 1/1 通过；缓存正项、tmpfs 未命中、实际 inode、CLOEXEC 与挂载引用见 15.1；02baa6365f 的旧 C 在四架构 CI 均通过；受控任务发布竞争及全部组合仍待补 |
+| openat2/CACHED O_PATH；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293)、[缓存遍历](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2678) | 只使用有效缓存；需慢路径或观察失效时 EAGAIN，不能由缓存中没有名字推断 ENOENT | sys_openat2 → try_cached_fs_binding → CachedLookup/PathObservation → OpenOptions.open_cached_path → path_only 或 Directory → captured CachedFileTable.reserve/FileDescriptorReservation.try_install | 部分正确 | 同一 C 的 Linux 通过、6a4a9f23f1 三项 EOPNOTSUPP 失败、46138dd272 x86 QEMU 1/1 通过；缓存正项、tmpfs 未命中、实际 inode、CLOEXEC 与挂载引用见 15.1；02baa6365f 的旧 C 在四架构 CI 均通过；受控任务发布竞争及全部组合仍待补 |
 | openat2/CACHED 普通只读文件；四架构 437 | v7.1 [complete_walk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L1045)、[may_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4238) | 缓存解析完成后按本次身份检查最终对象，每次打开取得新的打开描述和零位置 | sys_openat2 → captured binding/CachedLookup → OpenOptions.open_cached_path → cached_metadata/DAC → CachedFile.try_existing_memory → File.from_cached_readonly → original fd table | 部分正确 | 4c2ab40a5e 相同 C 在 Linux 通过，旧 Starry 缺少文件与目录只读打开并有两个 nofollow 失败；536b9c90af x86 QEMU 1/1，原数据、独立游标与实际描述见 15.4；原生后端、额外策略与其他架构本轮运行仍待补 |
 | openat2/CACHED 只读目录；四架构 437 | v7.1 [do_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4655) | 检查目录读权限，描述保留原目录并拥有独立枚举位置 | sys_openat2 → CachedLookup → OpenOptions.open_cached_path cached DAC → OpenResult.Dir(original PathHandle) → Directory.new | 部分正确 | 相同 C 的 Linux 与 x86 QEMU 均打开目录并原始 getdents64 读到条目；未把其他类型、后端及目录枚举边界当作已证明 |
 | openat2/CACHED 写入与额外准入；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293) | create/truncate/tmpfile 组合先为 EAGAIN；已有对象的写打开及 O_NOATIME 等策略另按各自条件准入 | sys_openat2 保留变更类参数顺序；open_cached_path 仍仅接受 O_PATH 和受限普通只读，其他准入返回 WouldBlock | 不正确 | 写打开、端点及额外策略仍未实现，不能从只读数据旅程推断完整 CACHED 支持 |
@@ -493,7 +493,7 @@ DirNode 缓存，并通过另一个目录别名真实创建使其失效，不伪
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
 | fstat/CACHED fd；x86_64 5；其余三架构 80 | v7.1 [vfs_fstat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c) | 描述保留被打开的 inode，unlink 后仍可读取更新的 nlink | sys_fstat → get_file_like → File.stat → original PathHandle/Location.metadata → MemoryNode.inode | 部分正确 | 相同 C 的 fstat 消费者比较实际 dev/ino，并在 unlink 后读到 nlink=0；Linux 和 x86 QEMU 通过，其他目标及完整 stat 参数边界未由此证明 |
-| fcntl/F_GETFD 缓存 fd；x86_64 72；其余三架构 25 | v7.1 [do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | O_CLOEXEC 安装到返回 fd 的表项，F_GETFD 返回 FD_CLOEXEC | sys_fcntl → original FileTable descriptor.cloexec；CachedFileTable.install 在同一短写锁内安装 | 部分正确 | 原 O_PATH 旅程及 536b9c90af 的普通只读 fd 均要求 F_GETFD 包含 FD_CLOEXEC；Linux 对照通过，其他命令及新增只读组合的其他目标不由此证明 |
+| fcntl/F_GETFD 缓存 fd；x86_64 72；其余三架构 25 | v7.1 [do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | O_CLOEXEC 安装到返回 fd 的表项，F_GETFD 返回 FD_CLOEXEC | sys_fcntl → original FileTable descriptor.cloexec；FileDescriptorReservation.try_install 在原表短写锁内安装 | 部分正确 | 原 O_PATH 旅程及 536b9c90af 的普通只读 fd 均要求 F_GETFD 包含 FD_CLOEXEC；Linux 对照通过，其他命令及新增只读组合的其他目标不由此证明 |
 | close/缓存 fd；x86_64 3；其余三架构 57 | v7.1 [close_fd](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 关闭最后的路径描述后释放它持有的挂载 use，仍存活的其他描述继续保活 | sys_close → close_file_like → table.remove → release_locks_on_close/File drop → PathHandle/MountUseGuard | 部分正确 | 同一 Linux/x86 旅程先关闭原 File 和 dirfd，缓存 fd 仍使卸载 busy，最后关闭缓存 fd 后卸载成功；其他目标、dup 和 close_range 的缓存 fd 旅程待补 |
 | umount2/唯一缓存 fd；x86_64 166；其余三架构 39 | v7.1 [path_umount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2035) | 打开的路径引用使普通卸载为 EBUSY，最后引用释放后允许卸载 | sys_umount2 → PathUnmount → actual MountUseState；缓存 File 保留 PathHandle，原 File 与 dirfd 已关闭 | 部分正确 | Linux 与 x86 客机在只剩缓存 fd 时实际得到 EBUSY，关闭后卸载成功；没有混用其他打开引用，其他目标和 detach/expire 不由此证明 |
 
@@ -620,10 +620,48 @@ F_SETFL 或所有端点的状态切换记为完成。
 | --- | --- | --- | --- | --- | --- |
 | fcntl/F_GETFL 普通文件初始状态；x86_64 72；其余三架构 25 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1182)、[do_dentry_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L963)、[do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | 返回访问及状态，创建、独占、截断、NOCTTY 和 CLOEXEC 位不应泄露 | sys_fcntl.F_GETFL → original File.open_flags → shared status mask；原 File 和 fd 表字段不变 | 部分正确 | 同一最终 C 的旧 Starry 为 525250，Linux/4732aeade7 x86 为 32770；同一 fd 的 F_GETFD 仍为 FD_CLOEXEC，其他目标与状态切换待补 |
 | fcntl/F_GETFL 普通 O_PATH；x86_64 72；其余三架构 25 | v7.1 [O_PATH_FLAGS](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1161)、[do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | 普通 openat 忽略的访问、创建、截断和非阻塞位不能重新出现在 O_PATH 的 F_GETFL 中 | sys_openat 的既有 O_PATH 解释 → kernel File original flags → sys_fcntl 的 path mask | 部分正确 | 携带 RDWR、NONBLOCK、CLOEXEC、CREAT、EXCL、TRUNC、NOCTTY 的 O_PATH 原始状态从旧 2624450 修为 Linux 的 2097152；后续实际载荷未被截断，其他目标待补 |
-| fcntl/F_GETFL 缓存 O_PATH；x86_64 72；其余三架构 25 | v7.1 [O_PATH_FLAGS](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1161) | 严格 CACHED O_PATH 的 CLOEXEC 属于 fd 表，F_GETFL 只显示实际路径状态 | captured CachedFileTable.install → original File.open_flags → sys_fcntl 的相同 path mask | 部分正确 | 相同 C 旧返回 2621440，Linux/4732aeade7 x86 均为 2097152，原 F_GETFD 仍保持 CLOEXEC；其他目标及其余组合待补 |
+| fcntl/F_GETFL 缓存 O_PATH；x86_64 72；其余三架构 25 | v7.1 [O_PATH_FLAGS](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1161) | 严格 CACHED O_PATH 的 CLOEXEC 属于 fd 表，F_GETFL 只显示实际路径状态 | captured CachedFileTable.reserve → original-table FileDescriptorReservation.try_install → original File.open_flags → sys_fcntl 的相同 path mask | 部分正确 | 相同 C 旧返回 2621440，Linux/4732aeade7 x86 均为 2097152，原 F_GETFD 仍保持 CLOEXEC；其他目标及其余组合待补 |
 | fcntl/F_GETFD 普通文件及 O_PATH；x86_64 72；其余三架构 25 | v7.1 [do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | 对 F_GETFL 的投影不能清除表项的 FD_CLOEXEC | sys_fcntl.F_GETFD → current_fd_table descriptor.cloexec；普通打开由 add_to_fd/add_file_like 发布 | 部分正确 | 普通读写文件和携带忽略位的 O_PATH 均实际返回 FD_CLOEXEC；缓存 fd 的安装链另见 15.2，其他目标与执行关闭行为不由此证明 |
 
 本阶段没有增加系统程序、默认启动或 Rust 单元测试。行为由原完整系统旅程
 的确定性红绿证明；AX 的另一个提交只澄清缓存准入的类型错误注释。记录为
 open_description_status。Kernel 一包标准库、四目标 Clippy 72/72、AX 注释的六项
 Clippy 及格式检查通过；原只读阶段的 18 包结果保留原源码，不改写为新版本。
+
+## 18. 缓存打开的描述符额度
+
+14ad08a41a 在同次 binding 捕获结束后从原表预留最低 fd，再检查 pathname
+相关的 BENEATH、dirfd 和查找。相同最终 C 在 Linux 通过，6799b62256 的
+旧 Starry 失败三项，修后真实 x86 QEMU 为 1/1；输入检查、变更类 CACHED
+拒绝和额度恢复后的槽号回滚保留原判据。
+
+### 18.1 输入与额度顺序
+
+私有进程只把自身 soft RLIMIT_NOFILE 暂时降为零，hard 值不变。原始请求
+区分输入错误、变更类 flags 和已经进入查找阶段的错误，不把它们合成一种
+EAGAIN。binding 捕获本身的竞争及完整参数边界仍须由受控并发阶段证明。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| openat2/CACHED pathname 错误与额度；四架构 437 | v7.1 [do_sys_openat2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1355) | getname 的 EFAULT 和空路径 ENOENT 早于 fd 预留；额度为零不能覆盖这些错误 | sys_openat2 how/flags 校验 → vm_load_path_string/空串检查 → captured binding → reserve | 部分正确 | Linux/x86 在额度为零时分别得到 EFAULT 与 ENOENT；真实请求没有在调用前解引用 NULL，其他目标及边界长度待补 |
+| openat2/CACHED 变更 flags 与额度；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293) | CACHED 与创建或截断等组合在路径复制和 fd 预留前返回 EAGAIN | sys_openat2 的早期变更类检查 → WouldBlock，不进入 capture/reserve | 部分正确 | 额度为零且 pathname 为 NULL 的 CACHED+O_CREAT 请求在 Linux/x86 为 EAGAIN；其余变更组合与目标待补 |
+| openat2/CACHED 冷名字与额度；四架构 437 | v7.1 [FD_PREPARE](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/file.h#L195) | 可复制的非空名字先取得 fd，额度耗尽为 EMFILE，不先进入冷查找得到 EAGAIN | captured binding 退出保护 → CachedFileTable.reserve → FileDescriptorReservation.try_in_table/reserve_below；缓存查找尚未开始 | 部分正确 | 同一 C 的旧 EAGAIN 稳定失败，Linux/14ad08a41a x86 为 EMFILE；正项的 EMFILE 也通过，捕获竞争及其他目标待补 |
+| openat2/CACHED 无效 dirfd 与额度；四架构 437 | v7.1 [FD_ADD](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/file.h#L236)、[path_init](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2673) | fd 额度判断早于从 dirfd 选起点；耗尽时为 EMFILE，恢复额度后无效 dirfd 为 EBADF | original-table reservation → CachedFileTable.directory → same CachedLookup context | 部分正确 | 旧 EBADF 在满额度组合下失败；Linux/x86 满额度 EMFILE、恢复后 EBADF，其他目标和受控表竞争待补 |
+| openat2/CACHED 绝对 BENEATH 与额度；四架构 437 | v7.1 [nd_jump_root](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L1127)、[path_init](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2716) | 额度先为 EMFILE，成功预留后的绝对 BENEATH 才为 EXDEV，且该拒绝早于 dirfd 获取 | sys_openat2 仅延后 CACHED 的绝对拒绝 → reserve → explicit BENEATH absolute check → 原缓存遍历；普通分支保持原顺序 | 部分正确 | 旧满额度 EXDEV 稳定失败，Linux/修后 x86 为 EMFILE；既有非满额度绝对链接 EXDEV 仍通过，其他目标待补 |
+
+### 18.2 预留的回滚
+
+FileDescriptorReservation 同时持有原表 Arc 和未公开的 Reserved 槽。查找失败、
+不支持的准入及最终 try-write 失败沿原 RAII 清理，成功时在原表写锁内消费
+预留并安装，失败描述在锁外退休。FIFO 与缓存入口共用数字 fd 上限检查，
+PreparedFileDescriptor 原 entry-count 上限没有改写。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| openat2/CACHED 失败后的槽号；四架构 437 | v7.1 [fd_prepare cleanup](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/file.h) | 查找失败归还未公开的 fd，后续打开仍选择原最低空闲号码 | original FileDescriptorReservation Drop → same table.release_reserved；成功由 try_install 消费，保持原 File/PathHandle | 部分正确 | dup 探测并关闭原最低号，实际冷查找和坏 dirfd 失败后，新缓存打开仍取得该号；Linux/x86 通过，完整受控发布竞争及其他目标待补 |
+
+Linux 夹具把私有 tmpfs 明确设为 MS_NOATIME，并普通预热链接名称，消除
+新链接粗粒度 atime/ctime 的边界依赖。首次未预热夹具的六项 Linux EAGAIN
+独立保留，不作为产品红绿；该条件不证明 Starry 的 atime/挂载时间策略。
+Kernel 一包标准库、四目标 Clippy 72/72 和三处 include-backed 格式检查通过，
+记录为 cached_fd_admission。没有新增 Rust 单元、系统程序或默认启动。

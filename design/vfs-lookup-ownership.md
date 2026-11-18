@@ -4730,6 +4730,27 @@ Kernel 一包标准库、四目标 Clippy 72/72、格式及 include-backed 文�
 测试。本阶段只证明初始状态分类，F_SETFL 切换、其余 producer 和其他目标的
 本轮状态读取继续按各自证据闭合。
 
+### 6.39 缓存描述符的提前预留
+
+14ad08a41a 在既有 binding 捕获保护全部结束后，从原表尝试预留最低 fd，
+再进入 pathname 相关的 BENEATH、dirfd 与缓存查找。既有
+FileDescriptorReservation 保留原表 Arc 和 Reserved 槽，失败 RAII 归还槽号，
+成功在原表写锁内消费预留；失败描述与最后引用在锁外释放。普通 FIFO 复用
+相同数字上限检查，其他构造方的 entry-count 策略保持独立。
+
+相同最终 C 在 Linux 通过，6799b62256 的旧 Starry 失败三项：满额度时冷名字
+先为 EAGAIN、坏 dirfd 先为 EBADF、绝对 BENEATH 先为 EXDEV。修后实际 x86
+QEMU 1/1，三项均为 EMFILE。NULL 路径 EFAULT、空串 ENOENT 和变更类
+CACHED 的早期 EAGAIN 保留顺序；恢复额度后，失败查找归还原最低空闲号，
+既有数据、标志及独占挂载引用旅程也继续通过。
+
+Linux fixture 的私有 tmpfs 明确使用 MS_NOATIME 并预热名称，避免未预热
+新链接因 atime 需要更新而使缓存成功前提不成立；首次六项 Linux EAGAIN
+独立保留，未当作 Starry 产品失败。Kernel 一包标准库、四目标 Clippy 72/72、
+格式和三处 include-backed 检查通过，六列表为 199 行，记录为
+cached_fd_admission。没有新增系统程序、默认启动或 Rust 单元测试。
+受控 binding/表发布竞争、完整错误优先级及时间策略仍有独立缺口。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
@@ -4783,9 +4804,10 @@ Kernel 一包标准库、四目标 Clippy 72/72、格式及 include-backed 文�
 系统调用的 wait-free 保证，也不允许在解析中回退到后端 I/O 或可睡眠重验证。
 
 最终 `O_PATH` 描述使用 `File::path_only` 接收真实 `PathHandle`，不执行普通打开、
-设备工厂或元数据回调。向捕获的 fd 表提交时只尝试写锁，在同一短临界区内选取
-最低空闲 fd、检查 `RLIMIT_NOFILE` 并安装；失败不留下预留槽，外部所有者在锁外
-释放文件。提交后的普通 `fstat` 仍读取原 inode，不能改用持久元数据副本。
+设备工厂或元数据回调。原表在捕获保护结束后预留最低 fd 并检查
+`RLIMIT_NOFILE`，查找完成后尝试同一表安装；预留的状态与回滚见第 7.7 节。
+失败不留下预留槽，外部所有者在锁外释放文件。提交后的普通 `fstat` 仍读取
+原 inode，不能改用持久元数据副本。
 
 持续返回 `EAGAIN` 虽能拒绝慢路径，却不能满足缓存正项打开。复用普通打开则会
 破坏缓存约束；另建路径或 inode 元数据登记表会增加失效和生命周期的第二个
@@ -4879,7 +4901,7 @@ FD_PREPARE 取得最低可用 fd，成功后才执行 do_file_open。当前缓�
 完成查找后才由 CachedFileTable.install 选槽，因而在额度耗尽时可能先返回
 冷名字的 EAGAIN、无效 dirfd 的 EBADF 或 BENEATH 绝对输入的 EXDEV。
 
-计划完成既有同次 binding 捕获、退出全部保护后，从该捕获的原表尝试预留
+完成既有同次 binding 捕获、退出全部保护后，从该捕获的原表尝试预留
 最低空闲 fd，再进行 pathname 相关的策略、dirfd 和缓存查找。复用既有
 FileDescriptorReservation 保持原表的 Arc 与 Reserved 槽；不使用会重新读取
 current 的构造入口。普通 FIFO 和缓存路径共用最低 fd-number 的额度校验，
