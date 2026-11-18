@@ -118,6 +118,7 @@ pub(super) fn test_workspace() -> (tempfile::TempDir, Metadata, Vec<Package>) {
 
 pub(super) fn run_git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
+        .args(["-c", "init.defaultBranch=fixture-base"])
         .arg("-C")
         .arg(root)
         .args(args)

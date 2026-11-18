@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command};
+use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
 
@@ -7,16 +7,16 @@ use super::process::ProcessExt;
 /// Ensures the active toolchain provides a target without installing into a CI image.
 pub(crate) fn ensure_target(target: &str) -> Result<()> {
     let prepared_image = std::env::var("TGOSKITS_PREBUILT_CONTAINER").as_deref() == Ok("1");
-    ensure_target_with_rustup(target, prepared_image, Path::new("rustup"))
+    ensure_target_with_rustup(target, prepared_image, &mut Command::new("rustup"))
 }
 
 fn ensure_target_with_rustup(
     target: &str,
     prepared_image: bool,
-    rustup_executable: &Path,
+    rustup_command: &mut Command,
 ) -> Result<()> {
     if prepared_image {
-        let output = Command::new(rustup_executable)
+        let output = rustup_command
             .args(["target", "list", "--installed"])
             .output()
             .context("failed to query installed Rust targets")?;
@@ -35,7 +35,7 @@ fn ensure_target_with_rustup(
         return Ok(());
     }
 
-    Command::new(rustup_executable)
+    rustup_command
         .args(["target", "add", target])
         .exec()
         .with_context(|| format!("failed to install Rust target `{target}` via rustup"))
@@ -43,7 +43,7 @@ fn ensure_target_with_rustup(
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
 
     use tempfile::TempDir;
 
@@ -77,7 +77,8 @@ mod tests {
             ("fixture-unknown-linux-musl\n", 7, false),
         ] {
             let (_directory, executable, _writer) = rustup_fixture(output, status);
-            let result = ensure_target_with_rustup(target, true, &executable);
+            let result =
+                ensure_target_with_rustup(target, true, Command::new("/bin/sh").arg(&executable));
             assert_eq!(
                 result.is_ok(),
                 available,
@@ -92,7 +93,11 @@ mod tests {
     fn bare_hosts_keep_target_installation_and_propagate_failure() {
         for status in [0, 7] {
             let (_directory, executable, _writer) = rustup_fixture("", status);
-            let result = ensure_target_with_rustup("fixture-target", false, &executable);
+            let result = ensure_target_with_rustup(
+                "fixture-target",
+                false,
+                Command::new("/bin/sh").arg(&executable),
+            );
             assert_eq!(
                 result.is_ok(),
                 status == 0,
