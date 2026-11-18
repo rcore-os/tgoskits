@@ -490,8 +490,13 @@ __asm__(".pushsection .rodata\n"
         ".popsection\n");
 extern const unsigned char exec_native_exit_start[], exec_native_exit_end[];
 
-/* File offsets need not have the alignment required by host Rust references. */
-static void check_unaligned_program_table(const char *image, const char *target)
+enum native_image_kind {
+    NATIVE_MAIN,
+    NATIVE_INTERPRETER,
+};
+
+static int stage_native_image(const char *image, const char *target,
+                               enum native_image_kind kind)
 {
     int source = open(image, O_RDONLY);
     Elf64_Ehdr header;
@@ -502,10 +507,11 @@ static void check_unaligned_program_table(const char *image, const char *target)
         close(source);
     }
     if (!ready) {
-        return;
+        return 0;
     }
-    header.e_type = ET_EXEC;
-    header.e_entry = 0x400000 + 128;
+    Elf64_Addr base = kind == NATIVE_MAIN ? 0x400000 : 0;
+    header.e_type = kind == NATIVE_MAIN ? ET_EXEC : ET_DYN;
+    header.e_entry = base + 128;
     header.e_phoff = sizeof(header) + 1;
     header.e_phnum = 1;
     header.e_shoff = 0;
@@ -515,46 +521,117 @@ static void check_unaligned_program_table(const char *image, const char *target)
     Elf64_Phdr ph = {
         .p_type = PT_LOAD,
         .p_flags = PF_R | PF_X,
-        .p_vaddr = 0x400000,
+        .p_vaddr = base,
         .p_filesz = 128 + code_size,
         .p_memsz = 128 + code_size,
         .p_align = 4096,
     };
-    int fd = open(target, O_CREAT | O_EXCL | O_WRONLY, 0755);
-    CHECK(fd >= 0, "create the standalone native ELF");
+    int flags = kind == NATIVE_MAIN ? O_EXCL : O_TRUNC;
+    int fd = open(target, O_CREAT | flags | O_WRONLY, 0755);
+    CHECK(fd >= 0, "open the private native ELF for staging");
     if (fd < 0) {
-        return;
+        return 0;
     }
     ready = pwrite(fd, &header, sizeof(header), 0) == (ssize_t)sizeof(header)
         && pwrite(fd, &ph, sizeof(ph), header.e_phoff) == (ssize_t)sizeof(ph)
         && pwrite(fd, exec_native_exit_start, code_size, 128) == (ssize_t)code_size;
     CHECK(ready, "stage the unaligned program table and native entry");
     close(fd);
-    if (ready) {
-        printf("ELF_UNALIGNED_PROGRAM_TABLE offset=%llu\n",
-               (unsigned long long)header.e_phoff);
-        fflush(stdout);
-        for (int api = 0; api < 2; api++) {
-            pid_t pid = fork();
-            CHECK(pid >= 0, "fork before executing the standalone native ELF");
-            if (pid == 0) {
-                char *const argv[] = {(char *)target, NULL};
-                if (api == 0) {
-                    syscall(SYS_execve, target, argv, environ);
-                } else {
-                    syscall(SYS_execveat, AT_FDCWD, target, argv, environ, 0);
-                }
-                _exit(126);
+    return ready;
+}
+
+static void check_native_image_runs(const char *target)
+{
+    for (int api = 0; api < 2; api++) {
+        pid_t pid = fork();
+        CHECK(pid >= 0, "fork before executing the native ELF");
+        if (pid == 0) {
+            char *const argv[] = {(char *)target, NULL};
+            if (api == 0) {
+                syscall(SYS_execve, target, argv, environ);
+            } else {
+                syscall(SYS_execveat, AT_FDCWD, target, argv, environ, 0);
             }
-            if (pid > 0) {
-                int status = 0;
-                CHECK(waitpid(pid, &status, 0) == pid, "collect the native ELF child");
-                check_exited_with(status, EXECVEAT_OK_STATUS,
-                                  "a legal unaligned program table executes its image");
-            }
+            _exit(126);
+        }
+        if (pid > 0) {
+            int status = 0;
+            CHECK(waitpid(pid, &status, 0) == pid, "collect the native ELF child");
+            check_exited_with(status, EXECVEAT_OK_STATUS,
+                              "the native ELF actually executes its exit instruction");
         }
     }
+}
+
+/* File offsets need not have the alignment required by host Rust references. */
+static void check_unaligned_program_table(const char *image, const char *target)
+{
+    if (stage_native_image(image, target, NATIVE_MAIN)) {
+        printf("ELF_UNALIGNED_PROGRAM_TABLE offset=%zu\n", sizeof(Elf64_Ehdr) + 1);
+        check_native_image_runs(target);
+    }
     CHECK(unlink(target) == 0, "remove the standalone native ELF");
+}
+
+/* Native Linux class checks differ even though all four loaders use Elf64. */
+static void check_native_class(const char *image, const char *interpreter,
+                               const char *standalone)
+{
+#if defined(__riscv) || defined(__loongarch__)
+    const bool require_class64 = true;
+#else
+    const bool require_class64 = false;
+#endif
+    const struct {
+        const char *target;
+        const char *executable;
+        enum native_image_kind kind;
+        int rejection;
+    } cases[] = {
+        {standalone, standalone, NATIVE_MAIN, ENOEXEC},
+        {interpreter, image, NATIVE_INTERPRETER, ELIBBAD},
+    };
+    const unsigned char classes[] = {ELFCLASSNONE, ELFCLASS32, ELFCLASS64, 0xff};
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        if (!stage_native_image(image, cases[i].target, cases[i].kind)) {
+            continue;
+        }
+        for (size_t j = 0; j < sizeof(classes) / sizeof(classes[0]); j++) {
+            int fd = open(cases[i].target, O_WRONLY);
+            CHECK(fd >= 0, "native class admission releases the prior executable lease");
+            if (fd < 0) {
+                break;
+            }
+            ssize_t written = pwrite(fd, &classes[j], 1, EI_CLASS);
+            CHECK(written == 1, "change only the private native ELF class byte");
+            close(fd);
+            if (written != 1) {
+                break;
+            }
+            printf("ELF_NATIVE_CLASS target=%s class=%u require64=%d\n",
+                   cases[i].target, classes[j], require_class64);
+            if (require_class64 && classes[j] != ELFCLASS64) {
+                check_exec_rejection(cases[i].executable, false, cases[i].rejection);
+                check_exec_rejection(cases[i].executable, true, cases[i].rejection);
+            } else {
+                check_native_image_runs(cases[i].executable);
+            }
+        }
+        unsigned char original = ELFCLASS64;
+        int fd = open(cases[i].target, O_WRONLY);
+        CHECK(fd >= 0, "reopen the same native ELF after its final class attempt");
+        if (fd >= 0) {
+            ssize_t written = pwrite(fd, &original, 1, EI_CLASS);
+            CHECK(written == 1, "restore the same native ELF class byte");
+            close(fd);
+            if (written == 1) {
+                check_native_image_runs(cases[i].executable);
+            }
+        }
+        if (cases[i].kind == NATIVE_MAIN) {
+            CHECK(unlink(cases[i].target) == 0, "remove the native main-image fixture");
+        }
+    }
 }
 
 /* A failed interpreter load must preserve the caller and release both leases. */
@@ -678,6 +755,7 @@ static void test_interpreter_format_recovery(void)
     char standalone[64];
     snprintf(standalone, sizeof(standalone), "%s/unaligned", directory);
     check_unaligned_program_table(image, standalone);
+    check_native_class(image, interpreter, standalone);
 
 cleanup:
     if (image_fd >= 0) {
