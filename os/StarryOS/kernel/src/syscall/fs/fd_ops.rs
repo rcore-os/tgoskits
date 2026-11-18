@@ -78,6 +78,16 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     options
 }
 
+fn force_largefile(flags: c_int) -> c_int {
+    // Native 64-bit Linux path opens publish the raw large-file status bit.
+    // O_PATH keeps only its path flags and must not acquire this status.
+    if cfg!(target_pointer_width = "64") && flags as u32 & O_PATH == 0 {
+        flags | O_LARGEFILE as c_int
+    } else {
+        flags
+    }
+}
+
 fn add_to_fd(
     current: &crate::task::UserTaskRef,
     view: &FsView<'_>,
@@ -346,6 +356,7 @@ pub fn sys_openat(
     // call tp:trace_sys_enter_openat
     trace_sys_enter_openat(dirfd, path as _, flags as _, mode);
 
+    let flags = force_largefile(flags);
     let curr = current;
     let thread = curr.as_thread();
     let path = vm_load_path_string(current, path)?;
@@ -463,6 +474,7 @@ pub fn sys_openat2(
         .flags
         .try_into()
         .map_err(|_| StarryError::InvalidInput)?;
+    let flags = force_largefile(flags);
     let mode: __kernel_mode_t = how_value
         .mode
         .try_into()
@@ -803,7 +815,13 @@ pub fn sys_fcntl(
         F_GETFL => {
             let f = get_file_like(fd)?;
 
-            let mut ret = f.open_flags() & !O_APPEND;
+            let flags = f.open_flags();
+            if flags & O_PATH != 0 {
+                return Ok((flags & (O_PATH | O_DIRECTORY | O_NOFOLLOW)) as _);
+            }
+            // Keep the original open arguments for endpoint callbacks; only
+            // the userspace status projection omits creation and fd flags.
+            let mut ret = flags & !(O_APPEND | O_CLOEXEC | O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
             if f.nonblocking() {
                 ret |= O_NONBLOCK;
             }
