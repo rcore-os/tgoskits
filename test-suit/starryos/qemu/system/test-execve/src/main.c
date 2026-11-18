@@ -25,6 +25,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdatomic.h>
 #include <sys/mount.h>
 #include <sys/resource.h>
@@ -159,7 +160,7 @@ static void check_exec_rejection(const char *path, bool use_execveat, int expect
         return;
     }
     if (pid == 0) {
-        char *const argv[] = {(char *)path, NULL};
+        char *const argv[] = {(char *)path, "-c", "exit 125", NULL};
         long result = use_execveat
             ? syscall(SYS_execveat, AT_FDCWD, path, argv, environ, 0)
             : syscall(SYS_execve, path, argv, environ);
@@ -418,6 +419,49 @@ static int redirect_interpreter(int fd, const char *replacement,
     return -1;
 }
 
+/* Reject an invalid native header, then execute after repairing the same inode. */
+static void check_header_recovery(const char *image, const char *target,
+                                  off_t offset, Elf64_Half invalid, int expected)
+{
+    printf("ELF_HEADER_REJECTION target=%s offset=%lld value=%u errno=%d\n",
+           target, (long long)offset, (unsigned)invalid, expected);
+    fflush(stdout);
+    int fd = open(target, O_RDWR);
+    CHECK(fd >= 0, "open the private ELF header for mutation");
+    if (fd < 0) {
+        return;
+    }
+    Elf64_Half original;
+    ssize_t read = pread(fd, &original, sizeof(original), offset);
+    CHECK(read == (ssize_t)sizeof(original), "read the original ELF header field");
+    if (read != (ssize_t)sizeof(original)) {
+        close(fd);
+        return;
+    }
+    ssize_t written = pwrite(fd, &invalid, sizeof(invalid), offset);
+    CHECK(written == (ssize_t)sizeof(invalid), "write the invalid ELF header field");
+    close(fd);
+    if (written != (ssize_t)sizeof(invalid)) {
+        return;
+    }
+
+    check_exec_rejection(image, false, expected);
+    check_exec_rejection(image, true, expected);
+
+    fd = open(target, O_WRONLY);
+    CHECK(fd >= 0, "rejected ELF header releases its inode's write exclusion");
+    if (fd < 0) {
+        return;
+    }
+    written = pwrite(fd, &original, sizeof(original), offset);
+    CHECK(written == (ssize_t)sizeof(original), "repair the same ELF header inode");
+    close(fd);
+    if (written == (ssize_t)sizeof(original)) {
+        check_execveat_ran(execveat_success_status(AT_FDCWD, image, 0),
+                          "repaired native headers execute the shell image");
+    }
+}
+
 /* A failed interpreter load must preserve the caller and release both leases. */
 static void test_interpreter_format_recovery(void)
 {
@@ -495,6 +539,12 @@ static void test_interpreter_format_recovery(void)
     interpreter_fd = -1;
     check_execveat_ran(execveat_success_status(AT_FDCWD, image, 0),
                       "repaired interpreter executes the original shell image");
+    check_header_recovery(image, image, offsetof(Elf64_Ehdr, e_machine),
+                          EM_NONE, ENOEXEC);
+    check_header_recovery(image, interpreter, offsetof(Elf64_Ehdr, e_machine),
+                          EM_NONE, ELIBBAD);
+    check_header_recovery(image, image, offsetof(Elf64_Ehdr, e_type),
+                          ET_REL, ENOEXEC);
 
 cleanup:
     if (image_fd >= 0) {
