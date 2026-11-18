@@ -1553,3 +1553,24 @@ af6332243ec71de393d8aa22cfa1c6e70da8880ecb3e09b2fa90fd5ff0d7f951。
 cached_readonly_descriptions。没有新增系统程序或默认启动；其他架构的本轮
 运行、写入和端点、额外策略、原生缓存、链接 atime 及受控任务/fd 发布仍需
 继续。先前 02baa6365f 的完整 CI 不替代本阶段，PR 仍保持草稿。
+
+### 9.59 状态与描述符标志的分类
+
+4732aeade7 在原生 64 位路径打开设置原始 O_LARGEFILE，并在 F_GETFL 区分
+普通描述与 O_PATH。普通投影去掉创建、独占、截断、NOCTTY、CLOEXEC；
+O_PATH 只保留自己的目录与 nofollow 状态。原参数继续供设备关闭等回调使用，
+fd 表中的 FD_CLOEXEC 没有被裁剪，也没有新增状态副本。
+
+相同最终 C 在 Linux 通过，f4a9c2cb24 的旧 Starry 失败四项，修后真实 x86
+QEMU 1/1。原始状态分别为普通文件 32770、普通 O_PATH 2097152、缓存只读
+34816、缓存 O_PATH 2097152，与 Linux 相同。两类普通描述的 F_GETFD 和
+原缓存 CLOEXEC 检查继续通过，载荷、共享位置及独占卸载引用也保留原判据。
+实际 ELF SHA-256 为
+a50d1eb24c07e1a2096dfced5c0e50e1fa123295597aed5f2bddb3ed47005a47。
+
+最终 Kernel 一包标准库、四目标 Clippy 72/72、格式和定向检查通过。AX 的
+前置提交 c9b35a2ee1 只澄清缓存类型错误的注释，非文档字节与基线相同，
+其六个 Clippy 组合再次通过。记录为 open_description_status，六列表 193 行；
+默认系统程序、启动数和 Rust 单元测试没有增加。此前 readonly 的 18 包
+记录仍绑定 536b9c90af。初始状态通过不证明 F_SETFL 完整切换、所有端点及
+其他目标本轮状态读取，完整 VFS 计划和独立审查仍未完成。

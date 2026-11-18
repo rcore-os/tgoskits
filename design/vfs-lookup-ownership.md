@@ -4710,6 +4710,26 @@ EBADF、非阻塞和 CLOEXEC、目录枚举及原唯一缓存 fd 的卸载旅程
 默认启动。写入、端点、额外策略、原生缓存属性、链接 atime 和受控发布仍在
 原计划内；02baa6365f 的完整 CI 早于本次只读改动。
 
+### 6.38 打开描述的状态投影
+
+4732aeade7 修正原始打开参数直接出现在 F_GETFL 中的差异。原生 64 位路径
+打开补入 O_LARGEFILE，O_PATH 保留自己的子集；普通状态投影清除创建、独占、
+截断、NOCTTY 和 CLOEXEC。原参数继续供设备关闭等回调使用，fd 表仍持有
+FD_CLOEXEC，没有新增状态所有者。
+
+相同最终 C 在 Linux 通过、f4a9c2cb24 的旧 Starry 稳定失败四项，修后真实
+x86 QEMU 1/1。普通文件状态由 525250 变为 Linux 的 32770，普通 O_PATH
+由 2624450 变为 2097152，缓存只读由 526592 变为 34816，缓存 O_PATH
+由 2621440 变为 2097152。F_GETFD 仍保留 CLOEXEC，原数据没有被 O_PATH
+携带的截断位改变，既有游标及卸载旅程继续通过。
+
+Kernel 一包标准库、四目标 Clippy 72/72、格式及 include-backed 文件检查
+通过。AX 另一个提交只澄清类型错误的公开注释，非文档字节与基线相同，
+其六个 Clippy 组合再次通过；没有为注释重复行为测试。六列表为 193 行，
+证据键为 open_description_status。没有新增系统程序、默认启动或 Rust 单元
+测试。本阶段只证明初始状态分类，F_SETFL 切换、其余 producer 和其他目标的
+本轮状态读取继续按各自证据闭合。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
@@ -4836,15 +4856,15 @@ MemoryFs 检查缓存准入和最终 DAC。代码回滚不迁移持久数据，�
 仍包含 O_CLOEXEC，并缺少 Linux 64 位路径打开强制设置的 O_LARGEFILE。
 这一差异需要单独的原始状态判定，不能因内容和游标正确而忽略。
 
-计划在普通 openat 及非 O_PATH 的 openat2 入口按 64 位 Linux 规则补入
+普通 openat 及非 O_PATH 的 openat2 入口按 64 位 Linux 规则补入
 O_LARGEFILE。openat2 对原始 O_PATH 组合的严格校验保持在自动补位之前，
 普通 O_PATH 的忽略规则继续由既有选项解释承担。F_GETFL 的公共投影集中
 在原 sys_fcntl 分支：O_PATH 仅保留 O_PATH、O_DIRECTORY、O_NOFOLLOW；
 普通描述清除 O_CLOEXEC、O_CREAT、O_EXCL、O_NOCTTY、O_TRUNC，再读取
 原描述的动态 append、nonblocking 和 async 状态。FD_CLOEXEC 仍由 fd 表持有。
 
-不直接裁剪所有 FileLike 构造方的原参数：设备关闭等业务回调仍需要原
-O_EXCL 信息。共享投影避免逐类生产者复制同一掩码，也不建立第二份描述
+设备关闭等业务回调仍需要原 O_EXCL 信息，FileLike 构造方继续保留原参数。
+共享投影避免逐类生产者复制同一掩码，也不建立第二份描述
 状态。回归继续增强原私有 tmpfs 旅程，比较普通写描述、缓存只读及 O_PATH
 的原始 F_GETFL，并继续用 F_GETFD 验证描述符状态没有随投影丢失。
 O_LARGEFILE 的直接系统调用位按 Linux UAPI 区分 AArch64 的 0400000 与

@@ -543,7 +543,7 @@ NO_SYMLINKS、NO_MAGICLINKS、最终 nofollow 和尾斜杠也在同一旅程中�
 | pread64/CACHED 普通文件；x86_64 17；其余三架构 67 | v7.1 [ksys_pread64](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c) | 定位读取实际内容，不修改打开描述的共享位置 | sys_pread64 → file_or_espipe → ax File.read_at → CachedFileShared；顺序位置仍由原 File 持有 | 部分正确 | 原始 pread64 在偏移 10 读取三个正确字节，后续 read 从偏移 7 继续；Linux/x86 通过，其余参数、fd 竞争和其他目标待补 |
 | dup/CACHED 普通文件；x86_64 32；其余三架构 23 | v7.1 [dup](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/file.c) | 新 fd 共享原打开描述，独立 open 不共享游标 | sys_dup → dup_fd → 原 FileDescriptor.inner Arc → 同一 ax File.position/CachedFileShared | 部分正确 | 原始 dup 之后连续 read 消费载荷的下一段，第二次 open 从头读；Linux/x86 通过，最后 dup 的独占卸载引用与其他目标待补 |
 | write/CACHED 只读文件；x86_64 1；其余三架构 64 | v7.1 [vfs_write](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c) | 没有写访问权的描述拒绝写入，返回 EBADF | sys_write → File.validate_write_access → 原 ax FileFlags.READ，无 writer lease | 部分正确 | 原始 write 在有效缓冲区得到 EBADF，Linux/x86 通过；写族其余入口、错误顺序与其他目标待补 |
-| fcntl/F_GETFL 缓存只读文件；x86_64 72；其余三架构 25 | v7.1 [do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | 返回只读访问模式和该描述的 O_NONBLOCK 状态 | sys_fcntl → File.open_flags/nonblocking；缓存打开在发布前设置该 File 的非阻塞状态 | 不正确 | 当前 C 只断言访问模式与 O_NONBLOCK；原始日志的 Linux 状态为 34816，Starry 为 526336，后者仍暴露 O_CLOEXEC 并缺少 O_LARGEFILE。标志分类与原生打开的强制大文件策略待后续修复 |
+| fcntl/F_GETFL 缓存只读文件；x86_64 72；其余三架构 25 | v7.1 [do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | 返回只读访问模式和该描述的 O_NONBLOCK 状态 | sys_openat2.force_largefile → File.open_flags；sys_fcntl.F_GETFL 对原参数作状态投影，再查询原描述的 nonblocking | 部分正确 | f4a9c2cb24 的严格 C 在旧 Starry 返回 526592，4732aeade7 与 Linux 均为 34816，已排除 O_CLOEXEC/O_NOCTTY 并保留 O_LARGEFILE/O_NONBLOCK；F_SETFL 切换、其他目标与其余命令不由此证明 |
 | getdents64/CACHED 只读目录；x86_64 217；其余三架构 61 | v7.1 [iterate_dir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/readdir.c) | 目录打开描述在原目录上维护枚举状态 | sys_getdents64 → Directory.position/read_state → original Location.open_directory_read_state/read_dir_with_state → MemoryNode | 部分正确 | 私有 tmpfs 的缓存只读目录由原始 getdents64 读到实际条目；Linux/x86 通过，条目布局、续读与其他目标不由此证明 |
 
 实际数据与路径由既有所有者保留，最终属性没有复制为持久 stat 副本。18 包
@@ -587,3 +587,43 @@ x86 独有 `poll` 入口的验证，也没有据此断言运行镜像的 musl �
 | poll/DRM 就绪；x86_64 7；其余三架构无此入口 | v7.1 [do_sys_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/select.c) | 只在所属打开描述有已送达事件时报告可读，未来事件不提前可读 | sys_poll → do_poll → Card0File.poll/poll_events → drm_poll → per-open DrmFile.event_list/event_wait | 无法确认 | 程序保留未来事件零超时不可读和真实事件唤醒判据；本轮定向目标为 LoongArch，其 libc poll 使用 ppoll，不能代替 x86 poll 入口证据 |
 | ppoll/DRM 就绪；x86_64 271；其余三架构 73 | v7.1 [do_ppoll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/select.c) | 同一事件状态控制可读与等待唤醒；超时或信号不伪造完成事件 | sys_ppoll → do_poll → Card0File.poll/poll_events → drm_poll → DrmFile.event_wait 与 Card0File.poll | 部分正确 | LoongArch 程序的 poll 经 libc 到 ppoll，覆盖未来事件和真实事件；本轮未增加原始 ppoll 的信号掩码或超时边界证明 |
 | close/DRM 打开描述；x86_64 3；其余三架构 57 | v7.1 [drm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_file.c) | 关闭所属描述取消未完成事件并释放 event_space，不影响其他打开描述 | sys_close → table.remove → Card0File drop → drm_release → DrmFile event cancellation | 部分正确 | 原程序关闭持有 128 个未来事件的另一 open，要求原 open 不出现该描述的事件；更多并发关闭和 fd 共享状态不由此单独证明 |
+
+## 17. 打开描述的状态标志
+
+4732aeade7 将原始打开参数、描述符 CLOEXEC 和 F_GETFL 的状态投影区分。
+设备关闭继续读取原参数；投影只改变返回给用户的位，不修改 fd 表或页数据。
+相同最终 C 在 Linux 通过，f4a9c2cb24 的旧实现稳定失败四项，修后 x86 QEMU
+1/1。两个 O_PATH 判据分别来自普通 openat 与 CACHED openat2。
+
+### 17.1 原生大文件策略
+
+64 位原生路径打开设置原始 UAPI 的 O_LARGEFILE，O_PATH 描述不取得该位。
+AArch64 的位为 0400000，其余三个目标沿 asm-generic 为 00100000；直接 C
+判据使用这些内核位，避免宿主 libc 把 O_LARGEFILE 定义为零掩盖差异。
+legacy 入口与直接受测入口分开保留证据范围。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| openat/64 位状态；x86_64 257；其余三架构 56 | v7.1 [openat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1381)、[大文件位](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/asm-generic/fcntl.h#L50) | 普通原生 64 位打开在最终 f_flags 中包含 O_LARGEFILE；创建与描述符标志不作为状态返回 | sys_openat → force_largefile → flags_to_options → add_to_fd → File original open_flags；状态查询由 sys_fcntl 投影 | 部分正确 | 私有 tmpfs 文件以创建、独占、截断、NOCTTY、CLOEXEC 及读写方式打开，原始 F_GETFL 在 Linux/x86 均为 32770；其他目标的本轮状态读取待补 |
+| openat2/64 位状态；四架构 437 | v7.1 [openat2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1389)、[AArch64 位](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/arm64/include/uapi/asm/fcntl.h#L26) | 严格解释原始 how，非 O_PATH 的原生 64 位打开补入 O_LARGEFILE；不把自动补位当作用户提供的 O_PATH 组合 | sys_openat2 原始 how/flags 校验 → force_largefile → 原 resolve 分支；CACHED 捕获仍只一次，readonly_flags 已允许 LargeFile | 部分正确 | CACHED 普通只读的原始 F_GETFL 在 Linux/x86 均为 34816，CACHED O_PATH 为 2097152；resolve=0 与其他策略的状态读取、其余目标待补 |
+| open/64 位状态；x86_64 2 | v7.1 [open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1374) | 原生 legacy open 同样设置大文件状态，O_PATH 保留自己的状态子集 | sys_open → sys_openat.force_largefile → File/Directory → F_GETFL 投影 | 无法确认 | 共享调用链已核对，原链接预算旅程仍通过；本阶段没有对 legacy open 返回 fd 直接读取 F_GETFL，不能借用 openat 的状态证明 |
+| creat/64 位状态；x86_64 85 | v7.1 [creat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1442) | 按 WRONLY+CREAT+TRUNC 执行，并在原生 64 位描述设置 O_LARGEFILE，创建位不暴露为状态 | sys_creat → sys_openat.force_largefile → 原创建/截断 → F_GETFL 投影 | 无法确认 | 本阶段没有原始 SYS_creat 的完整状态旅程，静态继承不作为运行通过 |
+
+### 17.2 状态与描述符分离
+
+F_GETFL 对 O_PATH 只保留 O_PATH、O_DIRECTORY 和 O_NOFOLLOW；普通描述去掉
+O_CLOEXEC、O_CREAT、O_EXCL、O_NOCTTY、O_TRUNC。原调用参数保留给实际
+业务回调，FD_CLOEXEC 则继续存于 fd 表。此处只证明初始状态分类，没有把
+F_SETFL 或所有端点的状态切换记为完成。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| fcntl/F_GETFL 普通文件初始状态；x86_64 72；其余三架构 25 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1182)、[do_dentry_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L963)、[do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | 返回访问及状态，创建、独占、截断、NOCTTY 和 CLOEXEC 位不应泄露 | sys_fcntl.F_GETFL → original File.open_flags → shared status mask；原 File 和 fd 表字段不变 | 部分正确 | 同一最终 C 的旧 Starry 为 525250，Linux/4732aeade7 x86 为 32770；同一 fd 的 F_GETFD 仍为 FD_CLOEXEC，其他目标与状态切换待补 |
+| fcntl/F_GETFL 普通 O_PATH；x86_64 72；其余三架构 25 | v7.1 [O_PATH_FLAGS](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1161)、[do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | 普通 openat 忽略的访问、创建、截断和非阻塞位不能重新出现在 O_PATH 的 F_GETFL 中 | sys_openat 的既有 O_PATH 解释 → kernel File original flags → sys_fcntl 的 path mask | 部分正确 | 携带 RDWR、NONBLOCK、CLOEXEC、CREAT、EXCL、TRUNC、NOCTTY 的 O_PATH 原始状态从旧 2624450 修为 Linux 的 2097152；后续实际载荷未被截断，其他目标待补 |
+| fcntl/F_GETFL 缓存 O_PATH；x86_64 72；其余三架构 25 | v7.1 [O_PATH_FLAGS](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1161) | 严格 CACHED O_PATH 的 CLOEXEC 属于 fd 表，F_GETFL 只显示实际路径状态 | captured CachedFileTable.install → original File.open_flags → sys_fcntl 的相同 path mask | 部分正确 | 相同 C 旧返回 2621440，Linux/4732aeade7 x86 均为 2097152，原 F_GETFD 仍保持 CLOEXEC；其他目标及其余组合待补 |
+| fcntl/F_GETFD 普通文件及 O_PATH；x86_64 72；其余三架构 25 | v7.1 [do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | 对 F_GETFL 的投影不能清除表项的 FD_CLOEXEC | sys_fcntl.F_GETFD → current_fd_table descriptor.cloexec；普通打开由 add_to_fd/add_file_like 发布 | 部分正确 | 普通读写文件和携带忽略位的 O_PATH 均实际返回 FD_CLOEXEC；缓存 fd 的安装链另见 15.2，其他目标与执行关闭行为不由此证明 |
+
+本阶段没有增加系统程序、默认启动或 Rust 单元测试。行为由原完整系统旅程
+的确定性红绿证明；AX 的另一个提交只澄清缓存准入的类型错误注释。记录为
+open_description_status。Kernel 一包标准库、四目标 Clippy 72/72、AX 注释的六项
+Clippy 及格式检查通过；原只读阶段的 18 包结果保留原源码，不改写为新版本。

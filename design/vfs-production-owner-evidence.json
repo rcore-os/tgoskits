@@ -9488,5 +9488,169 @@
       "This runtime proof covers x86_64. The earlier 02baa6365f terminal CI predates this readonly change.",
       "The PR remains draft; independent qualified design/implementation review and the remaining VFS plan are not completed by this slice."
     ]
+  },
+  "open_description_status": {
+    "before_source": "f4a9c2cb249076b87d74d69e69d4618eb3410f52",
+    "after_source": "4732aeade726cca5d41dabcfd677e100ae920622",
+    "test_byte_identical_before_and_after": true,
+    "test_source": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-status-main.c",
+      "sha256": "2cdb9fff3df5d3c0f5a38cf51c054f6b7f0692620d153e3bf9fb6b227c806dde",
+      "bytes": 25307
+    },
+    "source_files": {
+      "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c",
+        "sha256": "2cdb9fff3df5d3c0f5a38cf51c054f6b7f0692620d153e3bf9fb6b227c806dde",
+        "bytes": 25307
+      },
+      "fs/ax-fs-ng/src/file/open.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/fs/ax-fs-ng/src/file/open.rs",
+        "sha256": "7bd975a55e211a450a4b7cb7a2e655a303dd46390f1ae7bd8606c9bc0decaf60",
+        "bytes": 50850
+      },
+      "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/os/StarryOS/kernel/src/syscall/fs/fd_ops.rs",
+        "sha256": "e37ef87d6cb748699b1bfb7c2b1c84f51d057e6ff402a25fc64266ea6c66a520",
+        "bytes": 35114
+      }
+    },
+    "checks": {
+      "linux": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-status-linux.log",
+          "sha256": "66eec91115321d1699a45e9dc84b173bc776f76f0b8c3eecff74d9a4ada24807",
+          "bytes": 6775
+        },
+        "outer_exit": 0
+      },
+      "before": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-status-before.log",
+          "sha256": "1cb72655e747746ae69fac9ddd2e72c0ffc52ffdcad549ae5059bc74c91998ec",
+          "bytes": 36006
+        },
+        "outer_exit": 1,
+        "source": "f4a9c2cb249076b87d74d69e69d4618eb3410f52"
+      },
+      "after": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-status-after.log",
+          "sha256": "2ba6c1b608d1c2f0985405f974c317cec8189d665371a1e8c6b9b57348e49339",
+          "bytes": 36569
+        },
+        "outer_exit": 0,
+        "source": "4732aeade726cca5d41dabcfd677e100ae920622"
+      },
+      "std": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-status-std.log",
+          "sha256": "3a2202a67c620576a9fd4f4b184f6afc55344800bb25e8d2a65468c6fbd0b44b",
+          "bytes": 39101
+        },
+        "outer_exit": 0,
+        "source": "4732aeade726cca5d41dabcfd677e100ae920622"
+      },
+      "kernel_clippy": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-status-clippy.log",
+          "sha256": "7a77b93532fd144ea55660c06ed3613db9c0b67d6777b77c47a891b0ac72fcb5",
+          "bytes": 87418
+        },
+        "outer_exit": 0,
+        "source": "4732aeade726cca5d41dabcfd677e100ae920622"
+      },
+      "axfs_clippy": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-status-axfs-clippy.log",
+          "sha256": "bde3033212068240987a3247133726eea414269937e778e2c55addbb40c43fde",
+          "bytes": 2769
+        },
+        "outer_exit": 0,
+        "source": "4732aeade726cca5d41dabcfd677e100ae920622"
+      },
+      "format": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-status-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        "outer_exit": 0,
+        "source": "4732aeade726cca5d41dabcfd677e100ae920622"
+      }
+    },
+    "before_failures": [
+      "FAIL: ordinary open exposes status flags without creation or descriptor bits status=525250",
+      "FAIL: ordinary O_PATH reports only path status despite ignored open bits status=2624450",
+      "FAIL: CACHED reader reports exact readonly nonblocking status flags status=526592",
+      "FAIL: CACHED O_PATH excludes descriptor bits from status flags status=2621440"
+    ],
+    "status_cases": [
+      {
+        "case": "ordinary open exposes status flags without creation or descriptor bits",
+        "before": 525250,
+        "linux_and_after": 32770
+      },
+      {
+        "case": "ordinary O_PATH reports only path status despite ignored open bits",
+        "before": 2624450,
+        "linux_and_after": 2097152
+      },
+      {
+        "case": "CACHED reader reports exact readonly nonblocking status flags",
+        "before": 526592,
+        "linux_and_after": 34816
+      },
+      {
+        "case": "CACHED O_PATH excludes descriptor bits from status flags",
+        "before": 2621440,
+        "linux_and_after": 2097152
+      }
+    ],
+    "before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-f4a9c2cb24-baseline.elf",
+      "sha256": "af6332243ec71de393d8aa22cfa1c6e70da8880ecb3e09b2fa90fd5ff0d7f951",
+      "bytes": 218166888
+    },
+    "after_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-4732aeade7.elf",
+      "sha256": "a50d1eb24c07e1a2096dfced5c0e50e1fa123295597aed5f2bddb3ed47005a47",
+      "bytes": 218087352
+    },
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "host_kernel": "6.8.0-149-generic",
+      "functions": [
+        "SYSCALL_DEFINE3(open)",
+        "SYSCALL_DEFINE4(openat)",
+        "SYSCALL_DEFINE4(openat2)",
+        "build_open_flags",
+        "do_dentry_open",
+        "do_fcntl"
+      ],
+      "largefile_uapi": {
+        "aarch64": "0400000",
+        "x86_64_riscv64_loongarch64": "00100000"
+      }
+    },
+    "ownership": "Original open arguments remain in each endpoint for its business callbacks. F_GETFL only projects status; descriptor CLOEXEC remains in the original fd table. Native 64-bit pathname open entries set the raw large-file bit, excluding O_PATH. No new flag registry or per-open state is introduced.",
+    "validation": {
+      "std_packages": 1,
+      "std_selection_base": "c9b35a2ee14a88a1ad3639c321f4c2e501b7a302",
+      "kernel_clippy_checks": 72,
+      "axfs_clippy_checks": 6,
+      "format_exit": 0,
+      "qemu_programs": 1,
+      "new_rust_tests": 0,
+      "new_system_programs": 0,
+      "new_default_boots": 0
+    },
+    "axfs_comment_scope": "The AX change only clarifies the existing type errors in public cache-only admission documentation. All non-doc bytes are identical to the baseline; its six supported Clippy combinations passed again. Previous 18-package behavioral evidence remains bound to its original source.",
+    "limits": [
+      "This C proves initial status classification and descriptor separation, not the full F_SETFL transition contract or every endpoint status producer.",
+      "Legacy open/creat inherit the shared entry but have no direct new F_GETFL observation in this phase.",
+      "Runtime proof covers x86_64; other targets need current-head CI. The earlier e413cffdcc CI predates this status fix.",
+      "The whole VFS delivery and the independent qualified review before merge remain incomplete; PR stays draft."
+    ]
   }
 }
