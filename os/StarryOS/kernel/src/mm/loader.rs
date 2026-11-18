@@ -1,7 +1,11 @@
 //! User address space management.
 
 use alloc::{borrow::ToOwned, collections::VecDeque, string::String, sync::Arc, vec, vec::Vec};
-use core::{ffi::CStr, iter, mem::size_of};
+use core::{
+    ffi::CStr,
+    iter,
+    mem::{align_of, size_of},
+};
 
 use ax_fs_ng::{
     FsView,
@@ -657,7 +661,8 @@ fn map_elf_error(err: &'static str) -> StarryError {
 /// Parsed headers owned by one load; data pages remain shared by `CachedFile`.
 struct ElfImage {
     cache: CachedFile,
-    data: Vec<u8>,
+    // The header parser borrows native integer fields from this allocation.
+    data: Vec<u64>,
     #[borrows(data)]
     #[covariant]
     elf: ELFHeaders<'this>,
@@ -669,15 +674,17 @@ enum ElfImageKind {
     Interpreter,
 }
 
+// Linux bounds the native program-header table in load_elf_phdrs().
+const MAX_PROGRAM_HEADER_BYTES: usize = 65536;
+
 impl ElfImage {
     fn load(loc: PathHandle, kind: ElfImageKind) -> StarryResult<Result<Self, Vec<u8>>> {
         // A retained inode can have new bytes after its previous execution.
         // Read its headers anew rather than treating path identity as content.
         let cache = CachedFile::get_or_create(loc)?;
 
-        let mut data = vec![0; 4096];
-        let read = cache.read_at(&mut data[..], 0)?;
-        data.truncate(read);
+        let mut data = vec![0_u64; PAGE_SIZE_4K / size_of::<u64>()];
+        let read = cache.read_at(bytemuck::cast_slice_mut(&mut data), 0)?;
         let minimum_header_size = match kind {
             ElfImageKind::Main => 0,
             // Linux reads a complete native interpreter header before checking its format.
@@ -690,37 +697,71 @@ impl ElfImage {
             return Err(StarryError::UnexpectedEof);
         }
         match ElfImage::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
-            // Check the native ABI before the builder follows program-header offsets.
-            let header = xmas_elf::header::parse_header(data).map_err(map_elf_error)?;
-            let native_machine = cfg_select! {
-                target_arch = "x86_64" => xmas_elf::header::Machine::X86_64,
-                target_arch = "aarch64" => xmas_elf::header::Machine::AArch64,
-                target_arch = "riscv64" => xmas_elf::header::Machine::RISC_V,
-                target_arch = "loongarch64" => xmas_elf::header::Machine::Other(258),
-            };
-            if header.pt2.machine().as_machine() != native_machine
-                || (matches!(kind, ElfImageKind::Main)
-                    && !matches!(
-                        header.pt2.type_().as_type(),
-                        xmas_elf::header::Type::Executable | xmas_elf::header::Type::SharedObject
-                    ))
-            {
-                return Err(StarryError::InvalidExecutable);
-            }
-            let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
-            let range = builder.ph_range();
-            if range.end as usize <= data.len() {
-                builder.build(&data[range.start as usize..range.end as usize])
-            } else {
-                let mut buf = vec![0; (range.end - range.start) as usize];
-                cache.read_at(&mut buf[..], range.start)?;
-                builder.build(&buf)
-            }
-            .map_err(map_elf_error)
+            let data = &bytemuck::cast_slice(data)[..read];
+            Self::parse_headers(&cache, data, kind)
         }) {
             Ok(e) => Ok(Ok(e)),
-            Err((_, heads)) => Ok(Err(heads.data)),
+            Err((_, heads)) => Ok(Err(bytemuck::cast_slice(&heads.data)[..read].to_vec())),
         }
+    }
+
+    fn parse_headers<'a>(
+        cache: &CachedFile,
+        data: &'a [u8],
+        kind: ElfImageKind,
+    ) -> StarryResult<ELFHeaders<'a>> {
+        // Check the native ABI before following program-header offsets.
+        let header = xmas_elf::header::parse_header(data).map_err(map_elf_error)?;
+        let native_machine = cfg_select! {
+            target_arch = "x86_64" => xmas_elf::header::Machine::X86_64,
+            target_arch = "aarch64" => xmas_elf::header::Machine::AArch64,
+            target_arch = "riscv64" => xmas_elf::header::Machine::RISC_V,
+            target_arch = "loongarch64" => xmas_elf::header::Machine::Other(258),
+        };
+        if header.pt2.machine().as_machine() != native_machine
+            || (matches!(kind, ElfImageKind::Main)
+                && !matches!(
+                    header.pt2.type_().as_type(),
+                    xmas_elf::header::Type::Executable | xmas_elf::header::Type::SharedObject
+                ))
+        {
+            return Err(StarryError::InvalidExecutable);
+        }
+
+        let entry_size = size_of::<xmas_elf::program::ProgramHeader64>();
+        if header.pt2.ph_entry_size() as usize != entry_size {
+            return Err(StarryError::InvalidExecutable);
+        }
+        let table_size = (header.pt2.ph_count() as usize)
+            .checked_mul(entry_size)
+            .filter(|size| (1..=MAX_PROGRAM_HEADER_BYTES).contains(size))
+            .ok_or(StarryError::InvalidExecutable)?;
+        let start = header.pt2.ph_offset();
+        let end = start
+            .checked_add(table_size as u64)
+            .ok_or(StarryError::InvalidExecutable)?;
+        let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
+        if end <= data.len() as u64 {
+            let table = &data[start as usize..end as usize];
+            if table
+                .as_ptr()
+                .addr()
+                .is_multiple_of(align_of::<xmas_elf::program::ProgramHeader64>())
+            {
+                return builder.build(table).map_err(map_elf_error);
+            }
+        }
+
+        // File offsets may be unaligned. The builder copies its entries, so
+        // this bounded, aligned staging allocation need not outlive the call.
+        let mut words = vec![0_u64; table_size / size_of::<u64>()];
+        let table = bytemuck::cast_slice_mut(&mut words);
+        if end <= data.len() as u64 {
+            table.copy_from_slice(&data[start as usize..end as usize]);
+        } else if cache.read_at(&mut *table, start)? != table_size {
+            return Err(StarryError::InvalidExecutable);
+        }
+        builder.build(table).map_err(map_elf_error)
     }
 }
 
