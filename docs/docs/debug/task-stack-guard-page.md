@@ -73,7 +73,7 @@ task stack guard page hit: fault_addr=0x..., stack=[0x.....0x...), guard=[0x....
 
 ## 3. 验证入口
 
-正式 `task-stack-guard-page` 用例属于 ArceOS Rust QEMU 套件。它先迁移任务，再主动触发保护页 fault；运行器只接受用例开始标记之后包含完整地址字段的 guard 诊断。
+正式 `task-stack-guard-page` 用例属于 ArceOS Rust QEMU 套件。多核配置先在非串口所有者核创建任务栈，再把被测线程迁移到串口所有者核；调用 `ax_console_flush()` 排空之前的说明输出后，屏蔽本地 IRQ 并触发同步保护页 fault。这样保留跨核栈创建与迁移覆盖，同时排除测例自身的普通 UART 事务与有界紧急接管竞争。运行器只接受用例开始标记之后包含完整地址字段的 guard 诊断。
 
 ### 3.1 专项回归
 

@@ -14,6 +14,12 @@ success_regex = [
 ]
 
 [[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[6\\] console"]
+timeout = 60
+
+[[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm delete --force 6"
 success_regex = ["(?m)^✓ VM\\[6\\] deleted completely\\s*$"]

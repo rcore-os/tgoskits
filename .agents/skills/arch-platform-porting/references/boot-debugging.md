@@ -886,3 +886,8 @@ x86_64 httpboot 用例）可以只含 selector；axbuild 不向板卡环境
 CPU测试实现集中在test-suit/arceos/cpu/src，normal/suite.toml声明实际架构、特权级、CPU型号和启动批次。先用cargo xtask arceos test qemu --arch <arch> --test-group cpu --plan核对所选std/freestanding入口、SMP、features和配置，再运行；板端使用board-orangepi-5-plus/suite.toml统一登记两批：kernel复用Rust标准库入口及runner顺序执行PMU/IPI/cpufreq，pmu-user复用CPU normal/main.rs的freestanding构建；不保留功能专属包装包或boot重复启动。增改删规则见cpu/README.md，避免凭目录名推断架构或把逻辑项数当启动数。
 
 共享库启用AXCPU fp-simd/context时，入口的HAL/runtime浮点能力必须同步。CPU测试库的guest-entry、virtualization-lifecycle与fp-context能力同步启用ax-std/fp-simd，防止EL1在测试开始前因上下文保存访问FP寄存器而异常；入口不预先编入无关测试能力。不要通过关闭断言或改变QEMU语义处理这类装配错误。ARM EL0批次继续使用freestanding/uspace且无kernel TLS；RISC-V和Loong的无TLSnofault入口保留，不等同于真实进入用户态。预期boot异常独立启动，按专用诊断验收；普通批次只在全部成员返回后输出整批完成。
+
+SMP 的 `task-stack-guard-page` 保留跨核创建与迁移，但按 QEMU profile 的串口
+所有权在主核 0 触发故障。先用 `ax_console_flush()` 排空说明输出，再屏蔽该核
+本地 IRQ，使普通 worker/IRQ 不能与紧急接管竞争；同步 page fault 仍可发生。
+紧急输出允许有界接管失败，不能靠增加重试预算、睡眠或放宽正则稳定该用例。
