@@ -49,7 +49,7 @@ mod tests {
 
     use super::ensure_target_with_rustup;
 
-    fn rustup_fixture(output: &str, status: i32) -> (TempDir, PathBuf) {
+    fn rustup_fixture(output: &str, status: i32) -> (TempDir, PathBuf, fs::File) {
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("rustup");
         let script = format!(
@@ -58,7 +58,13 @@ mod tests {
         );
         fs::write(&executable, script).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
-        (directory, executable)
+        // Model a writer retained by a concurrent child between fork and exec.
+        // On Linux, executing this inode while the writer lives hits ETXTBSY.
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&executable)
+            .unwrap();
+        (directory, executable, writer)
     }
 
     #[test]
@@ -70,12 +76,12 @@ mod tests {
             ("", 0, false),
             ("fixture-unknown-linux-musl\n", 7, false),
         ] {
-            let (_directory, executable) = rustup_fixture(output, status);
+            let (_directory, executable, _writer) = rustup_fixture(output, status);
             let result = ensure_target_with_rustup(target, true, &executable);
             assert_eq!(
                 result.is_ok(),
                 available,
-                "output={output:?}, status={status}"
+                "output={output:?}, status={status}, result={result:#?}"
             );
             let calls = fs::read_to_string(executable.with_extension("calls")).unwrap();
             assert_eq!(calls, "target list --installed\n");
@@ -85,9 +91,13 @@ mod tests {
     #[test]
     fn bare_hosts_keep_target_installation_and_propagate_failure() {
         for status in [0, 7] {
-            let (_directory, executable) = rustup_fixture("", status);
+            let (_directory, executable, _writer) = rustup_fixture("", status);
             let result = ensure_target_with_rustup("fixture-target", false, &executable);
-            assert_eq!(result.is_ok(), status == 0);
+            assert_eq!(
+                result.is_ok(),
+                status == 0,
+                "status={status}, result={result:#?}"
+            );
             let calls = fs::read_to_string(executable.with_extension("calls")).unwrap();
             assert_eq!(calls, "target add fixture-target\n");
         }
