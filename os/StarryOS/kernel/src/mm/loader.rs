@@ -663,8 +663,14 @@ struct ElfImage {
     elf: ELFHeaders<'this>,
 }
 
+#[derive(Clone, Copy)]
+enum ElfImageKind {
+    Main,
+    Interpreter,
+}
+
 impl ElfImage {
-    fn load(loc: PathHandle, minimum_header_size: usize) -> StarryResult<Result<Self, Vec<u8>>> {
+    fn load(loc: PathHandle, kind: ElfImageKind) -> StarryResult<Result<Self, Vec<u8>>> {
         // A retained inode can have new bytes after its previous execution.
         // Read its headers anew rather than treating path identity as content.
         let cache = CachedFile::get_or_create(loc)?;
@@ -672,10 +678,35 @@ impl ElfImage {
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;
         data.truncate(read);
+        let minimum_header_size = match kind {
+            ElfImageKind::Main => 0,
+            // Linux reads a complete native interpreter header before checking its format.
+            ElfImageKind::Interpreter => {
+                size_of::<xmas_elf::header::HeaderPt1>()
+                    + size_of::<xmas_elf::header::HeaderPt2_<xmas_elf::P64>>()
+            }
+        };
         if read < minimum_header_size {
             return Err(StarryError::UnexpectedEof);
         }
         match ElfImage::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
+            // Check the native ABI before the builder follows program-header offsets.
+            let header = xmas_elf::header::parse_header(data).map_err(map_elf_error)?;
+            let native_machine = cfg_select! {
+                target_arch = "x86_64" => xmas_elf::header::Machine::X86_64,
+                target_arch = "aarch64" => xmas_elf::header::Machine::AArch64,
+                target_arch = "riscv64" => xmas_elf::header::Machine::RISC_V,
+                target_arch = "loongarch64" => xmas_elf::header::Machine::Other(258),
+            };
+            if header.pt2.machine().as_machine() != native_machine
+                || (matches!(kind, ElfImageKind::Main)
+                    && !matches!(
+                        header.pt2.type_().as_type(),
+                        xmas_elf::header::Type::Executable | xmas_elf::header::Type::SharedObject
+                    ))
+            {
+                return Err(StarryError::InvalidExecutable);
+            }
             let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
             let range = builder.ph_range();
             if range.end as usize <= data.len() {
@@ -701,7 +732,7 @@ fn load_elf(
     view: &FsView<'_>,
 ) -> StarryResult<LoadResult> {
     // A main input can be a short shebang script rather than an ELF image.
-    let elf = match ElfImage::load(loc, 0)? {
+    let elf = match ElfImage::load(loc, ElfImageKind::Main)? {
         Ok(elf) => elf,
         Err(data) => return Ok(Err(data)),
     };
@@ -748,10 +779,10 @@ fn load_elf(
         let loc = view.resolve(ldso)?;
         check_executable_access(&loc, view.credentials())?;
         _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
-        // Linux reads a complete native ELF header before checking its format.
-        let header_size = size_of::<xmas_elf::header::HeaderPt1>()
-            + size_of::<xmas_elf::header::HeaderPt2_<xmas_elf::P64>>();
-        Some(ElfImage::load(loc, header_size)?.map_err(|_| StarryError::InvalidElfInterpreter)?)
+        Some(
+            ElfImage::load(loc, ElfImageKind::Interpreter)?
+                .map_err(|_| StarryError::InvalidElfInterpreter)?,
+        )
     } else {
         None
     };
