@@ -2,7 +2,7 @@ use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::c_int,
     hint::likely,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsView};
@@ -12,7 +12,7 @@ use axfs_ng_vfs::{
 };
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
-    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
+    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL, O_NONBLOCK},
     ioctl::TIOCSCTTY,
 };
 
@@ -456,10 +456,9 @@ pub struct Directory {
     // description. This is a sleepable mutex because filesystem reads may
     // block; dup/fork share the Directory and therefore this position.
     pub(crate) position: Mutex<DirectoryPosition>,
-    /// Original open flags (used by fd_is_path / sys_fchmodat to detect
-    /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
-    /// must reject fchmod just like O_PATH on a regular file).
-    open_flags: u32,
+    /// Flags of this open description. Mutable status bits are shared by
+    /// dup/fork and independent across opens; path and access bits stay fixed.
+    open_flags: AtomicU32,
     /// Whether this is the original handle returned by fsmount(2).
     /// Reopening it as a normal directory deliberately drops this authority.
     detached_mount_handle: bool,
@@ -480,7 +479,7 @@ impl Directory {
                 cursor: DirectoryCursor::START,
                 read_state: None,
             }),
-            open_flags,
+            open_flags: AtomicU32::new(open_flags),
             detached_mount_handle: false,
         }
     }
@@ -492,7 +491,7 @@ impl Directory {
                 cursor: DirectoryCursor::START,
                 read_state: None,
             }),
-            open_flags,
+            open_flags: AtomicU32::new(open_flags),
             detached_mount_handle: true,
         })
     }
@@ -508,6 +507,14 @@ impl Directory {
 
     pub(crate) fn is_detached_mount_handle(&self) -> bool {
         self.detached_mount_handle
+    }
+
+    fn set_status_flag(&self, flag: u32, enabled: bool) {
+        if enabled {
+            self.open_flags.fetch_or(flag, Ordering::AcqRel);
+        } else {
+            self.open_flags.fetch_and(!flag, Ordering::AcqRel);
+        }
     }
 }
 
@@ -540,7 +547,25 @@ impl FileLike for Directory {
     }
 
     fn open_flags(&self) -> u32 {
-        self.open_flags
+        self.open_flags.load(Ordering::Acquire)
+    }
+
+    fn nonblocking(&self) -> bool {
+        self.open_flags() & O_NONBLOCK != 0
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> StarryResult {
+        self.set_status_flag(O_NONBLOCK, nonblocking);
+        Ok(())
+    }
+
+    fn append(&self) -> bool {
+        self.open_flags() & O_APPEND != 0
+    }
+
+    fn set_append(&self, append: bool) -> StarryResult {
+        self.set_status_flag(O_APPEND, append);
+        Ok(())
     }
 
     fn path(&self) -> Cow<'_, str> {

@@ -828,9 +828,11 @@ pub fn sys_fcntl(
             if flags & O_PATH != 0 {
                 return Ok((flags & (O_PATH | O_DIRECTORY | O_NOFOLLOW)) as _);
             }
-            // Keep the original open arguments for endpoint callbacks; only
-            // the userspace status projection omits creation and fd flags.
-            let mut ret = flags & !(O_APPEND | O_CLOEXEC | O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
+            // Append and nonblocking come from their live description state.
+            // Endpoint callbacks retain the original open arguments; creation
+            // and descriptor flags stay out of the userspace projection.
+            let mut ret = flags
+                & !(O_APPEND | O_NONBLOCK | O_CLOEXEC | O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
             if f.nonblocking() {
                 ret |= O_NONBLOCK;
             }
