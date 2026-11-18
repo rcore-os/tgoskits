@@ -496,6 +496,15 @@ impl FileTable {
         Some(fd)
     }
 
+    fn reserve_below(&mut self, limit: u64) -> StarryResult<usize> {
+        let fd = self.reserve().ok_or(StarryError::TooManyOpenFiles)?;
+        if fd as u64 >= limit {
+            self.release_reserved(fd);
+            return Err(StarryError::TooManyOpenFiles);
+        }
+        Ok(fd)
+    }
+
     fn install_reserved(
         &mut self,
         fd: usize,
@@ -709,17 +718,25 @@ impl FileDescriptorReservation {
             .proc_data
             .rlimit_current(RLIMIT_NOFILE);
         let table = current_fd_table();
-        let fd = {
-            let mut slots = table.write();
-            let fd = slots.reserve().ok_or(StarryError::TooManyOpenFiles)?;
-            // The bitmap chooses the lowest free number. Keep FIFO's fd-number
-            // limit without allocating a separate reservation under the raw lock.
-            if fd as u64 >= limit {
-                slots.release_reserved(fd);
-                return Err(StarryError::TooManyOpenFiles);
-            }
-            fd
-        };
+        let fd = table.write().reserve_below(limit)?;
+        Ok(Self {
+            table,
+            fd: Some(fd),
+        })
+    }
+
+    /// Tries to reserve below the descriptor number limit in a selected table.
+    /// The inline bitmap does not allocate or expose a file under the guard.
+    /// Call after capture/publication guards have ended; retirement can destroy
+    /// owners retained by the supplied table.
+    pub(crate) fn try_in_table(
+        table: Arc<RawSpinRwLock<FileTable>>,
+        limit: u64,
+    ) -> StarryResult<Self> {
+        let fd = table
+            .try_write()
+            .ok_or(StarryError::WouldBlock)?
+            .reserve_below(limit)?;
         Ok(Self {
             table,
             fd: Some(fd),
@@ -738,6 +755,22 @@ impl FileDescriptorReservation {
             drop(descriptor);
             panic!("prepared file descriptor lost its reservation before install");
         }
+    }
+
+    /// Tries publication in the original table, then returns the installed fd.
+    /// On contention, normal cleanup releases the unpublished reservation.
+    /// Cleanup can take the table lock and retire endpoint owners, so callers
+    /// must have released their capture/publication guards.
+    pub(crate) fn try_install(mut self, descriptor: FileDescriptor) -> StarryResult<c_int> {
+        let mut slots = self.table.try_write().ok_or(StarryError::WouldBlock)?;
+        let fd = self.fd.take().expect("fd reservation installed twice");
+        let install = slots.install_reserved(fd, descriptor);
+        drop(slots);
+        if let Err(descriptor) = install {
+            drop(descriptor);
+            panic!("prepared file descriptor lost its reservation before install");
+        }
+        Ok(fd as c_int)
     }
 }
 

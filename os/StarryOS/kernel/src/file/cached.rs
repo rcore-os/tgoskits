@@ -6,7 +6,7 @@ use core::ffi::c_int;
 use axfs_ng_vfs::PathHandle;
 use scope_local::Scope;
 
-use super::{Directory, FD_TABLE, File, FileDescriptor, FileLike, FileTable};
+use super::{Directory, FD_TABLE, File, FileDescriptorReservation, FileTable};
 use crate::{StarryError, StarryResult, sync::RawSpinRwLock};
 
 /// The original table and fd-number limit, without a task-local resample.
@@ -47,25 +47,7 @@ impl CachedFileTable {
         Ok(path.clone())
     }
 
-    pub(crate) fn install(&self, file: Arc<dyn FileLike>, cloexec: bool) -> StarryResult<c_int> {
-        let mut table = self.table.try_write().ok_or(StarryError::WouldBlock)?;
-        let fd = table.reserve().ok_or(StarryError::TooManyOpenFiles)?;
-        if fd as u64 >= self.limit {
-            table.release_reserved(fd);
-            return Err(StarryError::TooManyOpenFiles);
-        }
-        // Inline reservation and installation share this one guard, so no
-        // close or replacement can consume the reservation between them.
-        let installed = table.install_reserved(
-            fd,
-            FileDescriptor {
-                inner: file.clone(),
-                cloexec,
-            },
-        );
-        assert!(installed.is_ok(), "cache-only fd reservation disappeared");
-        // The parameter retains the file through unlock, including failures.
-        drop(table);
-        Ok(fd as c_int)
+    pub(crate) fn reserve(&self) -> StarryResult<FileDescriptorReservation> {
+        FileDescriptorReservation::try_in_table(self.table.clone(), self.limit)
     }
 }

@@ -503,7 +503,7 @@ pub fn sys_openat2(
     }
     use ax_fs_ng::{LookupPolicy, LookupRestrictions, LookupScope};
     let scope = if how_value.resolve & RESOLVE_BENEATH as u64 != 0 {
-        if path.starts_with('/') {
+        if path.starts_with('/') && how_value.resolve & RESOLVE_CACHED as u64 == 0 {
             return Err(StarryError::CrossesDevices);
         }
         LookupScope::Beneath
@@ -555,14 +555,21 @@ fn open_cached_path(
     flags: u32,
     policy: ax_fs_ng::LookupPolicy,
 ) -> StarryResult<isize> {
+    use ax_fs_ng::LookupScope;
     use axfs_ng_vfs::{CachedLookup, CachedLookupContext, CachedLookupOptions};
 
+    let binding = current.as_thread().try_cached_fs_binding()?;
+    let reservation = binding.files.reserve()?;
+    // Linux reserves before path_init, whose absolute BENEATH rejection also
+    // precedes dirfd acquisition. All capture guards have already ended here.
+    if policy.scope == LookupScope::Beneath && path.starts_with('/') {
+        return Err(StarryError::CrossesDevices);
+    }
     let readonly_flags = O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_LARGEFILE;
     if flags & O_PATH == 0 && (flags & O_ACCMODE != O_RDONLY || flags & !readonly_flags != 0) {
         // Extra open policies require their own cache-only admission.
         return Err(StarryError::WouldBlock);
     }
-    let binding = current.as_thread().try_cached_fs_binding()?;
     let start = if dirfd == AT_FDCWD {
         binding.fs.cwd().clone()
     } else {
@@ -590,9 +597,11 @@ fn open_cached_path(
     if flags & O_NONBLOCK != 0 {
         file.set_nonblocking(true)?;
     }
-    binding
-        .files
-        .install(file, flags & O_CLOEXEC != 0)
+    reservation
+        .try_install(FileDescriptor {
+            inner: file,
+            cloexec: flags & O_CLOEXEC != 0,
+        })
         .map(|fd| fd as isize)
 }
 
