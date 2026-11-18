@@ -11391,5 +11391,367 @@
       "scope": "Per-command RUST_LOG=info,uboot_shell=debug only; existing runner, cache, board type, timeout, command body and assertions retained; no other active lease reset; no root cause or board runtime repair claimed."
     },
     "remaining": "New head remote CI, original LoongArch stalls and the pre-kernel physical-board initialization incident still need evidence; local ELF validation is separately tied to 710411b5af."
+  },
+  "ci_5e81dea930_terminal_and_uboot_logging": {
+    "recorded_at": "2026-11-18T09:35:35.389129+00:00",
+    "ci_head": "5e81dea930f16fbbe71040de60617df9546b1431",
+    "counts": {
+      "SUCCESS": 44,
+      "SKIPPED": 5
+    },
+    "snapshot": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-terminal.json",
+      "sha256": "bfb1d3d11c7b422b03cc3b2047a7770145efc6939cb339ad61f55b101e54f698",
+      "bytes": 15016
+    },
+    "runs": {
+      "44266403464": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-run-44266403464.json",
+        "sha256": "dfba7f56bcfdbb7eb80c1bcf68bd604f135a7a3a1cb31718fea375e61972cba8",
+        "bytes": 12686
+      },
+      "44266412320": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-run-44266412320.json",
+        "sha256": "5bfd2267ab0267a8576e67e3c5a76094c8c9cc464d01f2f17d882952aeefd7b1",
+        "bytes": 12675
+      }
+    },
+    "duplicate_skips": "Five pull_request wrapper checks intentionally skipped; same-head push matrix completed successfully.",
+    "std": {
+      "packages": 88,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-std.log",
+        "sha256": "b5086cb4478cb7e164213118d6407e35058c72ef96cbcdcd6f0466a663d5c9ba",
+        "bytes": 1092450
+      }
+    },
+    "clippy": {
+      "checks": 83,
+      "failed": 0,
+      "skipped": 0,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-clippy.log",
+        "sha256": "d19c4eec3d5623a500aa666dbc1a62934b5ac6684d43846d48205367a387c320",
+        "bytes": 327893
+      }
+    },
+    "starry": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-starry-x86_64.log",
+          "sha256": "ed1401cebc6a485a864643c8cf5dc6e61134639f7d1434156cb799615ec437e7",
+          "bytes": 2302430
+        },
+        "system_summaries": [
+          [
+            1,
+            1,
+            0
+          ],
+          [
+            541,
+            541,
+            0
+          ]
+        ]
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-starry-riscv64.log",
+          "sha256": "94cb009707192e58dc4f62b03718fe65f773a10092cfa7c6218a95f6f16eec96",
+          "bytes": 2164395
+        },
+        "system_summaries": [
+          [
+            538,
+            538,
+            0
+          ]
+        ]
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-starry-loongarch64.log",
+          "sha256": "f12f462c57f975d8fd394a81dd9eefdfd9b4882ada5160a8717b9c224dc10458",
+          "bytes": 876643
+        },
+        "system_summaries": [
+          [
+            538,
+            538,
+            0
+          ]
+        ]
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-starry-aarch64.log",
+          "sha256": "3ba8fcf2256b83d3c47f4cfa5bb62ceed98b2048514318470d09004b9ac2c807",
+          "bytes": 2197573
+        },
+        "system_summaries": [
+          [
+            513,
+            513,
+            0
+          ],
+          [
+            23,
+            23,
+            0
+          ],
+          [
+            1,
+            1,
+            0
+          ],
+          [
+            1,
+            1,
+            0
+          ]
+        ]
+      }
+    },
+    "axvisor_loongarch64": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-axvisor-loongarch64.log",
+        "sha256": "2ee05438d9135e28b7658d6c1b578f565aac94aedbe7a7e85813ef580ed84c68",
+        "bytes": 212854
+      },
+      "cases_passed": "1/1",
+      "limit": "Successful run; no failing QMP state explains earlier stalls."
+    },
+    "physical_board": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-5e81dea930-axvisor-orangepi-uvc.log",
+        "sha256": "de38f0a0762c9d8d2f30051f1dc3c80c2b262e9e06e946595031e3005bc9f008",
+        "bytes": 395948
+      },
+      "allocation_sequence": [
+        "OrangePi-5-Plus-1",
+        "OrangePi-5-Plus-1",
+        "OrangePi-5-Plus-3",
+        "OrangePi-5-Plus-4"
+      ],
+      "shell_ready_count": 4,
+      "applications": [
+        {
+          "board_id": "OrangePi-5-Plus-1",
+          "target": "native Starry",
+          "effective_fps": 29.89,
+          "loopback_tx": 401,
+          "loopback_errors": 0
+        },
+        {
+          "board_id": "OrangePi-5-Plus-3",
+          "target": "Axvisor Linux",
+          "effective_fps": 29.92,
+          "loopback_tx": 401,
+          "loopback_errors": 0
+        },
+        {
+          "board_id": "OrangePi-5-Plus-4",
+          "target": "Axvisor Starry",
+          "effective_fps": 29.88,
+          "loopback_tx": 401,
+          "loopback_errors": 0
+        }
+      ],
+      "limit": "New Axvisor Linux success used board 3; earlier pre-kernel timeout used board 1 and remains unexplained."
+    },
+    "scope": "Published 5e81dea930 only; does not cover later unpublished source or complete the overall VFS plan."
+  },
+  "cached_resolution_ordinary_open_completion": {
+    "recorded_at": "2026-11-18T09:40:35.074863+00:00",
+    "baseline_source": "7feca074ed5494d31a72d6eee0afe394ccd41d68",
+    "implementation_source": "434a253cb227535e79ba740bbfc752cb1a2626ad",
+    "validation_source": "187b8e3dfe948051adaeecdfdaf74984c64a0e11",
+    "linux_source_baseline": "v7.1/8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+    "linux_runtime": "6.8.0-149-generic; host oracle, not a v7.1 runtime",
+    "linux_semantics": "complete_walk clears LOOKUP_CACHED before unlazy; do_open then applies ordinary may_open/vfs_open. Closed cache-only pathname lookup remains separate from completion on the retained inode.",
+    "source_sha256": {
+      "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs": "b0958fa35f4de7ce5a4dbfbdc042389619ba612358195f6279247f8eebb3f8e5",
+      "fs/ax-fs-ng/src/file/open.rs": "ca4544d1acee4481a1d30b9adf32b5aec60fbf7fa4a8d8be45066fe3eaba8e2b",
+      "fs/ax-fs-ng/src/file/cache/mod.rs": "1529fc1b17991818b92b0a2c8a3a555aef5d24d5a36ca5798caf2b07e5586a6a",
+      "fs/ax-fs-ng/src/file/handle/mod.rs": "c13a7d2517b8a11447329d67cd4c299b998be1f58fc078622a44a83811eef690"
+    },
+    "frozen_c": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-final.c",
+      "sha256": "66bbeabddccdc86cdd84341713cd9ad5aad48115fdf17269cc8fc66e68d6c910",
+      "bytes": 36264
+    },
+    "linux": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-linux.log",
+        "sha256": "dd11defbe54a49bfe21ce446b556a55d131bdc9b4b7cbc726ed24875acb78f53",
+        "bytes": 22043
+      },
+      "exit": 0
+    },
+    "before": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-before.log",
+        "sha256": "fb04684b2163972deabe48d2963188c889a04d6e3a96770f75aba10f81a31ef0",
+        "bytes": 50320
+      },
+      "exit": 1,
+      "failures": 1,
+      "elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-7feca074ed-cached-open-completion-before.elf",
+        "sha256": "ad4c20c33be4d7fedb31f787a0c86dd1f7671e96af7ffdd33c2f3364538d7749",
+        "bytes": 218321880
+      }
+    },
+    "after": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-after.log",
+        "sha256": "eeb5b0f0aec77201e9534a6624b9225093df57b05d94eb0218be26586df2fe41",
+        "bytes": 52296
+      },
+      "exit": 0,
+      "case": "qemu/system/test-path-lookup-ownership",
+      "arch": "x86_64",
+      "summary": "1/1",
+      "elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-187b8e3dfe.elf",
+        "sha256": "dc904daec6a3ef5e37e18c3320c73866936ffe587c113f3780e8a1da20e8fe86",
+        "bytes": 218004400
+      }
+    },
+    "clippy": {
+      "source": "434a253cb227535e79ba740bbfc752cb1a2626ad",
+      "checks": 78,
+      "failed": 0,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-clippy.log",
+        "sha256": "1f588a056869ac9470ae02f40681a80c3f00b4b5bbf8940d08c8bd2ac4f00020",
+        "bytes": 72267
+      },
+      "equivalence": "All four affected production files are byte-identical at the final validation source."
+    },
+    "std": {
+      "source": "187b8e3dfe948051adaeecdfdaf74984c64a0e11",
+      "packages": 18,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-std.log",
+        "sha256": "1a70ce7a1fc75ed4f8a669fa80bbb9ff184611cc69aef13b5f8daa3b08e32d82",
+        "bytes": 312795
+      },
+      "exit": 0,
+      "environment": "Local PATH selects isolated e2fsprogs 1.47.3; host tools are unchanged."
+    },
+    "format": {
+      "logs": [
+        {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ax-block-stop-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ],
+      "exit": 0
+    },
+    "removed_consumer_audit": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-removed-consumer-audit.log",
+      "sha256": "cbbdf8c4926e095458038a04e67d328b3f420d839cfc2815a733bb93e7085d17",
+      "bytes": 60
+    },
+    "ax_block_fixture": {
+      "source": "187b8e3dfe948051adaeecdfdaf74984c64a0e11",
+      "production_change": false,
+      "contract": "Before releasing blocked shutdown exactly one stopper returns Io; after release the join owner returns Ok. Which caller takes the slot is unspecified.",
+      "controlled_diagnostic": {
+        "before": {
+          "report": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ax-block-stop-order-before.json",
+            "sha256": "256e0d45441bf058975adbc52f17cafa824bbcaf2cb8713d4f4844fa64213d20",
+            "bytes": 605
+          },
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ax-block-stop-order-before.log",
+            "sha256": "eb1f96796fae5a6d78169451c73ecb4877cf9a5646982493d82641d2fd847a87",
+            "bytes": 3549
+          },
+          "inferior_exit": 101,
+          "binary": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-host-tests/ax-block-434a253cb2-stop-fixture-before",
+            "sha256": "e26b58f6dea51d871cf9eb94644010c57fb08adca4da4107ddd72d229df66bc9",
+            "bytes": 65898288
+          }
+        },
+        "after": {
+          "report": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ax-block-stop-order-after.json",
+            "sha256": "cc0e45342edf1c6897d66eca7aa79206f4afd82815a68bfa76245f3feedfc555",
+            "bytes": 602
+          },
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ax-block-stop-order-after.log",
+            "sha256": "fd4bb09d89c5b60c0069fe92b3cdb20b433fec269ee2b0b069e988a71301af1b",
+            "bytes": 3050
+          },
+          "inferior_exit": 0,
+          "binary": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-host-tests/ax-block-187b8e3dfe-stop-fixture-after",
+            "sha256": "a17927cd372ec1bddd4ee8479ac5c90efd3887805b131d9ee0d70cce9f9a4f5d",
+            "bytes": 65898216
+          }
+        }
+      },
+      "driver": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drive-ax-block-stop-order.py",
+        "sha256": "57726c00f5dc11fd8b759852507d9105a14d06278141f0563ee6abe4c8dc1106",
+        "bytes": 3993
+      },
+      "clippy": {
+        "checks": 6,
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ax-block-stop-clippy.log",
+          "sha256": "545fb83cd84b9d6db136fcf2ca5a86c012eeaee5beca601fe1d3be7118b90851",
+          "bytes": 4987
+        }
+      },
+      "std": "Existing 144-test component suite, both profiles passed; no new tests or production scheduling hooks."
+    },
+    "first_std_failure": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-first-std.log",
+        "sha256": "e2c29e963fdffb82da994b0350a842cb55bcf6189a1e9f35bfcb5e4e84228341",
+        "bytes": 311552
+      },
+      "exit": 1,
+      "causes": [
+        "Host e2fsprogs 1.46.5 rejects required fixture flags.",
+        "Old ax-block test assumes the first stop caller must own the join handle."
+      ]
+    },
+    "initial_policy_review": {
+      "source": "07613913b2b1e5cff11faf3dd975c71bc44acffe",
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-initial-clippy.log",
+        "sha256": "db4923d19549a5a789ffa886b64016f6126274d54a8afa2312fa4d2bd6f1eb55",
+        "bytes": 81066
+      },
+      "exit": 143,
+      "interruption": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-open-completion-policy-review-interrupt.json",
+        "sha256": "2fc55143908c7623ff05efced834693a8d66c168be29a0e14179200710c657a9",
+        "bytes": 304
+      },
+      "scope": "Unpublished admission was too broad; owned validation was interrupted before std/QEMU and amended to retain unverified open policies."
+    },
+    "test_counts": {
+      "system_programs_added": 0,
+      "default_boots_added": 0,
+      "std_tests_added": 0,
+      "manual_qemu_boots": 2,
+      "existing_component_test_rewritten": 2
+    },
+    "remaining": "Extra open policies, endpoints, native cache metadata, dynamic links and atime, controlled task/fd publication, other architectures for this new writer input, independent domain review and final-head CI remain."
   }
 }
