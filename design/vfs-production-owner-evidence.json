@@ -9974,5 +9974,138 @@
       "bytes": 13178672
     },
     "coverage": "Standard tests selected axdevice, axvm, virtualization-tests and axbuild; axbuild has 512 passing units. axbuild Clippy is 1/1; format check passed. No new test program or QEMU startup was added to defaults. Final published-head CI and the remaining VFS plan are still required."
+  },
+  "description_status_transitions": {
+    "before_source": "e6a73d635836afffc1824c876781d673061fc26a",
+    "after_source": "5451b16b078a74ab33f490d6987987d3f2653cc3",
+    "test_byte_identical_before_and_after": true,
+    "test_source": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/description-status-main.c",
+      "sha256": "f310c495d8dada26c278ecedf5b3c5147f61661d1bfb7fc2f0a7990c0fde7061",
+      "bytes": 30404
+    },
+    "linux_binary": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/description-status-linux",
+      "sha256": "68f9ffc7733e33327d740492d2ca555aa03ed2d35d32ebe42e46dad02ad26157",
+      "bytes": 940088
+    },
+    "source_files": {
+      "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c",
+        "sha256": "f310c495d8dada26c278ecedf5b3c5147f61661d1bfb7fc2f0a7990c0fde7061",
+        "bytes": 30404
+      },
+      "os/StarryOS/kernel/src/file/fs.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/os/StarryOS/kernel/src/file/fs.rs",
+        "sha256": "34811ce44f22192cea6103397d147c6c1eedb0dd6cf47f7e741baa0c96fa71ae",
+        "bytes": 19683
+      },
+      "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/os/StarryOS/kernel/src/syscall/fs/fd_ops.rs",
+        "sha256": "066f9db7caa54e5f27d7fa7f1e80ba5eef0efa4dfca64c17631aa4cbba51f911",
+        "bytes": 35694
+      }
+    },
+    "checks": {
+      "linux": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/description-status-linux.log",
+          "sha256": "afb0a934570203bdb72da38e486399f47218e0f8b14bf863ecb5eda2a4a501b4",
+          "bytes": 11112
+        },
+        "outer_exit": 0,
+        "source": "e6a73d635836afffc1824c876781d673061fc26a"
+      },
+      "before": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/description-status-before.log",
+          "sha256": "1e9d66717eca4868ed35eb886a62edaa7a2282f23326b7b01c70cd1de2565502",
+          "bytes": 40579
+        },
+        "outer_exit": 1,
+        "source": "e6a73d635836afffc1824c876781d673061fc26a"
+      },
+      "after": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/description-status-after.log",
+          "sha256": "c57e4ad6714c245970fd48a3c56ee2637ffe96cc5a551a65af002770fe8fa8fd",
+          "bytes": 40439
+        },
+        "outer_exit": 0,
+        "source": "5451b16b078a74ab33f490d6987987d3f2653cc3"
+      },
+      "std": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/description-status-std.log",
+          "sha256": "1833dbc9014307cabe828846be9286bc481c83507d9134f7db915e293c02ee91",
+          "bytes": 38591
+        },
+        "outer_exit": 0,
+        "source": "5451b16b078a74ab33f490d6987987d3f2653cc3"
+      },
+      "clippy": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/description-status-clippy.log",
+          "sha256": "b3849fab5318549e4dbf50276a9dc66128f71c16356604518be8e934bde968fa",
+          "bytes": 69349
+        },
+        "outer_exit": 0,
+        "source": "5451b16b078a74ab33f490d6987987d3f2653cc3"
+      },
+      "format": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/description-status-format.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        "outer_exit": 0,
+        "source": "5451b16b078a74ab33f490d6987987d3f2653cc3"
+      }
+    },
+    "before_failures": [
+      "FAIL: CACHED file mutable status is shared only by dup state=0 set=0 status=34816/34816 expected=32768 independent=32768/32768",
+      "FAIL: CACHED file mutable status is shared only by dup state=1024 set=0 status=35840/35840 expected=33792 independent=32768/32768",
+      "FAIL: CACHED file mutable status is shared only by dup state=0 set=0 status=34816/34816 expected=32768 independent=32768/32768",
+      "FAIL: CACHED directory mutable status is shared only by dup state=0 set=0 status=100352/100352 expected=98304 independent=100352/100352",
+      "FAIL: CACHED directory mutable status is shared only by dup state=1024 set=0 status=100352/100352 expected=99328 independent=100352/100352",
+      "FAIL: CACHED directory mutable status is shared only by dup state=3072 set=0 status=100352/100352 expected=101376 independent=100352/100352",
+      "FAIL: CACHED directory mutable status is shared only by dup state=0 set=0 status=100352/100352 expected=98304 independent=100352/100352",
+      "FAIL: ordinary directory mutable status is shared only by dup state=0 set=0 status=100352/100352 expected=98304 independent=100352/100352",
+      "FAIL: ordinary directory mutable status is shared only by dup state=1024 set=0 status=100352/100352 expected=99328 independent=100352/100352",
+      "FAIL: ordinary directory mutable status is shared only by dup state=3072 set=0 status=100352/100352 expected=101376 independent=100352/100352",
+      "FAIL: ordinary directory mutable status is shared only by dup state=0 set=0 status=100352/100352 expected=98304 independent=100352/100352"
+    ],
+    "before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-e6a73d6358-description-status-baseline.elf",
+      "sha256": "7cde0919b09a3ee51544f5383b5eda59357890d03b4102ead018c7c1c89b371d",
+      "bytes": 218598744
+    },
+    "after_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-5451b16b07.elf",
+      "sha256": "2f7118a7e5fcc7f017305136e8dc883ab436105be0bd4c68e5733d470a3fe3f1",
+      "bytes": 218054008
+    },
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "host_kernel": "6.8.0-149-generic",
+      "functions": [
+        "setfl",
+        "do_fcntl",
+        "do_dentry_open"
+      ]
+    },
+    "ownership": {
+      "projection": "F_GETFL removes the original append/nonblocking bits and rebuilds them from current description owners. File keeps its original arguments for endpoint callbacks.",
+      "directory": "Directory owns one AtomicU32 flag word. Its two status setters update only the chosen mutable bit. Existing Arc sharing preserves dup/fork identity; independent constructors create separate words. No parallel registry or second raw flag owner.",
+      "producer_audit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/description-status-design-notes.md",
+        "sha256": "b9704997e994c055c522274b8405dbf4f9d1f99db05b4bab6f4dc637290ea622",
+        "bytes": 2861
+      }
+    },
+    "runtime": "Same C exercises ordinary/cached File and Directory; all four bit combinations, dup sharing, independent opens, fd-local CLOEXEC, restoration, and the original data/cursor/directory/mount-reference assertions. No new Rust unit, system program or default QEMU startup.",
+    "table_rows": 212,
+    "retained_warnings": "The earlier cached-fd Clippy already contains Cargo unused_dependencies for axtest/sg200x-bsp in cfg-limited profiles. Upstream future-compatibility diagnostics remain visible. No lint allow or fake use was added.",
+    "remaining": "This proves sequential two-bit state, not whole-command multi-bit concurrency, O_PATH fcntl command admission, FASYNC, O_DIRECT/O_NOATIME policy, specific physical device I/O, or complete current-head CI."
   }
 }

@@ -665,3 +665,46 @@ Linux 夹具把私有 tmpfs 明确设为 MS_NOATIME，并普通预热链接名�
 独立保留，不作为产品红绿；该条件不证明 Starry 的 atime/挂载时间策略。
 Kernel 一包标准库、四目标 Clippy 72/72 和三处 include-backed 格式检查通过，
 记录为 cached_fd_admission。没有新增 Rust 单元、系统程序或默认启动。
+
+## 19. 打开描述的可变状态
+
+5451b16b07 从实际状态所有者投影 O_NONBLOCK，避免原始打开参数使清除操作
+失效。Directory 在同一打开描述的 AtomicU32 中保存 O_APPEND/O_NONBLOCK；
+dup 保留原 Arc，独立打开分别构造状态。相同 C 在 Linux 通过，e6a73d6358
+旧 Starry 稳定失败 11 项，修后实际 x86 QEMU 为 1/1。
+
+### 19.1 文件与目录的状态
+
+原路径旅程遍历两位的全部状态，经 dup 修改并从原描述和副本观察，同时
+确认另一独立打开不变。随后恢复初始状态，继续原有数据、位置、枚举和卸载
+引用断言。这里不把其他状态标志或并发 F_SETFL 的整体原子性当作已经证明。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| openat/目录状态所有者；x86_64 257；其余三架构 56 | v7.1 [do_dentry_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L963) | 每次目录打开拥有独立状态；随后设置或清除两位不影响另一打开 | sys_openat → add_to_fd → Directory::new → per-description AtomicU32 | 部分正确 | Linux/x86 普通目录实际状态切换及独立打开隔离通过；其他目标的本轮运行待补 |
+| openat2/CACHED 目录状态所有者；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1182)、[do_dentry_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L963) | 缓存目录打开仍生成独立打开描述，保留初始非阻塞位及以后可变状态 | captured binding/reservation → open_cached_path → Directory::new → original-table try_install | 部分正确 | Linux/x86 缓存目录实际切换、另一打开不变及后续 getdents 通过；完整缓存策略和其他目标待补 |
+| fcntl/F_GETFL 普通及缓存 File 的可变位；x86_64 72；其余三架构 25 | v7.1 [F_GETFL](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L473) | 清除初始 O_NONBLOCK 后不能由旧打开参数重新返回；访问方式和大文件位保留 | sys_fcntl → get_file_like → mask original O_APPEND/O_NONBLOCK → File.nonblock/append | 部分正确 | 相同 C 的缓存文件旧实现失败三项；Linux/5451b16b07 x86 的全部两位状态、访问位、共享及独立打开通过；其他目标待补 |
+| fcntl/F_SETFL 普通及缓存 File 的两位后置条件；x86_64 72；其余三架构 25 | v7.1 [setfl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L38) | 返回成功后的 GETFL 反映 O_APPEND/O_NONBLOCK，原访问方式不变 | sys_fcntl.F_SETFL → retained File → existing set_nonblocking/set_append → current-status projection | 部分正确 | Linux/x86 经 dup 设置四种状态后，原 fd 与副本一致，独立打开不变；其他 flags、错误顺序、整体并发原子性及目标待补 |
+| fcntl/F_GETFL 普通及缓存 Directory 的可变位；x86_64 72；其余三架构 25 | v7.1 [F_GETFL](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L473) | 目录的可变位也属于打开描述；O_DIRECTORY 和大文件位不能随切换消失 | sys_fcntl → Directory.open_flags/nonblocking/append → same AtomicU32 | 部分正确 | 同一 C 的两类目录各有四项旧失败；Linux/修后 x86 全部状态、独立打开及恢复通过；其他目标待补 |
+| fcntl/F_SETFL 普通及缓存 Directory 的两位后置条件；x86_64 72；其余三架构 25 | v7.1 [setfl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L38) | 目录不能用空 setter 假装提交成功；更改与 dup 共享，不改变另一打开 | sys_fcntl.F_SETFL → Directory.set_nonblocking/set_append → set_status_flag atomic RMW | 部分正确 | Linux/x86 覆盖置位、清除、同时置位及恢复；O_PATH 命令门禁、其他 flags 与并发多位提交尚未证明 |
+
+### 19.2 共享与委托
+
+dup 和 F_GETFD 的实际链路对文件与目录相同，分别保留打开描述和 fd 表项
+状态。采用 retained File 的设备包装会经过相同投影，但本轮没有在这些具体
+端点执行状态切换，下面按各自辅助链保留证据缺口。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| dup/文件和目录状态共享；x86_64 32；其余三架构 23 | v7.1 [dup](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/file.c) | 新 fd 指向同一打开描述，设置状态可从原 fd 观察，独立打开保持隔离 | sys_dup → dup_fd → get_file_like/add_file_like → same Arc<FileLike> | 部分正确 | Linux/x86 对普通及缓存文件、普通及缓存目录均实际经副本设置并从两端查询；其他目标与受控 fd 替换竞争待补 |
+| fcntl/F_GETFD 文件和目录的独立标志；x86_64 72；其余三架构 25 | v7.1 [do_fcntl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c) | 状态变化不能修改原表项 FD_CLOEXEC；dup 的新 fd 保持自己的描述符标志 | sys_fcntl.F_GETFD → current_fd_table.get(fd).cloexec，独立于 File/Directory 状态 | 部分正确 | Linux/x86 四类旅程切换后原描述符标志保持，dup 为零；本轮其他目标及 exec 关闭行为待补 |
+| fcntl/F_GETFL MountTableFile 的非阻塞清除；x86_64 72；其余三架构 25 | v7.1 [F_GETFL](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L473) | 委托的实际打开描述负责非阻塞位，不能被最初参数重新补回 | sys_fcntl projection → MountTableFile.open_flags/nonblocking → retained File | 无法确认 | 委托调用链和通用 File 的红绿已核对；未在实际挂载表描述执行本轮状态旅程 |
+| fcntl/F_GETFL UsbDeviceFile 的非阻塞清除；x86_64 72；其余三架构 25 | v7.1 [F_GETFL](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L473) | USB 打开描述保留自身当前非阻塞状态 | sys_fcntl projection → UsbDeviceFile.open_flags/nonblocking → base File | 无法确认 | 状态委托已核对；没有以实际 USB lease 运行本轮设置、清除及 I/O 后置条件 |
+| fcntl/F_GETFL V4l2File 的非阻塞清除；x86_64 72；其余三架构 25 | v7.1 [F_GETFL](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L473) | 视频打开描述的状态与 dup 共享，独立 session 不受影响 | sys_fcntl projection → V4l2File.open_flags/nonblocking → base File | 无法确认 | uvc 功能组合参与静态检查；没有以真实视频 session 执行本轮状态及排队行为 |
+| fcntl/F_GETFL Card1File 的非阻塞清除；x86_64 72；其余三架构 25 | v7.1 [F_GETFL](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L473) | 当前非阻塞状态由实际设备打开描述持有 | sys_fcntl projection → Card1File.open_flags/nonblocking → base File | 无法确认 | rknpu 功能组合参与静态检查；本轮没有实际 NPU 打开描述的直接运行 |
+| fcntl/F_GETFL RgaFile 的非阻塞清除；x86_64 72；其余三架构 25 | v7.1 [F_GETFL](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fcntl.c#L473) | 图形加速打开描述返回自己当前的状态，不能使用原参数代替 | sys_fcntl projection → RgaFile.open_flags/nonblocking → base File | 无法确认 | rga 功能组合参与静态检查；没有实际图形请求 session 的本轮运行 |
+
+其余原始标志生产者已核对：Socket/PacketSocket/NetlinkSocket/DmaBuf 的原始
+标志不含非阻塞位；Pipe 已主动去掉它；MqDescriptor、Card0File 和 DrmKapiFile
+有自己的实时标志及 getter。默认 open_flags 为零的对象没有这个原始位。
+这些事实不代替各端点 I/O、异步通知、O_PATH 命令门禁或整体并发原子性证明。

@@ -1623,3 +1623,24 @@ ec7787ba4d877b2cca0af335d97e9fc3a1227859bb31cf9a8d955cdda81fd372。
 格式检查通过。记录键为 ci_host_fixture_lifecycle，既有 68 项生产记录保持
 原值，六列表仍为 199 行。没有新增默认启动；最终发布 head 的 CI 和 VFS
 完整计划仍须继续完成。
+
+### 9.62 描述状态的共享与隔离
+
+5451b16b07 的 F_GETFL 从实时 nonblocking/append 状态重建两位，去掉原打开
+参数中会使 O_NONBLOCK 粘住的副本。Directory 在原 open_flags 位置保存
+AtomicU32，初始化及两种 setter 共享这个状态字，保留路径和访问位。既有
+dup/fork 的 Arc 继续共享状态，独立打开重新构造；没有增加第二份状态表。
+
+同一最终 C 在 Linux 通过，e6a73d6358 的实际旧 Starry 稳定失败 11 项，修后
+真实 x86 QEMU 1/1。普通/缓存 File 及 Directory 通过两位的全部状态组合，
+经 dup 设置后从原描述和副本观察，同时核对另一独立打开及 FD_CLOEXEC
+不变，最后恢复初始状态。载荷、共享位置、pread、目录枚举及独占挂载引用
+继续沿原判据通过。实际 ELF SHA-256 为
+2f7118a7e5fcc7f017305136e8dc883ab436105be0bd4c68e5733d470a3fe3f1。
+
+Kernel 一包标准库、四目标 Clippy 72/72、格式和两处 include-backed 检查通过。
+记录键为 description_status_transitions，既有 69 项生产记录保持原值，六列
+表为 212 行；没有新增 Rust 单元、系统程序或默认启动。原参数生产者及其
+实时 getter 已逐类核对，设备包装的直接运行未借用通用 File 结果冒充通过。
+F_SETFL 多位并发提交、O_PATH 命令门禁、FASYNC、O_DIRECT/O_NOATIME 以及
+完整 VFS 计划与最终发布 head 的 CI 仍按各自边界继续完成。

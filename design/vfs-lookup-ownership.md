@@ -4778,6 +4778,26 @@ stop 调用表达式，以 0.2 秒 HTTP 响应和 0.02/2 秒两类预算得到�
 Clippy 1/1 与格式检查通过；记录键为 ci_host_fixture_lifecycle。未新增默认
 测试程序或 QEMU 启动。最终发布提交的完整 CI 与 VFS 剩余计划继续单独验收。
 
+### 6.41 打开描述的可变状态
+
+5451b16b07 在 F_GETFL 投影前清除原始 O_NONBLOCK，再从实际描述状态补入，
+避免一次非阻塞打开使此位永久残留。Directory 的原标志字改为自身拥有的
+AtomicU32，两种 setter 更新同一描述的 O_APPEND/O_NONBLOCK；dup 共享原 Arc，
+独立打开分别拥有状态。File 的原参数、数据端点及描述符表 CLOEXEC 不变。
+
+相同 C 在 Linux 通过，e6a73d6358 的旧 Starry 稳定失败 11 项：缓存 File 的
+三项初始非阻塞清除，以及普通/缓存 Directory 各四项状态提交。修后真实
+x86 QEMU 为 1/1，四类描述均覆盖全部两位组合、dup 共享、独立打开隔离、
+FD_CLOEXEC 保持及状态恢复。原数据、游标、getdents 和唯一挂载引用旅程
+继续通过，未新增 Rust 单元、系统程序或默认启动。
+
+Kernel 一包标准库、四目标 Clippy 72/72、格式及两处 include-backed 文件
+检查通过。记录键为 description_status_transitions，六列表为 212 行。
+其他原始标志生产者及其 getter 已核对，设备包装的具体端点运行单列缺口；
+整个 F_SETFL 并发原子性、O_PATH 命令门禁和其他 flags 的契约继续独立验收。
+旧 Clippy 已有的条件依赖和上游 future-compatibility 提示保留，没有新增
+lint 放行或占位导入。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
@@ -4952,6 +4972,28 @@ PreparedFileDescriptor 原有的 entry-count 上限保持独立。
 固定 noatime 条件让 CACHED 链接成功判据不依赖该时间边界。初始未预热 Linux
 夹具的六项 EAGAIN 单独保留，不作为 Starry 产品红绿；此条件也不代表已完成
 Starry 的链接 atime 或挂载时间策略实现。
+
+### 7.8 描述状态的当前值
+
+F_GETFL 的 O_APPEND/O_NONBLOCK 来自打开描述的实时 getter，投影前清除原始
+参数中的这两位。File 保留原打开参数供端点回调使用，已有 nonblock/append
+状态继续负责后续 I/O；普通与缓存构造都在发布 fd 前设置初始非阻塞状态。
+O_PATH 分支在此前返回自己的固定掩码，不经普通描述投影。
+
+Directory 的 open_flags 是这一打开描述拥有的 AtomicU32。new 与
+new_detached_mount 初始化同一个标志字，set_status_flag 只修改两种可变位，
+保留路径、访问和目录位。dup/fork 共享原 Directory 的 Arc，独立打开重新
+构造状态；没有按 inode 建立共享状态表。目录写入仍由原访问检查拒绝，
+设置 O_APPEND 不授予写权限或制造数据后端。
+
+相同系统旅程通过 dup 遍历两位的全部组合，从原 fd 和副本核对结果，并确认
+另一独立打开及各自 FD_CLOEXEC 不变。恢复状态后继续真实读、定位读、目录
+枚举及唯一挂载引用回收。普通/缓存 File 和 Directory 共用这一行为 helper，
+不增加系统程序或默认启动。
+
+本阶段验证顺序设置后的状态与共享关系。整个 F_SETFL 的多位并发原子性、
+O_PATH 命令门禁、FASYNC、O_DIRECT/O_NOATIME 的权限及错误顺序和具体设备
+I/O 后置条件保持各自证据边界，不能由两位状态旅程概括为完整兼容。
 
 ## 8. 迁移与验收
 
