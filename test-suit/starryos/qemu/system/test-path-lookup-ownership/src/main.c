@@ -395,6 +395,39 @@ out:
     close_fd(fd);
 }
 
+static void description_status(int fd, int independent, const char *name)
+{
+    const int mutable = O_APPEND | O_NONBLOCK;
+    const int states[] = {0, O_APPEND, O_NONBLOCK, O_APPEND | O_NONBLOCK, 0};
+    int shared = -1;
+    int initial = (int)syscall(SYS_fcntl, fd, F_GETFL, 0);
+    int other_initial = (int)syscall(SYS_fcntl, independent, F_GETFL, 0);
+    int descriptor = (int)syscall(SYS_fcntl, fd, F_GETFD, 0);
+    REQUIRE(initial >= 0 && other_initial >= 0 && descriptor >= 0);
+    shared = (int)syscall(SYS_dup, fd);
+    REQUIRE(shared >= 0);
+    for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+        int changed = (int)syscall(SYS_fcntl, shared, F_SETFL, states[i]);
+        int actual = (int)syscall(SYS_fcntl, fd, F_GETFL, 0);
+        int duplicate = (int)syscall(SYS_fcntl, shared, F_GETFL, 0);
+        int other = (int)syscall(SYS_fcntl, independent, F_GETFL, 0);
+        int expected = (initial & ~mutable) | states[i];
+        CHECK(changed == 0 && actual == expected && duplicate == expected
+                  && other == other_initial,
+              "%s mutable status is shared only by dup state=%d set=%d status=%d/%d expected=%d independent=%d/%d",
+              name, states[i], changed, actual, duplicate, expected,
+              other, other_initial);
+    }
+    CHECK(syscall(SYS_fcntl, fd, F_GETFD, 0) == descriptor
+              && syscall(SYS_fcntl, shared, F_GETFD, 0) == 0,
+          "%s status changes preserve independent descriptor flags", name);
+out:
+    if (shared >= 0)
+        CHECK(syscall(SYS_fcntl, shared, F_SETFL, initial & mutable) == 0,
+              "%s restores its original status flags", name);
+    close_fd(shared);
+}
+
 static void cached_readonly(int rootfd, int original)
 {
     const char payload[] = "cached-open-content";
@@ -432,6 +465,8 @@ static void cached_readonly(int rootfd, int original)
           "CACHED reader installs descriptor close-on-exec state");
     second = cached_open(rootfd, "file", O_RDONLY, 0);
     REQUIRE(second >= 0);
+    description_status(original, second, "ordinary file");
+    description_status(first, second, "CACHED file");
     shared = (int)syscall(SYS_dup, first);
     REQUIRE(shared >= 0);
     CHECK(syscall(SYS_read, first, bytes, 4) == 4
@@ -457,13 +492,20 @@ out:
     close_fd(shared);
     close_fd(second);
     close_fd(first);
-    directory = cached_open(rootfd, ".", O_RDONLY | O_DIRECTORY, 0);
+    directory = cached_open(rootfd, ".", O_RDONLY | O_DIRECTORY | O_NONBLOCK, 0);
     CHECK(directory >= 0, "CACHED opens a pinned directory reader fd=%d errno=%d",
           directory, errno);
     if (directory >= 0) {
         char entries[512];
         CHECK(syscall(SYS_getdents64, directory, entries, sizeof(entries)) > 0,
               "CACHED directory description enumerates its actual directory");
+        int native = open_at(rootfd, ".", O_RDONLY | O_DIRECTORY | O_NONBLOCK);
+        CHECK(native >= 0, "ordinary directory status fixture fd=%d", native);
+        if (native >= 0) {
+            description_status(directory, native, "CACHED directory");
+            description_status(native, directory, "ordinary directory");
+        }
+        close_fd(native);
     }
     close_fd(directory);
 }
