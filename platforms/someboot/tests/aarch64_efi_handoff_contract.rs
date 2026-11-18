@@ -16,6 +16,7 @@ const TARGET: &str = "aarch64-unknown-none-softfloat";
 const EFI_ENTRY: &str = "<someboot::arch::Arch as someboot::ArchTrait>::efi_enter_kernel";
 const EFI_CONTINUATION: &str = "someboot::arch::entry::enter_with_boot_state";
 const SETUP_SERVICE: &str = "someboot::efi_stub::setup_service";
+const SETUP_EXCEPTION_LEVEL: &str = "someboot::arch::elx::switch_to_elx";
 const FDT_ADDR: &str = "someboot::fdt::FDT_ADDR";
 
 #[test]
@@ -32,17 +33,25 @@ fn aarch64_efi_handoff_preserves_firmware_state() {
         disassembly.contains("file format elf64-littleaarch64"),
         "the contract must inspect an AArch64 target artifact"
     );
-    // LLVM may relocate against the containing section instead of the static
-    // symbol. Its section name retains the mangled Rust name even with -C.
-    // Resolve that alias from this artifact's symbol table before inspecting
-    // both entry paths, so neither spelling can hide a firmware-state reset.
-    let fdt_section = disassembly
-        .lines()
-        .filter(|line| line.ends_with(FDT_ADDR))
-        .flat_map(str::split_whitespace)
-        .find(|field| field.starts_with(".bss."))
-        .expect("the FDT static must have its own BSS section");
-    let disassembly = disassembly.replace(fdt_section, FDT_ADDR);
+    // LLVM may relocate against a function's or static's section instead of
+    // its symbol. Section names retain mangled Rust names even with -C.
+    // Resolve aliases from this artifact's symbol table for every exact-name
+    // assertion, including forbidden firmware-state writes.
+    let mut disassembly = disassembly;
+    for symbol in [
+        FDT_ADDR,
+        SETUP_SERVICE,
+        EFI_CONTINUATION,
+        SETUP_EXCEPTION_LEVEL,
+    ] {
+        let section = disassembly
+            .lines()
+            .filter_map(|line| line.strip_suffix(symbol))
+            .flat_map(str::split_whitespace)
+            .find(|field| field.starts_with(".bss.") || field.starts_with(".text."))
+            .unwrap_or_else(|| panic!("the artifact must define a section for {symbol}"));
+        disassembly = disassembly.replace(section, symbol);
+    }
 
     let efi_entry = function_disassembly(&disassembly, EFI_ENTRY);
     assert_symbol_order(efi_entry, SETUP_SERVICE, EFI_CONTINUATION);
@@ -54,7 +63,7 @@ fn aarch64_efi_handoff_preserves_firmware_state() {
 
     let continuation = function_disassembly(&disassembly, EFI_CONTINUATION);
     assert!(
-        continuation.contains("someboot::arch::elx::switch_to_elx"),
+        continuation.contains(SETUP_EXCEPTION_LEVEL),
         "the EFI continuation must proceed to exception-level setup:\n{continuation}"
     );
     assert_no_firmware_state_reset(continuation, "the common EFI continuation");
@@ -92,6 +101,9 @@ fn build_aarch64_efi_archive(target_directory: &Path) -> PathBuf {
                 "--no-default-features",
                 "--features",
                 "efi",
+                // Keep local callees in one object to exercise section aliases.
+                "--config",
+                "profile.dev.package.someboot.codegen-units=1",
                 "--target-dir",
             ])
             .arg(target_directory)
