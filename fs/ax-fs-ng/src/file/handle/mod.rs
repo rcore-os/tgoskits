@@ -5,8 +5,8 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_io::{SeekFrom, prelude::*};
 use axfs_ng_vfs::{
-    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PreallocationMode,
-    VfsError, VfsResult, path::Path,
+    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PathHandle,
+    PreallocationMode, VfsError, VfsResult, path::Path,
 };
 use axpoll::{IoEvents, Pollable};
 
@@ -14,26 +14,45 @@ use super::{
     access::WriteAccess,
     open::{FileFlags, OpenOptions, OpenResult},
 };
-use crate::{fs_core::FsContext, os::sync::Mutex, vfs_error_to_io_error};
+use crate::{fs_core::FsView, os::sync::Mutex, vfs_error_to_io_error};
 
 mod backend;
-pub use backend::FileBackend;
+pub use backend::{FileBackend, LayeredFile};
 
 /// Provides `std::fs::File`-like interface.
 pub struct File {
-    pub(super) write_access: Option<Arc<WriteAccess>>,
     inner: FileBackend,
     flags: AtomicU8,
     position: Option<Mutex<u64>>,
     access_flags: AtomicU8,
+    // Backend/cache destruction must finish before releasing writer authority.
+    pub(super) write_access: Option<Arc<WriteAccess>>,
+    // Keep mount use through backend, cache, and inode writer-lease retirement.
+    path: PathHandle,
 }
 
 impl File {
+    /// Owns a resolved path without ordinary open or backend flag callbacks.
+    ///
+    /// This description permits path operations only. Its subsequent metadata
+    /// operations still consult the original inode rather than a saved copy.
+    pub fn path_only(path: PathHandle) -> Self {
+        Self {
+            inner: FileBackend::Direct(path.clone()),
+            flags: AtomicU8::new(FileFlags::PATH.bits()),
+            position: None,
+            access_flags: AtomicU8::new(0),
+            write_access: None,
+            path,
+        }
+    }
+
     /// Creates a low-level file without registering inode write access.
     ///
     /// Use [`OpenOptions`] for ordinary opens. Anonymous pseudo files such as
     /// newly created memfds deliberately bypass executable/write exclusion.
     pub fn new(inner: FileBackend, flags: FileFlags) -> Self {
+        let path = inner.path_handle().clone();
         // man 2 open: "The file offset is set to the beginning of the file"
         // — initial position is always 0, regardless of O_APPEND.
         // O_APPEND only relocates the offset BEFORE EACH WRITE (handled in
@@ -51,6 +70,7 @@ impl File {
             flags: AtomicU8::new(flags.bits()),
             position,
             access_flags: AtomicU8::new(0),
+            path,
         }
     }
 
@@ -61,7 +81,7 @@ impl File {
     }
 
     /// Opens an existing file for reading.
-    pub fn open(context: &FsContext, path: impl AsRef<Path>) -> VfsResult<Self> {
+    pub fn open(context: &FsView<'_>, path: impl AsRef<Path>) -> VfsResult<Self> {
         OpenOptions::new()
             .read(true)
             .open(context, path.as_ref())
@@ -70,7 +90,7 @@ impl File {
 
     /// Opens a file for writing, creating it if it does not exist and
     /// truncating it if it does.
-    pub fn create(context: &FsContext, path: impl AsRef<Path>) -> VfsResult<Self> {
+    pub fn create(context: &FsView<'_>, path: impl AsRef<Path>) -> VfsResult<Self> {
         OpenOptions::new()
             .write(true)
             .create(true)
@@ -128,7 +148,12 @@ impl File {
 
     /// Returns a reference to the underlying [`Location`].
     pub fn location(&self) -> &Location {
-        self.inner.location()
+        self.path.location()
+    }
+
+    /// Borrows this description's path use, including after lazy detachment.
+    pub fn path_handle(&self) -> &PathHandle {
+        &self.path
     }
 
     /// Reads a number of bytes starting from a given offset.
@@ -319,7 +344,7 @@ impl Drop for File {
             if flags & 2 != 0 {
                 update.mtime = Some(crate::os::wall_time());
             }
-            if let Err(err) = self.inner.location().update_metadata(update) {
+            if let Err(err) = self.inner.data_path().location().update_metadata(update) {
                 warn!("Failed to update file times on drop: {err:?}");
             }
         }
@@ -346,16 +371,19 @@ mod tests {
     struct TestFilesystem {
         name: &'static str,
         readonly: bool,
+        root: Option<DirEntry>,
     }
 
     static READONLY_TEST_FILESYSTEM: TestFilesystem = TestFilesystem {
         name: "readonly-file-drop-test",
         readonly: true,
+        root: None,
     };
 
     static WRITABLE_TEST_FILESYSTEM: TestFilesystem = TestFilesystem {
         name: "writable-file-drop-test",
         readonly: false,
+        root: None,
     };
 
     static DROP_METADATA_UPDATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -370,10 +398,7 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            test_entry(Arc::new(MetadataTrackingTestFile::new(
-                &READONLY_TEST_FILESYSTEM,
-                Arc::new(AtomicUsize::new(0)),
-            )))
+            self.root.clone().expect("a mounted fixture needs its root")
         }
 
         fn stat(&self) -> VfsResult<StatFs> {
@@ -515,20 +540,19 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_drop_metadata_update_attempts();
         let metadata_updates = Arc::new(AtomicUsize::new(0));
+        let entry = test_entry(Arc::new(MetadataTrackingTestFile::new(
+            &READONLY_TEST_FILESYSTEM,
+            metadata_updates.clone(),
+        )));
         let filesystem = Filesystem::new(Arc::new(TestFilesystem {
             name: "readonly-file-drop-test",
             readonly: true,
+            root: Some(entry.clone()),
         }));
         let mountpoint = Mountpoint::new_root(&filesystem);
-        let location = Location::new(
-            mountpoint,
-            test_entry(Arc::new(MetadataTrackingTestFile::new(
-                &READONLY_TEST_FILESYSTEM,
-                metadata_updates.clone(),
-            ))),
-        );
+        let location = Location::new(mountpoint, entry);
 
-        let file = File::new(FileBackend::new_direct(location), FileFlags::READ);
+        let file = File::new(FileBackend::new_direct(location).unwrap(), FileFlags::READ);
         let mut byte = [0];
         assert_eq!(file.read(&mut byte[..]).unwrap(), 1);
         drop(file);
@@ -544,20 +568,19 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_drop_metadata_update_attempts();
         let metadata_updates = Arc::new(AtomicUsize::new(0));
+        let entry = test_entry(Arc::new(MetadataTrackingTestFile::new(
+            &WRITABLE_TEST_FILESYSTEM,
+            metadata_updates.clone(),
+        )));
         let filesystem = Filesystem::new(Arc::new(TestFilesystem {
             name: "writable-file-drop-test",
             readonly: false,
+            root: Some(entry.clone()),
         }));
         let mountpoint = Mountpoint::new_root(&filesystem);
-        let location = Location::new(
-            mountpoint,
-            test_entry(Arc::new(MetadataTrackingTestFile::new(
-                &WRITABLE_TEST_FILESYSTEM,
-                metadata_updates.clone(),
-            ))),
-        );
+        let location = Location::new(mountpoint, entry);
 
-        let file = File::new(FileBackend::new_direct(location), FileFlags::READ);
+        let file = File::new(FileBackend::new_direct(location).unwrap(), FileFlags::READ);
         let mut byte = [0];
         assert_eq!(file.read(&mut byte[..]).unwrap(), 1);
         drop(file);
@@ -568,18 +591,17 @@ mod tests {
 
     #[test]
     fn direct_read_preserves_progress_before_a_later_error() {
-        let filesystem = Filesystem::new(Arc::new(TestFilesystem {
-            name: "direct-read-progress-test",
-            readonly: true,
-        }));
         let mut node =
             MetadataTrackingTestFile::new(&READONLY_TEST_FILESYSTEM, Arc::new(AtomicUsize::new(0)));
         node.read_record_size = Some(32);
-        let location = Location::new(
-            Mountpoint::new_root(&filesystem),
-            test_entry(Arc::new(node)),
-        );
-        let file = File::new(FileBackend::new_direct(location), FileFlags::READ);
+        let entry = test_entry(Arc::new(node));
+        let filesystem = Filesystem::new(Arc::new(TestFilesystem {
+            name: "direct-read-progress-test",
+            readonly: true,
+            root: Some(entry.clone()),
+        }));
+        let location = Location::new(Mountpoint::new_root(&filesystem), entry);
+        let file = File::new(FileBackend::new_direct(location).unwrap(), FileFlags::READ);
 
         // A first-record error must remain an error and leave the cursor intact.
         let mut small = [b'?'; 16];

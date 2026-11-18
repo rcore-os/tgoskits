@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{StarryError, StarryResult, sync::RawSpinLock};
 
@@ -8,7 +7,6 @@ use crate::{StarryError, StarryResult, sync::RawSpinLock};
 pub static ROOT_USER_NS: ax_lazyinit::LazyLock<Arc<RawSpinLock<UserNamespace>>> =
     ax_lazyinit::LazyLock::new(|| Arc::new(RawSpinLock::new(UserNamespace::new_root())));
 
-static NEXT_USER_NS_ID: AtomicU64 = AtomicU64::new(1);
 /// Highest parent level allowed by Linux's level-33 child limit.
 const MAX_PARENT_LEVEL: u32 = 32;
 
@@ -26,14 +24,7 @@ const MAX_PARENT_LEVEL: u32 = 32;
 /// `gid_mapped`, so the two sides are independent — a half-configured
 /// namespace correctly returns 65534 for the unmapped side.
 pub struct UserNamespace {
-    /// Globally unique namespace identifier (exposed via /proc/PID/ns/user).
-    pub id: u64,
-    /// Immutable parent namespace. The root namespace has no parent.
-    parent: Option<Arc<RawSpinLock<UserNamespace>>>,
-    /// Depth in the user-namespace tree; the root namespace is level zero.
-    level: u32,
-    /// Effective UID of the namespace creator (0 for root namespace).
-    owner_uid: u32,
+    lineage: UserNamespaceLineage,
     /// Whether this is the initial root user namespace or a child
     /// namespace that had both uid_map and gid_map configured.  Kept
     /// for compatibility; new code should use `uid_mapped` /
@@ -45,13 +36,23 @@ pub struct UserNamespace {
     pub gid_mapped: bool,
 }
 
+/// Immutable ancestry, independent of the mutable UID/GID mapping flags.
+#[derive(Clone)]
+pub(crate) struct UserNamespaceLineage {
+    pub(crate) parent: Option<Arc<RawSpinLock<UserNamespace>>>,
+    pub(crate) level: u32,
+    /// Creator's effective UID in the parent namespace.
+    pub(crate) owner_uid: u32,
+}
+
 impl UserNamespace {
     pub fn new_root() -> Self {
         Self {
-            id: NEXT_USER_NS_ID.fetch_add(1, Ordering::Relaxed),
-            parent: None,
-            level: 0,
-            owner_uid: 0,
+            lineage: UserNamespaceLineage {
+                parent: None,
+                level: 0,
+                owner_uid: 0,
+            },
             is_root: true,
             uid_mapped: true,
             gid_mapped: true,
@@ -59,37 +60,87 @@ impl UserNamespace {
     }
 
     pub(crate) fn new_child(
-        parent: Arc<RawSpinLock<UserNamespace>>,
-        owner_uid: u32,
+        parent: Arc<RawSpinLock<Self>>,
+        creator_euid: u32,
     ) -> StarryResult<Self> {
-        let parent_level = parent.lock_irqsave().level;
+        let parent_level = parent.lock_irqsave().lineage.level;
+        // Linux create_user_ns permits a level-32 parent to create level 33.
+        // Reject before assigning an identity or retaining another parent link.
         if parent_level > MAX_PARENT_LEVEL {
             return Err(StarryError::StorageFull);
         }
-
         Ok(Self {
-            id: NEXT_USER_NS_ID.fetch_add(1, Ordering::Relaxed),
-            parent: Some(parent),
-            level: parent_level + 1,
-            owner_uid,
+            lineage: UserNamespaceLineage {
+                parent: Some(parent),
+                level: parent_level + 1,
+                owner_uid: creator_euid,
+            },
             is_root: false,
             uid_mapped: false,
             gid_mapped: false,
         })
     }
 
-    /// Return a strong snapshot of the parent namespace.
-    pub(crate) fn parent(&self) -> Option<Arc<RawSpinLock<UserNamespace>>> {
-        self.parent.clone()
+    pub(crate) fn lineage(&self) -> UserNamespaceLineage {
+        self.lineage.clone()
     }
+}
 
-    /// Return this namespace's immutable tree depth.
-    pub(crate) const fn level(&self) -> u32 {
-        self.level
+/// Linux commoncap capability inheritance uses immutable namespace ancestry,
+/// never display IDs, mapping flags, or a procfs ptrace authorization result.
+pub(crate) fn has_namespace_capability(
+    cred: &crate::task::Cred,
+    caller: &Arc<RawSpinLock<UserNamespace>>,
+    target: &Arc<RawSpinLock<UserNamespace>>,
+    capability: u32,
+) -> bool {
+    let caller_level = caller.lock_irqsave().lineage().level;
+    let mut namespace = target.clone();
+    loop {
+        if Arc::ptr_eq(&namespace, caller) {
+            return cred.has_cap(capability);
+        }
+        let lineage = namespace.lock_irqsave().lineage();
+        if lineage.level <= caller_level {
+            return false;
+        }
+        let Some(parent) = lineage.parent else {
+            return false;
+        };
+        if Arc::ptr_eq(&parent, caller) && lineage.owner_uid == cred.euid {
+            return true;
+        }
+        namespace = parent;
     }
+}
 
-    /// Return the creator's effective UID captured at construction.
-    pub(crate) const fn owner_uid(&self) -> u32 {
-        self.owner_uid
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn child_creation_enforces_linux_parent_depth_limit() {
+        let mut parent = Arc::new(RawSpinLock::new(UserNamespace::new_root()));
+        for _ in 0..32 {
+            parent = Arc::new(RawSpinLock::new(
+                UserNamespace::new_child(parent, 41).unwrap(),
+            ));
+        }
+
+        let child = Arc::new(RawSpinLock::new(
+            UserNamespace::new_child(parent.clone(), 99).unwrap(),
+        ));
+        let error = UserNamespace::new_child(child.clone(), 100)
+            .err()
+            .expect("a level-33 parent must reject another child");
+        assert_eq!(error.linux_errno(), syscalls::Errno::ENOSPC);
+
+        let state = child.lock_irqsave();
+        let lineage = state.lineage();
+        assert_eq!(lineage.level, 33);
+        assert_eq!(lineage.owner_uid, 99);
+        assert!(Arc::ptr_eq(lineage.parent.as_ref().unwrap(), &parent));
+        assert!(!state.is_root && !state.uid_mapped && !state.gid_mapped);
     }
 }

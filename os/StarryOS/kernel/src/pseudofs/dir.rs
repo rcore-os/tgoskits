@@ -8,18 +8,28 @@ use alloc::{
 use core::any::Any;
 
 use axfs_ng_vfs::{
-    DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FilesystemOps,
-    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, RenameOptions,
-    VfsError, VfsResult, WeakDirEntry,
+    AuthorizedMutation, CreateOwnerPolicy, DirEntry, DirEntrySink, DirNode, DirNodeOps,
+    DirectoryCursor, FileNode, FilesystemOps, LockedAttempt, Metadata, MetadataRequest,
+    MetadataUpdate, MutationObservation, MutationRetire, NamespaceCompletion, NamespaceEffect,
+    NamespaceMutation, NamespaceNode, NamespaceOutcome, NodeIdentity, NodeOps, NodePermission,
+    NodeType, Reference, RenameNode, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
 
-use super::{DirMaker, NodeOpsMux, SimpleFs, SimpleFsNode};
+use super::{
+    DirMaker, NodeOpsMux, SimpleFsContext, SimpleFsNode, SimpleFsOwner, SimpleInode,
+    recipe::DirRecipe,
+};
 use crate::pseudofs::NodeOpsMuxTy;
 
 /// Operations for a simple directory.
 pub trait SimpleDirOps: Send + Sync + 'static {
+    /// Semantic identity for dynamically materialized directories.
+    fn identity(&self) -> Option<NodeIdentity> {
+        None
+    }
+
     /// Get the names of all children in the directory.
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a>;
     /// Look up a child directory or file by name.
@@ -52,13 +62,10 @@ impl SimpleDirOps for DirMapping {
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        self.map
-            .get(name)
-            .map(|ty| match ty {
-                NodeOpsMuxTy::Static(ops) => ops.clone(),
-                NodeOpsMuxTy::Dynamic(maker) => maker(),
-            })
-            .ok_or(VfsError::NotFound)
+        match self.map.get(name).ok_or(VfsError::NotFound)? {
+            NodeOpsMuxTy::Static(ops) => Ok(ops.clone()),
+            NodeOpsMuxTy::Dynamic(maker) => maker(),
+        }
     }
 
     fn is_cacheable(&self) -> bool {
@@ -96,7 +103,7 @@ impl DirMapping {
     pub fn add_dynamic(
         &mut self,
         name: impl Into<String>,
-        maker: impl Fn() -> NodeOpsMux + Send + Sync + 'static,
+        maker: impl Fn() -> VfsResult<NodeOpsMux> + Send + Sync + 'static,
     ) {
         self.map
             .insert(name.into(), NodeOpsMuxTy::Dynamic(Box::new(maker)));
@@ -145,28 +152,47 @@ impl<O: SimpleDirOps> SimpleDir<O> {
     }
 
     /// Create a [`DirMaker`] from given directory operations.
-    pub fn new_maker(fs: Arc<SimpleFs>, ops: Arc<O>) -> DirMaker {
-        Arc::new(move |this| {
-            SimpleDir::new(
-                SimpleFsNode::new(
-                    fs.clone(),
-                    NodeType::Directory,
-                    NodePermission::from_bits_truncate(0o755),
-                ),
-                ops.clone(),
-                this,
-            )
-        })
+    pub fn new_maker(context: SimpleFsContext, ops: Arc<O>) -> VfsResult<DirMaker> {
+        let inode = context.allocate_inode(
+            NodeType::Directory,
+            NodePermission::from_bits_truncate(0o755),
+        )?;
+        Ok(DirMaker::new(context, SimpleDirRecipe { inode, ops }))
+    }
+}
+
+struct SimpleDirRecipe<O> {
+    inode: Arc<SimpleInode>,
+    ops: Arc<O>,
+}
+
+impl<O: SimpleDirOps> DirRecipe for SimpleDirRecipe<O> {
+    fn materialize(
+        self: Arc<Self>,
+        owner: SimpleFsOwner,
+        this: WeakDirEntry,
+    ) -> Arc<dyn DirNodeOps> {
+        SimpleDir::new(
+            SimpleFsNode::bind(owner, self.inode.clone()),
+            self.ops.clone(),
+            this,
+        )
     }
 }
 
 #[inherit_methods(from = "self.node")]
 impl<O: SimpleDirOps> NodeOps for SimpleDir<O> {
+    fn identity(&self) -> Option<NodeIdentity> {
+        self.ops.identity()
+    }
+
     fn inode(&self) -> u64;
 
     fn metadata(&self) -> VfsResult<Metadata>;
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata>;
 
     fn filesystem(&self) -> &dyn FilesystemOps;
 
@@ -178,6 +204,10 @@ impl<O: SimpleDirOps> NodeOps for SimpleDir<O> {
 }
 
 impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
+    fn namespace_domain(&self) -> usize {
+        self.filesystem() as *const dyn FilesystemOps as *const () as usize
+    }
+
     fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let children = [DOT, DOTDOT]
             .into_iter()
@@ -218,9 +248,11 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         let reference = Reference::new(self.this.upgrade(), name.to_owned());
         Ok(match ops {
             NodeOpsMux::Dir(maker) => {
-                DirEntry::new_dir(|this| DirNode::new(maker(this)), reference)
+                let prepared = maker.prepare(self.node.owner())?;
+                DirEntry::new_dir(|this| DirNode::new(prepared.materialize(this)), reference)
             }
-            NodeOpsMux::File(ops) => {
+            NodeOpsMux::File(maker) => {
+                let ops = maker.prepare(self.node.owner())?.materialize();
                 let node_type = ops.metadata()?.node_type;
                 DirEntry::new_file(FileNode::new(ops.clone()), node_type, reference)
             }
@@ -235,43 +267,76 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         self.ops.is_cacheable_child(name)
     }
 
-    fn create(
+    fn mutate_namespace(
         &self,
-        _name: &str,
-        _node_type: NodeType,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
+        command: &NamespaceMutation<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        if !matches!(command, NamespaceMutation::Create(_)) {
+            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotPermitted));
+        }
+        let (parent, _) = command.parents();
+        if !parent
+            .downcast::<Self>()
+            .is_ok_and(|directory| core::ptr::eq(directory.as_ref(), self))
+        {
+            return NamespaceOutcome::unchanged(Err(VfsError::BadState));
+        }
+        let _gate = self.node.lock_namespace();
+        command.execute(&mut ExistingOpenAttempt { directory: self }, retired)
+    }
+}
+
+/// The fixed authorizer can select an existing entry, but this immutable
+/// directory never commits a create. All aliases share the actual FS gate.
+struct ExistingOpenAttempt<'a, O> {
+    directory: &'a SimpleDir<O>,
+}
+
+impl<O: SimpleDirOps> LockedAttempt for ExistingOpenAttempt<'_, O> {
+    fn parents(&mut self) -> VfsResult<(Metadata, Metadata)> {
+        let parent = self.directory.metadata()?;
+        Ok((parent.clone(), parent))
+    }
+
+    fn observe(
+        &mut self,
+        request: &NamespaceMutation<'_>,
+        retired: &MutationRetire,
+    ) -> VfsResult<MutationObservation> {
+        let NamespaceMutation::Create(request) = request else {
+            return Err(VfsError::OperationNotPermitted);
+        };
+        let name = request.name();
+        let target = match self.directory.lookup(name) {
+            Ok(entry) => {
+                retired.retire(entry.clone());
+                Some(RenameNode {
+                    metadata: entry.metadata()?,
+                    entry,
+                    canonical_name: name.into(),
+                    cacheable: self.directory.is_cacheable_child(name),
+                    empty: false,
+                })
+            }
+            Err(VfsError::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        Ok(MutationObservation::Create {
+            target,
+            owner_policy: CreateOwnerPolicy::ParentSetgid,
+        })
+    }
+
+    fn is_ancestor(&mut self, _: &NamespaceNode, _: u64) -> VfsResult<bool> {
         Err(VfsError::OperationNotPermitted)
     }
 
-    fn create_symlink(
-        &self,
-        _name: &str,
-        _target: &str,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn rename(
-        &self,
-        _src_name: &str,
-        _dst_dir: &DirNode,
-        _dst_name: &str,
-        _options: RenameOptions,
-    ) -> VfsResult<()> {
-        Err(VfsError::OperationNotPermitted)
+    fn commit(
+        &mut self,
+        _: &AuthorizedMutation<'_>,
+        _: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        NamespaceOutcome::unchanged(Err(VfsError::OperationNotPermitted))
     }
 }

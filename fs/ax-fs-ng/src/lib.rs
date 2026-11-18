@@ -17,7 +17,10 @@ extern crate ax_runtime;
 extern crate log;
 
 use axfs_ng_vfs::Location;
-pub use axfs_ng_vfs::{VfsError, VfsResult};
+pub use axfs_ng_vfs::{
+    CreateAttributes, CreateContent, LinkCaller, MutationCredentials, NativeLinkCaller, VfsError,
+    VfsResult,
+};
 
 pub mod api;
 pub(crate) mod block;
@@ -31,6 +34,24 @@ pub mod initramfs;
 pub mod migration;
 pub use fs::memory::MemoryFs;
 mod fs_core;
+/// Task filesystem ownership and its actual VFS namespace/path contracts.
+pub mod fs_context {
+    pub use axfs_ng_vfs::{
+        LinkCaller, Location, MountNamespace, Mountpoint, NamespaceClone, NamespaceRootSnapshot,
+        NativeLinkCaller, PathHandle,
+    };
+
+    pub use crate::fs_core::{
+        FinalComponent, FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement,
+        FsSharingRequirement, FsUpdateRetirement, FsView, LookupPolicy, LookupRestrictions,
+        LookupScope, ParentLookup, PreparedFsUpdate,
+    };
+}
+pub use fs_context::{
+    FinalComponent, FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement,
+    FsSharingRequirement, FsUpdateRetirement, FsView, LookupPolicy, LookupRestrictions,
+    LookupScope, ParentLookup, PreparedFsUpdate,
+};
 mod highlevel;
 mod mounts;
 pub mod os;
@@ -55,7 +76,7 @@ pub mod vfs {
     /// Create a filesystem from a native block runtime handle.
     #[cfg(any(feature = "ext4", feature = "fat"))]
     pub use crate::fs::new_from_handle as new_filesystem_from_handle;
-    pub use crate::highlevel::*;
+    pub use crate::{LinkCaller, NativeLinkCaller, highlevel::*};
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,15 +90,21 @@ fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location
 
     // Keep an immutable namespace anchor; the actual root mount can then be
     // pivoted and detached without invalidating the namespace itself.
-    let anchor = axfs_ng_vfs::Mountpoint::new_root_with_source(&MemoryFs::new(), "nullfs");
-    anchor.set_readonly(true);
+    let anchor =
+        axfs_ng_vfs::Mountpoint::new_root_with_source_readonly(&MemoryFs::new(), "nullfs", true);
     let mp = anchor
         .root_location()
         .mount_with_source(&fs, source)
         .expect("initial filesystem mount");
     let root = mp.root_location();
     register_mounted_filesystem(fs);
-    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()).into_shared());
+    highlevel::ROOT_FS_CONTEXT.call_once(|| {
+        let namespace = axfs_ng_vfs::MountNamespace::from_tree(anchor)
+            .expect("initial mount namespace")
+            .into_namespace();
+        let path = axfs_ng_vfs::PathHandle::acquire(root.clone()).expect("initial root use");
+        FsContextOwner::new_root(namespace, path).expect("initial root context")
+    });
     root
 }
 

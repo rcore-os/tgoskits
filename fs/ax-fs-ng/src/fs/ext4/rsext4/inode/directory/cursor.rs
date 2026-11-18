@@ -7,7 +7,7 @@ use rsext4::DirectoryCursor;
 // rewrites the only colliding major hash, 0xffff_fffe, to 0xffff_fffc.
 const HTREE_EOF_COOKIE: u64 = i64::MAX as u64;
 
-pub(super) fn vfs_to_core_directory_cursor(
+pub(crate) fn vfs_to_core_directory_cursor(
     cursor: VfsDirectoryCursor,
     indexed: bool,
 ) -> VfsResult<DirectoryCursor> {
@@ -30,7 +30,7 @@ pub(super) fn vfs_to_core_directory_cursor(
     })
 }
 
-pub(super) fn core_to_vfs_directory_cursor(
+pub(crate) fn core_to_vfs_directory_cursor(
     cursor: DirectoryCursor,
     change_attribute: Option<u64>,
 ) -> VfsDirectoryCursor {
@@ -57,7 +57,7 @@ pub(super) fn core_to_vfs_directory_cursor(
     }
 }
 
-pub(super) fn normalize_directory_cursor(
+pub(crate) fn normalize_directory_cursor(
     cursor: VfsDirectoryCursor,
     change_attribute: u64,
 ) -> VfsDirectoryCursor {

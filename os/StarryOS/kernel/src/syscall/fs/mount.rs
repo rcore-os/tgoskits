@@ -1,7 +1,6 @@
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
 
-use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
 use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
@@ -16,10 +15,7 @@ use crate::{
     mm::{VmPtr, vm_load_string},
     pseudofs::{
         MemoryFs,
-        dev::{
-            new_devptsfs,
-            tty::{DevPtsMount, DevPtsOptions},
-        },
+        dev::{new_devptsfs, tty::DevPtsOptions},
         overlay::OverlayOptions,
     },
     sync::Mutex,
@@ -80,27 +76,19 @@ fn parse_devpts_mode(value: &str) -> StarryResult<NodePermission> {
     NodePermission::from_bits(mode).ok_or(StarryError::InvalidInput)
 }
 
-enum DevPtsInstanceKind {
-    Legacy,
-    New,
-}
-
 fn parse_devpts_options(
     current: &crate::task::UserTaskRef,
     data: *const c_void,
-) -> crate::StarryResult<DevPtsMount> {
+) -> crate::StarryResult<DevPtsOptions> {
     let mut options = DevPtsOptions::mounted();
-    let mut instance = DevPtsInstanceKind::Legacy;
     if data.is_null() {
-        return Ok(DevPtsMount::Legacy(options));
+        return Ok(options);
     }
 
     for item in vm_load_string(current, data.cast())?.split(',') {
-        if item.is_empty() {
-            continue;
-        }
-        if item == "newinstance" {
-            instance = DevPtsInstanceKind::New;
+        // Linux v7.1 creates a private instance for every mount. The historical
+        // newinstance flag is accepted without changing that selection.
+        if item.is_empty() || item == "newinstance" {
             continue;
         }
         let (key, value) = item.split_once('=').ok_or(StarryError::InvalidInput)?;
@@ -113,10 +101,7 @@ fn parse_devpts_options(
             _ => return Err(StarryError::InvalidInput),
         }
     }
-    Ok(match instance {
-        DevPtsInstanceKind::Legacy => DevPtsMount::Legacy(options),
-        DevPtsInstanceKind::New => DevPtsMount::NewInstance(options),
-    })
+    Ok(options)
 }
 
 fn parse_overlay_options(
@@ -172,7 +157,7 @@ fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> b
         .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
         || fd
             .downcast_ref::<crate::file::Pipe>()
-            .and_then(crate::file::Pipe::named_file)
+            .and_then(crate::file::Pipe::backing_file)
             .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
         || fd
             .downcast_ref::<Directory>()
@@ -180,9 +165,6 @@ fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> b
 }
 
 fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
-    if fs_is_mount_busy(mp) {
-        return true;
-    }
     let tasks = tasks();
     for task in tasks {
         let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
@@ -408,9 +390,7 @@ pub fn sys_fsconfig(
                     .tmpfs_size_limit
                     .map_or_else(MemoryFs::new, MemoryFs::new_with_size_limit),
                 MountContextKind::Ramfs => MemoryFs::new_ramfs(),
-                MountContextKind::DevPts => {
-                    new_devptsfs(DevPtsMount::NewInstance(state.devpts_options))
-                }
+                MountContextKind::DevPts => new_devptsfs(state.devpts_options)?,
             });
         }
         command if command == fsconfig_command::FSCONFIG_CMD_RECONFIGURE as u32 => {
@@ -423,7 +403,7 @@ pub fn sys_fsconfig(
                 return Err(StarryError::InvalidInput);
             }
             for mountpoint in &state.mounts {
-                mountpoint.set_readonly(true);
+                mountpoint.set_readonly(true)?;
             }
             state.readonly_reconfigure = false;
         }
@@ -462,13 +442,13 @@ pub fn sys_fsmount(
             ..Default::default()
         })?;
     }
-    mountpoint.set_readonly(mount_attributes & MOUNT_ATTR_RDONLY != 0);
+    mountpoint.set_readonly(mount_attributes & MOUNT_ATTR_RDONLY != 0)?;
     mountpoint.set_mount_flags(
         mount_attributes & (MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC),
     );
     state.mounts.push(mountpoint);
 
-    Directory::new_detached_mount(root, O_PATH)
+    Directory::new_detached_mount(root, O_PATH)?
         .add_to_fd_table(flags & FSMOUNT_CLOEXEC != 0)
         .map(|fd| fd as isize)
 }
@@ -481,6 +461,7 @@ pub fn sys_move_mount(
     to_path: *const c_char,
     flags: u32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     if flags != MOVE_MOUNT_F_EMPTY_PATH || !vm_load_string(current, from_path)?.is_empty() {
         return Err(crate::StarryError::InvalidInput);
     }
@@ -494,13 +475,17 @@ pub fn sys_move_mount(
     }
     let path = vm_load_string(current, to_path)?;
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let context = ax_fs_ng::FsView::current(fs_context, &link_caller);
+    let mount_namespace = context.mount_namespace().clone();
     let target = if path.starts_with('/') {
-        fs_context.lock().resolve(&path)?
+        context.resolve(&path)?
     } else {
-        crate::file::with_fs(to_dirfd, |fs| Ok(fs.resolve(&path)?))?
+        crate::file::with_fs(to_dirfd, &link_caller, |fs| Ok(fs.resolve(&path)?))?
     };
-    source.inner().mountpoint().attach_detached(&target)?;
+    source
+        .inner()
+        .mountpoint()
+        .attach_detached(target.location())?;
     crate::file::notify_mount_namespace_changed(&mount_namespace);
     Ok(0)
 }
@@ -541,12 +526,12 @@ pub fn sys_mount_setattr(
         return Err(StarryError::InvalidInput);
     }
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let mount_namespace = fs_context.mount_namespace().clone();
     let is_visible = mount_namespace
         .walk_tree()
         .into_iter()
         .any(|(_, _, mountpoint)| Arc::ptr_eq(&mountpoint, directory.inner().mountpoint()));
-    apply_mount_attributes(directory.inner().mountpoint(), &attributes);
+    apply_mount_attributes(directory.inner().mountpoint(), &attributes)?;
     if is_visible {
         crate::file::notify_mount_namespace_changed(&mount_namespace);
     }
@@ -577,11 +562,14 @@ fn validate_mount_attributes(attributes: &MountAttr) -> StarryResult<()> {
     Ok(())
 }
 
-fn apply_mount_attributes(mountpoint: &Arc<Mountpoint>, attributes: &MountAttr) {
+fn apply_mount_attributes(
+    mountpoint: &Arc<Mountpoint>,
+    attributes: &MountAttr,
+) -> StarryResult<()> {
     if attributes.attr_set & MOUNT_ATTR_RDONLY as u64 != 0 {
-        mountpoint.set_readonly(true);
+        mountpoint.set_readonly(true)?;
     } else if attributes.attr_clr & MOUNT_ATTR_RDONLY as u64 != 0 {
-        mountpoint.set_readonly(false);
+        mountpoint.set_readonly(false)?;
     }
 
     let basic_attributes = (MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC) as u64;
@@ -600,6 +588,7 @@ fn apply_mount_attributes(mountpoint: &Arc<Mountpoint>, attributes: &MountAttr) 
         }
     }
     mountpoint.set_mount_flags(mount_flags);
+    Ok(())
 }
 
 pub fn sys_mount(
@@ -610,6 +599,7 @@ pub fn sys_mount(
     flags: i32,
     data: *const c_void,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let source = if source.is_null() {
         String::new()
     } else {
@@ -628,7 +618,8 @@ pub fn sys_mount(
     }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let context = ax_fs_ng::FsView::current(fs_context, &link_caller);
+    let mount_namespace = context.mount_namespace().clone();
     let propagation = flags & PROPAGATION_FLAGS;
 
     if propagation.count_ones() > 1 {
@@ -641,11 +632,11 @@ pub fn sys_mount(
             return Err(StarryError::InvalidInput);
         }
 
-        let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
-        if !target.is_root_of_mount() {
+        let target = context.resolve(target)?;
+        if !target.location().is_root_of_mount() {
             return Err(StarryError::InvalidInput);
         }
-        let mountpoint = target.mountpoint().clone();
+        let mountpoint = target.location().mountpoint().clone();
         if (flags & MS_REC) != 0 {
             match propagation {
                 MS_SHARED => mountpoint.set_shared_recursive(),
@@ -668,67 +659,65 @@ pub fn sys_mount(
     }
 
     if (flags & MS_REMOUNT) != 0 {
-        let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
-        if !target.is_root_of_mount() {
+        let target = context.resolve(target)?;
+        if !target.location().is_root_of_mount() {
             return Err(StarryError::InvalidInput);
         }
-        // Reconfigure the same backend before publishing VFS write access.
-        // Physical read-only devices and conflicting owners leave flags intact.
-        if flags & MS_BIND == 0 && flags & MS_RDONLY == 0 {
-            target.filesystem().remount_read_write()?;
-        }
-        let mp = target.mountpoint();
+        let mp = target.location().mountpoint();
         if flags & MS_BIND == 0 {
-            mp.set_filesystem_readonly(flags & MS_RDONLY != 0);
+            mp.set_filesystem_readonly(flags & MS_RDONLY != 0)?;
+        } else {
+            mp.set_readonly(flags & MS_RDONLY != 0)?;
         }
-        mp.set_readonly((flags & MS_RDONLY) != 0);
         mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     if (flags & MS_MOVE) != 0 {
-        let ctx = fs_context.lock();
-        let source = ctx.resolve(source)?;
-        let target = ctx.resolve(target)?;
-        source.move_mount(&target)?;
-        drop(ctx);
+        let source = context.resolve(source)?;
+        let target = context.resolve(target)?;
+        source.location().move_mount(target.location())?;
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     if (flags & MS_BIND) != 0 {
-        let ctx = fs_context.lock();
-        let source = ctx.resolve(source)?;
-        let target = ctx.resolve(target)?;
-        target.bind_mount(&source, (flags & MS_REC) != 0)?;
-        drop(ctx);
+        let source = context.resolve(source)?;
+        let target = context.resolve(target)?;
+        target
+            .location()
+            .bind_mount(source.location(), (flags & MS_REC) != 0)?;
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     match fs_type.as_str() {
         "proc" => {
-            let fs = crate::pseudofs::proc::new_procfs(current.as_thread().active_pid_namespace());
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let fs = crate::pseudofs::proc::new_procfs(current.as_thread().active_pid_namespace())?;
+            let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let mp = target
+                .location()
+                .mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         "sysfs" | "devtmpfs" | "tmpfs" => {
             let fs = MemoryFs::new();
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let mp = target
+                .location()
+                .mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -737,25 +726,27 @@ pub fn sys_mount(
             // RAMFS_MAGIC through statfs. It shares the in-memory inode/data
             // machinery here, but must not inherit tmpfs's visible identity.
             let fs = MemoryFs::new_ramfs();
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let mp = target
+                .location()
+                .mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         "devpts" => {
-            let fs = new_devptsfs(parse_devpts_options(current, data)?);
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let fs = new_devptsfs(parse_devpts_options(current, data)?)?;
+            let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
-            let mp = target.mount(&fs)?;
+            let mp = target.location().mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -766,15 +757,14 @@ pub fn sys_mount(
                 let namespace = nsproxy.cgroup_ns.lock_irqsave();
                 (namespace.root(), namespace.pin_root())
             };
-            let fs = crate::pseudofs::cgroup::new_cgroup2fs(cgroup_root);
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
-            if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
-            }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let root = crate::pseudofs::cgroup::cgroup2_mount_root(cgroup_root)?;
+            let target = context.resolve(target)?;
+            let mp = target
+                .location()
+                .mount_root_with_source(root, mount_source(&source))?;
             mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -783,26 +773,38 @@ pub fn sys_mount(
             mount_ext4(&source, &target, flags)?;
         }
         "overlay" => {
+            let mounter = crate::task::FsCredentialsSnapshot::capture(current.as_thread());
+            let credentials = mounter.as_mutation_credentials();
+            let resolve_backing = |path: &str| -> StarryResult<_> {
+                let (root, _) = context.resolve_with_search_checked(path, |directory| {
+                    credentials.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+                })?;
+                root.location().check_is_dir()?;
+                credentials
+                    .check_permission(&root.location().metadata()?, NodePermission::OTHER_EXEC)?;
+                Ok(root)
+            };
             let (lower_paths, upper_path, work_path) = parse_overlay_options(current, data)?;
-            let fs_context = ax_fs_ng::vfs::current_fs_context();
-            let ctx = fs_context.lock();
             let mut lower_dirs = Vec::new();
             for lower in lower_paths {
-                lower_dirs.push(ctx.resolve(lower)?);
+                lower_dirs.push(resolve_backing(&lower)?);
             }
-            let upper_dir = upper_path.map(|path| ctx.resolve(path)).transpose()?;
-            let work_dir = work_path.map(|path| ctx.resolve(path)).transpose()?;
+            let upper_dir = upper_path.as_deref().map(resolve_backing).transpose()?;
+            let work_dir = work_path.as_deref().map(resolve_backing).transpose()?;
             let readonly = upper_dir.is_none();
             let fs = crate::pseudofs::overlay::new_overlayfs(OverlayOptions {
                 lower_dirs,
                 upper_dir,
                 work_dir,
+                mounter,
             })?;
-            let target = ctx.resolve(target)?;
+            let target = context.resolve(target)?;
             if readonly || flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let mp = target
+                .location()
+                .mount_with_source(&fs, mount_source(&source))?;
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         _ => return Err(StarryError::NoSuchDevice),
@@ -828,6 +830,8 @@ impl Drop for LoopMountLease {
 
 #[cfg(feature = "ext4")]
 fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
+    let link_caller =
+        crate::task::ProcLinkCaller::capture(crate::task::current_user_task().as_thread());
     use ax_fs_ng::vfs::{FileBackend, new_filesystem_from_file};
     use axfs_ng_vfs::NodeType;
 
@@ -835,13 +839,13 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
 
     let (source_location, target_location) = {
         let context = ax_fs_ng::vfs::current_fs_context();
-        let context = context.lock();
+        let context = ax_fs_ng::FsView::current(context, &link_caller);
         (context.resolve(source)?, context.resolve(target)?)
     };
-    if source_location.metadata()?.node_type != NodeType::BlockDevice {
+    if source_location.location().metadata()?.node_type != NodeType::BlockDevice {
         return Err(Errno::ENOTBLK.into());
     }
-    let device = source_location.entry().downcast::<Device>()?;
+    let device = source_location.location().entry().downcast::<Device>()?;
     let readonly = flags & MS_RDONLY != 0;
     if let Some(physical) = device
         .inner()
@@ -859,8 +863,8 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         if fs.name() != "ext4" {
             return Err(StarryError::NoSuchDevice);
         }
-        let mount = target_location.mount_with_source(&fs, source)?;
-        mount.set_readonly(readonly || fs.is_readonly());
+        let mount = target_location.location().mount_with_source(&fs, source)?;
+        mount.set_readonly(readonly || fs.is_readonly())?;
         mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         return Ok(());
     }
@@ -879,8 +883,8 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     let fs = loop_device.mounted_filesystem(readonly, || {
         new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)
     })?;
-    let mount = target_location.mount_with_source(&fs, source)?;
-    mount.set_readonly(readonly || fs.is_readonly());
+    let mount = target_location.location().mount_with_source(&fs, source)?;
+    mount.set_readonly(readonly || fs.is_readonly())?;
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
     Ok(())
 }
@@ -890,6 +894,7 @@ pub fn sys_umount2(
     target: *const c_char,
     flags: i32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let target = vm_load_string(current, target)?;
     debug!("sys_umount2 <= target: {target:?}, flags: {flags:#x}");
 
@@ -906,11 +911,12 @@ pub fn sys_umount2(
     }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let context = ax_fs_ng::FsView::current(fs_context, &link_caller);
+    let mount_namespace = context.mount_namespace().clone();
     let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
-        fs_context.lock().resolve_no_follow(target)?
+        context.resolve_no_follow(target)?
     } else {
-        fs_context.lock().resolve(target)?
+        context.resolve(target)?
     };
 
     if !current.as_thread().cred().has_cap_sys_admin() {
@@ -918,35 +924,34 @@ pub fn sys_umount2(
     }
 
     // Linux umount2 returns EINVAL for paths that are not mount points.
-    if !target.is_root_of_mount() {
+    if !target.location().is_root_of_mount() {
         return Err(StarryError::InvalidInput);
     }
 
-    if (flags & MNT_EXPIRE) != 0 && !target.mountpoint().mark_expired() {
+    if (flags & MNT_EXPIRE) != 0 && !target.location().mountpoint().mark_expired() {
         return Err(StarryError::from(Errno::EAGAIN));
     }
 
     if (flags & MNT_DETACH) != 0 {
-        target.detach_mount()?;
+        target.location().detach_mount()?;
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
-    let plan = target
-        .mountpoint()
-        .plan_unmount(axfs_ng_vfs::UnmountKind::Normal)?;
+    let filesystem_path = target.location().clone();
+    let plan = target.prepare_unmount()?;
     if plan.targets().any(is_mount_busy) {
         return Err(StarryError::from(Errno::EBUSY));
     }
 
     // Flush this filesystem's closed-file cache before its own flush. An
     // unrelated filesystem's busy mapping must not reject this unmount.
-    ax_fs_ng::file::sync_filesystem_cached_files(target.filesystem())?;
+    ax_fs_ng::file::sync_filesystem_cached_files(filesystem_path.filesystem())?;
 
     if plan.targets().any(is_mount_busy) {
         return Err(StarryError::from(Errno::EBUSY));
     }
-    target.commit_unmount(plan)?;
+    plan.commit()?;
     crate::file::notify_mount_namespace_changed(&mount_namespace);
 
     Ok(0)
@@ -957,68 +962,28 @@ pub fn sys_pivot_root(
     new_root: *const c_char,
     put_old: *const c_char,
 ) -> crate::StarryResult<isize> {
-    let new_root = vm_load_string(current, new_root)?;
-    let put_old = vm_load_string(current, put_old)?;
-    debug!(
-        "sys_pivot_root <= new_root: {:?}, put_old: {:?}",
-        new_root, put_old
-    );
-
-    if !current.as_thread().cred().has_cap_sys_admin() {
-        return Err(crate::StarryError::OperationNotPermitted);
-    }
-
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mut ctx = fs_context.lock();
-
-    // The caller's current root must itself be a mount point (Linux
-    // EINVAL if e.g. the process chroot'd into a subdirectory).
-    if !ctx.root_dir().is_root_of_mount() {
-        return Err(StarryError::InvalidInput);
-    }
-
-    // Resolve both paths before checking their VFS relationship. Linux permits
-    // callers to enter new_root and use pivot_root(".", "old").
-    let new_root_loc = ctx.resolve(&new_root)?;
-    new_root_loc.check_is_dir()?;
-    let put_old_loc = ctx.resolve(&put_old)?;
-    put_old_loc.check_is_dir()?;
-
-    if !put_old_loc.is_descendant_of(&new_root_loc) {
-        return Err(StarryError::InvalidInput);
-    }
-
-    // `pivot_root` rearranges mounts rather than arbitrary directories.
-    if new_root_loc.is_root()
-        || !new_root_loc.is_root_of_mount()
-        || new_root_loc.ptr_eq(ctx.root_dir())
-    {
-        warn!(
-            "sys_pivot_root: new_root {:?} is not a distinct non-global mount root",
-            new_root
-        );
-        return Err(StarryError::InvalidInput);
-    }
-
-    // Capture the old root Location BEFORE the pivot, so that we can
-    // propagate the change to every other task afterwards (Linux
-    // chroot_fs_refs semantics).  We save the full Location (mountpoint +
-    // dentry) rather than just the mountpoint, so that tasks chroot'd
-    // into a subdirectory of the old root are not incorrectly updated.
-    let old_root = ctx.root_dir().clone();
-    let mount_namespace = ctx.mount_namespace().clone();
-
-    // Perform pivot: swap the root mount (updates this task's FsContext).
-    ctx.pivot_root(new_root_loc, put_old_loc)?;
-
-    let new_root_loc = ctx.root_dir().clone();
-    drop(ctx); // Release this task's lock before touching others.
-
-    // Propagate root / cwd to all other tasks whose root_dir or current_dir
-    // exactly matches the old root Location — mirroring Linux
-    // chroot_fs_refs() in fs/namespace.c.
-    ax_fs_ng::vfs::FsContext::propagate_pivot_root(&mount_namespace, &old_root, &new_root_loc);
-    crate::file::notify_mount_namespace_changed(&mount_namespace);
-
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let credentials = link_caller.fs_credentials();
+    let cred = credentials.as_mutation_credentials();
+    let binding = current
+        .as_thread()
+        .snapshot_fs_binding()?
+        .ok_or(StarryError::BadState)?;
+    let resolve_directory = |path: &str| -> StarryResult<axfs_ng_vfs::PathHandle> {
+        let location = ax_fs_ng::FsView::current(binding.fs.clone(), &link_caller)
+            .resolve_checked(path, |directory| {
+                cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+            })?;
+        location.location().check_is_dir()?;
+        Ok(location)
+    };
+    // Match path_pivot_root: new lookup and directory validation precede any
+    // observation of put_old, and both precede namespace capability checking.
+    let new_root_path = vm_load_string(current, new_root)?;
+    let new_root = resolve_directory(&new_root_path)?;
+    let put_old_path = vm_load_string(current, put_old)?;
+    let put_old = resolve_directory(&put_old_path)?;
+    let change = crate::task::NamespaceChange::new(current.as_thread())?;
+    change.pivot_root(new_root, put_old)?;
     Ok(0)
 }

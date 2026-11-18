@@ -20,11 +20,15 @@
  */
 #include "test_framework.h"
 
+#include <elf.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdatomic.h>
+#include <stdint.h>
+#include <sys/mount.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -36,7 +40,7 @@ extern char **environ;
 
 #ifndef SYS_execveat
 #if defined(__x86_64__)
-#define SYS_execveat 358
+#define SYS_execveat 322
 #elif defined(__aarch64__) || defined(__riscv) || defined(__loongarch__)
 #define SYS_execveat 281
 #else
@@ -157,11 +161,17 @@ static void check_exec_rejection(const char *path, bool use_execveat, int expect
         return;
     }
     if (pid == 0) {
-        char *const argv[] = {(char *)path, NULL};
+        char *const argv[] = {(char *)path, "-c", "exit 125", NULL};
         long result = use_execveat
             ? syscall(SYS_execveat, AT_FDCWD, path, argv, environ, 0)
             : syscall(SYS_execve, path, argv, environ);
-        _exit(result == -1 && errno == expected ? 123 : 124);
+        int actual = errno;
+        if (result != -1 || actual != expected) {
+            dprintf(STDERR_FILENO, "%s(%s): result=%ld errno=%d expected=%d\n",
+                    use_execveat ? "execveat" : "execve", path, result, actual,
+                    expected);
+        }
+        _exit(result == -1 && actual == expected ? 123 : 124);
     }
     int status = 0;
     CHECK(waitpid(pid, &status, 0) == pid, "collect rejected executable child");
@@ -192,6 +202,53 @@ static void test_exec_permission_and_format_rejection(void)
 /* The shell command whose exit status proves the new image really ran. */
 #define EXECVEAT_OK_STATUS 42
 static char *const SH_ARGV[] = {"sh", "-c", "exit 42", NULL};
+
+/* Descriptor spellings still traverse the caller's mounted procfs view. */
+static void test_execve_descriptor_paths_obey_mount_view(void)
+{
+    int fd = open("/bin/sh", O_PATH | O_CLOEXEC);
+    CHECK(fd >= 0, "retain executable through an O_PATH description");
+    if (fd < 0) {
+        return;
+    }
+    const char *prefixes[] = {"/proc/self/fd/", "/dev/fd/"};
+    for (unsigned index = 0; index < sizeof(prefixes) / sizeof(prefixes[0]); index++) {
+        char path[64];
+        snprintf(path, sizeof(path), "%s%d", prefixes[index], fd);
+        for (int covered = 0; covered < 2; covered++) {
+            pid_t pid = fork();
+            CHECK(pid >= 0, "fork descriptor-path executable actor");
+            if (pid < 0) {
+                continue;
+            }
+            if (pid == 0) {
+                if (covered &&
+                    (unshare(CLONE_NEWNS) != 0 ||
+                     mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) != 0 ||
+                     mount("tmpfs", "/proc", "tmpfs", MS_NOSUID | MS_NODEV, NULL) != 0)) {
+                    perror("cover procfs in executable actor");
+                    _exit(125);
+                }
+                errno = 0;
+                long result = syscall(SYS_execve, path, SH_ARGV, environ);
+                int saved_errno = errno;
+                if (covered && result == -1 && saved_errno == ENOENT) {
+                    _exit(123);
+                }
+                dprintf(STDERR_FILENO, "execve(%s) covered=%d ret=%ld errno=%d\n",
+                        path, covered, result, saved_errno);
+                _exit(126);
+            }
+            int status = 0;
+            CHECK(waitpid(pid, &status, 0) == pid,
+                  "collect descriptor-path executable actor");
+            CHECK(WIFEXITED(status) && WEXITSTATUS(status) ==
+                      (covered ? 123 : EXECVEAT_OK_STATUS),
+                  "descriptor-path exec follows the mounted view and preserves rejection");
+        }
+    }
+    close(fd);
+}
 
 static long do_execveat(int dirfd, const char *path, int flags)
 {
@@ -320,6 +377,319 @@ static int copy_file_into(int dst_fd, const char *src_path)
     }
     close(src);
     return n < 0 ? -1 : 0;
+}
+
+/* Redirect the copied native shell to a private copy of its actual loader. */
+static int redirect_interpreter(int fd, const char *replacement,
+                                char *original, size_t capacity)
+{
+    Elf64_Ehdr header;
+    if (pread(fd, &header, sizeof(header), 0) != (ssize_t)sizeof(header)
+        || memcmp(header.e_ident, ELFMAG, SELFMAG) != 0
+        || header.e_ident[EI_CLASS] != ELFCLASS64
+        || header.e_phentsize != sizeof(Elf64_Phdr)) {
+        errno = ENOEXEC;
+        return -1;
+    }
+    for (unsigned index = 0; index < header.e_phnum; index++) {
+        off_t offset = (off_t)header.e_phoff + index * sizeof(Elf64_Phdr);
+        Elf64_Phdr ph;
+        if (pread(fd, &ph, sizeof(ph), offset) != (ssize_t)sizeof(ph)) {
+            return -1;
+        }
+        if (ph.p_type != PT_INTERP) {
+            continue;
+        }
+        size_t length = strlen(replacement) + 1;
+        if (ph.p_filesz < length || ph.p_filesz > capacity
+            || pread(fd, original, ph.p_filesz, (off_t)ph.p_offset)
+                   != (ssize_t)ph.p_filesz
+            || original[ph.p_filesz - 1] != '\0') {
+            errno = ENOEXEC;
+            return -1;
+        }
+        if (pwrite(fd, replacement, length, (off_t)ph.p_offset)
+            != (ssize_t)length) {
+            return -1;
+        }
+        ph.p_filesz = length;
+        ph.p_memsz = length;
+        return pwrite(fd, &ph, sizeof(ph), offset) == (ssize_t)sizeof(ph) ? 0 : -1;
+    }
+    errno = ENOEXEC;
+    return -1;
+}
+
+/* Reject an invalid native header, then execute after repairing the same inode. */
+static void check_header_recovery(const char *image, const char *target,
+                                  off_t offset, const void *invalid,
+                                  size_t field_size, int expected)
+{
+    printf("ELF_HEADER_REJECTION target=%s offset=%lld size=%zu errno=%d\n",
+           target, (long long)offset, field_size, expected);
+    fflush(stdout);
+    int fd = open(target, O_RDWR);
+    CHECK(fd >= 0, "open the private ELF header for mutation");
+    if (fd < 0) {
+        return;
+    }
+    unsigned char original[sizeof(Elf64_Off)];
+    CHECK(field_size <= sizeof(original), "ELF field fits the recovery buffer");
+    if (field_size > sizeof(original)) {
+        close(fd);
+        return;
+    }
+    ssize_t read = pread(fd, original, field_size, offset);
+    CHECK(read == (ssize_t)field_size, "read the original ELF header field");
+    if (read != (ssize_t)field_size) {
+        close(fd);
+        return;
+    }
+    ssize_t written = pwrite(fd, invalid, field_size, offset);
+    CHECK(written == (ssize_t)field_size, "write the invalid ELF header field");
+    close(fd);
+    if (written != (ssize_t)field_size) {
+        return;
+    }
+
+    check_exec_rejection(image, false, expected);
+    check_exec_rejection(image, true, expected);
+
+    fd = open(target, O_WRONLY);
+    CHECK(fd >= 0, "rejected ELF header releases its inode's write exclusion");
+    if (fd < 0) {
+        return;
+    }
+    written = pwrite(fd, original, field_size, offset);
+    CHECK(written == (ssize_t)field_size, "repair the same ELF header inode");
+    close(fd);
+    if (written == (ssize_t)field_size) {
+        check_execveat_ran(execveat_success_status(AT_FDCWD, image, 0),
+                          "repaired native headers execute the shell image");
+    }
+}
+
+/* Native code for a minimal ELF that has no interpreter or libc dependency. */
+#if defined(__x86_64__)
+#define NATIVE_EXIT_CODE "mov $42, %edi\nmov $60, %eax\nsyscall\n"
+#elif defined(__aarch64__)
+#define NATIVE_EXIT_CODE "mov x0, #42\nmov x8, #93\nsvc #0\n"
+#elif defined(__riscv)
+#define NATIVE_EXIT_CODE "li a0, 42\nli a7, 93\necall\n"
+#elif defined(__loongarch__)
+#define NATIVE_EXIT_CODE "li.w $a0, 42\nli.w $a7, 93\nsyscall 0\n"
+#else
+#error "Native exit code is unknown for this architecture"
+#endif
+__asm__(".pushsection .rodata\n"
+        ".balign 4\n"
+        ".global exec_native_exit_start, exec_native_exit_end\n"
+        "exec_native_exit_start:\n"
+        NATIVE_EXIT_CODE
+        "exec_native_exit_end:\n"
+        ".popsection\n");
+extern const unsigned char exec_native_exit_start[], exec_native_exit_end[];
+
+/* File offsets need not have the alignment required by host Rust references. */
+static void check_unaligned_program_table(const char *image, const char *target)
+{
+    int source = open(image, O_RDONLY);
+    Elf64_Ehdr header;
+    int ready = source >= 0
+        && pread(source, &header, sizeof(header), 0) == (ssize_t)sizeof(header);
+    CHECK(ready, "read the native ABI for the standalone ELF");
+    if (source >= 0) {
+        close(source);
+    }
+    if (!ready) {
+        return;
+    }
+    header.e_type = ET_EXEC;
+    header.e_entry = 0x400000 + 128;
+    header.e_phoff = sizeof(header) + 1;
+    header.e_phnum = 1;
+    header.e_shoff = 0;
+    header.e_shnum = 0;
+    header.e_shstrndx = SHN_UNDEF;
+    size_t code_size = (uintptr_t)exec_native_exit_end - (uintptr_t)exec_native_exit_start;
+    Elf64_Phdr ph = {
+        .p_type = PT_LOAD,
+        .p_flags = PF_R | PF_X,
+        .p_vaddr = 0x400000,
+        .p_filesz = 128 + code_size,
+        .p_memsz = 128 + code_size,
+        .p_align = 4096,
+    };
+    int fd = open(target, O_CREAT | O_EXCL | O_WRONLY, 0755);
+    CHECK(fd >= 0, "create the standalone native ELF");
+    if (fd < 0) {
+        return;
+    }
+    ready = pwrite(fd, &header, sizeof(header), 0) == (ssize_t)sizeof(header)
+        && pwrite(fd, &ph, sizeof(ph), header.e_phoff) == (ssize_t)sizeof(ph)
+        && pwrite(fd, exec_native_exit_start, code_size, 128) == (ssize_t)code_size;
+    CHECK(ready, "stage the unaligned program table and native entry");
+    close(fd);
+    if (ready) {
+        printf("ELF_UNALIGNED_PROGRAM_TABLE offset=%llu\n",
+               (unsigned long long)header.e_phoff);
+        fflush(stdout);
+        for (int api = 0; api < 2; api++) {
+            pid_t pid = fork();
+            CHECK(pid >= 0, "fork before executing the standalone native ELF");
+            if (pid == 0) {
+                char *const argv[] = {(char *)target, NULL};
+                if (api == 0) {
+                    syscall(SYS_execve, target, argv, environ);
+                } else {
+                    syscall(SYS_execveat, AT_FDCWD, target, argv, environ, 0);
+                }
+                _exit(126);
+            }
+            if (pid > 0) {
+                int status = 0;
+                CHECK(waitpid(pid, &status, 0) == pid, "collect the native ELF child");
+                check_exited_with(status, EXECVEAT_OK_STATUS,
+                                  "a legal unaligned program table executes its image");
+            }
+        }
+    }
+    CHECK(unlink(target) == 0, "remove the standalone native ELF");
+}
+
+/* A failed interpreter load must preserve the caller and release both leases. */
+static void test_interpreter_format_recovery(void)
+{
+    char directory[] = "/tmp/xi-XXXXXX";
+    char *created = mkdtemp(directory);
+    CHECK(created != NULL, "create a private interpreter fixture");
+    if (created == NULL) {
+        return;
+    }
+    char image[64], interpreter[64], original[4096];
+    snprintf(image, sizeof(image), "%s/image", directory);
+    snprintf(interpreter, sizeof(interpreter), "%s/i", directory);
+    int image_fd = open(image, O_CREAT | O_EXCL | O_RDWR, 0755);
+    int interpreter_fd = -1;
+    CHECK(image_fd >= 0, "create the private executable image");
+    if (image_fd < 0) {
+        goto cleanup;
+    }
+    int prepared = copy_file_into(image_fd, "/bin/sh");
+    if (prepared == 0) {
+        prepared = redirect_interpreter(image_fd, interpreter, original,
+                                       sizeof(original));
+    }
+    CHECK(prepared == 0, "stage the shell with a private PT_INTERP path");
+    if (prepared != 0) {
+        goto cleanup;
+    }
+    interpreter_fd = open(interpreter, O_CREAT | O_EXCL | O_RDWR, 0755);
+    CHECK(interpreter_fd >= 0, "create the private ELF interpreter");
+    if (interpreter_fd < 0) {
+        goto cleanup;
+    }
+    prepared = copy_file_into(interpreter_fd, original);
+    CHECK(prepared == 0, "copy the actual dynamic linker");
+    if (prepared != 0) {
+        goto cleanup;
+    }
+    CHECK(pwrite(interpreter_fd, "BAD!", SELFMAG, 0) == SELFMAG,
+          "corrupt the complete interpreter's ELF magic");
+    close(image_fd);
+    close(interpreter_fd);
+    image_fd = interpreter_fd = -1;
+
+    check_exec_rejection(image, false, ELIBBAD);
+    check_exec_rejection(image, true, ELIBBAD);
+    interpreter_fd = open(interpreter, O_WRONLY);
+    CHECK(interpreter_fd >= 0, "reopen the rejected interpreter for truncation");
+    if (interpreter_fd < 0) {
+        goto cleanup;
+    }
+    CHECK(ftruncate(interpreter_fd, SELFMAG) == 0,
+          "truncate the interpreter below a complete native ELF header");
+    close(interpreter_fd);
+    interpreter_fd = -1;
+    check_exec_rejection(image, false, EIO);
+    check_exec_rejection(image, true, EIO);
+    image_fd = open(image, O_WRONLY);
+    CHECK(image_fd >= 0, "failed exec releases the main image's write exclusion");
+    if (image_fd >= 0) {
+        close(image_fd);
+        image_fd = -1;
+    }
+    interpreter_fd = open(interpreter, O_WRONLY);
+    CHECK(interpreter_fd >= 0,
+          "failed exec releases the interpreter's write exclusion");
+    if (interpreter_fd < 0) {
+        goto cleanup;
+    }
+    prepared = copy_file_into(interpreter_fd, original);
+    CHECK(prepared == 0, "restore the same interpreter inode's complete contents");
+    if (prepared != 0) {
+        goto cleanup;
+    }
+    close(interpreter_fd);
+    interpreter_fd = -1;
+    check_execveat_ran(execveat_success_status(AT_FDCWD, image, 0),
+                      "repaired interpreter executes the original shell image");
+    Elf64_Half invalid = EM_NONE;
+    check_header_recovery(image, image, offsetof(Elf64_Ehdr, e_machine),
+                          &invalid, sizeof(invalid), ENOEXEC);
+    check_header_recovery(image, interpreter, offsetof(Elf64_Ehdr, e_machine),
+                          &invalid, sizeof(invalid), ELIBBAD);
+    invalid = ET_REL;
+    check_header_recovery(image, image, offsetof(Elf64_Ehdr, e_type),
+                          &invalid, sizeof(invalid), ENOEXEC);
+
+    const struct {
+        off_t offset;
+        Elf64_Half value;
+    } invalid_tables[] = {
+        {offsetof(Elf64_Ehdr, e_phentsize), 0},
+        {offsetof(Elf64_Ehdr, e_phentsize), sizeof(Elf64_Phdr) - 1},
+        {offsetof(Elf64_Ehdr, e_phnum), 0},
+        {offsetof(Elf64_Ehdr, e_phnum), 65536 / sizeof(Elf64_Phdr) + 1},
+    };
+    for (size_t i = 0; i < sizeof(invalid_tables) / sizeof(invalid_tables[0]); i++) {
+        const void *value = &invalid_tables[i].value;
+        size_t size = sizeof(invalid_tables[i].value);
+        check_header_recovery(image, image, invalid_tables[i].offset,
+                              value, size, ENOEXEC);
+        check_header_recovery(image, interpreter, invalid_tables[i].offset,
+                              value, size, ELIBBAD);
+    }
+    const char *targets[] = {image, interpreter};
+    for (size_t i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        struct stat st;
+        int ready = stat(targets[i], &st);
+        CHECK(ready == 0, "inspect the original ELF table extent");
+        if (ready != 0) {
+            continue;
+        }
+        const Elf64_Off offsets[] = {UINT64_MAX - 27, st.st_size - 1};
+        for (size_t j = 0; j < sizeof(offsets) / sizeof(offsets[0]); j++) {
+            check_header_recovery(image, targets[i], offsetof(Elf64_Ehdr, e_phoff),
+                                  &offsets[j], sizeof(offsets[j]),
+                                  i == 0 ? ENOEXEC : ELIBBAD);
+        }
+    }
+    char standalone[64];
+    snprintf(standalone, sizeof(standalone), "%s/unaligned", directory);
+    check_unaligned_program_table(image, standalone);
+
+cleanup:
+    if (image_fd >= 0) {
+        close(image_fd);
+    }
+    if (interpreter_fd >= 0) {
+        close(interpreter_fd);
+    }
+    CHECK(unlink(image) == 0 || errno == ENOENT, "remove the private executable");
+    CHECK(unlink(interpreter) == 0 || errno == ENOENT,
+          "remove the private interpreter");
+    CHECK(rmdir(directory) == 0, "remove the interpreter fixture directory");
 }
 
 /*
@@ -537,6 +907,7 @@ static void test_multithread_exec_keeps_retiring_page_table_roots_alive(void)
 
 int main(void)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
     TEST_START("execve/execveat family semantics");
 
     test_fork_child_exit_wait4();
@@ -544,10 +915,12 @@ int main(void)
     test_execve_missing_path_reports_enoent();
     test_exec_permission_and_format_rejection();
 
+    test_execve_descriptor_paths_obey_mount_view();
     test_execveat_relative_path_via_dirfd();
     test_execveat_absolute_path_ignores_dirfd();
     test_execveat_relative_path_via_fdcwd();
     test_execveat_at_empty_path_executes_fd();
+    test_interpreter_format_recovery();
     test_execveat_memfd_sealed_exec();
     test_execveat_error_returns();
     test_execveat_non_directory_dirfd_enotdir();

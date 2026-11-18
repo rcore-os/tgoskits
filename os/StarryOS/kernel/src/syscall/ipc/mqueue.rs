@@ -166,7 +166,7 @@ pub fn sys_mq_open(
             // Linux stamps the new mqueue inode with mode & ~umask (masked to
             // the permission bits) and the creator's fsuid/fsgid.
             let perm = ((mode as u16) & !(umask as u16)) & 0o777;
-            let q = MessageQueue::new(max_msg, msg_size, perm, fsuid, fsgid, charged);
+            let q = MessageQueue::new(max_msg, msg_size, perm, fsuid, fsgid, charged)?;
             registry.insert(key.clone(), q.clone());
             created = true;
             q

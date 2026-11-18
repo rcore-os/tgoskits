@@ -59,6 +59,22 @@ pub struct FileExtentMap {
 }
 
 pub trait FileNodeOps: NodeOps + Pollable {
+    /// Authorizes a fresh existing-file open and prepares any copy-up before fd
+    /// publication. Layered owners override this and use their actual gate.
+    fn prepare_write_open(
+        &self,
+        request: &crate::FileOpenRequest<'_>,
+    ) -> crate::NamespaceCompletion<crate::Metadata> {
+        request.native(self)
+    }
+
+    /// Selects a fixed native endpoint outside every admission/backend gate.
+    /// Layered files must select their bound backing using saved credentials;
+    /// the default only accepts this actual receiver at native depth zero.
+    fn resolve_file_io(&self, request: crate::FileIoRequest<'_>) -> VfsResult<crate::FileIoTarget> {
+        request.native(self)
+    }
+
     /// Reads a number of bytes starting from a given offset.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
 

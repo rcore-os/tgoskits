@@ -127,7 +127,8 @@ fn update_owner(filesystem: &Ext4Filesystem, input: &Inode) {
             state.ext4.update_inode_metadata(
                 number,
                 InodeMetadataUpdate {
-                    owner: Some((73, 0)),
+                    uid: Some(73),
+                    gid: Some(0),
                     ..Default::default()
                 },
             )

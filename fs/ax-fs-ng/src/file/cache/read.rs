@@ -71,7 +71,7 @@ impl<'a> CachedRead<'a> {
         };
         Ok(Some(Self {
             cached,
-            file: cached.inner.entry().as_file()?,
+            file: cached.inner.location().entry().as_file()?,
             current: offset,
             end,
             window_pages,

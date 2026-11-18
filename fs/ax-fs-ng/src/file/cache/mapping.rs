@@ -15,7 +15,7 @@ impl CachedFile {
     pub fn pin_read_page(&self, number: u32) -> VfsResult<Option<CachedPagePin>> {
         let start = u64::from(number) * PAGE_SIZE as u64;
         let end = start + PAGE_SIZE as u64;
-        let file = self.inner.entry().as_file()?;
+        let file = self.inner.location().entry().as_file()?;
         let window = self.readahead.lock().plan(start, end).window_pages;
         loop {
             let pin = {

@@ -9,9 +9,9 @@ pub(crate) use crate::file::memfd::{
     check_write_seal_for_shared_file_backend as memfd_check_write_seal_for_shared_file_backend,
     collect_metas_touching_mprotect_range as memfd_collect_metas_touching_mprotect_range,
     on_after_map as memfd_on_after_map,
-    prepare_new_mapping_delta as memfd_prepare_new_mapping_delta,
     prepare_aspace_replace_deltas as memfd_prepare_aspace_replace_deltas,
     prepare_aspace_unmap_deltas as memfd_prepare_aspace_unmap_deltas,
+    prepare_new_mapping_delta as memfd_prepare_new_mapping_delta,
     resync_shared_writable_counts_after_mprotect as memfd_resync_shared_writable_counts_after_mprotect,
 };
 use crate::{
@@ -44,6 +44,7 @@ pub fn sys_memfd_create(
     name: *const c_char,
     flags: u32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let valid_flags = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
     if flags & !valid_flags != 0 || flags & MFD_HUGETLB != 0 {
         return Err(StarryError::InvalidInput);
@@ -58,7 +59,7 @@ pub fn sys_memfd_create(
         return Err(StarryError::InvalidInput);
     }
 
-    let (mount_path, tmpfs) = if fs_has_dir("/dev/shm") {
+    let (mount_path, tmpfs) = if fs_has_dir(&link_caller, "/dev/shm") {
         ("/dev/shm", pseudofs::shm_tmpfs())
     } else {
         ("/tmp", pseudofs::tmp_tmpfs())
@@ -66,8 +67,8 @@ pub fn sys_memfd_create(
     let tmpfs = tmpfs.ok_or(StarryError::NotFound)?;
 
     let fs_context = current_fs_context();
-    let fs = fs_context.lock();
-    let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
+    let fs = ax_fs_ng::FsView::current(fs_context, &link_caller);
+    let mountpoint = fs.resolve(mount_path)?.location().mountpoint().clone();
     let cred = current.as_thread().cred();
     // Linux shmem_file_setup creates an executable anonymous inode; the
     // explicit no-exec flag removes its execute bits before publication.
@@ -87,7 +88,9 @@ pub fn sys_memfd_create(
     // Like Linux alloc_file_pseudo(), the initial anonymous file does not
     // acquire pathname-open write access. A later open of its procfs fd does.
     let file = ax_fs_ng::File::new(
-        FileBackend::Cached(CachedFile::get_or_create(loc.clone())?),
+        FileBackend::Cached(CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(loc.clone())?,
+        )?),
         FileFlags::READ | FileFlags::WRITE,
     );
 
@@ -97,8 +100,10 @@ pub fn sys_memfd_create(
     add_file_like(memfd, cloexec).map(|fd| fd as _)
 }
 
-fn fs_has_dir(path: &str) -> bool {
-    current_fs_context().lock().resolve(path).is_ok()
+fn fs_has_dir(link_caller: &crate::task::ProcLinkCaller, path: &str) -> bool {
+    ax_fs_ng::FsView::current(current_fs_context(), link_caller)
+        .resolve(path)
+        .is_ok()
 }
 
 fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {

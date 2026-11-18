@@ -7,6 +7,7 @@ mod io;
 mod io_uring;
 mod lock;
 mod memfd;
+mod metadata;
 mod mount;
 mod pidfd;
 mod pipe;
@@ -15,21 +16,8 @@ mod stat;
 mod timerfd;
 mod xattr;
 
-use axfs_ng_vfs::MutationCredentials;
-
-use crate::task::Cred;
-
-/// Converts a StarryOS task credential into the VFS access snapshot.
-pub(crate) fn mutation_credentials(cred: &Cred) -> MutationCredentials<'_> {
-    MutationCredentials {
-        fsuid: cred.fsuid,
-        fsgid: cred.fsgid,
-        supplementary_gids: &cred.groups,
-        cap_dac_override: cred.has_cap_dac_override(),
-        cap_dac_read_search: cred.has_cap_dac_read_search(),
-        cap_fowner: cred.has_cap_fowner(),
-    }
-}
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use lock::render_file_lock_metrics;
 
 pub use self::{
     aio::*,
@@ -44,6 +32,7 @@ pub use self::{
         wake_flock_waiters, wake_lock_waiters,
     },
     memfd::*,
+    metadata::*,
     mount::*,
     pidfd::*,
     pipe::*,
@@ -52,6 +41,3 @@ pub use self::{
     timerfd::*,
     xattr::*,
 };
-
-#[cfg(feature = "qperf-metrics")]
-pub(crate) use lock::render_file_lock_metrics;

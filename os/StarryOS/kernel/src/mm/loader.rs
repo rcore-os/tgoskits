@@ -1,15 +1,21 @@
 //! User address space management.
 
-use alloc::{borrow::ToOwned, collections::VecDeque, string::String, vec, vec::Vec};
-use core::{ffi::CStr, iter, mem::size_of};
+use alloc::{borrow::ToOwned, collections::VecDeque, string::String, sync::Arc, vec, vec::Vec};
+use core::{
+    ffi::CStr,
+    iter,
+    mem::{align_of, size_of},
+};
 
-use ax_fs_ng::vfs::{CachedFile, FileBackend};
+use ax_fs_ng::{
+    FsView,
+    vfs::{CachedFile, FileBackend},
+};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
-use axfs_ng_vfs::{Location, NodeType};
+use axfs_ng_vfs::{NodeType, PathHandle};
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
-use uluru::LRUCache;
 use zerocopy::IntoBytes;
 
 use crate::{
@@ -18,8 +24,8 @@ use crate::{
         UserVirtualAddressLayout,
         aspace::{AddrSpace, AddressSpaceId, MappingOperation, VmEpoch},
     },
-    sync::Mutex,
-    task::Cred,
+    namespace::UserNamespace,
+    sync::RawSpinLock,
 };
 
 /// Largest argv/envp stack image accepted by execve.
@@ -119,6 +125,11 @@ impl PreparedUserImage {
 }
 
 impl UserImageBuilder {
+    /// Sets the nascent MM's authority before loading or publishing its image.
+    pub(crate) fn set_user_namespace(&mut self, namespace: Arc<RawSpinLock<UserNamespace>>) {
+        self.aspace.set_user_namespace(namespace);
+    }
+
     /// Consumes a successfully loaded attempt after verifying that no later
     /// retry changed the builder contents represented by `loaded`.
     pub fn finish(self, loaded: LoadedUserImage) -> StarryResult<PreparedUserImage> {
@@ -261,7 +272,7 @@ fn app_stack_region(args: &[String], envs: &[String], auxv: &[AuxEntry], sp: usi
 fn map_elf<'a>(
     uspace: &mut AddrSpace,
     base: usize,
-    entry: &'a ElfCacheEntry,
+    entry: &'a ElfImage,
 ) -> StarryResult<ELFParser<'a>> {
     let elf_parser =
         ELFParser::new(entry.borrow_elf(), base).map_err(|_| StarryError::InvalidData)?;
@@ -308,8 +319,6 @@ fn map_elf<'a>(
         // ELF requires each loadable segment's virtual address and file
         // offset to have the same page offset. This is untrusted executable
         // metadata, so reject a mismatch instead of panicking in the kernel.
-        // Use a distinct error from InvalidExecutable: execve uses that error
-        // to opt into its legacy shell fallback for a non-ELF file.
         if seg_pad != ph.offset as usize % PAGE_SIZE_4K {
             return Err(StarryError::MalformedExecutable);
         }
@@ -649,185 +658,231 @@ fn map_elf_error(err: &'static str) -> StarryError {
 }
 
 #[self_referencing]
-struct ElfCacheEntry {
+/// Parsed headers owned by one load; data pages remain shared by `CachedFile`.
+struct ElfImage {
     cache: CachedFile,
-    data: Vec<u8>,
+    // The header parser borrows native integer fields from this allocation.
+    data: Vec<u64>,
     #[borrows(data)]
     #[covariant]
     elf: ELFHeaders<'this>,
 }
 
-impl ElfCacheEntry {
-    fn load(loc: Location) -> StarryResult<Result<Self, Vec<u8>>> {
-        let cache = CachedFile::get_or_create(loc)?;
-
-        let mut data = vec![0; 4096];
-        let read = cache.read_at(&mut data[..], 0)?;
-        data.truncate(read);
-        match ElfCacheEntry::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
-            let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
-            let range = builder.ph_range();
-            if range.end as usize <= data.len() {
-                builder.build(&data[range.start as usize..range.end as usize])
-            } else {
-                let mut buf = vec![0; (range.end - range.start) as usize];
-                cache.read_at(&mut buf[..], range.start)?;
-                builder.build(&buf)
-            }
-            .map_err(map_elf_error)
-        }) {
-            Ok(e) => Ok(Ok(e)),
-            Err((_, heads)) => Ok(Err(heads.data)),
-        }
-    }
+#[derive(Clone, Copy)]
+enum ElfImageKind {
+    Main,
+    Interpreter,
 }
 
-struct ElfLoader(LRUCache<ElfCacheEntry, 32>);
+// Linux bounds the native program-header table in load_elf_phdrs().
+const MAX_PROGRAM_HEADER_BYTES: usize = 65536;
+
+impl ElfImage {
+    fn load(loc: PathHandle, kind: ElfImageKind) -> StarryResult<Result<Self, Vec<u8>>> {
+        // A retained inode can have new bytes after its previous execution.
+        // Read its headers anew rather than treating path identity as content.
+        let cache = CachedFile::get_or_create(loc)?;
+
+        let mut data = vec![0_u64; PAGE_SIZE_4K / size_of::<u64>()];
+        let read = cache.read_at(bytemuck::cast_slice_mut(&mut data), 0)?;
+        let minimum_header_size = match kind {
+            ElfImageKind::Main => 0,
+            // Linux reads a complete native interpreter header before checking its format.
+            ElfImageKind::Interpreter => {
+                size_of::<xmas_elf::header::HeaderPt1>()
+                    + size_of::<xmas_elf::header::HeaderPt2_<xmas_elf::P64>>()
+            }
+        };
+        if read < minimum_header_size {
+            return Err(StarryError::UnexpectedEof);
+        }
+        match ElfImage::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
+            let data = &bytemuck::cast_slice(data)[..read];
+            Self::parse_headers(&cache, data, kind)
+        }) {
+            Ok(e) => Ok(Ok(e)),
+            Err((_, heads)) => Ok(Err(bytemuck::cast_slice(&heads.data)[..read].to_vec())),
+        }
+    }
+
+    fn parse_headers<'a>(
+        cache: &CachedFile,
+        data: &'a [u8],
+        kind: ElfImageKind,
+    ) -> StarryResult<ELFHeaders<'a>> {
+        // Check the native ABI before following program-header offsets.
+        let header = xmas_elf::header::parse_header(data).map_err(map_elf_error)?;
+        let native_machine = cfg_select! {
+            target_arch = "x86_64" => xmas_elf::header::Machine::X86_64,
+            target_arch = "aarch64" => xmas_elf::header::Machine::AArch64,
+            target_arch = "riscv64" => xmas_elf::header::Machine::RISC_V,
+            target_arch = "loongarch64" => xmas_elf::header::Machine::Other(258),
+        };
+        if header.pt2.machine().as_machine() != native_machine
+            || (matches!(kind, ElfImageKind::Main)
+                && !matches!(
+                    header.pt2.type_().as_type(),
+                    xmas_elf::header::Type::Executable | xmas_elf::header::Type::SharedObject
+                ))
+        {
+            return Err(StarryError::InvalidExecutable);
+        }
+
+        let entry_size = size_of::<xmas_elf::program::ProgramHeader64>();
+        if header.pt2.ph_entry_size() as usize != entry_size {
+            return Err(StarryError::InvalidExecutable);
+        }
+        let table_size = (header.pt2.ph_count() as usize)
+            .checked_mul(entry_size)
+            .filter(|size| (1..=MAX_PROGRAM_HEADER_BYTES).contains(size))
+            .ok_or(StarryError::InvalidExecutable)?;
+        let start = header.pt2.ph_offset();
+        let end = start
+            .checked_add(table_size as u64)
+            .ok_or(StarryError::InvalidExecutable)?;
+        let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
+        if end <= data.len() as u64 {
+            let table = &data[start as usize..end as usize];
+            if table
+                .as_ptr()
+                .addr()
+                .is_multiple_of(align_of::<xmas_elf::program::ProgramHeader64>())
+            {
+                return builder.build(table).map_err(map_elf_error);
+            }
+        }
+
+        // File offsets may be unaligned. The builder copies its entries, so
+        // this bounded, aligned staging allocation need not outlive the call.
+        let mut words = vec![0_u64; table_size / size_of::<u64>()];
+        let table = bytemuck::cast_slice_mut(&mut words);
+        if end <= data.len() as u64 {
+            table.copy_from_slice(&data[start as usize..end as usize]);
+        } else if cache.read_at(&mut *table, start)? != table_size {
+            return Err(StarryError::InvalidExecutable);
+        }
+        builder.build(table).map_err(map_elf_error)
+    }
+}
 
 type LoadResult = Result<(VirtAddr, Vec<AuxEntry>), Vec<u8>>;
 
-impl ElfLoader {
-    const fn new() -> Self {
-        Self(LRUCache::new())
-    }
+fn load_elf(
+    uspace: &mut AddrSpace,
+    loc: PathHandle,
+    view: &FsView<'_>,
+) -> StarryResult<LoadResult> {
+    // A main input can be a short shebang script rather than an ELF image.
+    let elf = match ElfImage::load(loc, ElfImageKind::Main)? {
+        Ok(elf) => elf,
+        Err(data) => return Ok(Err(data)),
+    };
 
-    fn load(
-        &mut self,
-        uspace: &mut AddrSpace,
-        loc: Location,
-        cred: &Cred,
-    ) -> StarryResult<LoadResult> {
-        if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
-            match ElfCacheEntry::load(loc)? {
-                Ok(e) => {
-                    self.0.insert(e);
-                }
-                Err(data) => {
-                    return Ok(Err(data));
-                }
-            }
+    uspace.reset_uninstalled_for_loader()?;
+    map_trampoline(uspace)?;
+
+    let entry = &elf;
+    let ldso = if let Some(header) = entry
+        .borrow_elf()
+        .ph
+        .iter()
+        .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
+    {
+        let cache = entry.borrow_cache();
+        let interp_len = header.file_size;
+        let interp_end = header
+            .offset
+            .checked_add(interp_len)
+            .ok_or(StarryError::MalformedExecutable)?;
+        if !(2..=MAX_INTERPRETER_PATH_LEN).contains(&interp_len) || interp_end > cache.len() {
+            return Err(StarryError::MalformedExecutable);
         }
 
-        uspace.reset_uninstalled_for_loader()?;
-        map_trampoline(uspace)?;
+        let mut data = vec![0; interp_len as usize];
+        let read = cache.read_at(&mut data[..], header.offset)?;
+        if read != data.len() {
+            return Err(StarryError::MalformedExecutable);
+        }
 
-        let entry = self.0.front().unwrap();
-        let ldso = if let Some(header) = entry
-            .borrow_elf()
-            .ph
-            .iter()
-            .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
-        {
-            let cache = entry.borrow_cache();
-            let interp_len = header.file_size;
-            let interp_end = header
-                .offset
-                .checked_add(interp_len)
-                .ok_or(StarryError::MalformedExecutable)?;
-            if !(2..=MAX_INTERPRETER_PATH_LEN).contains(&interp_len) || interp_end > cache.len() {
-                return Err(StarryError::MalformedExecutable);
-            }
+        let ldso = CStr::from_bytes_with_nul(&data)
+            .ok()
+            .and_then(|cstr| cstr.to_str().ok())
+            .ok_or(StarryError::MalformedExecutable)?;
+        debug!("Loading dynamic linker: {ldso}");
+        Some(ldso.to_owned())
+    } else {
+        None
+    };
 
-            let mut data = vec![0; interp_len as usize];
-            let read = cache.read_at(&mut data[..], header.offset)?;
-            if read != data.len() {
-                return Err(StarryError::MalformedExecutable);
-            }
+    // PT_INTERP is protected while loading, but is not mm->exe_file.
+    let _interpreter_access;
+    let ldso = if let Some(ldso) = ldso {
+        let loc = view.resolve(ldso)?;
+        check_executable_access(&loc, view.credentials())?;
+        _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
+        Some(
+            ElfImage::load(loc, ElfImageKind::Interpreter)?
+                .map_err(|_| StarryError::InvalidElfInterpreter)?,
+        )
+    } else {
+        None
+    };
 
-            let ldso = CStr::from_bytes_with_nul(&data)
-                .ok()
-                .and_then(|cstr| cstr.to_str().ok())
-                .ok_or(StarryError::MalformedExecutable)?;
-            debug!("Loading dynamic linker: {ldso}");
-            Some(ldso.to_owned())
-        } else {
-            None
-        };
+    let elf = map_elf(uspace, uspace.base().as_usize(), &elf)?;
+    let (start_data, end_data) = executable_data_layout(&elf)?;
+    uspace.set_executable_data_layout(start_data, end_data)?;
+    let ldso = if ldso.is_some() {
+        let max_end = uspace
+            .max_mapped_end()
+            .map(VirtAddr::as_usize)
+            .unwrap_or_else(|| uspace.base().as_usize());
+        let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
+        ldso.as_ref()
+            .map(|elf| map_elf(uspace, interp_base, elf))
+            .transpose()?
+    } else {
+        None
+    };
 
-        // PT_INTERP is protected while loading, but is not mm->exe_file.
-        let _interpreter_access;
-        let (elf, ldso) = if let Some(ldso) = ldso {
-            let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(ldso)?;
-            check_executable_access(&loc, cred)?;
-            _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
-            if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
-                let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
-                self.0.insert(e);
-            }
+    let entry = VirtAddr::from_usize(
+        ldso.as_ref()
+            .map_or_else(|| elf.entry(), |ldso| ldso.entry()),
+    );
+    let has_ldso = ldso.is_some();
+    let mut auxv = elf
+        .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
+        .collect::<Vec<_>>();
+    auxv.push(AuxEntry::new(
+        AuxType::HWCAP,
+        crate::cpu_capabilities::elf_hwcap(),
+    ));
+    auxv.push(AuxEntry::new(AuxType::UID, 0));
+    auxv.push(AuxEntry::new(AuxType::EUID, 0));
+    auxv.push(AuxEntry::new(AuxType::GID, 0));
+    auxv.push(AuxEntry::new(AuxType::EGID, 0));
+    auxv.push(AuxEntry::new(AuxType::SECURE, 0));
 
-            let mut iter = self.0.iter();
-            let ldso = iter.next().unwrap();
-            let elf = iter.next().unwrap();
-            (elf, Some(ldso))
-        } else {
-            (entry, None)
-        };
+    debug!(
+        "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
+        entry.as_usize(),
+        auxv.len(),
+        has_ldso,
+        auxv.last()
+            .map(|e| e.get_type() as usize)
+            .unwrap_or(usize::MAX),
+    );
 
-        let elf = map_elf(uspace, uspace.base().as_usize(), elf)?;
-        let (start_data, end_data) = executable_data_layout(&elf)?;
-        uspace.set_executable_data_layout(start_data, end_data)?;
-        let ldso = if ldso.is_some() {
-            let max_end = uspace
-                .max_mapped_end()
-                .map(VirtAddr::as_usize)
-                .unwrap_or_else(|| uspace.base().as_usize());
-            let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
-            ldso.map(|elf| map_elf(uspace, interp_base, elf))
-                .transpose()?
-        } else {
-            None
-        };
-
-        let entry = VirtAddr::from_usize(
-            ldso.as_ref()
-                .map_or_else(|| elf.entry(), |ldso| ldso.entry()),
-        );
-        let has_ldso = ldso.is_some();
-        let mut auxv = elf
-            .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
-            .collect::<Vec<_>>();
-        auxv.push(AuxEntry::new(
-            AuxType::HWCAP,
-            crate::cpu_capabilities::elf_hwcap(),
-        ));
-        auxv.push(AuxEntry::new(AuxType::UID, 0));
-        auxv.push(AuxEntry::new(AuxType::EUID, 0));
-        auxv.push(AuxEntry::new(AuxType::GID, 0));
-        auxv.push(AuxEntry::new(AuxType::EGID, 0));
-        auxv.push(AuxEntry::new(AuxType::SECURE, 0));
-
-        debug!(
-            "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
-            entry.as_usize(),
-            auxv.len(),
-            has_ldso,
-            auxv.last()
-                .map(|e| e.get_type() as usize)
-                .unwrap_or(usize::MAX),
-        );
-
-        Ok(Ok((entry, auxv)))
-    }
+    Ok(Ok((entry, auxv)))
 }
-
-static ELF_LOADER: Mutex<ElfLoader> = Mutex::new(ElfLoader::new());
 
 // Linux's exec path bounds chained binary-format rewrites and returns ELOOP
 // for a too-deep interpreter chain. Give StarryOS's recursive script loader
 // the same bounded failure behavior.
 const MAX_INTERPRETER_RECURSION: usize = 5;
 
-/// Clear the ELF cache.
-///
-/// Useful for removing noises during memory leak detect.
-#[cfg(feature = "memtrack")]
-pub fn clear_elf_cache() {
-    ELF_LOADER.lock().0.clear();
-}
-
 /// Load the user app to the user address space.
 ///
-/// The executable is identified by an already-resolved [`Location`] — the
+/// The executable is identified by an already-resolved [`PathHandle`] — the
 /// caller resolves and opens it once (mirroring Linux's `do_open_execat`,
 /// which honors `AT_SYMLINK_NOFOLLOW` at that single lookup), and this never
 /// re-resolves the main executable from its pathname. Interpreters reached
@@ -841,20 +896,22 @@ pub fn clear_elf_cache() {
 ///   name an interpreter receives in `argv`.
 /// - `args`: The arguments of the user app.
 /// - `envs`: The environment variables of the user app.
+/// - `view`: The frozen paths and identity used to resolve the main executable;
+///   every interpreter reuses it without reading the current task scope.
 ///
 /// # Returns
 /// - The entry point of the user app.
 /// - The stack pointer of the user app.
 pub fn load_user_app(
     builder: &mut UserImageBuilder,
-    loc: Location,
+    loc: PathHandle,
     path: &str,
     args: &[String],
     envs: &[String],
-    cred: &Cred,
+    view: &FsView<'_>,
 ) -> StarryResult<LoadedUserImage> {
     let result = validate_exec_arg_size(args, envs).and_then(|()| {
-        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, cred, 0)
+        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, view, 0)
     });
     match result {
         Ok((entry, stack, auxv)) => Ok(LoadedUserImage {
@@ -883,24 +940,29 @@ pub fn load_user_app(
     }
 }
 
-/// Checks each executable and interpreter even when its ELF image is cached.
-fn check_executable_access(loc: &Location, cred: &Cred) -> StarryResult<()> {
-    let metadata = loc.metadata()?;
+/// Checks each executable and interpreter before reading its current image.
+fn check_executable_access(
+    loc: &PathHandle,
+    credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+) -> StarryResult<()> {
+    let metadata = loc.location().metadata()?;
     if metadata.node_type != NodeType::RegularFile
-        || loc.mountpoint().mount_flags() & linux_raw_sys::general::MS_NOEXEC != 0
+        || loc.location().mountpoint().mount_flags() & linux_raw_sys::general::MS_NOEXEC != 0
     {
         return Err(StarryError::PermissionDenied);
     }
     let mode = metadata.mode.bits();
-    let selected = if cred.fsuid == metadata.uid {
+    let selected = if credentials.fsuid == metadata.uid {
         mode >> 6
-    } else if cred.fsgid == metadata.gid || cred.groups.contains(&metadata.gid) {
+    } else if credentials.fsgid == metadata.gid
+        || credentials.supplementary_gids.contains(&metadata.gid)
+    {
         mode >> 3
     } else {
         mode
     };
     // CAP_DAC_OVERRIDE may bypass DAC only if some execute bit is set.
-    if selected & 1 != 0 || (mode & 0o111 != 0 && cred.has_cap_dac_override()) {
+    if selected & 1 != 0 || (mode & 0o111 != 0 && credentials.cap_dac_override) {
         Ok(())
     } else {
         Err(StarryError::PermissionDenied)
@@ -909,17 +971,17 @@ fn check_executable_access(loc: &Location, cred: &Cred) -> StarryResult<()> {
 
 fn load_user_app_with_depth(
     uspace: &mut AddrSpace,
-    loc: Location,
+    loc: PathHandle,
     path: &str,
     args: &[String],
     envs: &[String],
-    cred: &Cred,
+    view: &FsView<'_>,
     interpreter_depth: usize,
 ) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
-    check_executable_access(&loc, cred)?;
-    let executable_file = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
+    check_executable_access(&loc, view.credentials())?;
+    let executable_file = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
 
-    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc, cred)? } {
+    let (entry, auxv) = match load_elf(uspace, loc, view)? {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
@@ -940,9 +1002,7 @@ fn load_user_app_with_depth(
                     .collect();
                 // Open the interpreter by path (Linux's `open_exec` on the
                 // shebang interpreter) and load it as the new executable.
-                let interp = ax_fs_ng::vfs::current_fs_context()
-                    .lock()
-                    .resolve(&new_args[0])?;
+                let interp = view.resolve(&new_args[0])?;
                 // A script stops being the executable when its interpreter takes over.
                 drop(executable_file);
                 return load_user_app_with_depth(
@@ -951,7 +1011,7 @@ fn load_user_app_with_depth(
                     &new_args[0],
                     &new_args,
                     envs,
-                    cred,
+                    view,
                     interpreter_depth + 1,
                 );
             }
@@ -995,4 +1055,62 @@ fn load_user_app_with_depth(
     )?;
 
     Ok((entry, user_sp, auxv))
+}
+
+#[cfg(all(test, axtest))]
+mod tests {
+    use ax_fs_ng::{FsContext, MemoryFs, NativeLinkCaller, file::OpenOptions};
+    use axfs_ng_vfs::Mountpoint;
+
+    use super::*;
+
+    #[axtest::axtest]
+    fn script_interpreter_uses_the_supplied_view_and_releases_failed_exec_access() {
+        const SCRIPT: &str = "/__loader_view_script";
+        const INTERPRETER: &str = "/__loader_view_interpreter";
+        let caller = NativeLinkCaller::root();
+        let filesystem = MemoryFs::new();
+        let mount = Mountpoint::new_root(&filesystem);
+        let root = mount.root_location();
+        let view = FsView::native(FsContext::from_tree(mount, root).unwrap(), &caller);
+        for (name, mode, contents) in [
+            (SCRIPT, 0o755, b"#!/__loader_view_interpreter\n".as_slice()),
+            (INTERPRETER, 0, b"not executable".as_slice()),
+        ] {
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(mode)
+                .open(&view, name)
+                .unwrap()
+                .into_file()
+                .unwrap();
+            assert_eq!(file.write_at(contents, 0).unwrap(), contents.len());
+        }
+        let mut builder = new_user_image_builder().unwrap();
+        let error = load_user_app(
+            &mut builder,
+            view.resolve(SCRIPT).unwrap(),
+            SCRIPT,
+            &[SCRIPT.into()],
+            &[],
+            &view,
+        )
+        .err();
+        assert!(
+            matches!(error, Some(StarryError::PermissionDenied)),
+            "the private interpreter must be found and checked in the supplied view: {error:?}"
+        );
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&view, SCRIPT)
+            .unwrap()
+            .into_file()
+            .unwrap();
+        assert_eq!(
+            file.write_at(b"reusable".as_slice(), 0).unwrap(),
+            8,
+            "a failed image must release its executable lease before returning"
+        );
+    }
 }

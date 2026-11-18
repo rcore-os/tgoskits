@@ -272,7 +272,13 @@ pub fn sys_openat(
         let filename = filename?;
         let dir = dir_handle_for_at(dirfd, filename)?;
         let directory_only = (flags as u32) & ctypes::O_DIRECTORY != 0;
-        match ax_fs_ng::fops::open_at(dir.as_ref(), filename, &options, directory_only)? {
+        match ax_fs_ng::fops::open_at(
+            dir.as_ref(),
+            filename,
+            &options,
+            directory_only,
+            &ax_fs_ng::MutationCredentials::root(),
+        )? {
             OpenEntry::File(file) => File::new(file).add_to_fd_table(),
             OpenEntry::Directory(dir) => Directory::new(dir).add_to_fd_table(),
         }

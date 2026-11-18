@@ -7,30 +7,29 @@ use alloc::{
 use core::{
     ffi::{c_char, c_int},
     mem::{offset_of, size_of},
-    time::Duration,
 };
 
-use ax_fs_ng::vfs::{FsContext, current_fs_context, sync_all_cached_files};
-use ax_runtime::hal::time::wall_time;
+use ax_fs_ng::{
+    CreateAttributes, CreateContent,
+    vfs::{current_fs_context, sync_all_cached_files},
+};
 use axfs_ng_vfs::{
-    DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, NodePermission, NodeType,
-    RenameOptions, VfsError, path::Path,
+    DeviceId, DirectoryCursor, FileExtentTarget, NodePermission, NodeType, RenameOptions, VfsError,
+    path::Path,
 };
 use linux_raw_sys::{
     general::*,
     ioctl::{FIOASYNC, FIONBIO, FS_IOC_FIEMAP},
 };
 
-use super::mutation_credentials;
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
-        Directory, FileLike, current_fd_table, fd_is_path, get_file_like, resolve_at,
+        Directory, File, FileLike, current_fd_table, get_file_like,
         resolve_at_with_boundary_checked, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
-    task::UserTaskRef,
-    time::TimeValueLike,
+    task::{NamespaceChange, UserTaskRef, current_user_task},
 };
 
 /// `FIOCLEX` / `FIONCLEX`: set / clear the close-on-exec flag on a file descriptor
@@ -81,10 +80,12 @@ const _: () = {
 };
 
 fn path_info_at(dirfd: i32, path: &str) -> StarryResult<(String, bool)> {
-    with_fs(dirfd, |fs| {
+    let link_caller =
+        crate::task::ProcLinkCaller::capture(crate::task::current_user_task().as_thread());
+    with_fs(dirfd, &link_caller, |fs| {
         let loc = fs.resolve_no_follow(path)?;
-        let is_dir = loc.metadata()?.node_type == NodeType::Directory;
-        Ok((loc.absolute_path()?.to_string(), is_dir))
+        let is_dir = loc.location().metadata()?.node_type == NodeType::Directory;
+        Ok((loc.location().absolute_path()?.to_string(), is_dir))
     })
 }
 
@@ -242,20 +243,47 @@ pub fn sys_chdir(current: &UserTaskRef, path: *const c_char) -> StarryResult<isi
     let path = vm_load_path_string(current, path)?;
     debug_fn!("sys_chdir <= path: {path}");
 
-    let fs_context = current_fs_context();
-    let mut fs = fs_context.lock();
-    let entry = fs.resolve(path)?;
-    fs.set_current_dir(entry)?;
-    let cwd = fs.current_dir().absolute_path()?.to_string();
-    current.as_thread().proc_data.set_cwd_path(cwd);
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let credentials = link_caller.fs_credentials();
+    let cred = credentials.as_mutation_credentials();
+    let binding = current
+        .as_thread()
+        .snapshot_fs_binding()?
+        .ok_or(StarryError::BadState)?;
+    let entry = ax_fs_ng::FsView::current(binding.fs.clone(), &link_caller)
+        .resolve_checked(path, |directory| {
+            cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+        })?;
+    entry.location().check_is_dir()?;
+    cred.check_permission(&entry.location().metadata()?, NodePermission::OTHER_EXEC)?;
+    let cwd = entry
+        .location()
+        .absolute_path()
+        .ok()
+        .map(|path| path.to_string());
+    let mut change = NamespaceChange::new(current.as_thread())?;
+    change.prepare_cwd(entry)?;
+    change.commit()?;
+    if let Some(cwd) = cwd {
+        current.as_thread().proc_data.set_cwd_path(cwd);
+    }
     Ok(0)
 }
 
 pub fn sys_fchdir(dirfd: i32) -> StarryResult<isize> {
     debug!("sys_fchdir <= dirfd: {dirfd}");
 
-    let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
-    current_fs_context().lock().set_current_dir(entry)?;
+    let current = current_user_task();
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let credentials = link_caller.fs_credentials();
+    let directory = Directory::from_fd(dirfd)?;
+    credentials
+        .as_mutation_credentials()
+        .check_permission(&directory.inner().metadata()?, NodePermission::OTHER_EXEC)?;
+    let entry = directory.path_handle().clone();
+    let mut change = NamespaceChange::new(current.as_thread())?;
+    change.prepare_cwd(entry)?;
+    change.commit()?;
     Ok(0)
 }
 
@@ -278,18 +306,34 @@ pub fn sys_chroot(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
     let path = vm_load_path_string(current, path)?;
     debug!("sys_chroot <= path: {path}");
 
-    let fs_context = current_fs_context();
-    let mut fs = fs_context.lock();
-    let loc = fs.resolve(path)?;
-    if loc.node_type() != NodeType::Directory {
-        return Err(StarryError::NotADirectory);
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let credentials = link_caller.fs_credentials();
+    let cred = credentials.as_mutation_credentials();
+    let binding = current
+        .as_thread()
+        .snapshot_fs_binding()?
+        .ok_or(StarryError::BadState)?;
+    let loc = ax_fs_ng::FsView::current(binding.fs.clone(), &link_caller)
+        .resolve_checked(path, |directory| {
+            cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+        })?;
+    loc.location().check_is_dir()?;
+    cred.check_permission(&loc.location().metadata()?, NodePermission::OTHER_EXEC)?;
+    if !credentials.credentials().has_cap(CAP_SYS_CHROOT) {
+        return Err(StarryError::OperationNotPermitted);
     }
-    *fs = FsContext::new(loc);
-    let root = fs.root_dir().absolute_path()?.to_string();
-    let cwd = fs.current_dir().absolute_path()?.to_string();
-    let proc_data = current.as_thread().proc_data.clone();
-    proc_data.set_root_path(root);
-    proc_data.set_cwd_path(cwd);
+    let root = loc
+        .location()
+        .absolute_path()
+        .ok()
+        .map(|path| path.to_string());
+    let path = loc;
+    let mut change = NamespaceChange::new(current.as_thread())?;
+    change.prepare_root(path)?;
+    change.commit()?;
+    if let Some(root) = root {
+        current.as_thread().proc_data.set_root_path(root);
+    }
     Ok(0)
 }
 
@@ -342,10 +386,11 @@ pub fn sys_mkdirat(
 
     let mode = mode & !thread.proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
-    let cred = thread.cred();
+    let link_caller = crate::task::ProcLinkCaller::capture(thread);
+    let fs_credentials = link_caller.fs_credentials();
+    let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&cred);
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
@@ -355,8 +400,8 @@ pub fn sys_mkdirat(
     } else {
         dirfd
     };
-    let result = with_fs(resolve_dirfd, |fs| {
-        match fs.create_dir(&path, mode, uid, gid, &mutation_cred) {
+    let result = with_fs(resolve_dirfd, &link_caller, |fs| {
+        match fs.create_dir(&path, mode, uid, gid) {
             Ok(_) => Ok(0),
             // mkdir on an existing path should report EEXIST.
             // Use no-follow lookup so dangling symlinks are treated as existing
@@ -408,33 +453,25 @@ pub fn sys_mknodat(
         _ => return Err(StarryError::InvalidInput),
     };
 
-    let cred = thread.cred();
-    let uid = cred.fsuid;
-    let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&cred);
+    let link_caller = crate::task::ProcLinkCaller::capture(thread);
     let resolve_dirfd = if path.starts_with('/') {
         AT_FDCWD
     } else {
         dirfd
     };
-    let res = with_fs(resolve_dirfd, |fs| {
-        let loc = fs.create_node(
+    let device = if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
+        DeviceId(u64::from(dev as u32))
+    } else {
+        DeviceId::default()
+    };
+    let res = with_fs(resolve_dirfd, &link_caller, |fs| {
+        fs.create_node(
             Path::new(&path),
-            node_type,
-            NodePermission::from_bits_truncate(perm as u16),
-            uid,
-            gid,
-            &mutation_cred,
+            CreateAttributes {
+                content: CreateContent::Node(node_type, device),
+                permission: NodePermission::from_bits_truncate(perm as u16),
+            },
         )?;
-
-        // If device node, set rdev via update_metadata
-        if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
-            loc.update_metadata(MetadataUpdate {
-                rdev: Some(DeviceId(dev)),
-                ..Default::default()
-            })?;
-        }
-
         Ok(0)
     })?;
     Ok(res)
@@ -579,8 +616,9 @@ pub fn sys_linkat(
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
 
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let fs_credentials = link_caller.fs_credentials();
+    let mutation_cred = fs_credentials.as_mutation_credentials();
     // AT_EMPTY_PATH changes `olddirfd` into an object fd only for the
     // genuinely empty pathname. With a non-empty pathname it is ignored by
     // linkat(), so ordinary path-based linking remains unprivileged.
@@ -591,46 +629,31 @@ pub fn sys_linkat(
             return Err(StarryError::NotFound);
         }
     }
-    let (old, old_boundary, old_search) = resolve_at_with_boundary_checked(
-        old_dirfd,
-        old_path.as_deref(),
-        resolve_flags,
-        |fs, directory| fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred),
-    )?;
-    let old = old.into_file().ok_or(StarryError::BadFileDescriptor)?;
-    // Linux rejects hard links to directories before checking the source
-    // parent or the destination. Keep this check at the syscall boundary as
-    // well as in the VFS helper, because dirfd/`.` resolution is allowed to
-    // return an already-open directory without a normal parent walk.
-    if old.is_dir() {
-        return Err(StarryError::OperationNotPermitted);
-    }
-    // An absolute destination path is rooted at the process filesystem and
-    // ignores new_dirfd, including an invalid or non-directory descriptor.
-    let new_dirfd = if new_path.starts_with('/') {
-        AT_FDCWD
-    } else {
-        new_dirfd
-    };
-    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, |fs| {
-        let (new_dir, new_name, searched) = fs
-            .resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
-            })?;
-        Ok((
-            new_dir,
-            new_name,
-            fs.permission_boundary().cloned(),
-            searched,
-        ))
-    })?;
-    with_fs(AT_FDCWD, |fs| {
-        fs.link_locations_with_boundaries_and_search(
-            (&old, &old_search),
-            (&new_dir, &new_name, &new_search),
-            (old_boundary.as_ref(), new_boundary.as_ref()),
-            &mutation_cred,
+    with_fs(AT_FDCWD, &link_caller, |base| {
+        let (old, old_boundary, old_search) = resolve_at_with_boundary_checked(
+            base,
+            old_dirfd,
+            old_path.as_deref(),
+            resolve_flags,
+            |fs, directory| fs.check_search_path(directory, fs.permission_boundary()),
         )?;
+        let old = old.into_file().ok_or(StarryError::BadFileDescriptor)?;
+        // Reject directory sources before observing the destination dirfd.
+        if old.location().is_dir() {
+            return Err(StarryError::OperationNotPermitted);
+        }
+        let new_dirfd = if new_path.starts_with('/') {
+            AT_FDCWD
+        } else {
+            new_dirfd
+        };
+        let destination_view = crate::file::view_at(base, new_dirfd)?;
+        let destination =
+            destination_view.resolve_parent_checked(Path::new(&new_path), |directory| {
+                destination_view
+                    .check_search_path(directory, destination_view.permission_boundary())
+            })?;
+        base.link_resolved((&old, &old_search, old_boundary.as_ref()), &destination)?;
         Ok(())
     })?;
     Ok(0)
@@ -657,8 +680,7 @@ pub fn sys_unlinkat(
     flags: i32,
 ) -> StarryResult<isize> {
     let path = vm_load_path_string(current, path)?;
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
@@ -675,11 +697,11 @@ pub fn sys_unlinkat(
     } else {
         dirfd
     };
-    let result = with_fs(resolve_dirfd, |fs| {
+    let result = with_fs(resolve_dirfd, &link_caller, |fs| {
         if flags & AT_REMOVEDIR as i32 != 0 {
-            fs.remove_dir(&path, &mutation_cred)?;
+            fs.remove_dir(&path)?;
         } else {
-            fs.remove_file(&path, &mutation_cred)?;
+            fs.remove_file(&path)?;
         }
         Ok(0)
     });
@@ -704,9 +726,13 @@ pub fn sys_unlink(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
 
 pub fn sys_getcwd(current: &UserTaskRef, buf: *mut u8, size: usize) -> StarryResult<isize> {
     let cwd = {
-        let fs_context = current_fs_context();
-        let fs = fs_context.lock();
+        let fs = current_fs_context();
         let current_dir = fs.current_dir();
+        // getcwd requires a linked cwd even when it equals the process root.
+        // Retained names remain available to descriptor/proc display paths.
+        if current_dir.entry().name_state() == axfs_ng_vfs::NameState::Unlinked {
+            return Err(StarryError::NotFound);
+        }
         match current_dir.path_from(fs.root_dir()) {
             Ok(path) => path,
             Err(VfsError::InvalidInput) => {
@@ -748,17 +774,18 @@ pub fn sys_symlinkat(
     let linkpath = vm_load_path_string(current, linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
-    let cred = current.as_thread().cred();
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let fs_credentials = link_caller.fs_credentials();
+    let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&cred);
     let resolve_dirfd = if linkpath.starts_with('/') {
         AT_FDCWD
     } else {
         new_dirfd
     };
-    with_fs(resolve_dirfd, |fs| {
-        fs.symlink(target, linkpath, uid, gid, &mutation_cred)?;
+    with_fs(resolve_dirfd, &link_caller, |fs| {
+        fs.symlink(target, linkpath, uid, gid)?;
         Ok(0)
     })
 }
@@ -780,352 +807,41 @@ pub fn sys_readlinkat(
     buf: *mut u8,
     size: usize,
 ) -> StarryResult<isize> {
-    if size == 0 {
+    let size = size as i32;
+    if size <= 0 {
         return Err(StarryError::InvalidInput);
     }
+    let size = size as usize;
 
     let path = vm_load_path_string(current, path)?;
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
 
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
-    let link = with_fs(dirfd, |fs| {
-        let entry = fs.resolve_no_follow(path)?;
-        Ok(entry.read_link()?)
-    })?;
+    let link = if path.is_empty() {
+        if dirfd == AT_FDCWD {
+            return Err(StarryError::NotFound);
+        }
+        let description = get_file_like(dirfd)?;
+        // A valid non-link description produces ENOENT for an empty pathname,
+        // unlike EINVAL for an explicitly named non-link. Keep the description
+        // and its existing mount use alive through the dynamic link callback.
+        let file = description
+            .downcast_ref::<File>()
+            .filter(|file| file.inner().location().node_type() == NodeType::Symlink)
+            .ok_or(StarryError::NotFound)?;
+        file.inner().location().read_link(&link_caller)?
+    } else {
+        let dirfd = if path.starts_with('/') {
+            AT_FDCWD
+        } else {
+            dirfd
+        };
+        with_fs(dirfd, &link_caller, |fs| Ok(fs.read_link(path.as_str())?))?
+    };
     let read = size.min(link.len());
     vm_write_slice(current, buf, &link.as_bytes()[..read])?;
     Ok(read as isize)
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn sys_chown(
-    current: &UserTaskRef,
-    path: *const c_char,
-    uid: i32,
-    gid: i32,
-) -> StarryResult<isize> {
-    sys_fchownat(current, AT_FDCWD, path, uid, gid, 0)
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn sys_lchown(
-    current: &UserTaskRef,
-    path: *const c_char,
-    uid: i32,
-    gid: i32,
-) -> StarryResult<isize> {
-    use linux_raw_sys::general::AT_SYMLINK_NOFOLLOW;
-    sys_fchownat(current, AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW)
-}
-
-pub fn sys_fchown(current: &UserTaskRef, fd: i32, uid: i32, gid: i32) -> StarryResult<isize> {
-    if fd < 0 {
-        return Err(StarryError::BadFileDescriptor);
-    }
-    sys_fchownat(current, fd, core::ptr::null(), uid, gid, AT_EMPTY_PATH)
-}
-
-pub fn sys_fchownat(
-    current: &UserTaskRef,
-    dirfd: i32,
-    path: *const c_char,
-    uid: i32,
-    gid: i32,
-    flags: u32,
-) -> StarryResult<isize> {
-    const FCHOWNAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
-    if flags & !FCHOWNAT_VALID_FLAGS != 0 {
-        return Err(StarryError::InvalidInput);
-    }
-
-    let path = path
-        .nullable()
-        .map(|path| vm_load_path_string(current, path))
-        .transpose()?;
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(StarryError::BadFileDescriptor)?;
-    let meta = loc.metadata()?;
-
-    let cred = current.as_thread().cred();
-
-    // Permission checks following Linux semantics:
-    // - Changing the file owner (uid) requires CAP_CHOWN.
-    // - Changing the file group (gid) without CAP_CHOWN is allowed only if
-    //   the caller owns the file and the target group is one the caller
-    //   belongs to.
-    let changing_owner = uid != -1 && uid as u32 != meta.uid;
-    let changing_group = gid != -1 && gid as u32 != meta.gid;
-
-    if changing_owner && !cred.has_cap_chown() {
-        return Err(StarryError::OperationNotPermitted);
-    }
-
-    if changing_group && !cred.has_cap_chown() {
-        // Non-root: must own the file and target group must be in our groups.
-        if cred.fsuid != meta.uid {
-            return Err(StarryError::OperationNotPermitted);
-        }
-        if !cred.in_group(gid as u32) {
-            return Err(StarryError::OperationNotPermitted);
-        }
-    }
-
-    let mut mode = meta.mode;
-    // Linux chown_common() semantics for clearing setuid/setgid on
-    // non-directory files:
-    //   - ATTR_KILL_SUID is set unconditionally for all non-dir chown,
-    //     regardless of whether uid/gid participates (i.e. even chown
-    //     with -1/-1 clears SUID).
-    //   - After SUID clearing adds ATTR_MODE to ia_valid, notify_change()
-    //     calls should_remove_sgid() which strips SGID on non-directory
-    //     files only when GROUP_EXEC (S_IXGRP) is set.
-    // Directories preserve SETGID (used for new-file group inheritance).
-    let is_dir = meta.node_type == NodeType::Directory;
-
-    if !is_dir {
-        mode.remove(NodePermission::SET_UID);
-        if mode.contains(NodePermission::GROUP_EXEC) {
-            mode.remove(NodePermission::SET_GID);
-        }
-    }
-
-    let uid = if uid == -1 { meta.uid } else { uid as _ };
-    let gid = if gid == -1 { meta.gid } else { gid as _ };
-    loc.update_metadata(MetadataUpdate {
-        owner: Some((uid, gid)),
-        mode: Some(mode),
-        ..Default::default()
-    })?;
-    Ok(0)
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn sys_chmod(current: &UserTaskRef, path: *const c_char, mode: u32) -> StarryResult<isize> {
-    sys_fchmodat(current, AT_FDCWD, path, mode, 0)
-}
-
-pub fn sys_fchmod(current: &UserTaskRef, fd: i32, mode: u32) -> StarryResult<isize> {
-    if fd < 0 {
-        return Err(StarryError::BadFileDescriptor);
-    }
-    sys_fchmodat(current, fd, core::ptr::null(), mode, AT_EMPTY_PATH)
-}
-
-pub fn sys_fchmodat(
-    current: &UserTaskRef,
-    dirfd: i32,
-    path: *const c_char,
-    mode: u32,
-    flags: u32,
-) -> StarryResult<isize> {
-    const FCHMODAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
-    if flags & !FCHMODAT_VALID_FLAGS != 0 {
-        return Err(StarryError::InvalidInput);
-    }
-
-    let path = path
-        .nullable()
-        .map(|path| vm_load_path_string(current, path))
-        .transpose()?;
-
-    // man 2 open §"O_PATH": "other file operations (e.g., read(2), write(2),
-    // fchmod(2), fchown(2), fgetxattr(2), ioctl(2), mmap(2)) fail with the
-    // error EBADF." Fixes bug-open-path-fchmod-bypass.
-    //
-    // Three paths reach fchmod on a PATH fd; all three must be rejected to
-    // match Linux:
-    //   (1) Direct: SYS_fchmod(fd) — implemented as fchmodat(fd, NULL,
-    //       mode, AT_EMPTY_PATH).
-    //   (2) musl libc fallback: when (1) returns EBADF, musl re-tries
-    //       fchmodat(AT_FDCWD, "/proc/self/fd/<n>", mode, 0). Linux's procfs
-    //       propagates the PATH-handle restriction through the symlink.
-    //   (3) (theoretical) Direct user use of /proc/self/fd/<n>.
-    let path_is_empty = path.as_deref().is_none_or(|s| s.is_empty());
-    if path_is_empty && flags & AT_EMPTY_PATH != 0 && fd_is_path(dirfd) {
-        return Err(StarryError::BadFileDescriptor); // (1)
-    }
-    if let Some(p) = path.as_deref()
-        && let Some(rest) = p.strip_prefix("/proc/self/fd/")
-        && let Ok(n) = rest.parse::<i32>()
-        && fd_is_path(n)
-    {
-        return Err(StarryError::BadFileDescriptor); // (2) and (3)
-    }
-
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(StarryError::BadFileDescriptor)?;
-
-    // Only the file owner or a process with CAP_FOWNER may change mode bits.
-    let cred = current.as_thread().cred();
-    if !cred.has_cap_fowner() {
-        let meta = loc.metadata()?;
-        if cred.fsuid != meta.uid {
-            return Err(StarryError::OperationNotPermitted);
-        }
-    }
-
-    loc.update_metadata(MetadataUpdate {
-        mode: Some(NodePermission::from_bits_truncate(mode as u16)),
-        ..Default::default()
-    })?;
-    Ok(0)
-}
-
-#[cfg(target_arch = "x86_64")]
-fn update_times(
-    current: &UserTaskRef,
-    dirfd: i32,
-    path: *const c_char,
-    atime: Option<Duration>,
-    mtime: Option<Duration>,
-    flags: u32,
-) -> StarryResult<()> {
-    let path = path
-        .nullable()
-        .map(|path| vm_load_string(current, path))
-        .transpose()?;
-    resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(StarryError::BadFileDescriptor)?
-        .update_metadata(MetadataUpdate {
-            atime,
-            mtime,
-            ..Default::default()
-        })?;
-    Ok(())
-}
-
-#[cfg(target_arch = "x86_64")]
-#[allow(non_camel_case_types)]
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
-pub struct utimbuf {
-    actime: linux_raw_sys::general::__kernel_old_time_t,
-    modtime: linux_raw_sys::general::__kernel_old_time_t,
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn sys_utime(
-    current: &UserTaskRef,
-    path: *const c_char,
-    times: *const utimbuf,
-) -> StarryResult<isize> {
-    let (atime, mtime) = if let Some(times) = times.nullable() {
-        // SAFETY: `utimbuf` is #[repr(C)] with only integer fields;
-        // any bit pattern is a valid value.
-        let times = unsafe { times.vm_read_uninit(current)?.assume_init() };
-        (
-            Duration::from_secs(times.actime as _),
-            Duration::from_secs(times.modtime as _),
-        )
-    } else {
-        let time = wall_time();
-        (time, time)
-    };
-    update_times(current, AT_FDCWD, path, Some(atime), Some(mtime), 0)?;
-    Ok(0)
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn sys_utimes(
-    current: &UserTaskRef,
-    path: *const c_char,
-    times: *const [linux_raw_sys::general::timeval; 2],
-) -> StarryResult<isize> {
-    let (atime, mtime) = if let Some(times) = times.nullable() {
-        // SAFETY: `timeval` is #[repr(C)] with only integer fields;
-        // any bit pattern is a valid value.
-        let [atime, mtime] = unsafe { times.vm_read_uninit(current)?.assume_init() };
-        (atime.try_into_time_value()?, mtime.try_into_time_value()?)
-    } else {
-        let time = wall_time();
-        (time, time)
-    };
-    update_times(current, AT_FDCWD, path, Some(atime), Some(mtime), 0)?;
-    Ok(0)
-}
-
-pub fn sys_utimensat(
-    current: &UserTaskRef,
-    dirfd: i32,
-    path: *const c_char,
-    times: *const [timespec; 2],
-    mut flags: u32,
-) -> StarryResult<isize> {
-    const UTIMENSAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
-    if flags & !UTIMENSAT_VALID_FLAGS != 0 {
-        return Err(StarryError::InvalidInput);
-    }
-    if path.is_null() && dirfd != AT_FDCWD {
-        flags |= AT_EMPTY_PATH;
-    }
-    fn utime_to_duration(time: &timespec) -> Option<StarryResult<Duration>> {
-        match time.tv_nsec {
-            val if val == UTIME_OMIT as _ => None,
-            val if val == UTIME_NOW as _ => Some(Ok(wall_time())),
-            _ => Some(time.try_into_time_value()),
-        }
-    }
-
-    let (atime, mtime, write_permission_suffices) = if let Some(times) = times.nullable() {
-        // SAFETY: `timespec` is #[repr(C)] with only integer fields;
-        // any bit pattern is a valid value.
-        let [atime, mtime] = unsafe { times.vm_read_uninit(current)?.assume_init() };
-        let write_permission_suffices =
-            atime.tv_nsec == UTIME_NOW as _ && mtime.tv_nsec == UTIME_NOW as _;
-        (
-            utime_to_duration(&atime).transpose()?,
-            utime_to_duration(&mtime).transpose()?,
-            write_permission_suffices,
-        )
-    } else {
-        let time = wall_time();
-        (Some(time), Some(time), true)
-    };
-    if atime.is_none() && mtime.is_none() {
-        return Ok(0);
-    }
-
-    // Resolve file and check permissions.
-    if path.is_null() && dirfd == AT_FDCWD && flags & AT_EMPTY_PATH == 0 {
-        return Err(StarryError::BadAddress);
-    }
-    let path = path
-        .nullable()
-        .map(|path| vm_load_path_string(current, path))
-        .transpose()?;
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(StarryError::BadFileDescriptor)?;
-
-    let cred = current.as_thread().cred();
-    if !cred.has_cap_fowner() {
-        let meta = loc.metadata()?;
-        if cred.fsuid != meta.uid {
-            if !write_permission_suffices {
-                return Err(StarryError::OperationNotPermitted);
-            }
-            let has_write = if cred.has_cap_dac_override() {
-                true
-            } else if cred.in_group(meta.gid) {
-                meta.mode.contains(NodePermission::GROUP_WRITE)
-            } else {
-                meta.mode.contains(NodePermission::OTHER_WRITE)
-            };
-            if !has_write {
-                return Err(StarryError::PermissionDenied);
-            }
-        }
-    }
-
-    loc.update_metadata(MetadataUpdate {
-        atime,
-        mtime,
-        ..Default::default()
-    })?;
-    Ok(0)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1190,43 +906,19 @@ pub fn sys_renameat2(
     };
     // Check search permissions while resolving each parent, before a missing
     // entry or dangling symlink target can mask EACCES.
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
-    let (old_dir, old_name, old_boundary, old_search) = with_fs(old_dirfd, |fs| {
-        let (old_dir, old_name, searched) = fs
-            .resolve_parent_with_search_checked(Path::new(&old_path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    with_fs(AT_FDCWD, &link_caller, |base| {
+        let source_view = crate::file::view_at(base, old_dirfd)?;
+        let source = source_view.resolve_parent_checked(Path::new(&old_path), |directory| {
+            source_view.check_search_path(directory, source_view.permission_boundary())
+        })?;
+        let destination_view = crate::file::view_at(base, new_dirfd)?;
+        let destination =
+            destination_view.resolve_parent_checked(Path::new(&new_path), |directory| {
+                destination_view
+                    .check_search_path(directory, destination_view.permission_boundary())
             })?;
-        Ok((
-            old_dir,
-            old_name,
-            fs.permission_boundary().cloned(),
-            searched,
-        ))
-    })?;
-    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, |fs| {
-        let (new_dir, new_name, searched) = fs
-            .resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
-            })?;
-        Ok((
-            new_dir,
-            new_name,
-            fs.permission_boundary().cloned(),
-            searched,
-        ))
-    })?;
-
-    // Propagate the filesystem errno directly to match renameat2 callers.
-    with_fs(AT_FDCWD, |fs| {
-        Ok(fs.rename_locations_with_boundaries_and_search(
-            (&old_dir, &old_name),
-            (&new_dir, &new_name),
-            options,
-            (old_boundary.as_ref(), new_boundary.as_ref()),
-            (&old_search, &new_search),
-            &mutation_cred,
-        )?)
+        Ok(base.rename_resolved(&source, &destination, options)?)
     })?;
     Ok(0)
 }
@@ -1264,7 +956,7 @@ pub fn sys_sync() -> StarryResult<isize> {
             Ok(())
         },
         || {
-            current_fs_context().lock().root_dir().sync(false)?;
+            current_fs_context().root_dir().sync(false)?;
             Ok(())
         },
         || {

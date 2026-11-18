@@ -488,6 +488,8 @@ mod tests {
                     "4096",
                     "-g",
                     "1024",
+                    "-O",
+                    "^orphan_file,^metadata_csum_seed",
                     root_path.to_str().unwrap(),
                 ],
             );
@@ -532,7 +534,17 @@ mod tests {
                 let superblock = Ext4Superblock::from_disk_bytes(&superblock);
                 assert_eq!(
                     superblock.blocks_count() * superblock.block_size(),
-                    96 * 1024 * 1024
+                    96 * 1024 * 1024,
+                    "raw image {}: device_bytes={}, compat={:#x}, incompat={:#x}, \
+                     ro_compat={:#x}, reserved_gdt={}, writes={}, flushes={}",
+                    raw_path.display(),
+                    capacity * 512,
+                    superblock.s_feature_compat,
+                    superblock.s_feature_incompat,
+                    superblock.s_feature_ro_compat,
+                    superblock.s_reserved_gdt_blocks,
+                    raw.trace.writes.load(Ordering::Relaxed),
+                    raw.trace.flushes.load(Ordering::Relaxed),
                 );
             }
             File::create(&disk_path)

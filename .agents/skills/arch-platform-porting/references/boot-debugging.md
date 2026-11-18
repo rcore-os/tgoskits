@@ -420,6 +420,13 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
 - 容器通过后，如果持续集成或开发流程依赖该映像，仍需编写与宿主无关的文档。
 - 客户机控制台失败时区分宿主串口和机器所有客户机串口。宿主串口不得进入客户机直通集合。先检查固定 LoongArch 客户机资源、生成的扁平设备树或固件表、虚拟 PCH-PIC 电平状态和 Axvisor 控制台多路复用器，再修改宿主中断路由。
 
+LoongArch CI 使用 `scripts/test/qemu_state_capture.py` 保存每十秒一次的 QMP
+运行状态、各 CPU 寄存器和中断控制器状态，失败后输出最后三份快照。
+`TGOS_QEMU_CAPTURE_REAL` 明确选择真实模拟器，`TGOS_QEMU_CAPTURE_DIR` 指定记录
+目录；通过 `AXBUILD_QEMU_SYSTEM_LOONGARCH64` 选择同名启动链接。启动器直接
+exec QEMU，旁路观察者随该 PID 退出，保留原串口、退出码、SMP 与超时。
+这些无暂停采样用于定位运行期停顿，不计入性能比较，也不作为缺陷已修复的证明。
+
 LVZ 客户机运行时，宿主 clockevent 必须能独立于客户机中断屏蔽触发退出。
 `components/axcpu/src/arch/loongarch64/entry/guest.S::PREPARE_GUEST_ENTRY` 保留宿主
 `ECFG.LIE`，并设置 `PRMD.PIE`，使 `ertn` 恢复 root mode 的中断响应；客户机自己的
@@ -795,6 +802,15 @@ U-Boot 回显命令在中途缺字、尾部丢失或重试内容交错时，先�
 `setenv bootargs` 的回显、`printenv bootargs` 和内核实际 cmdline；不要通过
 缩短有效 cmdline 或恢复服务端持锁 `tcdrain` 掩盖输入流控制问题。该修复不
 改变固件自身的命令行容量，YMODEM 二进制传输也不走命令回显路径。
+
+实体板在取得 U-Boot 提示符之前超时时，保存实际 `board_id`、`session_id`
+及初始化阶段收到的串口行，再区分租约、复位、固件提示符和映像传输阶段。
+OrangePi 的 UVC/NPU/FT232 持续集成命令使用
+`RUST_LOG=info,uboot_shell=debug` 输出初始化收到的行及提示符阶段，保留原
+900 秒预算和业务判据。该日志按行记录，缺少完整行不能证明没有收到字节。
+同一任务的不同分组可能分配到不同实体板，一块板成功不能解释另一块板的
+超时。等待提示符失败尚未执行待加载内核；当前实体板已由其他租约持有时，
+先分析已保存的日志，不重置该租约。
 
 宿主归档的构建、交接、预留、解包、根选择与回收顺序见
 [`docs/design/host-initramfs.md`](../../../../docs/design/host-initramfs.md)。

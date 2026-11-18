@@ -1,0 +1,237 @@
+{
+  "local_audit_resources": [
+    {
+      "bytes": 3651,
+      "sha256": "b31bba98f826be38cc426e0dfe639fd7aaaf06ca11e2ffb739cc880d70a97532",
+      "path": ".anywork/sessions/c3320838e9d4b94cf09199c28802e530b817cf5a91a94da9be6d62a0b20fc852/artifacts/vfs-pivot-accepted-delivery-manifest.json"
+    },
+    {
+      "bytes": 3463,
+      "sha256": "b621d777b084b49754384e7dc6087783849a92ce56ef317e11c82f7a6376a5be",
+      "path": ".anywork/sessions/c3320838e9d4b94cf09199c28802e530b817cf5a91a94da9be6d62a0b20fc852/artifacts/vfs-pivot-red-root-verification.json"
+    },
+    {
+      "bytes": 13075,
+      "sha256": "fe5731758e73fda15e34b85540e0da6984f5e0b4c9e985927a72e9af128f8a12",
+      "path": ".anywork/sessions/c3320838e9d4b94cf09199c28802e530b817cf5a91a94da9be6d62a0b20fc852/artifacts/vfs-pivot-green-root-verification.json"
+    },
+    {
+      "bytes": 5696,
+      "sha256": "0c7ee211be8d375a5df552f6d5a4720aa3eb04739e9936ded023f5a09272e761",
+      "path": ".anywork/sessions/c3320838e9d4b94cf09199c28802e530b817cf5a91a94da9be6d62a0b20fc852/artifacts/mount-authorization-owner-migration-facts.json"
+    },
+    {
+      "bytes": 37201,
+      "label": "red_ledger",
+      "sha256": "e39cb11316d84a6753c4c764c6441cf83f0ed07f92c069154a52bd674ebc676c",
+      "path": ".anywork/sessions/01e8ad855dbfff203f326bfb3b97edc70e7483b6784bbdc6020846f2e2fa5498/artifacts/vfs-pivot-red-ledger.json"
+    },
+    {
+      "bytes": 40301,
+      "label": "green_ledger",
+      "sha256": "e5ffe1fbf36d64659364fcbb5c409c179371b59686380079bb7ee54158d82bcb",
+      "path": ".anywork/sessions/01e8ad855dbfff203f326bfb3b97edc70e7483b6784bbdc6020846f2e2fa5498/artifacts/vfs-pivot-green-ledger.json"
+    }
+  ],
+  "accepted_vfs_pivot": {
+    "source_manifest": [
+      {
+        "bytes": 120432,
+        "sha256": "20f513c09f4ba662fd72bc64dab49f4892ea648f585cbc4abfd75ce8cc3b9e30",
+        "path": "fs/axfs-ng-vfs/src/mount/mod.rs"
+      },
+      {
+        "bytes": 10048,
+        "sha256": "c0f1a426110ecda2cab10c6ae05e213298889eaab11099e67cc6c5ff20bf973c",
+        "path": "fs/axfs-ng-vfs/src/mount/pivot.rs"
+      },
+      {
+        "bytes": 1501,
+        "sha256": "8eae1e56f20c770fba5068284cc01f8696dde2c01175da0c6c553003fcd7b5a6",
+        "path": "fs/axfs-ng-vfs/src/mount/pivot/test_hook.rs"
+      },
+      {
+        "bytes": 27042,
+        "sha256": "2e2c42f83eadfdff16820d582078299865ef57e6d084009538afe43b45b16f57",
+        "path": "fs/axfs-ng-vfs/src/mount/propagation.rs"
+      },
+      {
+        "bytes": 36360,
+        "sha256": "92e5191e4d6408cec8f237d7ce22e6e820a7aaec32a6f5f7efe55284d96f592a",
+        "path": "fs/axfs-ng-vfs/src/mount/tests/namespace.rs"
+      }
+    ],
+    "independent_review": {
+      "findings": [],
+      "disposition": "approved",
+      "report_sha256": "9dc2c1954c9282abcecc44ee863fe228f0183e433517fcc07b3b3bfa167e322b",
+      "scope": "five VFS source files only; no syscall, AX aggregation, Kernel/ROOT or complete-plan approval"
+    },
+    "project_test_entry": "cargo xtask test --since 2655511d9624024ea0ab40eb49fbd564b18352b8",
+    "source_unchanged_in_handoff_merge": true,
+    "green": {
+      "profiles_failed": 1,
+      "passed": {
+        "compile_fail": 8,
+        "doctest": 3,
+        "unit": 70,
+        "integration": 10
+      },
+      "profiles_passed": 16,
+      "head": "13ad64fcac5c226e981be3f023a3e3f87a3c8ec8",
+      "corrected_summary_stdout_lines": {
+        "package_terminal": 1795,
+        "unit": 1756,
+        "integration": 1771,
+        "ordinary_doctest": 1779,
+        "compile_fail_doctest": 1792
+      },
+      "terminal_marker": "ok: axfs-ng-vfs",
+      "environment_printed_headers_byte_equal_to_red": true,
+      "remaining_failure": "starry-kernel Overlay E0061x10/E0407x5",
+      "overall_std_exit": 1
+    },
+    "tree": "00f9ee7ca5cc9a0520feea4c91f737babc5187e7",
+    "head": "13ad64fcac5c226e981be3f023a3e3f87a3c8ec8",
+    "scope_limit": "仅五文件VFS pivot依赖；AX聚合/Owner/Kernel/ROOT与ABI/四架构/性能未完成，其他挂载授权接口由根后续补设计。",
+    "direct_syscall_qemu_four_arch_performance": "not_proven",
+    "static": {
+      "formatting": "passed",
+      "profiles": [
+        "base",
+        "lockdep",
+        "host-test"
+      ],
+      "clippy_checks_passed": 3,
+      "diff_check": "passed"
+    },
+    "diff_range": "2655511d9624024ea0ab40eb49fbd564b18352b8..13ad64fcac5c226e981be3f023a3e3f87a3c8ec8",
+    "red": {
+      "head": "3e80efdfb09803eee7e8d3cb97a542c3794cde32",
+      "overall": {
+        "green": false,
+        "exit_code": 1,
+        "failed_profiles": {
+          "starry-kernel": {
+            "status": "compile failure",
+            "compiler_error_counts": {
+              "E0407": 5,
+              "E0061": 10
+            },
+            "diagnostic": "Overlay old DirNodeOps interface errors; not modified or repaired"
+          },
+          "axfs-ng-vfs": "2 unit assertions failed"
+        },
+        "terminal": "std tests failed for 2 package(s): axfs-ng-vfs, starry-kernel; Error: std test run failed",
+        "selected_profiles_passed": 15
+      },
+      "name_snapshot_retirement_test": {
+        "result": "passed",
+        "test": "mount::tests::namespace::namespace_pivot_success_and_rejection_retire_superseded_name_parents_after_writer",
+        "executed": true
+      },
+      "remaining_package_tests": "not_run_after_unit_failure",
+      "passed": 68,
+      "failed": 2,
+      "unit_total": 70,
+      "failures": [
+        {
+          "assertion": "foreign Core must not pivot a valid tree",
+          "actual": "Ok(())",
+          "test": "mount::tests::namespace::namespace_anchor_stays_fixed_across_pivot_bind_and_owner_retirement",
+          "source": "fs/axfs-ng-vfs/src/mount/tests/namespace.rs:93",
+          "expected": "Err(InvalidInput)"
+        },
+        {
+          "source": "fs/axfs-ng-vfs/src/mount/tests/namespace.rs:225",
+          "test": "mount::tests::namespace::namespace_pivot_rechecks_membership_and_keeps_its_gate_through_commit",
+          "actual": "Ok(())",
+          "expected": "Err(InvalidInput)"
+        }
+      ]
+    }
+  },
+  "post_merge_runtime_verification": "not_run",
+  "branch": "fix/vfs-lookup-ownership-linux71",
+  "kind": "handoff_of_partial_implementation",
+  "mount_authorization_research": {
+    "supplement": {
+      "kernel_mnt_namespace": "当前Kernel MntNamespace只有诊断id，没有actualCore或creator引用；NsProxy同时保存mnt/user两个Arc不能证明immutable creator。",
+      "fsmount_provenance": "MountContext只持Filesystem、选项与mount Vec，无creator或anonymous origin。Directory原始detached bool永久保留；attach后Ordinary，lazy-detach仍Ordinary/parent=None，旧fd bool仍true；底层attach不要求Unbound。Unbound可区分从未发布，但并非fsmount独占标记。",
+      "reverse_discovery": "普通PH仅持Location+use，Mountpoint可追父到顶，anchor无Core Weak反向连接；nsfd缓存是actual AX namespace Weak到inode，非mount到Core到creator查询。",
+      "open_tree": "当前明确Unsupported/ENOSYS，不扩展OPEN_TREE_CLONE或seq_origin新能力；新规则仍需保持已支持FSMOUNT子集。",
+      "capability_helper": "现有ProcReadCredentials::has_ptrace_cap固定CAP_SYS_PTRACE，保存一致caller Cred+userns后可在不取Scope/writer情况下沿immutable lineage判断；尚无通用target-userns CAP_SYS_ADMIN helper。"
+    },
+    "root_verified_linux_ranges": [
+      "fs/namespace.c:2843-2898",
+      "fs/namespace.c:2952-2982",
+      "fs/namespace.c:3636-3689",
+      "fs/namespace.c:3720-3752",
+      "fs/namespace.c:4920-4967"
+    ],
+    "runtime_evidence": "none; all states are fixed-source deductions, not executed reproductions",
+    "kind": "readonly_fact_handoff_not_a_design_contract",
+    "source_commit": "2655511d9624024ea0ab40eb49fbd564b18352b8",
+    "important_non_equivalences": [
+      "mount root != namespace membership",
+      "PathHandle/Filesystem owner != namespace authorization",
+      "original fsmount detached root != lazy-detached formerly attached mount",
+      "propagation must not reject every foreign mount",
+      "bind source and detached move source/target use different anonymous origin rules"
+    ],
+    "new_authorization_interface": "not_designed_or_implemented",
+    "facts": [
+      {
+        "id": "F1",
+        "operation": "mount(newmount)",
+        "current": "Kernel mount.rs708-880 to publication.rs112-157 has retired/type/occupied checks without actual caller Core",
+        "linux": "actual install parent current namespace, check inside LOCK_MOUNT/namespace_sem; foreign EINVAL; internal automount MNT_SHRINKABLE exception is not a user mount permission"
+      },
+      {
+        "id": "F2",
+        "operation": "mount(bind/recursive)",
+        "current": "mount.rs700 to mod.rs1822/bind_locked531 lacks target authorization and source may_copy_tree equivalent",
+        "linux": "target current; source current OR nsfs/pidfs dentry operations OR valid anonymous namespace origin; same namespace_sem"
+      },
+      {
+        "id": "F3",
+        "operation": "mount(MS_MOVE)",
+        "current": "mount.rs692 to move_to has structural checks without namespace branch and source-parent shared rejection",
+        "linux": "attached source current with parent/private parent and target current; alternative source anonymous namespace root, target current or acceptable anonymous namespace, source/target different namespaces"
+      },
+      {
+        "id": "F4",
+        "operation": "mount(propagation)",
+        "current": "mount.rs644 to propagation.rs406 lacks target namespace/owner proof; effective cap bit is not target-userns authorization",
+        "linux": "under namespace_sem target belongs to some real namespace; CAP_SYS_ADMIN in that target namespace owner userns; foreign allowed when authorized, lazy-detached EINVAL"
+      },
+      {
+        "id": "F5",
+        "operation": "mount(REMOUNT) and mount(REMOUNT|BIND)",
+        "current": "mount.rs676 checks mount root then readonly/flags without membership",
+        "linux": "check_mnt before mount-root/locked checks; early membership check is outside namespace_sem and not repeated in later modification locks; filesystem vs mount-local update differs"
+      },
+      {
+        "id": "F6",
+        "operation": "move_mount(detached F_EMPTY_PATH)",
+        "current": "source original detached Directory flag plus parentless/role guards already constrain supported source subset, but attach_detached target lacks may_use_mount equivalent",
+        "linux": "source anonymous root; target current or valid anonymous; target lookup precedes source lookup; same namespace_sem transaction"
+      },
+      {
+        "id": "F7",
+        "operation": "umount2(lazy/expire/normal)",
+        "current": "lazy and normal plan/commit omit caller Core; normal commit does revalidate connections/propagation/busy, so must preserve that evidence; mark_expired currently occurs before busy",
+        "linux": "early membership before expiry; expire busy before first EAGAIN; actual detach under namespace_sem+mount hash repeats membership/locked/parent; current fs root readonly special case differs"
+      },
+      {
+        "id": "F8",
+        "operation": "mount_setattr supported fd-empty-path no-propagation subset",
+        "current": "walk_tree only controls notification; foreign or lazy-detached mount attributes still applied; original fsmount root acceptance must be preserved",
+        "linux": "current mount OR anonymous namespace root; under mount hash with prepare/commit; no namespace_sem for no-propagation; zero full attributes bypass path lookup after argument checks"
+      }
+    ]
+  },
+  "merged_dev": "a15042772543065e16e48e15e5f472757004d0ec",
+  "linux_source_commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+  "merge_commit": "8aaa54b4f3d47a8126250f8cd1fbe3ec01764144"
+}

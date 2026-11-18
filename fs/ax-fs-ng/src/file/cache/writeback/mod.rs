@@ -1,6 +1,6 @@
 //! File-scoped writeback rounds with lock-external owned I/O batches.
 
-#[cfg(all(feature = "ext4", feature = "vfs"))]
+#[cfg(feature = "ext4")]
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -25,6 +25,7 @@ struct WritebackPage {
 #[cfg(any(feature = "vfs", feature = "ext4"))]
 enum WritebackProtection {
     Required,
+    #[cfg(any(feature = "vfs", feature = "ext4"))]
     Opportunistic,
 }
 
@@ -35,6 +36,14 @@ struct WritebackPages<'a> {
 }
 
 impl CachedFileShared {
+    fn sync_backing(&self, data_only: bool) -> VfsResult<()> {
+        let backing = self.backing()?;
+        let change = self.backing_persistence.begin()?;
+        backing.sync(data_only)?;
+        change.complete_sync();
+        Ok(())
+    }
+
     /// Runs after the writer publishes its current stable page and releases
     /// io_lock. Concurrent writeback may temporarily exceed the soft target.
     pub(super) fn balance_dirty_pages(&self, growing: bool) -> VfsResult<()> {
@@ -151,6 +160,7 @@ impl CachedFileShared {
         let mut round = WritebackPages::begin(self, requested)?;
         match protection {
             WritebackProtection::Required => round.protect()?,
+            #[cfg(any(feature = "vfs", feature = "ext4"))]
             WritebackProtection::Opportunistic => round.protect_available()?,
         }
         #[cfg(feature = "vfs")]
@@ -169,7 +179,7 @@ impl CachedFileShared {
         round.protect()?;
         round.write_back()?;
         drop(round);
-        self.backing()?.sync(false)?;
+        self.sync_backing(false)?;
         Ok(numbers)
     }
 
@@ -179,7 +189,7 @@ impl CachedFileShared {
         round.protect()?;
         round.write_back()?;
         drop(round);
-        self.backing()?.sync(false)
+        self.sync_backing(false)
     }
 
     pub(super) fn sync(&self, data_only: bool) -> VfsResult<()> {
@@ -188,12 +198,12 @@ impl CachedFileShared {
         round.protect()?;
         round.write_back()?;
         drop(round);
-        self.backing()?.sync(data_only)
+        self.sync_backing(data_only)
     }
 
-    #[cfg(all(feature = "ext4", feature = "vfs"))]
+    #[cfg(feature = "ext4")]
     pub(super) fn retire_from_writeback_registry(self: &Arc<Self>) -> VfsResult<()> {
-        #[cfg(test)]
+        #[cfg(all(test, feature = "vfs"))]
         self.notify_retirement_lock_attempt();
         let _writeback = self.writeback_lock.lock();
         {

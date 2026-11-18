@@ -1,60 +1,146 @@
-/*
- * bug-open-path-fchmod-bypass: fchmod on an O_PATH fd must fail with EBADF.
- *
- * man 2 open §"O_PATH":
- *   "The file itself is not opened, and other file operations (e.g., read(2),
- *    write(2), fchmod(2), fchown(2), fgetxattr(2), ioctl(2), mmap(2)) fail
- *    with the error EBADF."
- *
- * Linux behavior: fchmod on an O_PATH fd returns -1 EBADF.
- * StarryOS bug: fchmod succeeds, actually changing the file's mode bits —
- *   bypassing the "no real I/O" guarantee of O_PATH.
- *
- * Note on libc behavior: musl's fchmod() falls back to
- * fchmodat(AT_FDCWD, "/proc/self/fd/<n>", mode, 0) on EBADF. On Linux that
- * procfs path also returns EBADF (the procfs symlink to a PATH fd inherits
- * the PATH-only restriction). On starry the kernel must reject both paths
- * to truly match Linux behavior — this test exercises the full libc-visible
- * surface, not the raw syscall.
- */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+
+#ifndef SYS_fchmodat2
+/* Linux assigns syscall number 452 on x86_64, AArch64, RISC-V, and LoongArch. */
+#define SYS_fchmodat2 452
+#endif
+
+static int read_mode(int fd, mode_t *mode)
+{
+    struct stat st;
+    if (fstat(fd, &st) < 0)
+        return -1;
+    *mode = st.st_mode & 07777;
+    return 0;
+}
+
+static int check_result(const char *name, long rc, int error,
+                        int expected_rc, int expected_error, int fd,
+                        mode_t expected_mode)
+{
+    mode_t mode = 0;
+    int stat_error = 0;
+    if (read_mode(fd, &mode) < 0)
+        stat_error = errno;
+
+    int pass = rc == expected_rc &&
+               (rc != -1 || error == expected_error) &&
+               stat_error == 0 && mode == expected_mode;
+    printf("%s: %s rc=%ld errno=%d mode=%04o expected_mode=%04o",
+           name, pass ? "PASS" : "FAIL", rc, error, (unsigned)mode,
+           (unsigned)expected_mode);
+    if (stat_error != 0)
+        printf(" fstat_errno=%d (%s)", stat_error, strerror(stat_error));
+    putchar('\n');
+    return pass;
+}
+
+static int restore_mode(int fd, mode_t mode)
+{
+    errno = 0;
+    long rc = syscall(SYS_fchmod, fd, mode);
+    int error = errno;
+    return check_result("restore", rc, error, 0, 0, fd, mode);
+}
 
 int main(void)
 {
-    const char *file = "/tmp/bug_path_fchmod_bypass";
-    unlink(file);
-    int fd0 = open(file, O_CREAT | O_WRONLY, 0644);
-    if (fd0 < 0) { perror("setup"); return 1; }
-    close(fd0);
+    char file[] = "/tmp/bug_path_fchmod_bypassXXXXXX";
+    char fd_path[32];
+    char relative_path[32];
+    int result = 0;
+    int file_fd = -1;
+    int path_fd = -1;
+    int proc_fd = -1;
+    mode_t original_mode = 0;
+    const mode_t requested_mode = 0600;
 
-    int fd = open(file, O_PATH);
-    if (fd < 0) {
-        printf("FAIL: open(file, O_PATH) -> -1 errno=%d (%s)\n", errno, strerror(errno));
-        unlink(file);
+    file_fd = mkstemp(file);
+    if (file_fd < 0) {
+        int error = errno;
+        printf("FAIL: setup mkstemp errno=%d (%s)\n", error, strerror(error));
         return 1;
+    }
+    if (syscall(SYS_fchmod, file_fd, 0640) < 0 ||
+        read_mode(file_fd, &original_mode) < 0) {
+        int error = errno;
+        printf("FAIL: setup baseline mode errno=%d (%s)\n", error,
+               strerror(error));
+        result = 1;
+        goto cleanup;
+    }
+    if (original_mode != 0640) {
+        printf("FAIL: setup baseline mode=%04o expected=0640\n",
+               (unsigned)original_mode);
+        result = 1;
+        goto cleanup;
+    }
+
+    path_fd = open(file, O_PATH);
+    if (path_fd < 0) {
+        int error = errno;
+        printf("FAIL: setup open(O_PATH) errno=%d (%s)\n", error,
+               strerror(error));
+        result = 1;
+        goto cleanup;
+    }
+    proc_fd = open("/proc/self/fd", O_RDONLY | O_DIRECTORY);
+    if (proc_fd < 0) {
+        int error = errno;
+        printf("FAIL: setup open(/proc/self/fd) errno=%d (%s)\n", error,
+               strerror(error));
+        result = 1;
+        goto cleanup;
+    }
+    if (snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", path_fd) < 0 ||
+        snprintf(relative_path, sizeof(relative_path), "%d", path_fd) < 0) {
+        printf("FAIL: setup format procfd path\n");
+        result = 1;
+        goto cleanup;
     }
 
     errno = 0;
-    int rc = fchmod(fd, 0600);
-    int ok;
-    if (rc == -1 && errno == EBADF) {
-        printf("PASS: fchmod(O_PATH fd) -> -1 EBADF\n");
-        ok = 1;
-    } else {
-        struct stat st;
-        stat(file, &st);
-        printf("FAIL: fchmod returned %d errno=%d (%s); file mode now %04o\n",
-               rc, errno, strerror(errno), (unsigned)(st.st_mode & 07777));
-        ok = 0;
-    }
+    long rc = syscall(SYS_fchmod, path_fd, requested_mode);
+    int error = errno;
+    result |= !check_result("fchmod(O_PATH)", rc, error, -1, EBADF,
+                            file_fd, original_mode);
 
-    close(fd);
+    result |= !restore_mode(file_fd, original_mode);
+    errno = 0;
+    rc = syscall(SYS_fchmodat2, path_fd, "", requested_mode, AT_EMPTY_PATH);
+    error = errno;
+    result |= !check_result("fchmodat2(AT_EMPTY_PATH)", rc, error, 0, 0,
+                            file_fd, requested_mode);
+
+    result |= !restore_mode(file_fd, original_mode);
+    errno = 0;
+    rc = syscall(SYS_fchmodat, AT_FDCWD, fd_path, requested_mode);
+    error = errno;
+    result |= !check_result("fchmodat(procfd absolute)", rc, error, 0, 0,
+                            file_fd, requested_mode);
+
+    result |= !restore_mode(file_fd, original_mode);
+    errno = 0;
+    rc = syscall(SYS_fchmodat, proc_fd, relative_path, requested_mode);
+    error = errno;
+    result |= !check_result("fchmodat(procfd relative)", rc, error, 0, 0,
+                            file_fd, requested_mode);
+
+cleanup:
+    if (proc_fd >= 0)
+        close(proc_fd);
+    if (path_fd >= 0)
+        close(path_fd);
+    if (file_fd >= 0)
+        close(file_fd);
     unlink(file);
-    return ok ? 0 : 1;
+    return result ? 1 : 0;
 }

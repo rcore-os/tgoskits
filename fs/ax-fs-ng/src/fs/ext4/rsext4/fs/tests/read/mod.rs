@@ -84,7 +84,13 @@ pub(super) fn observe_device_read(sector: u64, bytes: usize) -> BlockResult {
         )
     });
     if let Some(root) = rename_root {
-        root.rename("replacement", &root, "victim").unwrap();
+        root.rename(
+            "replacement",
+            &root,
+            "victim",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
     }
     if let Some(other) = other {
         let mut output = [0; 5];
@@ -124,6 +130,11 @@ fn rename_replacement_preserves_the_open_victims_in_flight_data() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     victim
@@ -139,6 +150,11 @@ fn rename_replacement_preserves_the_open_victims_in_flight_data() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     replacement

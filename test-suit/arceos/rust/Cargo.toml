@@ -11,7 +11,7 @@ default = []
 # baseline instead of relying on axbuild to add it for the selected test case.
 ax-std = ["dep:ax-cpu", "dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
 memtest = ["ax-std", "ax-std/alloc"]
-mem-stage1-transition = ["task-runtime", "ax-std/alloc", "ax-std/ipi", "ax-std/paging"]
+mem-stage1-transition = ["task-runtime", "dep:ax-memory-addr", "ax-std/alloc", "ax-std/ipi", "ax-std/paging"]
 task-runtime = ["ax-std"]
 cpu-capacity = ["task-runtime"]
 serial-rx = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection"]
@@ -81,11 +81,16 @@ debug-panic-path = ["ax-std", "dep:axbacktrace", "ax-std/backtrace", "ax-std/fs"
 display-basic = ["ax-std", "ax-driver/virtio-gpu", "ax-std/display"]
 eventfd-epoll = ["ax-std", "ax-std/fd", "dep:libc"]
 exception-breakpoint = ["ax-std"]
-lockdep-baseline = ["ax-std", "dep:axfs-ng-vfs", "ax-std/alloc"]
+# Native filesystem task-local owners require runtime filesystem initialization.
+lockdep-baseline = [
+    "ax-std",
+    "dep:ax-fs-ng",
+    "dep:axfs-ng-vfs",
+    "ax-std/alloc",
+    "ax-runtime/fs",
+]
 lockdep-detect = [
     "ax-std",
-    "dep:axfs-ng-vfs",
-    "axfs-ng-vfs/lockdep",
     "ax-std/alloc",
     "ax-std/lockdep",
 ]
@@ -108,7 +113,7 @@ ax-fs-ng = { workspace = true, optional = true }
 ax-block = { workspace = true, optional = true, features = ["cache"] }
 ax-hal = { workspace = true, optional = true }
 ax-ipi = { workspace = true, optional = true }
-ax-memory-addr.workspace = true
+ax-memory-addr = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }

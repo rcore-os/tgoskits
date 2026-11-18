@@ -29,7 +29,7 @@ host-test = [
 smp = ["ax-runtime/smp"]
 alloc = ["dep:ax-alloc"]
 lockdep = ["ax-runtime/lockdep"]
-fd = ["alloc", "dep:scope-local"]
+fd = ["alloc", "dep:flatten_objects", "dep:scope-local"]
 fs = ["dep:ax-fs-ng", "fd"]
 net = ["dep:ax-net", "fd"]
 pipe = ["fd"]
@@ -53,7 +53,7 @@ ax-task.workspace = true
 ax-io.workspace = true
 ax-lazyinit.workspace = true
 axpoll.workspace = true
-flatten_objects = "0.2"
+flatten_objects = { version = "0.2", optional = true }
 scope-local = { workspace = true, optional = true }
 syscalls.workspace = true
 thiserror.workspace = true

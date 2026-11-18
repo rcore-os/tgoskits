@@ -22,7 +22,7 @@ impl CachedFile {
     }
 
     pub(super) fn prefetch_page_window(&self, pn: u32, window_pages: usize) -> VfsResult<bool> {
-        let file = self.inner.entry().as_file()?;
+        let file = self.inner.location().entry().as_file()?;
         let end = (u64::from(pn) + window_pages.min(super::readahead::MAX_READAHEAD_PAGES) as u64)
             .min(self.shared.len().div_ceil(PAGE_SIZE as u64))
             .min(u64::from(u32::MAX) + 1);

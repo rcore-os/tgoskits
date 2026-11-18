@@ -6,14 +6,15 @@ use rdif_pwm::{Pwm, PwmError, PwmPolarity, PwmState};
 
 use crate::{
     pseudofs::{
-        DirMaker, DirectRwFsFileOps, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
-        SimpleFileOperation, SimpleFileOps, SimpleFs, SpecialFsFile,
+        DirMaker, DirectRwFsFileOps, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps,
+        SimpleFileBacking, SimpleFileOperation, SimpleFileOps, SimpleFsContext,
+        SpecialFsFileBacking,
     },
     sync::Mutex,
 };
 
 /// The class exists even on platforms without a PWM controller.
-pub(crate) fn pwm_class_dir_maker(fs: Arc<SimpleFs>) -> DirMaker {
+pub(crate) fn pwm_class_dir_maker(fs: SimpleFsContext) -> VfsResult<DirMaker> {
     SimpleDir::new_maker(fs.clone(), Arc::new(PwmClassDir { fs }))
 }
 
@@ -122,14 +123,15 @@ impl DirectRwFsFileOps for PwmAttrFile {
     }
 }
 fn attribute(
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     permissions: NodePermission,
     ops: impl SimpleFileOps,
-) -> NodeOpsMux {
-    SpecialFsFile::new_regular_with_perm(fs, PwmAttrFile { ops: Arc::new(ops) }, permissions).into()
+) -> VfsResult<NodeOpsMux> {
+    SpecialFsFileBacking::new_regular_with_perm(fs, PwmAttrFile { ops: Arc::new(ops) }, permissions)
+        .map(Into::into)
 }
 struct PwmClassDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
 }
 impl SimpleDirOps for PwmClassDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
@@ -154,11 +156,11 @@ impl SimpleDirOps for PwmClassDir {
                 fs: self.fs.clone(),
                 index,
             }),
-        )))
+        )?))
     }
 }
 struct PwmChipDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     index: usize,
 }
 impl SimpleDirOps for PwmChipDir {
@@ -180,7 +182,7 @@ impl SimpleDirOps for PwmChipDir {
         match name {
             "export" | "unexport" => {
                 let export = name == "export";
-                Ok(attribute(
+                attribute(
                     self.fs.clone(),
                     NodePermission::OWNER_WRITE,
                     RwFile::new(move |request| match request {
@@ -192,11 +194,11 @@ impl SimpleDirOps for PwmChipDir {
                             Ok(None::<Vec<u8>>)
                         }
                     }),
-                ))
+                )
             }
-            "npwm" => Ok(SimpleFile::new_regular(self.fs.clone(), move || {
+            "npwm" => Ok(SimpleFileBacking::new_regular(self.fs.clone(), move || {
                 Ok(format!("{}\n", CHIPS[index].channels.lock().len()))
-            })
+            })?
             .into()),
             _ => {
                 let channel = name
@@ -213,7 +215,7 @@ impl SimpleDirOps for PwmChipDir {
                         channel,
                         generation,
                     }),
-                )))
+                )?))
             }
         }
     }
@@ -222,7 +224,7 @@ impl SimpleDirOps for PwmChipDir {
     }
 }
 struct PwmChannelDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     index: usize,
     channel: usize,
     generation: usize,
@@ -254,7 +256,7 @@ impl SimpleDirOps for PwmChannelDir {
         let channel = self.channel;
         let generation = self.generation;
         exported_channel(&CHIPS[index].channels.lock(), channel, Some(generation))?;
-        Ok(attribute(
+        attribute(
             self.fs.clone(),
             NodePermission::from_bits_truncate(0o644),
             RwFile::new(move |request| match request {
@@ -277,7 +279,7 @@ impl SimpleDirOps for PwmChannelDir {
                     Ok(None)
                 }
             }),
-        ))
+        )
     }
     fn is_cacheable(&self) -> bool {
         false

@@ -4,13 +4,15 @@ use core::any::Any;
 use ax_fs_ng::vfs::CachedFile;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axfs_ng_vfs::{
-    DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, VfsError, VfsResult,
+    DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataRequest, MetadataUpdate,
+    NamespaceCompletion, NodeFlags, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 
-use super::{SimpleFs, SimpleFsNode};
+use super::{
+    FileMaker, SimpleFsContext, SimpleFsNode, SimpleFsOwner, SimpleInode, recipe::FileRecipe,
+};
 
 /// Mmap behavior for devices.
 #[derive(Clone)]
@@ -122,27 +124,68 @@ pub struct Device {
     ops: Arc<dyn DeviceOps>,
 }
 
-impl Device {
-    /// Creates a new device.
+/// Device entity and I/O operations retained by filesystem-free recipes and indexes.
+pub struct DeviceBacking {
+    inode: Arc<SimpleInode>,
+    ops: Arc<dyn DeviceOps>,
+}
+
+impl DeviceBacking {
     pub fn new(
-        fs: Arc<SimpleFs>,
+        fs: SimpleFsContext,
         node_type: NodeType,
         device_id: DeviceId,
         ops: Arc<dyn DeviceOps>,
+    ) -> VfsResult<Arc<Self>> {
+        let inode = fs.allocate_inode(node_type, NodePermission::default())?;
+        Ok(Self::from_inode(inode, device_id, ops))
+    }
+
+    pub(super) fn from_inode(
+        inode: Arc<SimpleInode>,
+        device_id: DeviceId,
+        ops: Arc<dyn DeviceOps>,
     ) -> Arc<Self> {
-        let node = SimpleFsNode::new(fs, node_type, NodePermission::default());
-        node.metadata.lock_irqsave().rdev = device_id;
-        Arc::new(Self { node, ops })
+        inode.metadata.lock_irqsave().rdev = device_id;
+        Arc::new(Self { inode, ops })
+    }
+
+    pub(super) fn initialize_metadata(&self, update: MetadataUpdate) {
+        self.inode.update_metadata(update);
+    }
+
+    pub fn set_device_id(&self, device_id: DeviceId) {
+        self.inode.metadata.lock_irqsave().rdev = device_id;
+    }
+}
+
+impl FileRecipe for DeviceBacking {
+    fn materialize(self: Arc<Self>, owner: SimpleFsOwner) -> Arc<dyn FileNodeOps> {
+        Arc::new(Device {
+            node: SimpleFsNode::bind(owner, self.inode.clone()),
+            ops: self.ops.clone(),
+        })
+    }
+}
+
+impl From<Arc<DeviceBacking>> for FileMaker {
+    fn from(backing: Arc<DeviceBacking>) -> Self {
+        Self::new(backing.inode.context(), backing)
+    }
+}
+
+impl Device {
+    /// A PTY master keeps the opened ptmx entity while owning this open's I/O state.
+    pub(crate) fn with_open_ops(&self, ops: Arc<dyn DeviceOps>) -> Arc<Self> {
+        Arc::new(Self {
+            node: SimpleFsNode::bind(self.node.owner(), self.node.inode.clone()),
+            ops,
+        })
     }
 
     /// Returns the inner device operations.
     pub fn inner(&self) -> &Arc<dyn DeviceOps> {
         &self.ops
-    }
-
-    /// Updates the device ID.
-    pub fn set_device_id(&self, device_id: DeviceId) {
-        self.node.metadata.lock_irqsave().rdev = device_id;
     }
 
     /// Returns the memory mapping behavior of the device for the given offset.
@@ -168,6 +211,8 @@ impl NodeOps for Device {
     fn metadata(&self) -> VfsResult<Metadata>;
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata>;
 
     fn filesystem(&self) -> &dyn FilesystemOps;
 

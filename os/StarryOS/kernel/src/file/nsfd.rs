@@ -1,6 +1,5 @@
-use alloc::{borrow::Cow, sync::Arc};
+use alloc::{borrow::Cow, format, sync::Arc};
 
-use ax_fs_ng::MountNamespace as FsMountNamespace;
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER,
@@ -8,43 +7,39 @@ use linux_raw_sys::general::{
 };
 
 use super::FileLike;
-use crate::{
-    StarryResult,
-    namespace::{
-        CgroupNamespace, IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace,
-        UserNamespace, UtNamespace,
-    },
-    sync::RawSpinLock,
-};
+use crate::StarryResult;
+
+mod object;
+pub(crate) use object::{NamespaceKind, NamespaceObject};
 
 /// A file descriptor that references a specific kernel namespace.
 ///
 /// Created by opening a file under `/proc/<pid>/ns/<type>`.  The fd is
 /// passed to `setns(2)` to join the referenced namespace.
-pub enum NsFd {
-    Uts(Arc<RawSpinLock<UtNamespace>>),
-    Ipc(Arc<RawSpinLock<IpcNamespace>>),
-    Mnt {
-        ns: Arc<RawSpinLock<ProxyMntNamespace>>,
-        fs_ns: Arc<FsMountNamespace>,
-    },
-    Pid(crate::namespace::PidNamespaceRef),
-    Net(Arc<RawSpinLock<NetNamespace>>),
-    User(Arc<RawSpinLock<UserNamespace>>),
-    Cgroup(Arc<RawSpinLock<CgroupNamespace>>),
+pub struct NsFd {
+    object: NamespaceObject,
+    inode: Arc<crate::pseudofs::object::ObjectInode>,
 }
 
 impl NsFd {
+    pub(crate) fn object(&self) -> &NamespaceObject {
+        &self.object
+    }
+
+    pub(crate) fn location(&self) -> axfs_ng_vfs::Location {
+        self.inode.location(self.object.clone())
+    }
+
     /// Return the `CLONE_NEW*` constant for this namespace.
     pub fn ns_type(&self) -> u32 {
-        match self {
-            NsFd::Uts(_) => CLONE_NEWUTS,
-            NsFd::Ipc(_) => CLONE_NEWIPC,
-            NsFd::Mnt { .. } => CLONE_NEWNS,
-            NsFd::Pid(_) => CLONE_NEWPID,
-            NsFd::Net(_) => CLONE_NEWNET,
-            NsFd::User(_) => CLONE_NEWUSER,
-            NsFd::Cgroup(_) => CLONE_NEWCGROUP,
+        match &self.object {
+            NamespaceObject::Uts(_) => CLONE_NEWUTS,
+            NamespaceObject::Ipc(_) => CLONE_NEWIPC,
+            NamespaceObject::Mnt(_) => CLONE_NEWNS,
+            NamespaceObject::Pid(_) => CLONE_NEWPID,
+            NamespaceObject::Net(_) => CLONE_NEWNET,
+            NamespaceObject::User(_) => CLONE_NEWUSER,
+            NamespaceObject::Cgroup(_) => CLONE_NEWCGROUP,
         }
     }
 }
@@ -55,34 +50,12 @@ impl FileLike for NsFd {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        match self {
-            NsFd::Uts(_) => "anon_inode:[uts_ns]".into(),
-            NsFd::Ipc(_) => "anon_inode:[ipc_ns]".into(),
-            NsFd::Mnt { .. } => "anon_inode:[mnt_ns]".into(),
-            NsFd::Pid(_) => "anon_inode:[pid_ns]".into(),
-            NsFd::Net(_) => "anon_inode:[net_ns]".into(),
-            NsFd::User(_) => "anon_inode:[user_ns]".into(),
-            NsFd::Cgroup(_) => "anon_inode:[cgroup_ns]".into(),
-        }
+        format!("{}:[{}]", self.object.kind().name(), self.inode.inode()).into()
     }
 
     fn stat(&self) -> StarryResult<super::Kstat> {
-        let ino = match self {
-            NsFd::Uts(ns) => ns.lock_irqsave().id,
-            NsFd::Ipc(ns) => ns.lock_irqsave().ns_id,
-            NsFd::Mnt { ns, .. } => ns.lock_irqsave().id(),
-            NsFd::Pid(ns) => ns.id().get(),
-            NsFd::Net(ns) => ns.lock_irqsave().ns_id,
-            NsFd::User(ns) => ns.lock_irqsave().id,
-            NsFd::Cgroup(ns) => ns.lock_irqsave().id(),
-        };
-        Ok(super::Kstat {
-            ino,
-            mode: 0o100_444, // S_IFREG | 0444
-            nlink: 1,
-            blksize: 4096,
-            ..super::Kstat::default()
-        })
+        let location = self.location();
+        Ok(super::metadata_to_kstat(&location.metadata()?))
     }
 }
 

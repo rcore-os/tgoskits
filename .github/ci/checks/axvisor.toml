@@ -168,7 +168,21 @@ download_xtask_bin_artifact = true
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
-target/debug/tg-xtask axvisor test qemu --arch loongarch64
+task_capture_bin=$(mktemp -d)
+task_capture_state=$(mktemp -d "$PWD/target/ci-qemu-state.XXXXXX")
+ln -s "$PWD/scripts/test/qemu_state_capture.py" "$task_capture_bin/qemu-system-loongarch64"
+task_status=0
+TGOS_QEMU_CAPTURE_REAL="$(command -v qemu-system-loongarch64)" \
+TGOS_QEMU_CAPTURE_DIR="$task_capture_state" \
+AXBUILD_QEMU_SYSTEM_LOONGARCH64="$task_capture_bin/qemu-system-loongarch64" \
+  target/debug/tg-xtask axvisor test qemu --arch loongarch64 || task_status=$?
+if [ "$task_status" -ne 0 ]; then
+  python3 scripts/test/qemu_state_capture.py --report "$task_capture_state" \
+    || printf '%s\n' 'QEMU state report failed' >&2
+fi
+rm "$task_capture_bin/qemu-system-loongarch64"
+rmdir "$task_capture_bin"
+exit "$task_status"
 '''
 
 [[check.suite]]
@@ -344,8 +358,8 @@ cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-cargo xtask starry test board --board orangepi-5-plus-robot
-cargo xtask axvisor test board \
+RUST_LOG=info,uboot_shell=debug cargo xtask starry test board --board orangepi-5-plus-robot
+RUST_LOG=info,uboot_shell=debug cargo xtask axvisor test board \
   --board orangepi-5-plus-robot-starry,orangepi-5-plus-robot-linux
 '''
 

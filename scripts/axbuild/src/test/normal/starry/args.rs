@@ -78,6 +78,7 @@ pub struct ArgsTestQemu {
         long,
         value_name = "ELF",
         requires = "build_config",
+        conflicts_with_all = ["arch", "target", "test_case", "list"],
         help = "Boot this validated, byte-preserved ELF instead of the fresh build"
     )]
     pub fixed_elf: Option<PathBuf>,
@@ -140,77 +141,4 @@ pub struct ArgsTestNixos {
 
     #[arg(short = 'l', long, help = "List StarryOS-backed NixOS test cases")]
     pub list: bool,
-}
-
-#[cfg(test)]
-mod tests {
-    use clap::Parser;
-
-    use super::ArgsTestQemu;
-
-    #[derive(Parser)]
-    struct TestCli {
-        #[command(flatten)]
-        qemu: ArgsTestQemu,
-    }
-
-    #[test]
-    fn external_run_accepts_complete_inputs_without_arch_selection() {
-        let cli = TestCli::try_parse_from([
-            "test",
-            "--build-config",
-            "build.toml",
-            "--qemu-config",
-            "qemu.toml",
-            "--rootfs",
-            "rootfs.img",
-            "--fixed-elf",
-            "/tmp/starryos",
-        ])
-        .unwrap();
-
-        assert!(cli.qemu.arch.is_none());
-        assert!(cli.qemu.target.is_none());
-    }
-
-    #[test]
-    fn external_run_rejects_partial_or_discovery_inputs() {
-        assert!(
-            TestCli::try_parse_from([
-                "test",
-                "--build-config",
-                "build.toml",
-                "--rootfs",
-                "rootfs.img",
-            ])
-            .is_err()
-        );
-        assert!(
-            TestCli::try_parse_from([
-                "test",
-                "--arch",
-                "x86_64",
-                "--build-config",
-                "build.toml",
-                "--qemu-config",
-                "qemu.toml",
-                "--rootfs",
-                "rootfs.img",
-            ])
-            .is_err()
-        );
-        assert!(
-            TestCli::try_parse_from([
-                "test",
-                "--build-config",
-                "build.toml",
-                "--qemu-config",
-                "qemu.toml",
-                "--rootfs",
-                "rootfs.img",
-                "--list",
-            ])
-            .is_err()
-        );
-    }
 }

@@ -383,19 +383,44 @@ static void check_vblank_timeout(int fd)
           WEXITSTATUS(status) == 0, "WAIT_VBLANK has a 3-second EBUSY deadline");
 }
 
-static int vblank_wait_child(int fd, int ready_fd, int expect_disable_wake)
+static long query_vblank(int fd, union drm_wait_vblank *query)
 {
+    *query = (union drm_wait_vblank){0};
+    query->req.type = _DRM_VBLANK_RELATIVE;
+    return syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, query);
+}
+
+static long queue_immediate_sequence(int fd, uint32_t crtc_id, uint64_t user_data)
+{
+    struct drm_crtc_queue_sequence event = {
+        .crtc_id = crtc_id, .flags = DRM_CRTC_SEQUENCE_RELATIVE,
+        .user_data = user_data, .sequence = 0,
+    };
+    return syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &event);
+}
+
+static int vblank_wait_child(int fd, uint32_t crtc_id, int ready_fd,
+                             int expect_disable_wake)
+{
+    struct drm_crtc_get_sequence before = { .crtc_id = crtc_id };
+    if (syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &before) != 0)
+        return 1;
     union drm_wait_vblank wait = {0};
     wait.req.type = _DRM_VBLANK_RELATIVE;
     wait.req.sequence = 100000;
     if (write(ready_fd, "R", 1) != 1)
         return 1;
-    close(ready_fd);
+    if (!expect_disable_wake)
+        close(ready_fd);
     alarm(5);
     long result = syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, &wait);
     alarm(0);
-    if (expect_disable_wake)
-        return result == 0 && wait.reply.sequence < 100000 ? 0 : 1;
+    if (expect_disable_wake) {
+        ssize_t copied = write(ready_fd, &wait.reply, sizeof(wait.reply));
+        close(ready_fd);
+        return result == 0 && copied == (ssize_t)sizeof(wait.reply) &&
+               (uint32_t)(wait.reply.sequence - (uint32_t)before.sequence) < 100000 ? 0 : 1;
+    }
     return result < 0 && errno == EBUSY ? 0 : 1;
 }
 
@@ -436,7 +461,7 @@ static void check_vblank_disable_reenable(int fd, uint32_t crtc_id,
     }
     if (waiter == 0) {
         close(ready_pipe[0]);
-        _exit(vblank_wait_child(fd, ready_pipe[1], 0));
+        _exit(vblank_wait_child(fd, crtc_id, ready_pipe[1], 0));
     }
     close(ready_pipe[1]);
     char ready;
@@ -484,6 +509,19 @@ static void check_vblank_disable_reenable(int fd, uint32_t crtc_id,
           "WAIT_VBLANK remains pending after an unobserved disable/re-enable");
     CHECK(sched_setaffinity(0, sizeof(saved_affinity), &saved_affinity) == 0,
           "restore affinity after quick re-enable test");
+}
+
+static int vblank_advance_matches_active_time(uint64_t before, uint64_t after,
+                                             uint64_t elapsed_ns, uint64_t period_ns)
+{
+    if (period_ns == 0 || after < before)
+        return 0;
+    /* Linux adds one on modeset and rounds timestamp-derived active frames
+     * to nearest. The first query can enable vblank partway through a frame. */
+    uint64_t active_frames = elapsed_ns / period_ns;
+    active_frames += elapsed_ns % period_ns >= period_ns / 2 + period_ns % 2;
+    uint64_t advance = after - before;
+    return advance == 0 || advance - 1 <= active_frames;
 }
 
 int main(void)
@@ -702,12 +740,11 @@ int main(void)
     char buf[64] = {0};
     CHECK_ERR(read(fd, buf, sizeof(buf)), EAGAIN, "empty read returns EAGAIN");
 
-    /* --- WAIT_VBLANK 查询不回退 ---
-     * type=0（absolute，target=0）是纯查询：真实时钟下同一周期内两次
-     * 查询返回相同序列号，跨周期则 +1，因此只要求不回退。 */
+    /* A relative zero request queries the current sequence. Absolute zero
+     * can instead name a distant target once the 32-bit counter has advanced. */
     union drm_wait_vblank wv1 = {0}, wv2 = {0};
-    CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wv1), 0, "WAIT_VBLANK 1");
-    CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wv2), 0, "WAIT_VBLANK 2");
+    CHECK_RET(query_vblank(fd, &wv1), 0, "WAIT_VBLANK 1");
+    CHECK_RET(query_vblank(fd, &wv2), 0, "WAIT_VBLANK 2");
     CHECK(wv2.reply.sequence >= wv1.reply.sequence, "vblank seq monotonic");
     CHECK(wv2.reply.sequence >= seq1, "vblank seq >= flip seq");
 
@@ -831,9 +868,10 @@ int main(void)
     int other = open("/dev/dri/card0", O_RDWR | O_CLOEXEC | O_NONBLOCK);
     CHECK(other >= 0, "open independent card0 file");
     struct drm_crtc_queue_sequence immediate = {
-        .crtc_id = crtc_ids[0], .user_data = 0xace0, .sequence = 0,
+        .crtc_id = crtc_ids[0], .flags = DRM_CRTC_SEQUENCE_RELATIVE,
+        .user_data = 0xace0, .sequence = 0,
     };
-    CHECK_RET(ioctl(other, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &immediate), 0,
+    CHECK_RET(queue_immediate_sequence(other, crtc_ids[0], 0xace0), 0,
               "queue immediate event on other open");
     CHECK_ERR(read(fd, buf, sizeof(buf)), EAGAIN, "other open's event is isolated");
     n = read(other, &seq_ev, sizeof(seq_ev));
@@ -858,15 +896,9 @@ int main(void)
     struct pollfd isolated = { .fd = fd, .events = POLLIN };
     CHECK(poll(&isolated, 1, 100) == 0, "closing other open cancels its events");
 
-    struct drm_crtc_queue_sequence first_ready = {
-        .crtc_id = crtc_ids[0], .sequence = 0, .user_data = 0xface01,
-    };
-    struct drm_crtc_queue_sequence second_ready = {
-        .crtc_id = crtc_ids[0], .sequence = 0, .user_data = 0xface02,
-    };
-    CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &first_ready), 0,
+    CHECK_RET(queue_immediate_sequence(fd, crtc_ids[0], 0xface01), 0,
               "queue first immediate event for partial read");
-    CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &second_ready), 0,
+    CHECK_RET(queue_immediate_sequence(fd, crtc_ids[0], 0xface02), 0,
               "queue second immediate event for partial read");
     void *guard = mmap(NULL, sizeof(seq_ev), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(guard != MAP_FAILED, "map inaccessible destination for partial read");
@@ -1104,13 +1136,12 @@ int main(void)
     CHECK(waiter >= 0, "fork waiter for concurrent CRTC disable");
     if (waiter == 0) {
         close(ready_pipe[0]);
-        _exit(vblank_wait_child(fd, ready_pipe[1], 1));
+        _exit(vblank_wait_child(fd, crtc_ids[0], ready_pipe[1], 1));
     }
     close(ready_pipe[1]);
     char ready;
     int blocked = read(ready_pipe[0], &ready, 1) == 1 && ready == 'R' &&
                   wait_for_vblank_sleep(waiter) == 0;
-    close(ready_pipe[0]);
     CHECK(blocked, "WAIT_VBLANK is blocked before CRTC disable");
     struct drm_mode_crtc disable = { .crtc_id = crtc_ids[0] };
     CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_SETCRTC, &disable), 0, "disable CRTC");
@@ -1118,6 +1149,9 @@ int main(void)
     CHECK(waitpid(waiter, &wait_status, 0) == waiter && WIFEXITED(wait_status) &&
           WEXITSTATUS(wait_status) == 0,
           "concurrent disable completes WAIT_VBLANK with frozen sequence");
+    struct drm_wait_vblank_reply completed_wait = {0};
+    ssize_t completed_wait_bytes = read(ready_pipe[0], &completed_wait, sizeof(completed_wait));
+    close(ready_pipe[0]);
     check_binding(fd, plane_ids[0], crtc_ids[0], 0);
     struct drm_mode_crtc disabled_crtc = { .crtc_id = crtc_ids[0] };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &disabled_crtc), 0,
@@ -1132,7 +1166,11 @@ int main(void)
     CHECK(n == (ssize_t)sizeof(resumed_event) &&
           resumed_event.user_data == 0xadd00ff &&
           resumed_event.sequence >= before_disable.sequence &&
-          resumed_event.sequence < suspended.sequence,
+          resumed_event.sequence < suspended.sequence &&
+          completed_wait_bytes == (ssize_t)sizeof(completed_wait) &&
+          completed_wait.sequence == (uint32_t)resumed_event.sequence &&
+          completed_wait.tv_sec * 1000000000LL + completed_wait.tv_usec * 1000 <= resumed_event.tv_ns &&
+          resumed_event.tv_ns - (completed_wait.tv_sec * 1000000000LL + completed_wait.tv_usec * 1000) < 1000,
           "disabled event carries the current rather than target sequence");
     struct pollfd other_pfd = { .fd = other_disable, .events = POLLIN };
     CHECK(poll(&other_pfd, 1, 1000) == 1,
@@ -1172,9 +1210,13 @@ int main(void)
     clock_gettime(CLOCK_MONOTONIC, &reenable_end);
     uint64_t reenabled_ns = (uint64_t)(reenable_end.tv_sec - reenable_start.tv_sec)
                             * 1000000000ULL + reenable_end.tv_nsec - reenable_start.tv_nsec;
-    CHECK(after_enable.sequence >= resumed_event.sequence &&
-          after_enable.sequence - resumed_event.sequence <=
-          1 + reenabled_ns / period_ns,
+    printf("  INFO | re-enable frozen=(seq=%llu ns=%lld) after=(seq=%llu ns=%lld) "
+           "elapsed_ns=%llu period_ns=%llu\n",
+           (unsigned long long)resumed_event.sequence, (long long)resumed_event.tv_ns,
+           (unsigned long long)after_enable.sequence, (long long)after_enable.sequence_ns,
+           (unsigned long long)reenabled_ns, (unsigned long long)period_ns);
+    CHECK(vblank_advance_matches_active_time(resumed_event.sequence,
+                                            after_enable.sequence, reenabled_ns, period_ns),
           "disabled interval does not advance vblank sequence");
     check_binding(fd, plane_ids[0], crtc_ids[0], next_fb.fb_id);
     struct drm_crtc_get_sequence after_event = { .crtc_id = crtc_ids[0] };

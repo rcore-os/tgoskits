@@ -795,9 +795,7 @@ fn user_page_fault_may_be_serviced(thr: &crate::task::Thread) -> bool {
 }
 
 pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
-    if ax_runtime::diagnostics::diagnose_current_stack_guard_page_fault(vaddr) {
-        return false;
-    }
+    ax_runtime::diagnostics::panic_on_current_stack_guard_page_fault(vaddr);
 
     // This callback handles only faults caused by a user mapping or by the
     // kernel explicitly touching one. Reject unrelated kernel addresses before
@@ -1339,7 +1337,7 @@ mod tests {
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn no_fault_read_marker_outranks_active_user_memory_scope() {
-        use crate::task::{PidReservation, PidReservationKind, ROOT_PID_NS, Thread, Tgid, Tid};
+        use crate::task::{PidReservation, PidReservationKind, ROOT_PID_NS, Tgid, Thread, Tid};
 
         // A synthetic thread with a real process, as in the clone axtests.
         let reservation =

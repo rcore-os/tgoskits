@@ -535,12 +535,11 @@ fn current_process_pid_snapshot(current: &crate::task::UserTaskRef) -> PidSnapsh
     current.as_thread().proc_data.identity().snapshot()
 }
 
-/// Resolve `fd` to an inode-keyed lockable file. Returns `EBADF` when the
+/// Resolve a retained description to an inode-keyed lockable file. Returns `EBADF` when the
 /// file description does not expose a lock identity.
-fn lockable(fd: c_int) -> StarryResult<(InodeKey, Arc<dyn FileLike>)> {
-    let f = get_file_like(fd)?;
-    let key = f.inode_key().ok_or(StarryError::BadFileDescriptor)?;
-    Ok((key, f))
+fn lockable(file: Arc<dyn FileLike>) -> StarryResult<(InodeKey, Arc<dyn FileLike>)> {
+    let key = file.inode_key().ok_or(StarryError::BadFileDescriptor)?;
+    Ok((key, file))
 }
 
 /// Resolve `flock64.l_start` relative to `l_whence`, matching Linux
@@ -560,7 +559,7 @@ fn resolve_l_start(file: &Arc<dyn FileLike>, l_whence: i16, l_start: i64) -> Sta
     if whence != SEEK_CUR && whence != SEEK_END {
         return Err(StarryError::InvalidInput);
     }
-    let fifo = file.downcast_ref::<Pipe>().and_then(Pipe::named_file);
+    let fifo = file.downcast_ref::<Pipe>().and_then(Pipe::backing_file);
     let backing = fifo
         .map(Arc::as_ref)
         .or_else(|| file.downcast_ref::<File>())
@@ -919,7 +918,7 @@ fn try_setlk_once(
 /// `EAGAIN` immediately.
 pub fn fcntl_setlk(
     current: &crate::task::UserTaskRef,
-    fd: c_int,
+    file: Arc<dyn FileLike>,
     arg: usize,
     ofd: bool,
     wait: bool,
@@ -931,7 +930,7 @@ pub fn fcntl_setlk(
     if ofd && fl.l_pid != 0 {
         return Err(StarryError::InvalidInput);
     }
-    let (key, file) = lockable(fd)?;
+    let (key, file) = lockable(file)?;
     let abs_start = resolve_l_start(&file, fl.l_whence, fl.l_start)?;
     let (start, end) = flock_range(abs_start, fl.l_len)?;
 
@@ -1022,7 +1021,7 @@ pub fn fcntl_setlk(
 /// range is free.
 pub fn fcntl_getlk(
     current: &crate::task::UserTaskRef,
-    fd: c_int,
+    file: Arc<dyn FileLike>,
     arg: usize,
     ofd: bool,
 ) -> crate::StarryResult<isize> {
@@ -1039,7 +1038,7 @@ pub fn fcntl_getlk(
         F_WRLCK => LockKind::Write,
         _ => return Err(StarryError::InvalidInput),
     };
-    let (key, file) = lockable(fd)?;
+    let (key, file) = lockable(file)?;
     let abs_start = resolve_l_start(&file, fl.l_whence, fl.l_start)?;
     let (start, end) = flock_range(abs_start, fl.l_len)?;
 
@@ -1151,18 +1150,18 @@ fn write_flock64_outputs(
 /// through to other fcntl handling.
 pub fn dispatch_fcntl(
     current: &crate::task::UserTaskRef,
-    fd: c_int,
+    file: &Arc<dyn FileLike>,
     cmd: c_int,
     arg: usize,
 ) -> Option<crate::StarryResult<isize>> {
     let cmd = cmd as u32;
     Some(match cmd {
-        F_SETLK => fcntl_setlk(current, fd, arg, false, false),
-        F_SETLKW => fcntl_setlk(current, fd, arg, false, true),
-        F_OFD_SETLK => fcntl_setlk(current, fd, arg, true, false),
-        F_OFD_SETLKW => fcntl_setlk(current, fd, arg, true, true),
-        F_GETLK => fcntl_getlk(current, fd, arg, false),
-        F_OFD_GETLK => fcntl_getlk(current, fd, arg, true),
+        F_SETLK => fcntl_setlk(current, file.clone(), arg, false, false),
+        F_SETLKW => fcntl_setlk(current, file.clone(), arg, false, true),
+        F_OFD_SETLK => fcntl_setlk(current, file.clone(), arg, true, false),
+        F_OFD_SETLKW => fcntl_setlk(current, file.clone(), arg, true, true),
+        F_GETLK => fcntl_getlk(current, file.clone(), arg, false),
+        F_OFD_GETLK => fcntl_getlk(current, file.clone(), arg, true),
         _ => return None,
     })
 }
@@ -1412,7 +1411,7 @@ pub fn flock_op(
         _ => return Err(StarryError::InvalidInput),
     };
 
-    let (key, file) = lockable(fd)?;
+    let (key, file) = lockable(get_file_like(fd)?)?;
     let addr = ofd_addr(&file);
 
     loop {

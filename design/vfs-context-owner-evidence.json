@@ -1,0 +1,409 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-11-16T15:52:55.760459+08:00",
+  "scope": "AX owner/snapshot, controlled updates, and ordered pivot component; production migration remains incomplete",
+  "repository": "rcore-os/tgoskits",
+  "pull_request": 2800,
+  "base_commit": "b64f42bdbb0ccc41e15df7df6c8f10a359f7097e",
+  "source_commit": "41d90c72a39ef82b5589e2a828fb62b2817f80db",
+  "source_tree": "1acf5cac39f10eda4a0f61981f180645a75a9e48",
+  "source_files": [
+    {
+      "path": "fs/ax-fs-ng/src/lib.rs",
+      "sha256": "a4ebd3b17f3ac77e2e9ca01c65333af86ae2df608a7514b7fef4fbf10ecb57db"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs_core/mod.rs",
+      "sha256": "ef456d9aa352de4b2a65f9e3f22359fbf561478a27e09654c1e2828387b042ff"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs_core/owner/mod.rs",
+      "sha256": "1435494d15d5d3889c609cf61154d1dbd5dd4d802a475ab98019332f2d4f515f"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs_core/owner/update.rs",
+      "sha256": "0c00b436ea15c6c1df82527db71fcd6abc95b154a953e787f6942e6912fe6e94"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs_core/owner/pivot.rs",
+      "sha256": "05730458ef990ff8d38f0a7ccd42069dd6f22d15be6ca9940e77978cd0715ad0"
+    }
+  ],
+  "toolchain": {
+    "rustc": "rustc 1.100.0-nightly (a69a63265 2026-09-03)\nbinary: rustc\ncommit-hash: a69a63265cfd9e006d43137f98301b8d274ad4c9\ncommit-date: 2026-09-03\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0-nightly\nLLVM version: 23.1.1",
+    "cargo": "cargo 1.100.0-nightly (b2e9d5f9d 2026-09-02)",
+    "working_directory": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev"
+  },
+  "linux_reference": {
+    "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+    "source": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fs_struct.c",
+    "kind": "source comparison, not Linux runtime evidence"
+  },
+  "std_command": "cargo xtask test --since b64f42bdbb0ccc41e15df7df6c8f10a359f7097e",
+  "red": {
+    "commit": "ca8a095c385141fc73132c10205b80f9612c5236",
+    "mutation": "release PIVOT_SEQUENCE immediately after VFS topology movement",
+    "exit_code": 1,
+    "profiles": [
+      {
+        "features": [
+          "host-test",
+          "vfs",
+          "fat",
+          "ext4"
+        ],
+        "results": [
+          "test result: FAILED. 267 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.54s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... FAILED",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test",
+          "vfs",
+          "fat"
+        ],
+        "results": [
+          "test result: FAILED. 156 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... FAILED",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test",
+          "fat"
+        ],
+        "results": [
+          "test result: FAILED. 136 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... FAILED",
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test",
+          "ext4"
+        ],
+        "results": [
+          "test result: FAILED. 237 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.20s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... FAILED",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test"
+        ],
+        "results": [
+          "test result: FAILED. 127 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... FAILED",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      }
+    ]
+  },
+  "green": {
+    "commit": "55894fad2e512ebee34707c591535b2b9a0c255c",
+    "exit_code": 1,
+    "profiles": [
+      {
+        "features": [
+          "host-test",
+          "vfs",
+          "fat",
+          "ext4"
+        ],
+        "results": [
+          "test result: ok. 268 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.62s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test",
+          "vfs",
+          "fat"
+        ],
+        "results": [
+          "test result: ok. 157 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test",
+          "fat"
+        ],
+        "results": [
+          "test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test",
+          "ext4"
+        ],
+        "results": [
+          "test result: ok. 238 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.23s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test"
+        ],
+        "results": [
+          "test result: ok. 128 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      }
+    ]
+  },
+  "final_validation": {
+    "commit": "41d90c72a39ef82b5589e2a828fb62b2817f80db",
+    "std_exit_code": 1,
+    "selected_packages": 18,
+    "passed_packages": 17,
+    "failed_packages": [
+      "starry-kernel"
+    ],
+    "ax_fs_ng_profiles": [
+      {
+        "features": [
+          "host-test",
+          "vfs",
+          "fat",
+          "ext4"
+        ],
+        "results": [
+          "test result: ok. 268 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.28s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test",
+          "vfs",
+          "fat"
+        ],
+        "results": [
+          "test result: ok. 157 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test",
+          "fat"
+        ],
+        "results": [
+          "test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test",
+          "ext4"
+        ],
+        "results": [
+          "test result: ok. 238 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.28s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      },
+      {
+        "features": [
+          "host-test"
+        ],
+        "results": [
+          "test result: ok. 128 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+        ],
+        "owner_tests": [
+          "test fs_core::owner::pivot::tests::pivot_retains_selected_states_until_after_the_caller_releases_protection ... ok",
+          "test fs_core::owner::pivot::tests::pivots_order_real_topology_and_exact_shared_path_revisions ... ok",
+          "test fs_core::owner::tests::shared_paths_preserve_task_namespace_and_explicit_owner_shares ... ok",
+          "test fs_core::owner::tests::snapshots_fork_frozen_paths_without_resurrecting_source_state ... ok",
+          "test fs_core::owner::tests::updates_return_rejected_inputs_and_replaced_last_path_owners ... ok"
+        ]
+      }
+    ],
+    "clippy_command": "cargo xtask clippy --package ax-fs-ng",
+    "clippy_exit_code": 0,
+    "passed_clippy_checks": 6,
+    "formatting": "cargo fmt; git diff --check",
+    "overall_pass": false
+  },
+  "baseline_blocker": {
+    "command": "cargo xtask clippy --package starry-kernel",
+    "exit_code": 1,
+    "errors": {
+      "E0061": 10,
+      "E0407": 5
+    },
+    "executed_checks": 1,
+    "remaining_checks_not_run": 71,
+    "cause": "Overlay still implements removed DirNodeOps namespace methods and calls old mutation signatures"
+  },
+  "local_artifact_root": "/home/zhourui/.codex/artifacts/pr2800-continuation",
+  "logs": [
+    {
+      "name": "baseline-starry-clippy.log",
+      "bytes": 40800,
+      "sha256": "9850b2164a5c129ade64553d603fcf18c6f9c8d292bdc2aa55f9deeb6686223b"
+    },
+    {
+      "name": "owner-first-tests.log",
+      "bytes": 319906,
+      "sha256": "508f11fb512a7e8fc1fec70c0d2ef58f105b2f093f0eaa24aaf0d275cd8452a2"
+    },
+    {
+      "name": "owner-sequence-red.log",
+      "bytes": 280374,
+      "sha256": "ead278404c7c1172cdce1f2394a4fd9ddb880f27bbf37670387f4d8d2dbb7d3e"
+    },
+    {
+      "name": "owner-sequence-green.log",
+      "bytes": 284723,
+      "sha256": "298e4894d844e4ce5fd1d313511347bae22e63568099e17f381f5ccb0fb4ae88"
+    },
+    {
+      "name": "owner-final-head-tests.log",
+      "bytes": 284723,
+      "sha256": "2ca7ef19b81d3ce410d64912c3ec36fe1ebdc3eade5f90d3b41ebb4acc367170"
+    },
+    {
+      "name": "owner-public-api-clippy.log",
+      "bytes": 2769,
+      "sha256": "10aaa308885cac0ae6a150e1c2acecd8d977e063761277d7af56be4fbe70f65e"
+    }
+  ],
+  "limitations": [
+    "No production FS_CONTEXT or ROOT migration",
+    "No Kernel FS/MNT paired scope binding or creator migration",
+    "No Overlay implementation migration",
+    "No direct syscall, QEMU, four-architecture runtime, or performance evidence",
+    "No independent review approval for this component"
+  ]
+}

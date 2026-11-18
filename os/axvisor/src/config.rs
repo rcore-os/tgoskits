@@ -23,8 +23,9 @@ use axvmconfig::{GuestConfig, GuestType, HostDeviceAssignment};
 
 pub fn load_builtin_catalog() -> Result<axvisor::builtin::BuiltinCatalog> {
     init_guest_boot_resources();
-    let context = ax_fs_ng::current_fs_context();
-    axvisor::builtin::load_catalog(&context.lock())
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
+    let context = ax_fs_ng::FsView::current(ax_fs_ng::current_fs_context(), &caller);
+    axvisor::builtin::load_catalog(&context)
 }
 
 pub(crate) struct PreparedGuestVm {
@@ -208,9 +209,9 @@ fn vm_config_needs_host_filesystem_release(config: &GuestConfig) -> bool {
         target_arch = "loongarch64"
     ))]
     {
-        return (ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block)
+        (ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block)
             && config.base.guest_type == GuestType::Passthrough)
-            || !config.devices.passthrough.is_empty();
+            || !config.devices.passthrough.is_empty()
     }
     #[cfg(not(any(
         target_arch = "aarch64",

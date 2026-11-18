@@ -174,6 +174,13 @@ fn verify_renameat_tracks_moved_directory_fd() -> crate::TestResult {
     fs::create_dir(SRC_DIR).expect("failed to create rename_src");
     fs::write(SRC_ITEM, ITEM_CONTENT.as_bytes()).expect("failed to write source item");
 
+    // Rust std now retains a directory handle for DirEntry metadata on musl.
+    // Keep an entry after its iterator closes and its original name is moved.
+    let mut entries = fs::read_dir(SRC_DIR).expect("failed to read rename_src");
+    let entry = entries.next().expect("missing source entry").unwrap();
+    assert_eq!(entry.file_name(), "item.txt");
+    drop(entries);
+
     let dir_fd = unsafe {
         libc::open(
             c"/arceos-test-suit/rename_src".as_ptr(),
@@ -187,6 +194,13 @@ fn verify_renameat_tracks_moved_directory_fd() -> crate::TestResult {
     );
 
     fs::rename(SRC_DIR, MOVED_DIR).expect("failed to rename open directory");
+    let metadata = entry
+        .metadata()
+        .expect("std DirEntry lost its renamed directory handle");
+    assert!(metadata.is_file());
+    assert_eq!(metadata.len(), ITEM_CONTENT.len() as u64);
+    assert!(entry.file_type().unwrap().is_file());
+    drop(entry);
 
     let mut st_dir: libc::stat = unsafe { mem::zeroed() };
     let ret = unsafe { libc::fstatat(dir_fd, ptr::null(), &mut st_dir, libc::AT_EMPTY_PATH) };

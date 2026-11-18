@@ -26,20 +26,24 @@ use super::{
     runtime_status_error, with_current_cpu_pin,
 };
 
-/// Reports whether a kernel page fault hit the current runtime stack guard.
-pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) -> bool {
+/// Terminates a fault in the current runtime stack guard with its bounds.
+///
+/// Other faults return without output. The guard diagnosis belongs to the
+/// primary panic record so a failed preliminary emergency write cannot lose it.
+pub fn panic_on_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) {
     #[cfg(feature = "paging")]
     {
-        // SAFETY: trap execution cannot migrate before returning through its
-        // architecture epilogue.
+        let _irq_guard = ax_task::sync::IrqSaveGuard::new();
+        // SAFETY: the raw local-IRQ guard excludes scheduler migration for
+        // the complete CPU-pin callback, including restored-IRQ fault paths.
         unsafe {
             with_current_cpu_pin(|cpu_pin| {
                 let Ok(context) = current_runtime_context(cpu_pin) else {
-                    return false;
+                    return;
                 };
                 let stack = context.stack.into_raw();
                 if stack == 0 {
-                    return false;
+                    return;
                 }
                 // SAFETY: the scheduler owns the stack until this context can
                 // no longer run, and the current header keeps it on-CPU.
@@ -47,30 +51,28 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
                 let super::resources::StackBacking::VirtualPages { allocation, .. } =
                     &stack.backing
                 else {
-                    return false;
+                    return;
                 };
                 let guard_start = allocation.reservation_range().start.as_usize();
                 let guard_end = allocation.usable_range().start.as_usize();
                 if !(guard_start..guard_end).contains(&fault.as_usize()) {
-                    return false;
+                    return;
                 }
-                let _ = crate::emergency_console::write_fmt(format_args!(
+                panic!(
                     "task stack guard page hit: fault_addr={:#x}, stack=[{:#x}..{:#x}), \
-                     guard=[{:#x}..{:#x})\n",
+                     guard=[{:#x}..{:#x})",
                     fault.as_usize(),
                     guard_end,
                     stack.usable_top,
                     guard_start,
                     guard_end,
-                ));
-                true
+                );
             })
         }
     }
     #[cfg(not(feature = "paging"))]
     {
         let _ = fault;
-        false
     }
 }
 

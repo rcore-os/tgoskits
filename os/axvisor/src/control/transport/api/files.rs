@@ -155,10 +155,10 @@ pub async fn send_chunk(Path(id): Path<String>, request: Request) -> Response {
             "`Content-Range: {range}` is not `bytes <start>-<end>/<total>`"
         ));
     };
-    if let Some(total) = total {
-        if total > files::FILE_LIMIT {
-            return too_large(total, files::FILE_LIMIT);
-        }
+    if let Some(total) = total
+        && total > files::FILE_LIMIT
+    {
+        return too_large(total, files::FILE_LIMIT);
     }
     let Some(expected) = end
         .checked_sub(start)

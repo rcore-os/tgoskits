@@ -57,6 +57,7 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(feature = "sg2002")]
 use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
 
@@ -68,13 +69,14 @@ pub static ION_DEVICE: OnceLock<Arc<ion::IonDevice>> = OnceLock::new();
 pub use log::bind_dev_log;
 use rand::{Rng, SeedableRng, rngs::ChaCha20Rng};
 
-use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFile, SimpleFs};
+use crate::pseudofs::{
+    DeviceBacking, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFileBacking, SimpleFs,
+    SimpleFsContext,
+};
 
 const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
-
-static INITIAL_PTS_INSTANCE: OnceLock<Arc<tty::PtsInstance>> = OnceLock::new();
 
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
 pub(super) struct IrqRegistration {
@@ -113,10 +115,11 @@ pub(super) fn request_shared_disabled(
     ax_runtime::hal::irq::request_irq(irq, request).map(IrqRegistration::new)
 }
 
-pub(crate) fn new_devfs(root_mount_device: u64) -> Filesystem {
+pub(crate) fn new_devfs(root_mount_device: u64) -> VfsResult<Filesystem> {
     SimpleFs::new_with("devfs".into(), 0x01021994, move |fs| {
         builder(fs, root_mount_device)
     })
+    .map(|owner| owner.as_filesystem())
 }
 
 pub(crate) fn init_drm_kapi() {
@@ -126,26 +129,12 @@ pub(crate) fn init_drm_kapi() {
     }
 }
 
-pub(crate) fn new_devptsfs(mount: tty::DevPtsMount) -> Filesystem {
+pub(crate) fn new_devptsfs(options: tty::DevPtsOptions) -> VfsResult<Filesystem> {
     SimpleFs::new_with("devpts".into(), 0x00001cd1, move |fs| {
-        devpts_builder(fs, mount)
+        let instance = tty::PtsInstance::new(fs.clone(), options)?;
+        SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(instance)))
     })
-}
-
-fn devpts_builder(fs: Arc<SimpleFs>, mount: tty::DevPtsMount) -> DirMaker {
-    let instance = match mount {
-        tty::DevPtsMount::Legacy(options) => initial_pts_instance(options),
-        tty::DevPtsMount::NewInstance(options) => tty::PtsInstance::new(options),
-    };
-    SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(fs, instance)))
-}
-
-fn initial_pts_instance(options: tty::DevPtsOptions) -> Arc<tty::PtsInstance> {
-    let instance = INITIAL_PTS_INSTANCE
-        .call_once(|| tty::PtsInstance::new(options))
-        .clone();
-    instance.update_options(options);
-    instance
+    .map(|owner| owner.as_filesystem())
 }
 
 struct Null;
@@ -461,62 +450,62 @@ impl DeviceOps for CpuDmaLatency {
     }
 }
 
-fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
+fn builder(fs: SimpleFsContext, root_mount_device: u64) -> VfsResult<DirMaker> {
     let mut root = DirMapping::new();
-    let pts_instance = initial_pts_instance(tty::DevPtsOptions::root());
+    let pts_instance = tty::PtsInstance::new(fs.clone(), tty::DevPtsOptions::root())?;
 
     // Linux environments conventionally expose descriptor paths through
     // these links into procfs (proc_pid_fd(5)). Bash process substitution and
     // the generated NixOS stage-2 initializer rely on the dynamic /dev/fd/N
     // form before systemd can perform any additional /dev setup.
-    root.add("fd", descriptor_symlink(fs.clone(), "/proc/self/fd"));
-    root.add("stdin", descriptor_symlink(fs.clone(), "/proc/self/fd/0"));
-    root.add("stdout", descriptor_symlink(fs.clone(), "/proc/self/fd/1"));
-    root.add("stderr", descriptor_symlink(fs.clone(), "/proc/self/fd/2"));
+    root.add("fd", descriptor_symlink(fs.clone(), "/proc/self/fd")?);
+    root.add("stdin", descriptor_symlink(fs.clone(), "/proc/self/fd/0")?);
+    root.add("stdout", descriptor_symlink(fs.clone(), "/proc/self/fd/1")?);
+    root.add("stderr", descriptor_symlink(fs.clone(), "/proc/self/fd/2")?);
     root.add(
         "null",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 3),
             Arc::new(Null),
-        ),
+        )?,
     );
     root.add(
         "zero",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 5),
             Arc::new(Zero),
-        ),
+        )?,
     );
     root.add(
         "full",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 7),
             Arc::new(Full),
-        ),
+        )?,
     );
     root.add(
         "random",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 8),
             Arc::new(Random::new()),
-        ),
+        )?,
     );
     root.add(
         "urandom",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 9),
             Arc::new(Random::new()),
-        ),
+        )?,
     );
     // Root block device node. Its rdev must equal the root filesystem's st_dev
     // so that tools resolving the root device by scanning /dev (e.g. busybox
@@ -532,12 +521,12 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
     {
         root.add(
             root_name.as_ref(),
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::BlockDevice,
                 DeviceId(root_mount_device),
                 Arc::new(RootBlk),
-            ),
+            )?,
         );
     }
     for node in block_nodes {
@@ -549,155 +538,152 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
         let device = node.device;
         root.add(
             name,
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::BlockDevice,
                 device,
                 Arc::new(PhysicalBlock(node)),
-            ),
+            )?,
         );
     }
     if ax_display::has_display() {
         root.add(
             "fb0",
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 DeviceId::new(29, 0),
                 Arc::new(fb::FrameBuffer::new()),
-            ),
+            )?,
         );
     }
 
     root.add(
         "tty",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 0),
             Arc::new(tty::CurrentTty),
-        ),
+        )?,
     );
     for entry in tty::serial_tty_entries() {
         let number = entry.number();
         let minor = u32::try_from(64 + number).unwrap_or(u32::MAX);
         root.add(
             format!("ttyS{number}"),
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 DeviceId::new(4, minor),
                 entry.tty(),
-            ),
+            )?,
         );
     }
     root.add(
         "console",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 1),
             tty::console_device(),
-        ),
+        )?,
     );
     root.add_dynamic("ttyUSB0", {
         let fs = fs.clone();
         move || {
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 DeviceId::new(188, 0),
                 tty::usb_serial_tty(0).expect("ttyUSB0 slot must exist"),
             )
-            .into()
+            .map(Into::into)
         }
     });
 
     root.add(
         "ptmx",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 2),
-            Arc::new(tty::Ptmx::new(fs.clone(), pts_instance.clone())),
-        ),
+            Arc::new(tty::Ptmx::new(fs.clone(), Arc::downgrade(&pts_instance))),
+        )?,
     );
     root.add(
         "pts",
-        SimpleDir::new_maker(
-            fs.clone(),
-            Arc::new(tty::PtsDir::new(fs.clone(), pts_instance)),
-        ),
+        SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(pts_instance)))?,
     );
     #[cfg(feature = "dev-log")]
     root.add(
         "log",
-        crate::pseudofs::SimpleFile::new(fs.clone(), NodeType::Socket, || Ok("")),
+        crate::pseudofs::SimpleFileBacking::new(fs.clone(), NodeType::Socket, || Ok(""))?,
     );
 
     #[cfg(feature = "memtrack")]
     root.add(
         "memtrack",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(114, 514),
             Arc::new(memtrack::MemTrack),
-        ),
+        )?,
     );
 
     root.add(
         "cpu_dma_latency",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(10, 1024),
             Arc::new(CpuDmaLatency),
-        ),
+        )?,
     );
     // /dev/kmsg — standard char major 1, minor 11 (LANANA memory-device major,
     // same group as null/zero/random above).
     root.add(
         "kmsg",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 11),
             Arc::new(kmsg::Kmsg),
-        ),
+        )?,
     );
     root.add(
         "rtc0",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             rtc::RTC0_DEVICE_ID,
             Arc::new(rtc::Rtc),
-        ),
+        )?,
     );
 
-    axivc::register_devices(&mut root, fs.clone());
+    axivc::register_devices(&mut root, fs.clone())?;
 
     #[cfg(feature = "k230-kpu")]
     {
         if let Some(kpu_device) = kpu::KpuDevice::probe().map(Arc::new) {
             root.add(
                 "kpu",
-                Device::new(
+                DeviceBacking::new(
                     fs.clone(),
                     NodeType::CharacterDevice,
                     kpu::KPU_DEVICE_ID,
                     kpu_device.clone(),
-                ),
+                )?,
             );
             root.add(
                 "kpu0",
-                Device::new(
+                DeviceBacking::new(
                     fs.clone(),
                     NodeType::CharacterDevice,
                     kpu::KPU_DEVICE_ID,
                     kpu_device,
-                ),
+                )?,
             );
         }
     }
@@ -709,12 +695,12 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
     {
         root.add(
             "mpp_service",
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 mpp_service::MPP_SERVICE_DEVICE_ID,
                 Arc::new(mpp_service::MppService::new()),
-            ),
+            )?,
         );
     }
 
@@ -726,41 +712,41 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
         for name in dmaheap::HEAP_NAMES {
             dma_heap_dir.add(
                 *name,
-                Device::new(
+                DeviceBacking::new(
                     fs.clone(),
                     NodeType::CharacterDevice,
                     dmaheap::DMA_HEAP_DEVICE_ID,
                     Arc::new(dmaheap::DmaHeap),
-                ),
+                )?,
             );
         }
         root.add(
             "dma_heap",
-            SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir)),
+            SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir))?,
         );
     }
 
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
         "shm",
-        SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new()))?,
     );
     // Mount point for mqueuefs; `mount_all` mounts it at `/dev/mqueue`.
     root.add(
         "mqueue",
-        SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new()))?,
     );
     root.add(
         "net",
-        SimpleDir::new_maker(fs.clone(), Arc::new(net::net_dir(fs.clone()))),
+        SimpleDir::new_maker(fs.clone(), Arc::new(net::net_dir(fs.clone())))?,
     );
     {
         let mut bus_dir = DirMapping::new();
         bus_dir.add(
             "usb",
-            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new()))?,
         );
-        root.add("bus", SimpleDir::new_maker(fs.clone(), Arc::new(bus_dir)));
+        root.add("bus", SimpleDir::new_maker(fs.clone(), Arc::new(bus_dir))?);
     }
 
     let mut dri_dir = DirMapping::new();
@@ -779,12 +765,12 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
             } else {
                 dri_dir.add(
                     format!("card{index}"),
-                    Device::new(
+                    DeviceBacking::new(
                         fs.clone(),
                         NodeType::CharacterDevice,
                         DeviceId::new(226, index),
                         dri_card0.clone(),
-                    ),
+                    )?,
                 );
             }
         }
@@ -798,12 +784,12 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
             } else {
                 dri_dir.add(
                     format!("renderD{index}"),
-                    Device::new(
+                    DeviceBacking::new(
                         fs.clone(),
                         NodeType::CharacterDevice,
                         DeviceId::new(226, index),
                         dri_card0,
-                    ),
+                    )?,
                 );
             }
         }
@@ -812,12 +798,12 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
     #[cfg(feature = "rga")]
     root.add(
         "rga",
-        Device::new(
+        DeviceBacking::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(252, 16), // CONFIRM ON BOARD: real /dev/rga major/minor
             Arc::new(rga::RgaDevice::new()),
-        ),
+        )?,
     );
 
     #[cfg(feature = "rknpu")]
@@ -827,34 +813,34 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
         // accelerator gate.
         dri_dir.add(
             "card1",
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 card1::CARD1_SYSTEM_DEVICE_ID,
                 Arc::new(card1::Card1::new()),
-            ),
+            )?,
         );
     }
-    root.add("dri", SimpleDir::new_maker(fs.clone(), Arc::new(dri_dir)));
+    root.add("dri", SimpleDir::new_maker(fs.clone(), Arc::new(dri_dir))?);
 
     // Loop devices (major 7, minor = device index)
     for i in 0..16 {
         let dev_id = DeviceId::new(7, i);
         root.add(
             format!("loop{i}"),
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::BlockDevice,
                 dev_id,
                 Arc::new(r#loop::LoopDevice::new(i, dev_id)),
-            ),
+            )?,
         );
     }
 
     // Input devices
     root.add(
         "input",
-        SimpleDir::new_maker(fs.clone(), Arc::new(event::input_devices(fs.clone()))),
+        SimpleDir::new_maker(fs.clone(), Arc::new(event::input_devices(fs.clone())?))?,
     );
 
     #[cfg(feature = "sg2002")]
@@ -862,54 +848,54 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
         if let Some(tpu) = tpu::TpuDevice::probe() {
             root.add(
                 "cvi-tpu0",
-                Device::new(
+                DeviceBacking::new(
                     fs.clone(),
                     NodeType::CharacterDevice,
                     DeviceId::new(240, 0),
                     Arc::new(tpu),
-                ),
+                )?,
             );
         }
         let ion_device = Arc::new(ion::IonDevice::new());
         ION_DEVICE.call_once(|| ion_device.clone());
         root.add(
             "ion",
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 DeviceId::new(10, 56),
                 ion_device,
-            ),
+            )?,
         );
         root.add(
             "pinmux",
-            Device::new(
+            DeviceBacking::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 DeviceId::new(1, 1),
                 Arc::new(pinmux::PinmuxDev),
-            ),
+            )?,
         );
         #[cfg(feature = "sg2002-cvi-usb-camera")]
         {
             let jpu = Arc::new(cvi_jpu::CviJpu::new());
             root.add(
                 "cvi-usb-camera0",
-                Device::new(
+                DeviceBacking::new(
                     fs.clone(),
                     NodeType::CharacterDevice,
                     DeviceId::new(10, 202),
                     Arc::new(cvi_usb_camera::CviCamera::new(jpu.clone())),
-                ),
+                )?,
             );
             root.add(
                 "cvi_vc_dec0",
-                Device::new(
+                DeviceBacking::new(
                     fs.clone(),
                     NodeType::CharacterDevice,
                     DeviceId::new(10, 203),
                     Arc::new(cvi_vdec::CviVdec::new(jpu)),
-                ),
+                )?,
             );
         }
     }
@@ -924,8 +910,11 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
     }
 }
 
-fn descriptor_symlink(fs: Arc<SimpleFs>, target: &'static str) -> Arc<SimpleFile> {
-    SimpleFile::new(fs, NodeType::Symlink, move || Ok(target))
+fn descriptor_symlink(
+    fs: SimpleFsContext,
+    target: &'static str,
+) -> VfsResult<Arc<SimpleFileBacking>> {
+    SimpleFileBacking::new(fs, NodeType::Symlink, move || Ok(target))
 }
 
 #[cfg(all(test, axtest))]

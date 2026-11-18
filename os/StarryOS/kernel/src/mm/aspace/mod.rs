@@ -24,6 +24,7 @@ use crate::{
     StarryError, StarryResult,
     config::USER_HEAP_BASE,
     mm::{ProcessVmStat, ProcessVmStatSnapshot, UserVirtualAddressLayout},
+    namespace::{ROOT_USER_NS, UserNamespace},
     sync::{LockdepMutexExt, Mutex, RawSpinLock, try_reserve_irq_vec},
 };
 
@@ -754,6 +755,8 @@ pub struct AddrSpace {
     executable_data: ExecutableDataLayout,
     /// The main image remains write-protected until this MM is retired.
     executable_file: Option<Arc<ax_fs_ng::file::ExecutableFile>>,
+    /// The user namespace that owned this MM when it was created.
+    user_namespace: Arc<RawSpinLock<UserNamespace>>,
     pt: PageTable,
     /// Fixed-order PTE/structure lock domains.  The page-table root remains a
     /// materialized view; ownership is carried by VMA/page records.
@@ -826,6 +829,21 @@ impl AddrSpace {
     /// Returns the current program break while the address-space lock is held.
     pub(crate) const fn heap_break(&self) -> usize {
         self.heap.current
+    }
+
+    /// Clones the existing executable lease while the address-space lock is held.
+    pub(crate) fn executable_file(&self) -> Option<Arc<ax_fs_ng::file::ExecutableFile>> {
+        self.executable_file.clone()
+    }
+
+    /// Returns the user namespace captured at MM creation, not the task's current one.
+    pub(crate) fn user_namespace(&self) -> Arc<RawSpinLock<UserNamespace>> {
+        self.user_namespace.clone()
+    }
+
+    /// Sets the creating user namespace while preparing an unpublished MM.
+    pub(crate) fn set_user_namespace(&mut self, namespace: Arc<RawSpinLock<UserNamespace>>) {
+        self.user_namespace = namespace;
     }
 
     /// Transfers the loader's exclusion lease to the address-space lifetime.
@@ -1632,6 +1650,7 @@ impl AddrSpace {
             heap: HeapState::new(USER_HEAP_BASE),
             executable_data: ExecutableDataLayout::default(),
             executable_file: None,
+            user_namespace: ROOT_USER_NS.clone(),
             pt: PageTable::new(PagingAllocator).map_err(|_| StarryError::NoMemory)?,
             pte_domain: PageTableDomain::new(),
             mutation_gate: MutationGate::new(),
@@ -7132,6 +7151,7 @@ impl AddrSpace {
         guard.heap = self.heap;
         guard.executable_data = self.executable_data;
         guard.executable_file = self.executable_file.clone();
+        guard.user_namespace = self.user_namespace.clone();
         let mut child_memfd_deltas = Vec::new();
         let mut child_vss_pages = 0u64;
 

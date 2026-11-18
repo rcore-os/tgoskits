@@ -1,27 +1,30 @@
 use alloc::sync::Arc;
 
-use super::{DirMaker, DirMapping, SimpleDir, SimpleFile, SimpleFs};
+use axfs_ng_vfs::VfsResult;
+
+use super::{DirMaker, DirMapping, SimpleDir, SimpleFileBacking, SimpleFs, SimpleFsContext};
 
 const DEBUGFS_MAGIC: u32 = 0x64626720;
 
 /// Create a new debugfs filesystem.
-pub fn new_debugfs() -> axfs_ng_vfs::Filesystem {
+pub fn new_debugfs() -> axfs_ng_vfs::VfsResult<axfs_ng_vfs::Filesystem> {
     // TODO: update fs_type
     SimpleFs::new_with("debug".into(), DEBUGFS_MAGIC, debugfs_builder)
+        .map(|owner| owner.as_filesystem())
 }
 
-fn debugfs_builder(fs: Arc<SimpleFs>) -> DirMaker {
+fn debugfs_builder(fs: SimpleFsContext) -> VfsResult<DirMaker> {
     let mut root = DirMapping::new();
-    let tracing = crate::tracepoint::init_tracing_dir(fs.clone());
+    let tracing = crate::tracepoint::init_tracing_dir(fs.clone())?;
     root.add("tracing", tracing);
     root.add(
         "net_queue",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_net_queue())),
+        SimpleFileBacking::new_regular(fs.clone(), || Ok(render_net_queue()))?,
     );
     #[cfg(feature = "uaccess-lock-regression")]
     root.add(
         "uaccess_lock_regression",
-        SimpleFile::new_regular(
+        SimpleFileBacking::new_regular(
             fs.clone(),
             super::RwFile::new(
                 |operation| -> axfs_ng_vfs::VfsResult<Option<alloc::vec::Vec<u8>>> {
@@ -43,17 +46,19 @@ fn debugfs_builder(fs: Arc<SimpleFs>) -> DirMaker {
                     }
                 },
             ),
-        ),
+        )?,
     );
     #[cfg(feature = "qperf-metrics")]
     root.add(
         "scheduler_metrics",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_scheduler_metrics())),
+        SimpleFileBacking::new_regular(fs.clone(), || Ok(render_scheduler_metrics()))?,
     );
     #[cfg(feature = "qperf-metrics")]
     root.add(
         "file_lock_metrics",
-        SimpleFile::new_regular(fs.clone(), || Ok(crate::syscall::render_file_lock_metrics())),
+        SimpleFileBacking::new_regular(fs.clone(), || {
+            Ok(crate::syscall::render_file_lock_metrics())
+        })?,
     );
     SimpleDir::new_maker(fs, Arc::new(root))
 }
@@ -132,8 +137,12 @@ fn render_queue_snapshots(
         render_optional_cpu(&mut output, stats.last_irq_cpu);
         output.push(' ');
         render_optional_cpu(&mut output, stats.last_poll_cpu);
-        writeln!(output, " {} {}", stats.irq_to_poll_remote_wake, stats.rx_drops)
-            .expect("write to String cannot fail");
+        writeln!(
+            output,
+            " {} {}",
+            stats.irq_to_poll_remote_wake, stats.rx_drops
+        )
+        .expect("write to String cannot fail");
     }
     output
 }

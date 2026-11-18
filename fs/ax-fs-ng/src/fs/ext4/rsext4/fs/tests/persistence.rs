@@ -18,6 +18,11 @@ fn metadata_owner_and_times_remain_durable_after_explicit_sync() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     filesystem.sync_to_disk().unwrap();
@@ -55,6 +60,11 @@ fn read_close_changes_atime_without_forcing_a_filesystem_commit() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     entry
@@ -71,7 +81,10 @@ fn read_close_changes_atime_without_forcing_a_filesystem_commit() {
         .unwrap();
     filesystem.sync_to_disk().unwrap();
     let before = flushes.load(Ordering::Relaxed);
-    let file = File::new(FileBackend::new_direct(entry.clone()), FileFlags::READ);
+    let file = File::new(
+        FileBackend::new_direct(entry.clone()).unwrap(),
+        FileFlags::READ,
+    );
     let mut bytes = [0; 5];
 
     assert_eq!(file.read(&mut bytes[..]).unwrap(), bytes.len());
@@ -114,7 +127,7 @@ fn mount_background(
 #[test]
 fn boot_directory_exchange_replaces_assets_and_preserves_open_old_files() {
     crate::os::memory::test_support::with_test_page_provider(true, |_| {
-        use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission};
+        use axfs_ng_vfs::{Mountpoint, NodePermission};
 
         use crate::{MemoryFs, highlevel::FsContext};
 
@@ -128,18 +141,20 @@ fn boot_directory_exchange_replaces_assets_and_preserves_open_old_files() {
             BlockRegion::from_num_blocks((TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64),
         )
         .unwrap();
-        let target = FsContext::new(Mountpoint::new_root(&filesystem).root_location());
-        let source = FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location());
+        let target_tree = Mountpoint::new_root(&filesystem);
+        let target =
+            FsContext::from_tree(target_tree.clone(), target_tree.root_location()).unwrap();
+        let target_caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let target = crate::FsView::native(target, &target_caller);
+        let source_tree = Mountpoint::new_root(&MemoryFs::new());
+        let source =
+            FsContext::from_tree(source_tree.clone(), source_tree.root_location()).unwrap();
+        let source_caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let source = crate::FsView::native(source, &source_caller);
         for context in [&source, &target] {
             for path in ["/guest", "/guest/builtin"] {
                 context
-                    .create_dir(
-                        path,
-                        NodePermission::from_bits_truncate(0o755),
-                        0,
-                        0,
-                        &MutationCredentials::root(),
-                    )
+                    .create_dir(path, NodePermission::from_bits_truncate(0o755), 0, 0)
                     .unwrap();
             }
         }

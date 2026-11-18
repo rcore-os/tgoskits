@@ -31,7 +31,7 @@ pub fn sys_pipe2(
     })?;
 
     let cloexec = flags.contains(PipeFlags::CLOEXEC);
-    let (read_end, write_end) = Pipe::new();
+    let (read_end, write_end) = Pipe::new()?;
     if flags.contains(PipeFlags::NONBLOCK) {
         read_end.set_nonblocking(true)?;
         write_end.set_nonblocking(true)?;

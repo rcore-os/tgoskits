@@ -354,6 +354,24 @@ static int run_unprivileged_checks(void)
           "linkat reports an existing target before destination write permission");
 
     errno = 0;
+    check(syscall(SYS_unlinkat, AT_FDCWD, readonly_dir, 0) < 0 && errno == EACCES,
+          "unlinkat checks parent write permission before rejecting a directory");
+    errno = 0;
+    check(syscall(SYS_unlinkat, AT_FDCWD, readonly_existing, AT_REMOVEDIR) < 0
+              && errno == EACCES,
+          "rmdir checks parent write permission before rejecting a regular file");
+    errno = 0;
+    check(syscall(SYS_unlinkat, AT_FDCWD,
+                  "/tmp/bug-dir-mutation-permissions/readonly/", 0) < 0
+              && errno == EISDIR,
+          "unlinkat keeps the trailing directory separator error before parent write permission");
+    errno = 0;
+    check(syscall(SYS_unlinkat, AT_FDCWD,
+                  "/tmp/bug-dir-mutation-permissions/readonly/existing/", 0) < 0
+              && errno == ENOTDIR,
+          "unlinkat keeps the trailing file separator error before parent write permission");
+
+    errno = 0;
     check(dirfd >= 0
               && linkat(dirfd, ".", AT_FDCWD,
                         "/tmp/bug-dir-mutation-permissions/public/directory-link", 0)

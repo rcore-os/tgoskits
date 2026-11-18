@@ -70,22 +70,16 @@ fn prepare_filesystem() {
     for path in ["/tmp", "/var", "/run"] {
         std::fs::create_dir_all(path).expect("prepare memory-root test directory");
     }
-    ax_fs_ng::current_fs_context()
-        .lock()
-        .symlink(
-            "/run",
-            "/var/run",
-            0,
-            0,
-            &axfs_ng_vfs::MutationCredentials::root(),
-        )
+    let caller = ax_fs_ng::NativeLinkCaller::root();
+    ax_fs_ng::FsView::current(ax_fs_ng::current_fs_context(), &caller)
+        .symlink("/run", "/var/run", 0, 0)
         .expect("prepare directory symlink fixture");
 }
 
 #[axtest::tests(setup = prepare_filesystem)]
 mod tests {
     use ax_fs_ng::vfs::FsContext;
-    use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission};
+    use axfs_ng_vfs::{Mountpoint, NodePermission};
     use axtest::prelude::*;
     use axvisor::builtin::{install_builtin, load_catalog};
 
@@ -253,8 +247,10 @@ mod tests {
 
     #[test]
     fn builtin_catalog_ignores_vm_default_and_rejects_invalid_builtin_configs() {
-        let context =
-            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        let tree = Mountpoint::new_root(&ax_fs_ng::MemoryFs::new());
+        let context = FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+        let caller = ax_fs_ng::NativeLinkCaller::root();
+        let context = ax_fs_ng::FsView::native(context, &caller);
         for path in [
             "/guest",
             "/guest/builtin",
@@ -262,13 +258,7 @@ mod tests {
             "/guest/vm_default",
         ] {
             context
-                .create_dir(
-                    path,
-                    NodePermission::from_bits_truncate(0o755),
-                    0,
-                    0,
-                    &MutationCredentials::root(),
-                )
+                .create_dir(path, NodePermission::from_bits_truncate(0o755), 0, 0)
                 .unwrap();
         }
         let builtin = "[base]\nid=1\nname='builtin'\ncpu_num=1\n[kernel]\nentry_point=0\nkernel_load_addr=0\nkernel_path='/guest/builtin/images/kernel'\n[devices]\n";
@@ -299,10 +289,15 @@ mod tests {
 
     #[test]
     fn package_install_validates_external_assets_before_replacing_defaults() {
+        let source_tree = Mountpoint::new_root(&ax_fs_ng::MemoryFs::new());
         let source =
-            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+            FsContext::from_tree(source_tree.clone(), source_tree.root_location()).unwrap();
+        let caller = ax_fs_ng::NativeLinkCaller::root();
+        let source = ax_fs_ng::FsView::native(source, &caller);
+        let target_tree = Mountpoint::new_root(&ax_fs_ng::MemoryFs::new());
         let target =
-            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+            FsContext::from_tree(target_tree.clone(), target_tree.root_location()).unwrap();
+        let target = ax_fs_ng::FsView::native(target, &caller);
         for context in [&source, &target] {
             for path in [
                 "/guest",
@@ -312,13 +307,7 @@ mod tests {
                 "/board",
             ] {
                 context
-                    .create_dir(
-                        path,
-                        NodePermission::from_bits_truncate(0o755),
-                        0,
-                        0,
-                        &MutationCredentials::root(),
-                    )
+                    .create_dir(path, NodePermission::from_bits_truncate(0o755), 0, 0)
                     .unwrap();
             }
         }

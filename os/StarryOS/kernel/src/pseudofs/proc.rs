@@ -9,7 +9,7 @@ use alloc::{
 };
 use core::{ffi::CStr, fmt::Write, iter, mem::size_of, sync::atomic::Ordering};
 
-use ax_fs_ng::vfs::{FS_CONTEXT, current_fs_context};
+use ax_fs_ng::vfs::current_fs_context;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
@@ -20,7 +20,7 @@ use ax_std::os::arceos::task::{
     sched::{CpuId, CpuSet},
     thread::ThreadState,
 };
-use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
 use zerocopy::IntoBytes;
 
@@ -29,7 +29,8 @@ use crate::{
     mm::{MappingFileInfo, ProcessMemStats},
     pseudofs::{
         DirMaker, DirMapping, DirectRwFsFileOps, NodeOpsMux, RwFile, SeqObject, SimpleDir,
-        SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
+        SimpleDirOps, SimpleFileBacking, SimpleFileOperation, SimpleFs, SimpleFsContext,
+        SpecialFsFileBacking,
     },
     task::{
         Cred, PidNamespaceRef, PidNumber, PidView, Process, ProcessData, ROOT_PID_NS, TaskStat,
@@ -37,6 +38,10 @@ use crate::{
         tasks,
     },
 };
+
+mod link;
+mod self_link;
+use link::ProcLinkKind;
 
 /// Linux `new_idmap_permitted`: without the capability in the initial user
 /// namespace, a writer may map only its own id.
@@ -148,10 +153,13 @@ fn procfs_visible_pid(view: &PidView, proc: &Process) -> Option<u32> {
     view.visible_number(&proc.identity()).map(PidNumber::get)
 }
 
-fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Option<Arc<SimpleFile>> {
-    let generated_boot_id = boot_id_from_entropy(ax_runtime::hal::boot::boot_entropy())?;
+fn boot_id_proc_file(fs: SimpleFsContext) -> VfsResult<Option<Arc<SimpleFileBacking>>> {
+    let Some(generated_boot_id) = boot_id_from_entropy(ax_runtime::hal::boot::boot_entropy())
+    else {
+        return Ok(None);
+    };
     let boot_id = BOOT_ID.get_or_init(|| generated_boot_id).clone();
-    let file = SimpleFile::new_regular(fs, move || Ok(boot_id.clone()));
+    let file = SimpleFileBacking::new_regular(fs, move || Ok(boot_id.clone()))?;
     let now = wall_time();
     file.set_attrs(
         NodePermission::from_bits_truncate(0o444),
@@ -161,7 +169,7 @@ fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Option<Arc<SimpleFile>> {
         now,
         now,
     );
-    Some(file)
+    Ok(Some(file))
 }
 
 fn boot_id_from_entropy(boot_entropy: Option<[u8; 32]>) -> Option<String> {
@@ -770,18 +778,28 @@ fn usb_endpoint_type_label(ty: u8) -> &'static str {
     }
 }
 
-pub fn new_procfs(observer: PidNamespaceRef) -> Filesystem {
+pub fn new_procfs(observer: PidNamespaceRef) -> VfsResult<Filesystem> {
     let view = PidView::new(observer);
     SimpleFs::new_with("proc".into(), 0x9fa0, move |fs| builder(fs, view))
+        .map(|owner| owner.as_filesystem())
 }
 
 struct ProcessTaskDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     process: Weak<Process>,
     view: PidView,
 }
 
 impl SimpleDirOps for ProcessTaskDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        let process = self.process.upgrade()?;
+        Some(axfs_ng_vfs::NodeIdentity::new(vec![
+            self.fs.identity(),
+            process.identity().id().get(),
+            2,
+        ]))
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let Some(process) = self.process.upgrade() else {
             return Box::new(iter::empty());
@@ -818,7 +836,7 @@ impl SimpleDirOps for ProcessTaskDir {
                 procfs_pid: None,
                 view: self.view.clone(),
             }),
-        )))
+        )?))
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1059,11 +1077,15 @@ fn collect_cpu_presence(cpus: &CpuSet, cpu_num: usize) -> Vec<bool> {
 
 /// The /proc/[pid]/fd directory
 struct ThreadFdDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     task: WeakUserTaskRef,
 }
 
 impl SimpleDirOps for ThreadFdDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        link::directory_identity(&self.fs, self.task, 3)
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let task = match upgrade_proc_task(&self.task) {
             Ok(Some(task)) => task,
@@ -1084,14 +1106,10 @@ impl SimpleDirOps for ThreadFdDir {
         let task = require_proc_task(&self.task)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
         let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
-        let path = fd_table
-            .read()
-            .get(fd as _)
-            .ok_or(VfsError::NotFound)?
-            .inner
-            .path()
-            .into_owned();
-        Ok(SimpleFile::new(fs, NodeType::Symlink, move || Ok(path.clone())).into())
+        if fd_table.read().get(fd as _).is_none() {
+            return Err(VfsError::NotFound);
+        }
+        Ok(link::node(fs, &task, ProcLinkKind::Fd(fd))?.into())
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1101,11 +1119,15 @@ impl SimpleDirOps for ThreadFdDir {
 
 /// The /proc/[pid]/fdinfo directory.
 struct ThreadFdInfoDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     task: WeakUserTaskRef,
 }
 
 impl SimpleDirOps for ThreadFdInfoDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        link::directory_identity(&self.fs, self.task, 5)
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let task = match upgrade_proc_task(&self.task) {
             Ok(Some(task)) => task,
@@ -1139,10 +1161,10 @@ impl SimpleDirOps for ThreadFdInfoDir {
         // fallback. Other descriptor kinds still have an fdinfo entry, even
         // though StarryOS does not yet expose their type-specific fields.
         let Some(identity) = pidfd else {
-            return Ok(SimpleFile::new_regular(fs, || Ok(Vec::new())).into());
+            return Ok(SimpleFileBacking::new_regular(fs, || Ok(Vec::new()))?.into());
         };
 
-        Ok(SimpleFile::new_regular(fs, move || {
+        Ok(SimpleFileBacking::new_regular(fs, move || {
             let pids: Vec<i32> = if identity.is_exited() {
                 vec![-1]
             } else {
@@ -1159,7 +1181,7 @@ impl SimpleDirOps for ThreadFdInfoDir {
                 .collect::<Vec<_>>()
                 .join(" ");
             Ok(format!("Pid:\t{pid}\nNSpid:\t{nspid}\n").into_bytes())
-        })
+        })?
         .into())
     }
 
@@ -1170,15 +1192,17 @@ impl SimpleDirOps for ThreadFdInfoDir {
 
 /// The /proc/[pid]/ns directory — namespace entries.
 ///
-/// Each entry is a regular file displaying the namespace identifier.
-/// When opened, the kernel intercepts the open path and creates an
-/// [`NsFd`](crate::file::NsFd) instead of a regular file descriptor.
+/// Entries are links to native namespace objects, not namespace-name text.
 struct NsDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     task: WeakUserTaskRef,
 }
 
 impl SimpleDirOps for NsDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        link::directory_identity(&self.fs, self.task, 4)
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
             ["uts", "ipc", "mnt", "pid", "net", "user", "cgroup"]
@@ -1193,48 +1217,8 @@ impl SimpleDirOps for NsDir {
         let Some(task) = upgrade_proc_task(&task_ref)? else {
             return Err(VfsError::NotFound);
         };
-        let proc_data = &task.as_thread().proc_data;
-
-        let content: String = match name {
-            "uts" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.uts_ns.lock_irqsave().id;
-                format!("uts:[{}]\n", ns_id)
-            }
-            "ipc" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.ipc_ns.lock_irqsave().ns_id;
-                format!("ipc:[{}]\n", ns_id)
-            }
-            "mnt" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.mnt_ns.lock_irqsave().id();
-                format!("mnt:[{}]\n", ns_id)
-            }
-            "pid" => {
-                let ns_id = proc_data.identity().active_namespace().id().get();
-                format!("pid:[{}]\n", ns_id)
-            }
-            "net" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.net_ns.lock_irqsave().ns_id;
-                format!("net:[{}]\n", ns_id)
-            }
-            "user" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.user_ns.lock_irqsave().id;
-                format!("user:[{}]\n", ns_id)
-            }
-            "cgroup" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.cgroup_ns.lock_irqsave().id();
-                format!("cgroup:[{}]\n", ns_id)
-            }
-            _ => return Err(VfsError::NotFound),
-        };
-
-        let content = content.into_bytes();
-        Ok(SimpleFile::new_regular(fs, move || Ok(content.clone())).into())
+        let kind = crate::file::NamespaceKind::parse(name).ok_or(VfsError::NotFound)?;
+        Ok(link::node(fs, &task, ProcLinkKind::Namespace(kind))?.into())
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1244,7 +1228,7 @@ impl SimpleDirOps for NsDir {
 
 /// The /proc/[pid] directory
 struct ThreadDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     task: WeakUserTaskRef,
     /// Authoritative process state for memory counters (`path_pid` lookup).
     proc_data: Arc<ProcessData>,
@@ -1485,6 +1469,10 @@ impl DirectRwFsFileOps for ProcMemFile {
 }
 
 impl SimpleDirOps for ThreadDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        link::directory_identity(&self.fs, self.task, 1)
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
             [
@@ -1527,18 +1515,18 @@ impl SimpleDirOps for ThreadDir {
                 let path_pid = self.path_pid;
                 let procfs_pid = self.procfs_pid;
                 let view = self.view.clone();
-                SimpleFile::new_regular(fs, move || {
+                SimpleFileBacking::new_regular(fs, move || {
                     render_thread_stat(&task, &proc_data, path_pid, procfs_pid, &view)
-                })
+                })?
                 .into()
             }
             "statm" => {
                 let task = self.task;
                 let proc_data = self.proc_data.clone();
                 let path_pid = self.path_pid;
-                SimpleFile::new_regular(fs, move || {
+                SimpleFileBacking::new_regular(fs, move || {
                     render_thread_statm(&task, &proc_data, path_pid)
-                })
+                })?
                 .into()
             }
             "status" => {
@@ -1547,12 +1535,12 @@ impl SimpleDirOps for ThreadDir {
                 let path_pid = self.path_pid;
                 let procfs_pid = self.procfs_pid;
                 let view = self.view.clone();
-                SimpleFile::new_regular(fs, move || {
+                SimpleFileBacking::new_regular(fs, move || {
                     render_thread_status(&task, &proc_data, path_pid, procfs_pid, &view)
-                })
+                })?
                 .into()
             }
-            "oom_score_adj" => SimpleFile::new_regular(
+            "oom_score_adj" => SimpleFileBacking::new_regular(
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => Ok(Some(
@@ -1570,7 +1558,7 @@ impl SimpleDirOps for ThreadDir {
                         Ok(None)
                     }
                 }),
-            )
+            )?
             .into(),
             "task" => SimpleDir::new_maker(
                 fs.clone(),
@@ -1579,54 +1567,56 @@ impl SimpleDirOps for ThreadDir {
                     process: Arc::downgrade(&task.as_thread().proc_data.proc),
                     view: self.view.clone(),
                 }),
-            )
+            )?
             .into(),
             "maps" => {
                 let task = self.task;
                 let seq = SeqObject::new(move || render_thread_maps(&task));
-                SpecialFsFile::new_regular_with_perm(
+                SpecialFsFileBacking::new_regular_with_perm(
                     fs.clone(),
                     seq,
                     NodePermission::from_bits_truncate(0o444),
-                )
+                )?
                 .into()
             }
-            "mem" => SpecialFsFile::new_regular_with_perm(
+            "mem" => SpecialFsFileBacking::new_regular_with_perm(
                 fs,
                 ProcMemFile {
                     proc_data: task.as_thread().proc_data.clone(),
                 },
                 NodePermission::from_bits_truncate(0o600),
-            )
+            )?
             .into(),
-            "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
+            "auxv" => {
+                SimpleFileBacking::new_regular(fs, move || Ok(render_thread_auxv(&task)))?.into()
+            }
             "mounts" => {
                 let task = self.task;
-                SimpleFile::new_regular(fs, move || {
+                SimpleFileBacking::new_regular(fs, move || {
                     let task = require_proc_task(&task)?;
                     let ctx_arc = task
                         .as_thread()
-                        .clone_scope_item(&FS_CONTEXT)
+                        .snapshot_fs_binding()?
                         .ok_or(VfsError::NotFound)?;
-                    let ctx = ctx_arc.lock();
-                    Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
-                })
+                    let ctx = &ctx_arc.fs;
+                    Ok(crate::pseudofs::proc_mountinfo::render_mounts(ctx))
+                })?
                 .into()
             }
             "mountinfo" => {
                 let task = self.task;
-                SimpleFile::new_regular(fs, move || {
+                SimpleFileBacking::new_regular(fs, move || {
                     let task = require_proc_task(&task)?;
                     let ctx_arc = task
                         .as_thread()
-                        .clone_scope_item(&FS_CONTEXT)
+                        .snapshot_fs_binding()?
                         .ok_or(VfsError::NotFound)?;
-                    let ctx = ctx_arc.lock();
-                    Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
-                })
+                    let ctx = &ctx_arc.fs;
+                    Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(ctx))
+                })?
                 .into()
             }
-            "cmdline" => SimpleFile::new_regular(fs, move || {
+            "cmdline" => SimpleFileBacking::new_regular(fs, move || {
                 let cmdline = task.as_thread().proc_data.cmdline();
                 let mut buf = Vec::new();
                 for arg in cmdline.iter() {
@@ -1634,9 +1624,9 @@ impl SimpleDirOps for ThreadDir {
                     buf.push(0);
                 }
                 Ok(buf)
-            })
+            })?
             .into(),
-            "comm" => SimpleFile::new_regular(
+            "comm" => SimpleFileBacking::new_regular(
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => {
@@ -1668,13 +1658,10 @@ impl SimpleDirOps for ThreadDir {
                         Ok(None)
                     }
                 }),
-            )
+            )?
             .into(),
-            "exe" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.exe_path().to_string())
-            })
-            .into(),
-            "environ" => SimpleFile::new_regular(fs, move || {
+            "exe" => link::node(fs, &task, ProcLinkKind::Exe)?.into(),
+            "environ" => SimpleFileBacking::new_regular(fs, move || {
                 let envp = task.as_thread().proc_data.envp();
                 let mut buf = Vec::new();
                 for env in envp.iter() {
@@ -1682,23 +1669,17 @@ impl SimpleDirOps for ThreadDir {
                     buf.push(0);
                 }
                 Ok(buf)
-            })
+            })?
             .into(),
-            "root" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.root_path().to_string())
-            })
-            .into(),
-            "cwd" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.cwd_path().to_string())
-            })
-            .into(),
+            "root" => link::node(fs, &task, ProcLinkKind::Root)?.into(),
+            "cwd" => link::node(fs, &task, ProcLinkKind::Cwd)?.into(),
             "fd" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(ThreadFdDir {
                     fs,
                     task: task.downgrade(),
                 }),
-            )
+            )?
             .into(),
             "fdinfo" => SimpleDir::new_maker(
                 fs.clone(),
@@ -1706,9 +1687,9 @@ impl SimpleDirOps for ThreadDir {
                     fs,
                     task: task.downgrade(),
                 }),
-            )
+            )?
             .into(),
-            "uid_map" => SimpleFile::new_regular(
+            "uid_map" => SimpleFileBacking::new_regular(
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => {
@@ -1774,9 +1755,9 @@ impl SimpleDirOps for ThreadDir {
                         Ok(None)
                     }
                 }),
-            )
+            )?
             .into(),
-            "gid_map" => SimpleFile::new_regular(
+            "gid_map" => SimpleFileBacking::new_regular(
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => {
@@ -1824,9 +1805,9 @@ impl SimpleDirOps for ThreadDir {
                         Ok(None)
                     }
                 }),
-            )
+            )?
             .into(),
-            "setgroups" => SimpleFile::new_regular(
+            "setgroups" => SimpleFileBacking::new_regular(
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => {
@@ -1850,9 +1831,9 @@ impl SimpleDirOps for ThreadDir {
                         Ok(None)
                     }
                 }),
-            )
+            )?
             .into(),
-            "cgroup" => SimpleFile::new_regular(fs, move || {
+            "cgroup" => SimpleFileBacking::new_regular(fs, move || {
                 let reader = current_user_task();
                 let reader_cgroup_ns = reader
                     .as_thread()
@@ -1864,7 +1845,7 @@ impl SimpleDirOps for ThreadDir {
                 let target_membership = task.as_thread().proc_data.cgroup_node();
                 let path = crate::cgroup::relative_path(&reader_root, &target_membership);
                 Ok(format!("0::{path}\n"))
-            })
+            })?
             .into(),
             "ns" => SimpleDir::new_maker(
                 fs.clone(),
@@ -1872,7 +1853,7 @@ impl SimpleDirOps for ThreadDir {
                     fs,
                     task: self.task,
                 }),
-            )
+            )?
             .into(),
             _ => return Err(VfsError::NotFound),
         })
@@ -1883,9 +1864,9 @@ impl SimpleDirOps for ThreadDir {
     }
 }
 
-/// Handles /proc/[pid] & /proc/self
+/// Handles numeric process entries and caller-dependent self symlinks.
 struct ProcFsHandler {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     view: PidView,
 }
 
@@ -1898,39 +1879,37 @@ impl SimpleDirOps for ProcFsHandler {
                     procfs_visible_pid(&self.view, &proc_data.proc)
                         .map(|pid| pid.to_string().into())
                 })
-                .chain([Cow::Borrowed("self")]),
+                .chain([Cow::Borrowed("self"), Cow::Borrowed("thread-self")]),
         )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        let (task, path_pid, procfs_pid, proc_data) = if name == "self" {
-            let task = current_user_task();
-            let proc_data = task.as_thread().proc_data.clone();
-            let path_pid =
-                procfs_visible_pid(&self.view, &proc_data.proc).ok_or(VfsError::NotFound)?;
-            (task, path_pid, None, proc_data)
-        } else {
-            let pid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-            let identity = self
-                .view
-                .resolve_process(TgidNumber::try_from(pid).map_err(|_| VfsError::NotFound)?)
-                .map_err(|_| VfsError::NotFound)?;
-            let proc_data = identity.live_data().ok_or(VfsError::NotFound)?;
-            let task = identity.live_task().ok_or(VfsError::NotFound)?;
-            let procfs_pid = Some(pid);
-            (task, pid, procfs_pid, proc_data)
+        let self_kind = match name {
+            "self" => Some(self_link::SelfLinkKind::Process),
+            "thread-self" => Some(self_link::SelfLinkKind::Thread),
+            _ => None,
         };
+        if let Some(kind) = self_kind {
+            return Ok(self_link::node(self.fs.clone(), self.view.clone(), kind)?.into());
+        }
+        let pid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+        let identity = self
+            .view
+            .resolve_process(TgidNumber::try_from(pid).map_err(|_| VfsError::NotFound)?)
+            .map_err(|_| VfsError::NotFound)?;
+        let proc_data = identity.live_data().ok_or(VfsError::NotFound)?;
+        let task = identity.live_task().ok_or(VfsError::NotFound)?;
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(
             self.fs.clone(),
             Arc::new(ThreadDir {
                 fs: self.fs.clone(),
                 task: task.downgrade(),
                 proc_data,
-                path_pid,
-                procfs_pid,
+                path_pid: pid,
+                procfs_pid: Some(pid),
                 view: self.view.clone(),
             }),
-        ));
+        )?);
         Ok(node)
     }
 
@@ -1952,12 +1931,12 @@ impl SimpleDirOps for ProcFsHandler {
 /// change, so the faithful capability is `CAP_SYS_RESOURCE`. Reads stay open to
 /// all; an unprivileged write is rejected with `EPERM`.
 fn mq_sysctl_file(
-    fs: &Arc<SimpleFs>,
+    fs: &SimpleFsContext,
     cell: &'static core::sync::atomic::AtomicUsize,
     min: usize,
     max: usize,
-) -> Arc<SimpleFile> {
-    SimpleFile::new_regular(
+) -> VfsResult<Arc<SimpleFileBacking>> {
+    SimpleFileBacking::new_regular(
         fs.clone(),
         RwFile::new(move |req| match req {
             SimpleFileOperation::Read => Ok(Some(
@@ -1996,8 +1975,11 @@ fn mq_sysctl_file(
 /// Do not acknowledge writes until PID allocation and VMA admission consume
 /// these settings. Returning `EOPNOTSUPP` keeps procfs from reporting a limit
 /// that the kernel does not enforce.
-fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc<SimpleFile> {
-    SimpleFile::new_regular(
+fn unsupported_limit_sysctl_file(
+    fs: &SimpleFsContext,
+    value: &'static str,
+) -> VfsResult<Arc<SimpleFileBacking>> {
+    SimpleFileBacking::new_regular(
         fs.clone(),
         RwFile::new(move |operation| match operation {
             SimpleFileOperation::Read => Ok(Some(value)),
@@ -2027,8 +2009,11 @@ enum UtsNameField {
 /// namespace. systemd's service mount-namespace setup chases both paths for
 /// ProtectHostname units; ENOENT there aborts every such service start (e.g.
 /// systemd-udevd crash-loops and stalls boot).
-fn uts_name_proc_file(fs: &Arc<SimpleFs>, field: UtsNameField) -> Arc<SimpleFile> {
-    SimpleFile::new_regular(
+fn uts_name_proc_file(
+    fs: &SimpleFsContext,
+    field: UtsNameField,
+) -> VfsResult<Arc<SimpleFileBacking>> {
+    SimpleFileBacking::new_regular(
         fs.clone(),
         RwFile::new(move |req| match req {
             SimpleFileOperation::Read => {
@@ -2081,14 +2066,14 @@ fn uts_name_proc_file(fs: &Arc<SimpleFs>, field: UtsNameField) -> Arc<SimpleFile
     )
 }
 
-fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
+fn builder(fs: SimpleFsContext, view: PidView) -> VfsResult<DirMaker> {
     let mut root = DirMapping::new();
     // Test-only control plane for serializing LLVM coverage into guest memory.
     // Production builds do not compile this procfs entry.
     #[cfg(axtest_coverage)]
     root.add(
         "starry-test-coverage",
-        SimpleFile::new_regular(
+        SimpleFileBacking::new_regular(
             fs.clone(),
             RwFile::new(|operation| match operation {
                 SimpleFileOperation::Read => Ok(Some(Vec::new())),
@@ -2097,74 +2082,77 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                     Ok(None)
                 }
             }),
-        ),
+        )?,
     );
     // /proc/cmdline — the kernel command line plus one trailing newline.
     // systemd's PID 1 environment fixup reads it unconditionally and freezes
     // with "Failed to fix up PID 1 environment" when it is missing.
     root.add(
         "cmdline",
-        SimpleFile::new_regular(fs.clone(), || {
+        SimpleFileBacking::new_regular(fs.clone(), || {
             let cmdline = ax_runtime::hal::boot::bootargs().unwrap_or("");
             Ok(format!("{cmdline}\n"))
-        }),
+        })?,
     );
     root.add(
         "mounts",
-        SimpleFile::new_regular(fs.clone(), || {
+        SimpleFileBacking::new_regular(fs.clone(), || {
             let fs_context = current_fs_context();
-            let ctx = fs_context.lock();
+            let ctx = fs_context;
             Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
-        }),
+        })?,
     );
     root.add(
         "mountinfo",
-        SimpleFile::new_regular(fs.clone(), || {
+        SimpleFileBacking::new_regular(fs.clone(), || {
             let fs_context = current_fs_context();
-            let ctx = fs_context.lock();
+            let ctx = fs_context;
             Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
-        }),
+        })?,
     );
     // /proc/filesystems — list of registered filesystem types. Tools like
     // `mount`/`findmnt` and some container runtimes read it to decide what they
     // can mount; absence (ENOENT) made those probes fail.
     root.add(
         "filesystems",
-        SimpleFile::new_regular(fs.clone(), || {
+        SimpleFileBacking::new_regular(fs.clone(), || {
             Ok("nodev\tsysfs\nnodev\tproc\nnodev\ttmpfs\nnodev\tdevtmpfs\n\text4\n")
-        }),
+        })?,
     );
-    root.add("stat", SimpleFile::new_regular(fs.clone(), render_stat));
+    root.add(
+        "stat",
+        SimpleFileBacking::new_regular(fs.clone(), render_stat)?,
+    );
     root.add(
         "diskstats",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_diskstats())),
+        SimpleFileBacking::new_regular(fs.clone(), || Ok(render_diskstats()))?,
     );
     root.add(
         "meminfo",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_meminfo())),
+        SimpleFileBacking::new_regular(fs.clone(), || Ok(render_meminfo()))?,
     );
     root.add(
         "vmstat",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_vmstat())),
+        SimpleFileBacking::new_regular(fs.clone(), || Ok(render_vmstat()))?,
     );
     root.add(
         "cpuinfo",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_cpuinfo())),
+        SimpleFileBacking::new_regular(fs.clone(), || Ok(render_cpuinfo()))?,
     );
     root.add(
         "uptime",
-        SimpleFile::new_regular(fs.clone(), || {
+        SimpleFileBacking::new_regular(fs.clone(), || {
             let up = monotonic_time();
             let secs = up.as_secs();
             let cs = up.subsec_millis() / 10;
             // Approximate total idle as uptime × cpu_count (no per-CPU idle accounting yet).
             let idle_secs = secs.saturating_mul(ax_runtime::hal::cpu_num() as u64);
             Ok(format!("{secs}.{cs:02} {idle_secs}.00\n"))
-        }),
+        })?,
     );
     root.add(
         "loadavg",
-        SimpleFile::new_regular(fs.clone(), || {
+        SimpleFileBacking::new_regular(fs.clone(), || {
             let all_tasks = tasks();
             let running = all_tasks
                 .iter()
@@ -2177,18 +2165,18 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                 .count();
             let total = all_tasks.len();
             Ok(format!("0.00 0.00 0.00 {running}/{total} 1\n"))
-        }),
+        })?,
     );
     root.add(
         "meminfo2",
-        SimpleFile::new_regular(fs.clone(), || {
+        SimpleFileBacking::new_regular(fs.clone(), || {
             let allocator = ax_alloc::global_allocator();
             Ok(format!("{:?}\n", allocator.usages()))
-        }),
+        })?,
     );
     root.add(
         "instret",
-        SimpleFile::new_regular(fs.clone(), || {
+        SimpleFileBacking::new_regular(fs.clone(), || {
             #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
             {
                 Ok(format!("{}\n", riscv::register::instret::read64()))
@@ -2197,13 +2185,13 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
             {
                 Ok("0\n".to_string())
             }
-        }),
+        })?,
     );
     root.add(
         "interrupts",
-        SimpleFile::new_regular(fs.clone(), || {
+        SimpleFileBacking::new_regular(fs.clone(), || {
             Ok(format!("0: {}", ax_runtime::diagnostics::timer_irq_count()))
-        }),
+        })?,
     );
 
     root.add("sys", {
@@ -2212,26 +2200,26 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
         sys.add("kernel", {
             let mut kernel = DirMapping::new();
 
-            kernel.add("pid_max", unsupported_limit_sysctl_file(&fs, "32768\n"));
+            kernel.add("pid_max", unsupported_limit_sysctl_file(&fs, "32768\n")?);
             kernel.add(
                 "osrelease",
-                SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("6.6.0-starry\n"))?,
             );
             kernel.add(
                 "ostype",
-                SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("Linux\n"))?,
             );
-            kernel.add("hostname", uts_name_proc_file(&fs, UtsNameField::Hostname));
+            kernel.add("hostname", uts_name_proc_file(&fs, UtsNameField::Hostname)?);
             kernel.add(
                 "domainname",
-                uts_name_proc_file(&fs, UtsNameField::Domainname),
+                uts_name_proc_file(&fs, UtsNameField::Domainname)?,
             );
             kernel.add("random", {
                 let mut random = DirMapping::new();
-                if let Some(boot_id) = boot_id_proc_file(fs.clone()) {
+                if let Some(boot_id) = boot_id_proc_file(fs.clone())? {
                     random.add("boot_id", boot_id);
                 }
-                SimpleDir::new_maker(fs.clone(), Arc::new(random))
+                SimpleDir::new_maker(fs.clone(), Arc::new(random))?
             });
 
             // perf knobs the upstream Linux `perf` tool probes at startup.
@@ -2240,20 +2228,20 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
             // events all allowed) so perf can profile freely here.
             kernel.add(
                 "perf_event_paranoid",
-                SimpleFile::new_regular(fs.clone(), || Ok("-1\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("-1\n"))?,
             );
             // Per-user locked pages for the perf ring buffer; Linux default.
             kernel.add(
                 "perf_event_mlock_kb",
-                SimpleFile::new_regular(fs.clone(), || Ok("516\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("516\n"))?,
             );
             // Upper bound perf uses to clamp the requested sample frequency (-F).
             kernel.add(
                 "perf_event_max_sample_rate",
-                SimpleFile::new_regular(fs.clone(), || Ok("100000\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("100000\n"))?,
             );
 
-            SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
+            SimpleDir::new_maker(fs.clone(), Arc::new(kernel))?
         });
 
         // /proc/sys/vm — read-only constants several runtimes probe at startup.
@@ -2263,13 +2251,13 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
             let mut vm = DirMapping::new();
             vm.add(
                 "overcommit_memory",
-                SimpleFile::new_regular(fs.clone(), || Ok("0\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("0\n"))?,
             );
             vm.add(
                 "max_map_count",
-                unsupported_limit_sysctl_file(&fs, "65530\n"),
+                unsupported_limit_sysctl_file(&fs, "65530\n")?,
             );
-            SimpleDir::new_maker(fs.clone(), Arc::new(vm))
+            SimpleDir::new_maker(fs.clone(), Arc::new(vm))?
         });
 
         // /proc/sys/fs — file-descriptor limits some servers read to size tables.
@@ -2277,11 +2265,11 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
             let mut fs_sys = DirMapping::new();
             fs_sys.add(
                 "file-max",
-                SimpleFile::new_regular(fs.clone(), || Ok("1048576\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("1048576\n"))?,
             );
             fs_sys.add(
                 "nr_open",
-                SimpleFile::new_regular(fs.clone(), || Ok("1048576\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("1048576\n"))?,
             );
             // /proc/sys/fs/mqueue/{queues_max,msg_max,msgsize_max,
             // msg_default,msgsize_default} — the writable POSIX message-queue
@@ -2297,7 +2285,7 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                         &crate::ipc::mqueue::MQ_QUEUES_MAX,
                         0,
                         i32::MAX as usize,
-                    ),
+                    )?,
                 );
                 mqueue.add(
                     "msg_max",
@@ -2306,7 +2294,7 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                         &crate::ipc::mqueue::MQ_MSG_MAX,
                         crate::ipc::mqueue::MQ_MIN_MSG_MAX,
                         crate::ipc::mqueue::MQ_HARD_MSG_MAX,
-                    ),
+                    )?,
                 );
                 mqueue.add(
                     "msgsize_max",
@@ -2315,7 +2303,7 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                         &crate::ipc::mqueue::MQ_MSGSIZE_MAX,
                         crate::ipc::mqueue::MQ_MIN_MSGSIZE_MAX,
                         crate::ipc::mqueue::MQ_HARD_MSGSIZE_MAX,
-                    ),
+                    )?,
                 );
                 mqueue.add(
                     "msg_default",
@@ -2324,7 +2312,7 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                         &crate::ipc::mqueue::MQ_MSG_DEFAULT,
                         crate::ipc::mqueue::MQ_MIN_MSG_MAX,
                         crate::ipc::mqueue::MQ_HARD_MSG_MAX,
-                    ),
+                    )?,
                 );
                 mqueue.add(
                     "msgsize_default",
@@ -2333,11 +2321,11 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                         &crate::ipc::mqueue::MQ_MSGSIZE_DEFAULT,
                         crate::ipc::mqueue::MQ_MIN_MSGSIZE_MAX,
                         crate::ipc::mqueue::MQ_HARD_MSGSIZE_MAX,
-                    ),
+                    )?,
                 );
-                SimpleDir::new_maker(fs.clone(), Arc::new(mqueue))
+                SimpleDir::new_maker(fs.clone(), Arc::new(mqueue))?
             });
-            SimpleDir::new_maker(fs.clone(), Arc::new(fs_sys))
+            SimpleDir::new_maker(fs.clone(), Arc::new(fs_sys))?
         });
 
         // /proc/sys/net/core/somaxconn — listen-backlog clamp some servers read.
@@ -2347,11 +2335,11 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                 let mut core = DirMapping::new();
                 core.add(
                     "somaxconn",
-                    SimpleFile::new_regular(fs.clone(), || Ok("4096\n")),
+                    SimpleFileBacking::new_regular(fs.clone(), || Ok("4096\n"))?,
                 );
-                SimpleDir::new_maker(fs.clone(), Arc::new(core))
+                SimpleDir::new_maker(fs.clone(), Arc::new(core))?
             });
-            SimpleDir::new_maker(fs.clone(), Arc::new(net))
+            SimpleDir::new_maker(fs.clone(), Arc::new(net))?
         });
 
         // /proc/sys/user/max_*_namespaces — nix checks these to decide
@@ -2360,36 +2348,36 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
             let mut user = DirMapping::new();
             user.add(
                 "max_user_namespaces",
-                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("65536\n"))?,
             );
             user.add(
                 "max_mnt_namespaces",
-                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("65536\n"))?,
             );
             user.add(
                 "max_pid_namespaces",
-                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("65536\n"))?,
             );
             user.add(
                 "max_net_namespaces",
-                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("65536\n"))?,
             );
             user.add(
                 "max_uts_namespaces",
-                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("65536\n"))?,
             );
             user.add(
                 "max_ipc_namespaces",
-                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("65536\n"))?,
             );
             user.add(
                 "max_cgroup_namespaces",
-                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok("65536\n"))?,
             );
-            SimpleDir::new_maker(fs.clone(), Arc::new(user))
+            SimpleDir::new_maker(fs.clone(), Arc::new(user))?
         });
 
-        SimpleDir::new_maker(fs.clone(), Arc::new(sys))
+        SimpleDir::new_maker(fs.clone(), Arc::new(sys))?
     });
 
     root.add("net", {
@@ -2397,17 +2385,17 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
 
         net.add(
             "arp",
-            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_arp())),
+            SimpleFileBacking::new_regular(fs.clone(), || Ok(render_proc_net_arp()))?,
         );
         net.add(
             "dev",
-            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_dev())),
+            SimpleFileBacking::new_regular(fs.clone(), || Ok(render_proc_net_dev()))?,
         );
         net.add(
             "snmp",
-            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_snmp())),
+            SimpleFileBacking::new_regular(fs.clone(), || Ok(render_proc_net_snmp()))?,
         );
-        SimpleDir::new_maker(fs.clone(), Arc::new(net))
+        SimpleDir::new_maker(fs.clone(), Arc::new(net))?
     });
 
     root.add("bus", {
@@ -2416,11 +2404,11 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
             let mut usb = DirMapping::new();
             usb.add(
                 "devices",
-                SimpleFile::new_regular(fs.clone(), || Ok(render_proc_bus_usb_devices())),
+                SimpleFileBacking::new_regular(fs.clone(), || Ok(render_proc_bus_usb_devices()))?,
             );
-            SimpleDir::new_maker(fs.clone(), Arc::new(usb))
+            SimpleDir::new_maker(fs.clone(), Arc::new(usb))?
         });
-        SimpleDir::new_maker(fs.clone(), Arc::new(bus))
+        SimpleDir::new_maker(fs.clone(), Arc::new(bus))?
     });
 
     // /proc/device-tree/{compatible,model} — minimal Open Firmware view from the
@@ -2435,15 +2423,15 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
             let mut dt = DirMapping::new();
             dt.add(
                 "compatible",
-                SimpleFile::new_regular(fs.clone(), move || Ok(compatible.clone())),
+                SimpleFileBacking::new_regular(fs.clone(), move || Ok(compatible.clone()))?,
             );
             if let Some(model) = read_dt_root_property("model") {
                 dt.add(
                     "model",
-                    SimpleFile::new_regular(fs.clone(), move || Ok(model.clone())),
+                    SimpleFileBacking::new_regular(fs.clone(), move || Ok(model.clone()))?,
                 );
             }
-            SimpleDir::new_maker(fs.clone(), Arc::new(dt))
+            SimpleDir::new_maker(fs.clone(), Arc::new(dt))?
         });
     }
 
@@ -2452,10 +2440,10 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
 
         dynamic_debug.add(
             "control",
-            super::dyn_debug::create_dyn_debug_control_file(fs.clone()),
+            super::dyn_debug::create_dyn_debug_control_file(fs.clone())?,
         );
 
-        SimpleDir::new_maker(fs.clone(), Arc::new(dynamic_debug))
+        SimpleDir::new_maker(fs.clone(), Arc::new(dynamic_debug))?
     });
 
     static ALL_SYMS: LazyInit<String> = LazyInit::new();
@@ -2465,11 +2453,11 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     root.add("kallsyms", {
         ALL_SYMS.get_or_init(|| KALLSYMS.dump_all_symbols());
         let seq_obj = SeqObject::new(|| Ok(ALL_SYMS.as_str()));
-        SpecialFsFile::new_regular_with_perm(
+        SpecialFsFileBacking::new_regular_with_perm(
             fs.clone(),
             seq_obj,
             NodePermission::from_bits_truncate(0o444),
-        )
+        )?
     });
 
     let proc_dir = ProcFsHandler {
@@ -2530,8 +2518,7 @@ impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
 
 #[cfg(all(test, axtest))]
 fn proc_mountinfo_lines_match_linux_layout() -> bool {
-    let ctx_arc = current_fs_context();
-    let ctx = ctx_arc.lock();
+    let ctx = current_fs_context();
     let text = crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx);
     !text.is_empty()
         && text.lines().any(|line| line.contains(" / / "))

@@ -14,6 +14,11 @@ fn hardlink_readers_complete_same_and_disjoint_ranges_during_another_read() {
                 NodePermission::default(),
                 0,
                 0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
             )
             .unwrap();
         let bytes: Vec<_> = (0..12288).map(|index| (index % 251) as u8).collect();
@@ -23,7 +28,9 @@ fn hardlink_readers_complete_same_and_disjoint_ranges_during_another_read() {
             .unwrap()
             .write_at(&bytes, 0)
             .unwrap();
-        let alias = root.link("alias", &input).unwrap();
+        let alias = root
+            .link("alias", &input, &axfs_ng_vfs::MutationCredentials::root())
+            .unwrap();
         filesystem.sync_to_disk().unwrap();
         let input: Arc<Inode> = input.entry().downcast().unwrap();
         let alias: Arc<Inode> = alias.entry().downcast().unwrap();

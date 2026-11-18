@@ -7,11 +7,13 @@ use super::{
     irq,
     manager::UsbFsManager,
 };
-use crate::pseudofs::{NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs};
+use crate::pseudofs::{
+    NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFileBacking, SimpleFs, SimpleFsContext,
+};
 
 const SYSFS_MAGIC: u32 = 0x6265_6572;
 
-pub(super) fn new_bus_usb_sysfs() -> Filesystem {
+pub(super) fn new_bus_usb_sysfs() -> VfsResult<Filesystem> {
     SimpleFs::new_with("sysfs".into(), SYSFS_MAGIC, |fs| {
         SimpleDir::new_maker(
             fs.clone(),
@@ -21,27 +23,29 @@ pub(super) fn new_bus_usb_sysfs() -> Filesystem {
             }),
         )
     })
+    .map(|owner| owner.as_filesystem())
 }
 
-fn dir(fs: Arc<SimpleFs>, ops: impl SimpleDirOps) -> NodeOpsMux {
-    NodeOpsMux::Dir(SimpleDir::new_maker(fs, Arc::new(ops)))
+fn dir(fs: SimpleFsContext, ops: impl SimpleDirOps) -> VfsResult<NodeOpsMux> {
+    Ok(NodeOpsMux::Dir(SimpleDir::new_maker(fs, Arc::new(ops))?))
 }
 
-fn text_file(fs: Arc<SimpleFs>, text: impl Into<Vec<u8>>) -> NodeOpsMux {
+fn text_file(fs: SimpleFsContext, text: impl Into<Vec<u8>>) -> VfsResult<NodeOpsMux> {
     let text = text.into();
-    SimpleFile::new_regular(fs, move || -> VfsResult<Vec<u8>> { Ok(text.clone()) }).into()
+    SimpleFileBacking::new_regular(fs, move || -> VfsResult<Vec<u8>> { Ok(text.clone()) })
+        .map(Into::into)
 }
 
-fn symlink(fs: Arc<SimpleFs>, target: impl Into<String>) -> NodeOpsMux {
+fn symlink(fs: SimpleFsContext, target: impl Into<String>) -> VfsResult<NodeOpsMux> {
     let target = target.into().into_bytes();
-    SimpleFile::new(fs, NodeType::Symlink, move || -> VfsResult<Vec<u8>> {
+    SimpleFileBacking::new(fs, NodeType::Symlink, move || -> VfsResult<Vec<u8>> {
         Ok(target.clone())
     })
-    .into()
+    .map(Into::into)
 }
 
 struct SysUsbDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     manager: Option<Arc<UsbFsManager>>,
 }
 
@@ -52,27 +56,27 @@ impl SimpleDirOps for SysUsbDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         match name {
-            "devices" => Ok(dir(
+            "devices" => dir(
                 self.fs.clone(),
                 SysUsbDevicesDir {
                     fs: self.fs.clone(),
                     manager: self.manager.clone(),
                 },
-            )),
-            "device-nodes" => Ok(dir(
+            ),
+            "device-nodes" => dir(
                 self.fs.clone(),
                 SysUsbDeviceNodesDir {
                     fs: self.fs.clone(),
                     manager: self.manager.clone(),
                 },
-            )),
+            ),
             _ => Err(VfsError::NotFound),
         }
     }
 }
 
 struct SysUsbDevicesDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     manager: Option<Arc<UsbFsManager>>,
 }
 
@@ -112,12 +116,12 @@ impl SimpleDirOps for SysUsbDevicesDir {
             .into_iter()
             .find(|snapshot| sysfs_device_name(snapshot) == name)
             .ok_or(VfsError::NotFound)?;
-        Ok(symlink(self.fs.clone(), format!("../device-nodes/{name}")))
+        symlink(self.fs.clone(), format!("../device-nodes/{name}"))
     }
 }
 
 struct SysUsbDeviceNodesDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     manager: Option<Arc<UsbFsManager>>,
 }
 
@@ -158,18 +162,18 @@ impl SimpleDirOps for SysUsbDeviceNodesDir {
             .into_iter()
             .find(|snapshot| sysfs_device_name(snapshot) == name)
             .ok_or(VfsError::NotFound)?;
-        Ok(dir(
+        dir(
             self.fs.clone(),
             SysUsbDeviceDir {
                 fs: self.fs.clone(),
                 snapshot,
             },
-        ))
+        )
     }
 }
 
 struct SysUsbDeviceDir {
-    fs: Arc<SimpleFs>,
+    fs: SimpleFsContext,
     snapshot: UsbDeviceSnapshot,
 }
 
@@ -202,46 +206,26 @@ impl SimpleDirOps for SysUsbDeviceDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         match name {
-            "uevent" => Ok(text_file(self.fs.clone(), self.uevent())),
-            "dev" => Ok(text_file(self.fs.clone(), format!("{}\n", self.dev_id()))),
-            "busnum" => Ok(text_file(
-                self.fs.clone(),
-                format!("{}\n", self.snapshot.bus_num),
-            )),
-            "devnum" => Ok(text_file(
-                self.fs.clone(),
-                format!("{}\n", self.snapshot.device_num),
-            )),
-            "speed" => Ok(text_file(self.fs.clone(), "480\n")),
-            "descriptors" => Ok(text_file(
-                self.fs.clone(),
-                self.snapshot.descriptor_blob.clone(),
-            )),
-            "bConfigurationValue" => Ok(text_file(
+            "uevent" => text_file(self.fs.clone(), self.uevent()),
+            "dev" => text_file(self.fs.clone(), format!("{}\n", self.dev_id())),
+            "busnum" => text_file(self.fs.clone(), format!("{}\n", self.snapshot.bus_num)),
+            "devnum" => text_file(self.fs.clone(), format!("{}\n", self.snapshot.device_num)),
+            "speed" => text_file(self.fs.clone(), "480\n"),
+            "descriptors" => text_file(self.fs.clone(), self.snapshot.descriptor_blob.clone()),
+            "bConfigurationValue" => text_file(
                 self.fs.clone(),
                 format!("{}\n", self.active_configuration()),
-            )),
-            "idVendor" => Ok(text_file(
-                self.fs.clone(),
-                format!("{:04x}\n", self.vendor_id()),
-            )),
-            "idProduct" => Ok(text_file(
-                self.fs.clone(),
-                format!("{:04x}\n", self.product_id()),
-            )),
-            "bDeviceClass" => Ok(text_file(
-                self.fs.clone(),
-                format!("{:02x}\n", self.device_class()),
-            )),
-            "bDeviceSubClass" => Ok(text_file(
-                self.fs.clone(),
-                format!("{:02x}\n", self.device_subclass()),
-            )),
-            "bDeviceProtocol" => Ok(text_file(
-                self.fs.clone(),
-                format!("{:02x}\n", self.device_protocol()),
-            )),
-            "subsystem" => Ok(symlink(self.fs.clone(), "../../usb")),
+            ),
+            "idVendor" => text_file(self.fs.clone(), format!("{:04x}\n", self.vendor_id())),
+            "idProduct" => text_file(self.fs.clone(), format!("{:04x}\n", self.product_id())),
+            "bDeviceClass" => text_file(self.fs.clone(), format!("{:02x}\n", self.device_class())),
+            "bDeviceSubClass" => {
+                text_file(self.fs.clone(), format!("{:02x}\n", self.device_subclass()))
+            }
+            "bDeviceProtocol" => {
+                text_file(self.fs.clone(), format!("{:02x}\n", self.device_protocol()))
+            }
+            "subsystem" => symlink(self.fs.clone(), "../../usb"),
             _ => Err(VfsError::NotFound),
         }
     }

@@ -133,7 +133,7 @@ fn direct_backend_cursor_handles_short_reads_and_eof_incrementally() {
         let backing = Arc::new(CacheTestFile::new(b"contents".to_vec()));
         backing.state.lock().unwrap().max_read = 2;
         let cached = reopen_cached_file(backing.clone());
-        let backend = FileBackend::Direct(cached.location().clone());
+        let backend = FileBackend::Direct(cached.path_handle().clone());
         let mut bytes = [MaybeUninit::uninit(); 20];
         let mut dst = BorrowedBuf::from(&mut bytes[..]);
         dst.unfilled().append(b"prefix");

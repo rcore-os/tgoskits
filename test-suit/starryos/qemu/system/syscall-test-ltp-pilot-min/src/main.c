@@ -2,7 +2,7 @@
  * Minimal dynamic confirmation for LTP-derived syscall conformance fixes.
  *
  * Scope is intentionally narrow:
- * - openat2 open_how validation and ordinary-path fallback through openat
+ * - openat2 open_how validation, ordinary opens and cached-create rejection
  * - mmap invalid PROT bit validation
  * - multi-component PATH_MAX handling for representative path syscalls
  */
@@ -29,14 +29,6 @@
 
 #ifndef STATX_BASIC_STATS
 #define STATX_BASIC_STATS 0x000007ffU
-#endif
-
-#ifndef RESOLVE_NO_XDEV
-#define RESOLVE_NO_XDEV        0x01
-#define RESOLVE_NO_MAGICLINKS  0x02
-#define RESOLVE_NO_SYMLINKS    0x04
-#define RESOLVE_BENEATH        0x08
-#define RESOLVE_IN_ROOT        0x10
 #endif
 
 #ifndef RESOLVE_CACHED
@@ -187,30 +179,15 @@ static void test_openat2_min(void)
     expect_openat2_padded_e2big();
 
     expect_openat2_success("openat2 ordinary path succeeds", dirfd, "basic", O_RDWR, 0);
-    expect_openat2_errno("openat2 unsupported RESOLVE_NO_XDEV -> EOPNOTSUPP",
-                         dirfd, "resolve-xdev",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_NO_XDEV },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_NO_MAGICLINKS -> EOPNOTSUPP",
-                         dirfd, "resolve-magic",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_NO_MAGICLINKS },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_NO_SYMLINKS -> EOPNOTSUPP",
-                         dirfd, "resolve-symlink",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_NO_SYMLINKS },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_BENEATH -> EOPNOTSUPP",
-                         dirfd, "resolve-beneath",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_BENEATH },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_IN_ROOT -> EOPNOTSUPP",
-                         dirfd, "resolve-in-root",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_IN_ROOT },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_CACHED -> EOPNOTSUPP",
+    /* Scoped traversal is exercised by the complete path-lookup journey. */
+    expect_openat2_errno("openat2 cached creation -> EAGAIN",
                          dirfd, "resolve-cached",
                          (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_CACHED },
-                         sizeof(struct open_how), EOPNOTSUPP);
+                         sizeof(struct open_how), EAGAIN);
+    struct stat cached;
+    errno = 0;
+    CHECK(fstatat(dirfd, "resolve-cached", &cached, 0) == -1 && errno == ENOENT,
+          "cached creation refusal leaves the target absent");
 
     close(dirfd);
     rmdir(dir);

@@ -9,16 +9,15 @@ use core::{
     mem::size_of,
 };
 
-use ax_fs_ng::vfs::current_fs_context;
+use ax_fs_ng::{FsView, vfs::current_fs_context};
 use ax_runtime::hal::cpu::user::UserContext;
-use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
 use starry_vm::VmError;
 
 use crate::{
     StarryError, StarryResult,
-    file::{ResolveAtResult, memfd::Memfd, resolve_at, resolve_fd},
+    file::{ResolveAtResult, memfd::Memfd, resolve_at_from_view},
     mm::{
         MAX_EXEC_ARG_BYTES, MmHandle, load_user_app, new_user_image_builder,
         validate_exec_arg_size, vm_load_string, vm_load_until_nul,
@@ -27,14 +26,14 @@ use crate::{
     task::{TidNumber, future::block_on, zap_thread},
 };
 
-fn commit_address_space_handoff<OldAddressSpace>(
+fn commit_address_space_handoff<OldAddressSpace, Retirement>(
     publish_new: impl FnOnce() -> OldAddressSpace,
     install_new: impl FnOnce(),
-    release_old: impl FnOnce(OldAddressSpace),
-) {
+    release_old: impl FnOnce(OldAddressSpace) -> Retirement,
+) -> Retirement {
     let old_address_space = publish_new();
     install_new();
-    release_old(old_address_space);
+    release_old(old_address_space)
 }
 
 fn charge_exec_arg_bytes(total: &mut usize, bytes: usize) -> StarryResult {
@@ -95,30 +94,11 @@ pub fn sys_execve(
     argv: *const *const c_char,
     envp: *const *const c_char,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let path = vm_load_string(current, path)?;
-    let loc = if let Some(fd) = self_fd_number(&path) {
-        match resolve_fd(fd)? {
-            ResolveAtResult::File(loc) => loc,
-            ResolveAtResult::Other(file) => file
-                .downcast_ref::<Memfd>()
-                .ok_or(StarryError::PermissionDenied)?
-                .inner()
-                .inner()
-                .location()
-                .clone(),
-        }
-    } else {
-        current_fs_context().lock().resolve(&path)?
-    };
-    do_execve(current, uctx, loc, path, argv, envp)
-}
-
-fn self_fd_number(path: &str) -> Option<c_int> {
-    ["/proc/self/fd/", "/dev/fd/"]
-        .into_iter()
-        .find_map(|prefix| path.strip_prefix(prefix))?
-        .parse()
-        .ok()
+    let view = FsView::current(current_fs_context(), &link_caller);
+    let loc = view.resolve(&path)?;
+    do_execve(&view, current, uctx, loc, path, argv, envp)
 }
 
 /// execveat(2) — like execve, but the program is identified by `dirfd` plus
@@ -133,20 +113,26 @@ pub fn sys_execveat(
     envp: *const *const c_char,
     flags: u32,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     if flags & !(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) != 0 {
         return Err(StarryError::InvalidInput);
     }
 
     let path = vm_load_string(current, path)?;
+    let view = FsView::current(current_fs_context(), &link_caller);
 
-    // Resolve dirfd + path to the `Location` the loader reads from. A regular
+    // Resolve dirfd + path to the `PathHandle` the loader reads from. A regular
     // file yields its filesystem path as the display name; an anonymous memfd
-    // has no path but wraps a tmpfs-backed `Location` we can still load — this
+    // has no path but wraps a tmpfs-backed `PathHandle` we can still load — this
     // is systemd's `execveat(memfd, "", AT_EMPTY_PATH)` path. Other anonymous
     // fds (sockets, eventfd, …) are not executable.
-    let (loc, disp_path) = match resolve_at(dirfd, Some(path.as_str()), flags)? {
+    let (loc, disp_path) = match resolve_at_from_view(&view, dirfd, Some(path.as_str()), flags)? {
         ResolveAtResult::File(loc) => {
-            let disp = loc.absolute_path().map(|p| p.to_string()).unwrap_or(path);
+            let disp = loc
+                .location()
+                .absolute_path()
+                .map(|p| p.to_string())
+                .unwrap_or(path);
             (loc, disp)
         }
         ResolveAtResult::Other(f) => {
@@ -154,24 +140,25 @@ pub fn sys_execveat(
                 warn!("sys_execveat: exec from non-memfd anonymous fd is not supported");
                 StarryError::PermissionDenied
             })?;
-            let loc = memfd.inner().inner().location().clone();
+            let loc = memfd.inner().inner().path_handle().clone();
             let disp = format!("/memfd:{} (deleted)", memfd.name());
             (loc, disp)
         }
     };
 
-    do_execve(current, uctx, loc, disp_path, argv, envp)
+    do_execve(&view, current, uctx, loc, disp_path, argv, envp)
 }
 
 /// Shared execve core (Linux's `do_execveat_common` equivalent): both
-/// `sys_execve` and `sys_execveat` resolve the program to a `Location`, then
+/// `sys_execve` and `sys_execveat` resolve the program to a `PathHandle`, then
 /// funnel it plus the raw `argv` / `envp` user pointers here to be loaded once.
 /// `path` is the display name (used for argv0-independent `comm`/`exe_path` and
 /// the loader's shebang handling), not re-resolved against the FS.
 fn do_execve(
+    view: &FsView<'_>,
     current: &crate::task::UserTaskRef,
     uctx: &mut UserContext,
-    loc: Location,
+    loc: axfs_ng_vfs::PathHandle,
     path: String,
     argv: *const *const c_char,
     envp: *const *const c_char,
@@ -233,8 +220,9 @@ fn do_execve(
     // Collect metadata from the already-resolved location before touching
     // anything. An anonymous memfd has no filesystem path, so fall back to the
     // caller-supplied display name (e.g. `/memfd:<name> (deleted)`).
-    let new_name = loc.name().to_string();
+    let new_name = loc.location().name().to_string();
     let new_exe_path = loc
+        .location()
         .absolute_path()
         .map(|p| p.to_string())
         .unwrap_or_else(|_| path.clone());
@@ -248,7 +236,8 @@ fn do_execve(
     // pinned now, so the post-teardown commit phase doesn't re-resolve
     // the pathname (the FS could change while siblings are being reaped).
     let mut image_builder = new_user_image_builder()?;
-    let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, &thr.cred())?;
+    image_builder.set_user_namespace(proc_data.namespace_snapshot().user_ns.clone());
+    let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, view)?;
     let prepared_image = image_builder.finish(loaded_image)?;
     let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
 
@@ -359,10 +348,14 @@ fn do_execve(
     crate::task::release_robust_futexes(curr);
 
     // Publish only this process's new MM. CLONE_VM peers keep their owner.
-    commit_address_space_handoff(
+    let security_publication = proc_data.namespace_update();
+    let retired_memory = commit_address_space_handoff(
         || proc_data.stage_memory_replacement(prepared_memory),
         || curr.switch_address_space(scheduler_address_space),
-        |old_memory| old_memory.retire(),
+        |old_memory| {
+            old_memory.retire();
+            old_memory
+        },
     );
 
     // PR_SET_KEEPCAPS is deliberately not inherited by a new executable
@@ -372,8 +365,10 @@ fn do_execve(
     if old_cred.keep_capabilities() {
         let mut new_cred = (*old_cred).clone();
         new_cred.set_keep_capabilities(false);
-        thr.set_cred(new_cred);
+        security_publication.set_process_cred(thr, new_cred);
     }
+    drop(security_publication);
+    retired_memory.synchronize_retirement();
 
     curr.set_name(&new_name);
     proc_data.set_exe_path(new_exe_path);

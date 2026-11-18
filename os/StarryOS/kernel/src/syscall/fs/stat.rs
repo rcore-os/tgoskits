@@ -3,7 +3,6 @@ use core::{
     mem::{offset_of, size_of},
 };
 
-use ax_fs_ng::vfs::current_fs_context;
 use axfs_ng_vfs::Location;
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
@@ -14,8 +13,8 @@ use linux_raw_sys::general::{
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
-        Directory, File, ResolveAtResult, get_file_like, memfd::Memfd, metadata_to_kstat,
-        resolve_at, resolve_at_checked, resolve_fd,
+        ResolveAtResult, descriptor_path, get_file_like, metadata_to_kstat, resolve_at,
+        resolve_at_checked, resolve_fd,
     },
     mm::{UserPtr, VmMutPtr, VmPtr, vm_load_path_string},
 };
@@ -92,6 +91,7 @@ pub fn sys_fstatat(
     statbuf: *mut stat,
     flags: u32,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     // man 2 fstatat: flags may contain AT_EMPTY_PATH, AT_NO_AUTOMOUNT,
     // AT_SYMLINK_NOFOLLOW. Any other bit is EINVAL.
     const FSTATAT_VALID: u32 = AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW;
@@ -106,7 +106,7 @@ pub fn sys_fstatat(
 
     debug!("sys_fstatat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?;
+    let loc = resolve_at(&link_caller, dirfd, path.as_deref(), flags)?;
     write_stat(current, statbuf, loc.stat()?.into())?;
 
     Ok(0)
@@ -120,6 +120,7 @@ pub fn sys_statx(
     mask: u32,
     statxbuf: *mut statx,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     // man 2 statx: reject reserved mask bits and the invalid sync-type
     // combination FORCE_SYNC|DONT_SYNC. flags must fit within AT_* and the
     // sync-type field.
@@ -167,12 +168,12 @@ pub fn sys_statx(
         .transpose()?;
     debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
-    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    let resolved = resolve_at(&link_caller, dirfd, path.as_deref(), flags)?;
     let mut status: statx = resolved.stat()?.into();
     if let ResolveAtResult::File(location) = &resolved {
         status.stx_mask |= linux_raw_sys::general::STATX_MNT_ID;
-        status.stx_mnt_id = location.mountpoint().mount_id();
-        if location.is_root_of_mount() {
+        status.stx_mnt_id = location.location().mountpoint().mount_id();
+        if location.location().is_root_of_mount() {
             status.stx_attributes |= linux_raw_sys::general::STATX_ATTR_MOUNT_ROOT as u64;
         }
     }
@@ -199,6 +200,7 @@ pub fn sys_faccessat2(
     mode: u32,
     flags: u32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     // man 2 access: mode is a mask of F_OK(0), R_OK, W_OK, and X_OK;
     // faccessat2 flags are limited to AT_EACCESS, AT_EMPTY_PATH, and
     // AT_SYMLINK_NOFOLLOW. Linux rejects invalid bits before path resolution.
@@ -214,15 +216,15 @@ pub fn sys_faccessat2(
         .transpose()?;
     debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
 
-    let current_cred = current.as_thread().cred();
-    let cred = if flags & AT_EACCESS != 0 {
-        (*current_cred).clone()
+    let link_caller = if flags & AT_EACCESS != 0 {
+        link_caller
     } else {
-        current_cred.for_real_id_access()
+        link_caller.for_real_id_access()
     };
-    let file = resolve_at_checked(dirfd, path.as_deref(), flags, |directory| {
+    let cred = link_caller.fs_credentials().credentials();
+    let file = resolve_at_checked(&link_caller, dirfd, path.as_deref(), flags, |directory| {
         let metadata = metadata_to_kstat(&directory.metadata()?);
-        check_dac_access(&cred, &metadata, X_OK).map_err(axfs_ng_vfs::VfsError::from)
+        check_dac_access(cred, &metadata, X_OK).map_err(axfs_ng_vfs::VfsError::from)
     })?;
     if mode == 0 {
         return Ok(0);
@@ -232,23 +234,23 @@ pub fn sys_faccessat2(
     if let ResolveAtResult::File(location) = &file {
         if mode & X_OK != 0
             && node_type == S_IFREG
-            && location.mountpoint().mount_flags() & MS_NOEXEC != 0
+            && location.location().mountpoint().mount_flags() & MS_NOEXEC != 0
         {
             return Err(StarryError::PermissionDenied);
         }
         // Linux sb_permission precedes DAC; a bind-only restriction does not.
         if mode & W_OK != 0
             && matches!(node_type, S_IFREG | S_IFDIR | S_IFLNK)
-            && location.mountpoint().is_filesystem_readonly()
+            && location.location().mountpoint().is_filesystem_readonly()
         {
             return Err(StarryError::ReadOnlyFilesystem);
         }
     }
-    check_dac_access(&cred, &metadata, mode)?;
+    check_dac_access(cred, &metadata, mode)?;
     if mode & W_OK != 0
         && !matches!(node_type, S_IFBLK | S_IFCHR | S_IFIFO | S_IFSOCK)
         && let ResolveAtResult::File(location) = &file
-        && location.is_readonly()
+        && location.location().is_readonly()
     {
         return Err(StarryError::ReadOnlyFilesystem);
     }
@@ -322,14 +324,17 @@ pub fn sys_statfs(
     path: *const c_char,
     buf: *mut statfs,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let path = vm_load_path_string(current, path)?;
     debug!("sys_statfs <= path: {path:?}");
 
-    let location = current_fs_context().lock().resolve(path)?;
+    let location = crate::file::with_fs(linux_raw_sys::general::AT_FDCWD, &link_caller, |fs| {
+        Ok(fs.resolve(path)?)
+    })?;
     write_statfs(
         current,
         buf,
-        statfs(&location.mountpoint().root_location())?,
+        statfs(&location.location().mountpoint().root_location())?,
     )?;
     Ok(0)
 }
@@ -342,21 +347,8 @@ pub fn sys_fstatfs(
     debug!("sys_fstatfs <= fd: {fd}");
 
     let file_like = get_file_like(fd)?;
-    let location = if let Some(directory) = file_like.downcast_ref::<Directory>() {
-        directory.inner()
-    } else if let Some(file) = file_like.downcast_ref::<File>() {
-        file.inner().location()
-    } else if let Some(file) = file_like
-        .downcast_ref::<crate::file::Pipe>()
-        .and_then(crate::file::Pipe::named_file)
-    {
-        file.inner().location()
-    } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
-        memfd.inner().inner().location()
-    } else {
-        return Err(StarryError::InvalidInput);
-    };
-    write_statfs(current, buf, statfs(location)?)?;
+    let path = descriptor_path(&file_like)?;
+    write_statfs(current, buf, statfs(path.location())?)?;
     Ok(0)
 }
 
@@ -548,6 +540,7 @@ pub fn sys_name_to_handle_at(
     mount_id: *mut c_int,
     flags: u32,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     const VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_FOLLOW;
     if flags & !VALID_FLAGS != 0 {
         return Err(StarryError::InvalidInput);
@@ -564,10 +557,10 @@ pub fn sys_name_to_handle_at(
     } else {
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
-    let loc = resolve_at(dirfd, path.as_deref(), resolve_flags)?
+    let loc = resolve_at(&link_caller, dirfd, path.as_deref(), resolve_flags)?
         .into_file()
         .ok_or(StarryError::InvalidInput)?;
-    let stat = loc.metadata()?;
+    let stat = loc.location().metadata()?;
 
     let header_ptr = UserPtr::<FileHandleHeader>::from(handle);
     let mut header = header_ptr.read(current)?;
@@ -589,7 +582,7 @@ pub fn sys_name_to_handle_at(
         .ok_or(crate::StarryError::InvalidInput)? as *mut u8;
     UserPtr::<u8>::from(data_ptr).write_slice(current, &bytes)?;
 
-    let resolved_mount_id = c_int::try_from(loc.mountpoint().mount_id())
+    let resolved_mount_id = c_int::try_from(loc.location().mountpoint().mount_id())
         .map_err(|_| StarryError::from(Errno::EOVERFLOW))?;
     (mount_id as *mut c_int).vm_write(current, resolved_mount_id)?;
     Ok(0)

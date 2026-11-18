@@ -5,7 +5,6 @@ use alloc::{
     format,
     rc::Rc,
     string::String,
-    sync::Arc,
     vec::Vec,
 };
 use core::cell::RefCell;
@@ -15,9 +14,9 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 #[cfg(any(target_os = "none", target_env = "musl"))]
 use ax_fs_ng::current_fs_context;
 use ax_fs_ng::{
-    VfsError,
+    FsContextSnapshot, VfsError,
     migration::{MigrationEntry, MigrationPlan, ResourceKind},
-    vfs::FsContext,
+    vfs::FsView,
 };
 use axvmconfig::{BUILTIN_GUEST_DIR, GuestConfig};
 
@@ -30,24 +29,19 @@ pub const BUILTIN_WEB_UI_DIR: &str = "/guest/builtin/web-ui";
 
 /// The initramfs namespace remains available after a disk root is committed so
 /// builtin boot assets can still be read by a later lazy-start request. The
-/// context is deliberately *not* created with [`FsContext::into_shared`]:
-/// shared contexts are registered in `FS_REGISTRY`, and root switching would
-/// then rewrite their root through `propagate_pivot_root`. Keeping this context
-/// out of that registry leaves it anchored at the detached initramfs mount;
-/// the mount owns an immutable memory filesystem and is independent of the
-/// block filesystem released for passthrough.
-static RETAINED_BOOT_CONTEXT: OnceLock<Arc<ax_block::os::sync::Mutex<FsContext>>> = OnceLock::new();
+/// frozen snapshot owns an independent cloned namespace without registering
+/// mutable task state. Root switching cannot retarget these archive paths.
+static RETAINED_BOOT_CONTEXT: OnceLock<FsContextSnapshot> = OnceLock::new();
 
-pub fn retain_boot_context(context: &FsContext) -> Result<()> {
-    let mut retained = FsContext::new(context.root_dir().clone());
-    // A copied `FsContext` still points into the active mount namespace. Clone
-    // that namespace before the root switch so detaching the old root cannot
-    // invalidate this archive owner. Keep the resulting context out of the
-    // global registry: it must not receive the pivot-root propagation update.
-    retained
-        .unshare_mount_namespace()
+/// Clones boot topology during ordinary preparation, outside scope and writer gates.
+pub fn retain_boot_context(context: &FsContextSnapshot) -> Result<()> {
+    let mut cloned = context.namespace().clone_namespace();
+    let retained = context
+        .remap(&mut cloned)
         .context("isolate retained initramfs mount namespace")?;
-    let retained = Arc::new(ax_block::os::sync::Mutex::new(retained));
+    let (created, retirement) = cloned.into_parts();
+    drop(created.into_namespace());
+    drop(retirement);
     RETAINED_BOOT_CONTEXT.get_or_init(|| retained);
     Ok(())
 }
@@ -56,8 +50,10 @@ fn read_retained_builtin_asset(path: &str) -> Option<Result<Vec<u8>>> {
     if !is_builtin_path(path) {
         return None;
     }
-    let context = RETAINED_BOOT_CONTEXT.get()?;
-    match context.lock().read(path) {
+    let snapshot = RETAINED_BOOT_CONTEXT.get()?;
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
+    let context = FsView::current(snapshot.clone(), &caller);
+    match context.read(path) {
         Ok(bytes) => Some(Ok(bytes)),
         // A disk root may already contain a previously installed builtin
         // package when this boot's archive has no package. Let the normal
@@ -74,8 +70,9 @@ fn read_retained_builtin_asset_exact(path: &str, read_size: usize) -> Option<Res
     if !is_builtin_path(path) {
         return None;
     }
-    let context = RETAINED_BOOT_CONTEXT.get()?;
-    let context = context.lock();
+    let snapshot = RETAINED_BOOT_CONTEXT.get()?;
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
+    let context = FsView::current(snapshot.clone(), &caller);
     let file = match ax_fs_ng::file::File::open(&context, path) {
         Ok(file) => file,
         Err(VfsError::NotFound) => return None,
@@ -118,7 +115,8 @@ pub fn boot_asset_size(path: &str) -> Result<Option<usize>> {
     let Some(context) = RETAINED_BOOT_CONTEXT.get() else {
         return Ok(None);
     };
-    let context = context.lock();
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
+    let context = FsView::current(context.clone(), &caller);
     match context.metadata(path) {
         Ok(metadata) => usize::try_from(metadata.size)
             .map(Some)
@@ -132,11 +130,11 @@ pub fn boot_asset_exists(path: &str) -> bool {
     if !is_builtin_path(path) {
         return false;
     }
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
     RETAINED_BOOT_CONTEXT.get().is_some_and(|context| {
-        context
-            .lock()
+        FsView::current(context.clone(), &caller)
             .resolve(path)
-            .is_ok_and(|asset| asset.check_is_file().is_ok())
+            .is_ok_and(|asset| asset.location().check_is_file().is_ok())
     })
 }
 
@@ -212,13 +210,14 @@ pub fn prepare_root() -> Result<()> {
         .into_iter()
         .take_while(|arg| arg != "--")
         .any(|arg| arg.starts_with("root="));
-    let source_handle = current_fs_context();
-    let source = source_handle.lock().clone();
+    let source_snapshot = current_fs_context();
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
+    let source = FsView::current(source_snapshot.clone(), &caller);
     let has_block_devices = ax_block::block::runtime::BlockRuntime::installed_devices()
         .is_some_and(|devices| !devices.is_empty());
     if !has_root || !has_block_devices {
         log::info!("Axvisor uses initramfs root; disk root unavailable or not requested");
-        retain_boot_context(&source)?;
+        retain_boot_context(&source_snapshot)?;
         validate_builtin(&source, BUILTIN_GUEST_DIR)?;
         return Ok(());
     }
@@ -227,8 +226,8 @@ pub fn prepare_root() -> Result<()> {
     if prepared.context().root_dir().is_readonly() {
         bail!("Axvisor disk root is read-only; keeping the initramfs root");
     }
-    install_builtin(&source, prepared.context())?;
-    retain_boot_context(&source)?;
+    install_builtin(&source, &prepared.context())?;
+    retain_boot_context(&source_snapshot)?;
     // Release the copied archive context before committing; the runtime's root
     // and task contexts are replaced by commit and are then the last old owners.
     drop(source);
@@ -238,7 +237,7 @@ pub fn prepare_root() -> Result<()> {
 /// Replaces the built-in package after validating its assets on the target root.
 /// A missing source preserves the installed version and returns `false`.
 /// The caller must exclude concurrent writers until installation finishes.
-pub fn install_builtin(source: &FsContext, target: &FsContext) -> Result<bool> {
+pub fn install_builtin(source: &FsView<'_>, target: &FsView<'_>) -> Result<bool> {
     let validation_error = Rc::new(RefCell::new(None));
     let validation_error_for_validator = Rc::clone(&validation_error);
     let mut plan = MigrationPlan::new();
@@ -259,10 +258,10 @@ pub fn install_builtin(source: &FsContext, target: &FsContext) -> Result<bool> {
     drop(plan);
     let report = result
         .map_err(|error| {
-            if error == VfsError::InvalidData {
-                if let Some(validation) = validation_error.borrow_mut().take() {
-                    return anyhow!(validation);
-                }
+            if error == VfsError::InvalidData
+                && let Some(validation) = validation_error.borrow_mut().take()
+            {
+                return anyhow!(validation);
             }
             anyhow::Error::from(error)
         })
@@ -270,14 +269,14 @@ pub fn install_builtin(source: &FsContext, target: &FsContext) -> Result<bool> {
     Ok(report.migrated != 0)
 }
 
-fn config_files(context: &FsContext, directory: &str) -> Result<Vec<String>> {
+fn config_files(context: &FsView<'_>, directory: &str) -> Result<Vec<String>> {
     Ok(config_files_with_paths(context, directory)?
         .into_iter()
         .map(|(_, content)| content)
         .collect())
 }
 
-fn config_files_with_paths(context: &FsContext, directory: &str) -> Result<Vec<(String, String)>> {
+fn config_files_with_paths(context: &FsView<'_>, directory: &str) -> Result<Vec<(String, String)>> {
     let entries = match context.read_dir(directory) {
         Ok(entries) => entries,
         Err(VfsError::NotFound) => return Ok(Vec::new()),
@@ -314,7 +313,7 @@ fn config_files_with_paths(context: &FsContext, directory: &str) -> Result<Vec<(
 }
 
 /// Loads and validates the builtin catalog without creating any VM.
-pub fn load_catalog(context: &FsContext) -> Result<BuiltinCatalog> {
+pub fn load_catalog(context: &FsView<'_>) -> Result<BuiltinCatalog> {
     let directory = format!("{BUILTIN_GUEST_DIR}/configs");
     let entries = config_files_with_paths(context, &directory)
         .context("load built-in guest configuration")?;
@@ -337,14 +336,14 @@ pub fn load_catalog(context: &FsContext) -> Result<BuiltinCatalog> {
 
 /// Validates archive-owned assets while preserving their final absolute paths.
 /// External absolute assets are deferred to VM loading on an initramfs root.
-pub fn validate_builtin(context: &FsContext, staged: &str) -> Result<()> {
+pub fn validate_builtin(context: &FsView<'_>, staged: &str) -> Result<()> {
     validate_builtin_assets(context, staged, None)
 }
 
 fn validate_builtin_assets(
-    context: &FsContext,
+    context: &FsView<'_>,
     staged: &str,
-    external_root: Option<&FsContext>,
+    external_root: Option<&FsView<'_>>,
 ) -> Result<()> {
     let entries = match context.read_dir(staged) {
         Ok(entries) => entries,
@@ -360,6 +359,7 @@ fn validate_builtin_assets(
                 nonempty = true;
                 context
                     .resolve(format!("{staged}/{}", entry.name))?
+                    .location()
                     .check_is_dir()?;
             }
             "web-ui" => validate_web_ui(context, staged)?,
@@ -371,6 +371,7 @@ fn validate_builtin_assets(
     }
     context
         .resolve(format!("{staged}/configs"))?
+        .location()
         .check_is_dir()?;
     for content in config_files(context, &format!("{staged}/configs"))? {
         let config = GuestConfig::from_toml(&content)?;
@@ -398,9 +399,10 @@ fn validate_builtin_assets(
             }
             .with_context(|| format!("resolve guest boot asset {path}"))?;
             resource
+                .location()
                 .check_is_file()
                 .with_context(|| format!("guest boot asset is not a file: {path}"))?;
-            if resource.len()? == 0 {
+            if resource.location().len()? == 0 {
                 bail!("empty guest boot asset: {path}");
             }
         }
@@ -409,18 +411,20 @@ fn validate_builtin_assets(
 }
 
 /// Validates the bundled dashboard tree before publication.
-fn validate_web_ui(context: &FsContext, staged: &str) -> Result<()> {
+fn validate_web_ui(context: &FsView<'_>, staged: &str) -> Result<()> {
     let directory = format!("{staged}/web-ui");
     context
         .resolve(&directory)?
+        .location()
         .check_is_dir()
         .with_context(|| format!("check built-in dashboard package {BUILTIN_WEB_UI_DIR}"))?;
     let shell = context.resolve(format!("{directory}/index.html"))?;
     shell
+        .location()
         .check_is_file()
         .with_context(|| format!("check built-in dashboard shell {BUILTIN_WEB_UI_DIR}"))?;
     ensure!(
-        shell.len()? > 0,
+        shell.location().len()? > 0,
         "built-in dashboard shell {BUILTIN_WEB_UI_DIR}/index.html is empty"
     );
     Ok(())

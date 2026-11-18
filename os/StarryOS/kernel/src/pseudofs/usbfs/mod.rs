@@ -1,3 +1,4 @@
+use axfs_ng_vfs::VfsResult;
 mod descriptor;
 mod irq;
 mod manager;
@@ -40,7 +41,7 @@ use crate::{
     sync::{Mutex, RawSpinLock},
 };
 
-fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {
+fn create_filesystem(manager: Arc<UsbFsManager>) -> VfsResult<Filesystem> {
     info!("usbfs: creating filesystem instance");
     SimpleFs::new_with("usbfs".into(), descriptor::USBFS_MAGIC, move |fs| {
         SimpleDir::new_maker(
@@ -51,11 +52,12 @@ fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {
             }),
         )
     })
+    .map(|owner| owner.as_filesystem())
 }
 
 pub(crate) fn new_usbfs() -> StarryResult<Option<Filesystem>> {
     if let Some(manager) = manager() {
-        return Ok(Some(create_filesystem(manager)));
+        return Ok(Some(create_filesystem(manager)?));
     }
 
     info!("usbfs: initializing manager");
@@ -104,7 +106,7 @@ pub(crate) fn new_usbfs() -> StarryResult<Option<Filesystem>> {
         .spawn(move || manager::usbfs_refresh_task(refresh_manager.clone()))
         .expect("failed to spawn kernel thread");
 
-    Ok(Some(create_filesystem(manager)))
+    Ok(Some(create_filesystem(manager)?))
 }
 
 pub(crate) fn has_manager() -> bool {
@@ -115,7 +117,7 @@ pub(crate) fn start_event_pump() {
     irq::start_event_pump();
 }
 
-pub(crate) fn new_bus_usb_sysfs() -> Filesystem {
+pub(crate) fn new_bus_usb_sysfs() -> VfsResult<Filesystem> {
     sysfs::new_bus_usb_sysfs()
 }
 
@@ -2189,8 +2191,11 @@ mod reap_tests {
             next_device_num: 2,
             stable_id_to_device_num: Default::default(),
         }]));
-        let fs = create_filesystem(manager.clone());
-        let context = FsContext::new(Mountpoint::new_root(&fs).root_location());
+        let fs = create_filesystem(manager.clone()).unwrap();
+        let tree = Mountpoint::new_root(&fs);
+        let context = FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let context = ax_fs_ng::FsView::native(context, &caller);
         let base = KernelFile::new(
             ax_fs_ng::File::open(&context, "/001/001").unwrap(),
             O_RDONLY,
