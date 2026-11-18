@@ -70,7 +70,7 @@ cargo xtask axvisor app qemu --app-root apps/suite/axvisor --group qemu --arch a
 | AMD SVM | 2 | 2 |
 | 合计 | 11 | 10 |
 
-AArch64 `memory-web`以一次SMP1无盘启动承接原`qemu-host-initramfs`及`web-ui-diskless`两项检查；原90秒日志期限和180秒probe预算保留，整组270秒。`--test-case qemu/aarch64/memory-web`执行整组；追加`/memory-root`或`/dashboard`可单独选择其中一项，同时选择两项仍只启动一次。当前27项normal功能检查，其中25项主CI检查由10个启动组承接。具体分组、单项命令和不能合并的边界见[qemu/README.md](qemu/README.md)。
+AArch64 `memory-web`以一次SMP1无盘启动承接原`qemu-host-initramfs`及`web-ui-diskless`两项检查；原90秒日志期限和180秒probe预算保留，整组270秒。`--test-case qemu/aarch64/memory-web`执行整组；追加`/memory-root`或`/dashboard`可单独选择其中一项，同时选择两项仍只启动一次。当前28项普通功能检查，其中26项主CI检查由11个启动组承接；包含新主线加入的PCI memory专项。具体分组、单项命令和不能合并的边界见[qemu/README.md](qemu/README.md)。
 
 未进入主CI的QEMU检查仍是AArch64 `ivc`和RISC-V的`smoke/smp-ipi`；IVC混合客机仍保留原协议不匹配停用边界。manual的两个三ArceOS控制台变体保持手动。
 
@@ -149,6 +149,6 @@ success_regex = ["本项成功标记"]
 
 OrangePi模拟机器人场景使用`robot/robot-virtual-linux`与`robot/robot-virtual-starry`目录名，`virtual`仅指执行器模拟。三客户机场景的配置直接放在场景根目录：`guest-linux.toml`、`guest-starry.toml`、`guest-zephyr.toml`；不再增加guests或角色子目录层。其他场景不因此强制改名。
 
-原两项控制台检查interleave/atomic-output已迁入[apps/suite](../../apps/suite/axvisor/qemu/aarch64/console/README.md)，不再由test-suit发现；普通CI的25项功能保持，general整组就是原五项CI检查。
+原两项控制台检查interleave/atomic-output已迁入[apps/suite](../../apps/suite/axvisor/qemu/aarch64/console/README.md)，不再由test-suit发现；普通CI保留原25项功能，并接入新主线的PCI memory专项；general整组仍是原五项CI检查。
 
 测试数据直接从本目录根发现，不再有normal物理分组，也无需传`--test-group normal`。仓库内场景仍以`qemu/...`和`board/...`选择；外部项目原有命名分组保持，平铺自定义根可显式使用`--test-group .`。应用的命名分组和SDK内部`test/normal`执行方式目录不受影响。

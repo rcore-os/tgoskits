@@ -1164,11 +1164,11 @@ command = "true"
         pci_checks = [
             check
             for check in ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
-            if "qemu-pci-memory-test" in check["command"]
+            if "qemu/aarch64/pci-memory-test" in check["command"]
             and any(
                 registration["kind"] == "axvisor-qemu"
                 and registration.get("arch") == "aarch64"
-                and "qemu-pci-memory-test" in registration.get("cases", ())
+                and "qemu/aarch64/pci-memory-test" in registration.get("cases", ())
                 for registration in check.get("suite", ())
             )
         ]
@@ -1183,7 +1183,7 @@ command = "true"
                 self.assertIn(check["id"], rows)
                 self.assertEqual(rows[check["id"]]["group"], "AxVisor")
                 self.assertIn(
-                    "qemu-pci-memory-test", rows[check["id"]]["command"]
+                    "qemu/aarch64/pci-memory-test", rows[check["id"]]["command"]
                 )
 
     def test_dualguest_robot_board_is_scheduled_in_main_only(self) -> None:

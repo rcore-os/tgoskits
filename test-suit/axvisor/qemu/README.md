@@ -9,6 +9,7 @@
 | AArch64 | `general` | `shell-and-block` → `pool` → `ivc` → `pool-http` → `dashboard` | 全组，五项 |
 | AArch64 | `http-control-plane` | `browser-console` → `control-plane` | 全组，最小web构建 |
 | AArch64 | `memory-web` | `memory-root` → `dashboard` | 全组，无盘Memory根 |
+| AArch64 | `pci-memory-test` | ECAM发现、BAR2边界、memory decode与写入读回 | 上游新增专项 |
 | AArch64 | `ivc` | Linux/ArceOS 混合 IVC | 未登记；原客户机协议不匹配问题保留 |
 | RISC-V64 | `smoke` | `shell-and-block` → `smp-ipi` | 只选择 `shell-and-block` |
 | LoongArch64 | `smoke` | `shell-and-block` | 全组 |
@@ -18,7 +19,7 @@
 | AMD SVM | `smoke` | `shell-and-block` | 全组 |
 | AMD SVM | `functional` | `direct-acpi` → `ovmf-acpi` → `pci-enumeration` → `pci-block-rw` → `pci-block-ro` | 全组 |
 
-normal 共11个启动组，27项功能检查。主 CI 保持原25项功能检查，使用10次宿主启动。夜间 GICv2/GICv3 在 `apps/axvisor`，仍分别启动，不计入此表。SVM 执行需要 AMD KVM；VMX 通过不能替代 SVM 实跑。
+普通测试共12个启动组，28项功能检查。主 CI 在原25项功能、10次宿主启动基础上，保留新主线加入的 PCI memory 专项，共26项功能、11次宿主启动。夜间 GICv2/GICv3 在 `apps/axvisor`，仍分别启动，不计入此表。SVM 执行需要 AMD KVM；VMX 通过不能替代 SVM 实跑。
 
 ## 执行与单项选择
 
@@ -58,6 +59,7 @@ CI 作业在 `.github/ci/checks/axvisor.toml` 登记。`command` 与 `check.suit
 
 - VMX/SVM 依赖不同的硬件虚拟化后端，不能合并。
 - x86 NVMe 基础组不能与 passthrough functional 顺序合批：直通客户机启动会按内核契约释放宿主磁盘文件系统，后续成员无法再从 builtin 读取资产。functional 保持无盘宿主。
+- `pci-memory-test` 保留上游4核、4GiB、无盘宿主及专用ECAM客户机环境；本次变基只迁移路径，不把它并入8GiB磁盘根general或SMP1的memory-web。
 - 最小 `web` 的 browser-console 明确要求完整 UI 不存在，不能与 `web-ui` 构建合并。
 - `memory-web` 验证 Memory 根，磁盘场景验证 NVMe 根，保留两种启动条件。
 - 夜间 GICv2/GICv3 使用不同中断控制器；LoongArch 当前只有一个 normal 组。
