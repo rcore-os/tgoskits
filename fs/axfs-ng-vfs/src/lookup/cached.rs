@@ -111,7 +111,7 @@ impl<'a> CachedLookup<'a> {
         } else {
             self.context.start.clone()
         };
-        let mut directory = options.require_directory || path.ends_with('/');
+        let mut trailing_directory = path.ends_with('/');
         let mut pending = SmallVec::<[PathFrame<'_>; 1]>::new();
         pending.push(PathFrame {
             text: PathText::Input(path),
@@ -135,7 +135,7 @@ impl<'a> CachedLookup<'a> {
                     let child = Location::new(current.location().mountpoint().clone(), entry);
                     let child = self.follow_mounts(self.bind(&current, child)?)?;
                     if child.location().node_type() == NodeType::Symlink
-                        && (more || options.follow_final_link || directory)
+                        && (more || options.follow_final_link || trailing_directory)
                     {
                         if self
                             .context
@@ -166,7 +166,7 @@ impl<'a> CachedLookup<'a> {
                     current = self.jump_root(&current)?;
                 }
                 if !more && target.ends_with('/') {
-                    directory = true;
+                    trailing_directory = true;
                 }
                 pending.push(PathFrame {
                     text: PathText::Link(target),
@@ -174,7 +174,7 @@ impl<'a> CachedLookup<'a> {
                 });
             }
         }
-        if directory && !current.location().is_dir() {
+        if (options.require_directory || trailing_directory) && !current.location().is_dir() {
             return Err(VfsError::NotADirectory);
         }
         Ok(current)

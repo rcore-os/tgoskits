@@ -545,9 +545,9 @@ fn open_cached_path(
 ) -> StarryResult<isize> {
     use axfs_ng_vfs::{CachedLookup, CachedLookupContext, CachedLookupOptions};
 
-    if flags & O_PATH == 0 {
-        // Ordinary open capabilities (including writer and endpoint admission)
-        // are distinct from path ownership and must not invoke a slow fallback.
+    let readonly_flags = O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_LARGEFILE;
+    if flags & O_PATH == 0 && (flags & O_ACCMODE != O_RDONLY || flags & !readonly_flags != 0) {
+        // Extra open policies require their own cache-only admission.
         return Err(StarryError::WouldBlock);
     }
     let binding = current.as_thread().try_cached_fs_binding()?;
@@ -569,11 +569,15 @@ fn open_cached_path(
             require_directory: flags & O_DIRECTORY != 0,
         },
     )?;
-    let file: Arc<dyn FileLike> = if path.location().is_dir() {
-        Arc::new(Directory::new(path, flags))
-    } else {
-        Arc::new(File::new(ax_fs_ng::File::path_only(path), flags))
+    let credentials = binding.credentials.as_mutation_credentials();
+    let options = flags_to_options(flags as c_int, 0, (credentials.fsuid, credentials.fsgid));
+    let file: Arc<dyn FileLike> = match options.open_cached_path(path, &credentials)? {
+        OpenResult::Dir(path) => Arc::new(Directory::new(path, flags)),
+        OpenResult::File(file) => Arc::new(File::new(file, flags)),
     };
+    if flags & O_NONBLOCK != 0 {
+        file.set_nonblocking(true)?;
+    }
     binding
         .files
         .install(file, flags & O_CLOEXEC != 0)

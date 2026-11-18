@@ -139,6 +139,8 @@ pub trait NodeOps: Send + Sync + 'static {
 
     /// Returns inode-owned state that survives eviction of directory entries.
     /// Memory filesystems use this for file contents shared by hard links.
+    /// Returning the field must not wait, allocate or perform I/O; each caller
+    /// chooses how to acquire the returned lock.
     fn inode_user_data(&self) -> Option<&RawSpinLock<TypeMap>> {
         None
     }
@@ -356,7 +358,9 @@ impl DirEntry {
         })
     }
 
-    pub(crate) fn cached_metadata(&self) -> VfsResult<Metadata> {
+    /// Reads the inode's explicit cache-only attributes with this entry's type.
+    /// Missing or contended state returns `WouldBlock`, without ordinary I/O.
+    pub fn cached_metadata(&self) -> VfsResult<Metadata> {
         self.0.node.cached_metadata().map(|mut metadata| {
             metadata.node_type = self.0.node_type;
             metadata

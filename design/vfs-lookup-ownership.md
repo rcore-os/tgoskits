@@ -4767,6 +4767,8 @@ Linux 的 `complete_walk()` 在取得路径引用时清除 LOOKUP_CACHED，随�
 
 最终权限读取 `DirEntry::cached_metadata()` 的显式能力，并沿既有凭据规则
 检查实际 inode。O_PATH 不取得内容访问权；普通 nofollow 链接拒绝为 ELOOP。
+`O_DIRECTORY` 只要求最终对象为目录，不能覆盖 `O_NOFOLLOW`；输入路径尾斜杠
+则要求跟随最终链接并取得目录。只有实际跟随链接后，目标文本的尾斜杠才生效。
 目录只读返回原路径构造的目录描述。普通文件只尝试原 inode 的
 `inode_user_data()` 锁，克隆已有 `FileUserData::Strong`；只有实际共享缓存的
 `backing` 为 None 且未退休时接受，不使用文件系统名称推断，也不创建新页缓存。
