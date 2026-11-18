@@ -17,6 +17,13 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+/* Linux UAPI bits: 64-bit libc may define O_LARGEFILE as zero. */
+#if defined(__aarch64__)
+#define KERNEL_O_LARGEFILE 0400000
+#else
+#define KERNEL_O_LARGEFILE 00100000
+#endif
+
 #ifndef SYS_openat2
 #define SYS_openat2 437
 #endif
@@ -384,18 +391,34 @@ static void cached_readonly(int rootfd, int original)
 {
     const char payload[] = "cached-open-content";
     char bytes[sizeof(payload)] = {0};
-    int first = -1, second = -1, shared = -1, directory = -1;
+    int first = -1, second = -1, shared = -1, directory = -1, path = -1;
+    int original_status = (int)syscall(SYS_fcntl, original, F_GETFL, 0);
+    CHECK(original_status == (O_RDWR | KERNEL_O_LARGEFILE),
+          "ordinary open exposes status flags without creation or descriptor bits status=%d",
+          original_status);
+    CHECK(syscall(SYS_fcntl, original, F_GETFD, 0) == FD_CLOEXEC,
+          "ordinary descriptor retains close-on-exec independently of F_GETFL");
     REQUIRE(syscall(SYS_pwrite64, original, payload, sizeof(payload) - 1, 0)
                 == (ssize_t)sizeof(payload) - 1);
-    first = cached_open(rootfd, "file", O_RDONLY | O_NONBLOCK | O_CLOEXEC, 0);
+    path = open_at(rootfd, "file", O_PATH | O_RDWR | O_NONBLOCK | O_CLOEXEC
+                    | O_CREAT | O_EXCL | O_TRUNC | O_NOCTTY);
+    REQUIRE(path >= 0);
+    int path_status = (int)syscall(SYS_fcntl, path, F_GETFL, 0);
+    CHECK(path_status == O_PATH,
+          "ordinary O_PATH reports only path status despite ignored open bits status=%d",
+          path_status);
+    CHECK(syscall(SYS_fcntl, path, F_GETFD, 0) == FD_CLOEXEC,
+          "ordinary O_PATH descriptor retains close-on-exec separately");
+    first = cached_open(rootfd, "file", O_RDONLY | O_NONBLOCK | O_CLOEXEC
+                        | O_NOCTTY, 0);
     CHECK(first >= 0, "CACHED opens a pinned ordinary reader fd=%d errno=%d",
           first, errno);
     if (first < 0)
         goto out;
     int status = (int)syscall(SYS_fcntl, first, F_GETFL, 0);
-    CHECK(status >= 0 && (status & O_ACCMODE) == O_RDONLY
-              && (status & O_NONBLOCK) != 0,
-          "CACHED reader retains access and nonblocking flags status=%d", status);
+    CHECK(status == (O_RDONLY | O_NONBLOCK | KERNEL_O_LARGEFILE),
+          "CACHED reader reports exact readonly nonblocking status flags status=%d",
+          status);
     int descriptor = (int)syscall(SYS_fcntl, first, F_GETFD, 0);
     CHECK(descriptor >= 0 && (descriptor & FD_CLOEXEC) != 0,
           "CACHED reader installs descriptor close-on-exec state");
@@ -422,6 +445,7 @@ static void cached_readonly(int rootfd, int original)
     CHECK(syscall(SYS_write, first, payload, 1) == -1 && errno == EBADF,
           "CACHED readonly description rejects writes errno=%d", errno);
 out:
+    close_fd(path);
     close_fd(shared);
     close_fd(second);
     close_fd(first);
@@ -446,7 +470,8 @@ static void mount_boundary(int rootfd)
     mounted = 1;
     mountfd = open_at(rootfd, "mount", O_RDONLY | O_DIRECTORY);
     REQUIRE(mountfd >= 0);
-    file = open_at(mountfd, "file", O_CREAT | O_EXCL | O_RDWR);
+    file = open_at(mountfd, "file", O_CREAT | O_EXCL | O_RDWR | O_TRUNC
+                   | O_NOCTTY | O_CLOEXEC);
     REQUIRE(file >= 0);
     expect_open(open2(rootfd, "scope/file", O_RDONLY, RESOLVE_NO_XDEV), 0,
                 "NO_XDEV permits same mount");
@@ -478,6 +503,10 @@ static void mount_boundary(int rootfd)
     int descriptor_flags = (int)syscall(SYS_fcntl, cached, F_GETFD, 0);
     CHECK(descriptor_flags >= 0 && (descriptor_flags & FD_CLOEXEC) != 0,
           "CACHED installs descriptor close-on-exec state");
+    int cached_status = (int)syscall(SYS_fcntl, cached, F_GETFL, 0);
+    CHECK(cached_status == O_PATH,
+          "CACHED O_PATH excludes descriptor bits from status flags status=%d",
+          cached_status);
     REQUIRE(unlinkat(mountfd, "file", 0) == 0);
     CHECK(fstat(cached, &retained) == 0 && retained.st_nlink == 0,
           "CACHED descriptor observes live metadata after unlink");
