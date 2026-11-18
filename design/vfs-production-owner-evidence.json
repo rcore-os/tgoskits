@@ -11753,5 +11753,362 @@
       "existing_component_test_rewritten": 2
     },
     "remaining": "Extra open policies, endpoints, native cache metadata, dynamic links and atime, controlled task/fd publication, other architectures for this new writer input, independent domain review and final-head CI remain."
+  },
+  "elf_program_header_bounds_and_alignment": {
+    "recorded_at": "2026-11-18T10:29:23.331177+00:00",
+    "baseline_source": "857927bcc79c76c3b5be922a6cc59568174aa840",
+    "implementation_source": "2cef6047db1d012b3c766de9a6fc4d36271f04b1",
+    "linux_source": "v7.1/8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+    "linux_rule": "load_elf_phdrs requires the native entry size, a nonzero table of at most 65536 bytes and an exact read. Invalid main tables return ENOEXEC; invalid interpreter tables return ELIBBAD before begin_new_exec. File offsets need not satisfy Rust reference alignment.",
+    "frozen_c": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-final.c",
+      "bytes": 32448,
+      "sha256": "bdd4d76090f5631004c6d228fb5cd45c57458f0cbb9f9e694cf65e83f525cc50"
+    },
+    "linux": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-linux.log",
+        "bytes": 48969,
+        "sha256": "cd3aeb8427a34600859c6231055187c8637460859277a0e39935f81e2731693d"
+      },
+      "environment": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-linux-environment.json",
+        "bytes": 838,
+        "sha256": "880c8ffa6cb900c6a62aa3841f3e075047b7419e447e93601acf088b4921fb73"
+      },
+      "exit": 0,
+      "assertions": "366/366",
+      "limit": "Host runtime 6.8.0-149-generic, not v7.1 runtime."
+    },
+    "before": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-before.log",
+        "bytes": 59774,
+        "sha256": "da99d542fa180fad9f3b31c14367cf182855b4d4fd9399a00a339acbbfdb43d3"
+      },
+      "exit": 1,
+      "failure": "The first newly rejected e_phentsize=0 reaches chunks_exact(0) and panics. Later new inputs are not claimed to have executed in this failing boot.",
+      "elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-857927bcc7-elf-program-table-before.elf",
+        "bytes": 218004400,
+        "sha256": "dc904daec6a3ef5e37e18c3320c73866936ffe587c113f3780e8a1da20e8fe86"
+      }
+    },
+    "targets": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-x86_64.log",
+          "bytes": 100250,
+          "sha256": "0a9f560c01281f7adb4e8892d7ba1583dfbc6b1d3810eab5e9b5172aadf9adbb"
+        },
+        "exit": 0,
+        "summary": "1/1",
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-2cef6047db.elf",
+          "bytes": 218065208,
+          "sha256": "a6c505b495df7b7462190d5040cd974efd68654a75cb5d7478f7dffe62c7dd5c"
+        },
+        "assertion_summary_visible": true,
+        "unaligned_marker_visible": true
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-riscv64.log",
+          "bytes": 91874,
+          "sha256": "7092ed1f9978aa6eb3149e1763e4bc504a733f6f807a79b1adbb5cb959a00368"
+        },
+        "exit": 0,
+        "summary": "1/1",
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/riscv64-2cef6047db.elf",
+          "bytes": 284475720,
+          "sha256": "3f7e29067ce5ac644d06c2e451fc199120c45472b49ba28e3425a83d555e0bd2"
+        },
+        "assertion_summary_visible": true,
+        "unaligned_marker_visible": true
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-loongarch64.log",
+          "bytes": 23996,
+          "sha256": "837af8175a3c4e29cd7c73ccfd2990db844796c66d4e96147efb681637913b3b"
+        },
+        "exit": 0,
+        "summary": "1/1",
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/loongarch64-2cef6047db.elf",
+          "bytes": 259524336,
+          "sha256": "d802365cdaaf6757ad171f4d946c05946b12f0aa7d0f9f6654ff34dd790a0d7b"
+        },
+        "assertion_summary_visible": false,
+        "unaligned_marker_visible": false
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-aarch64.log",
+          "bytes": 89348,
+          "sha256": "ef84b1468a7a3dea3b48c84b54e2f4655a5edb677cb8abd1272c30cd709fff49"
+        },
+        "exit": 0,
+        "summary": "1/1",
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/aarch64-2cef6047db.elf",
+          "bytes": 230289856,
+          "sha256": "d22f5aff6d175dd1b78763f90034e8f9a8016adbf05761ecdf63323bef1ecb79"
+        },
+        "assertion_summary_visible": true,
+        "unaligned_marker_visible": true
+      }
+    },
+    "clippy": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-clippy.log",
+        "bytes": 78885,
+        "sha256": "71c4700f523804a564808998a4a33716dae41db9cbcf76fdf2d6e4c655280913"
+      },
+      "checks": 83,
+      "failed": 0,
+      "skipped": 0
+    },
+    "std": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-std.log",
+        "bytes": 38591,
+        "sha256": "eec51eb81d043924e650d33f994c856c4e899585f0a353bc1140e40173ed6979"
+      },
+      "packages": 1,
+      "exit": 0,
+      "limit": "Host Kernel profile does not replace the four actual target loader executions."
+    },
+    "format": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-format.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "exit": 0,
+      "commands": [
+        "cargo fmt",
+        "rustfmt --edition 2024 os/StarryOS/kernel/src/mm/loader.rs",
+        "cargo fmt --check",
+        "rustfmt --edition 2024 --check os/StarryOS/kernel/src/mm/loader.rs"
+      ]
+    },
+    "ownership": "ElfImage owns a u64-aligned 4096-byte header allocation; only actual read bytes are parsed. Valid aligned in-buffer tables keep the existing direct path. Other tables use bounded aligned staging; builder copies the program headers before staging is dropped. Recovering a script copies only its original read bytes.",
+    "initial_compile_failure": {
+      "source": "c45dc0d94e09caec8a2799b17f9b5c66bfdc922e",
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-initial-clippy.log",
+        "bytes": 2089,
+        "sha256": "6214956be74ad248d9e28e1bff00b8e1763013e2fc82ba9216a54a1d9146bc5f"
+      },
+      "loader": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-initial-loader.rs",
+        "bytes": 41548,
+        "sha256": "7babe7a935dbe6d73a10190475ca35a4e095ec5719b30ea265b9141c62670f7a"
+      },
+      "exit": 1,
+      "cause": "Generic read_at consumes the mutable-slice value; corrected by an explicit mutable reborrow. No std or QEMU ran from this intermediate source."
+    },
+    "initial_linux_environment_failure": {
+      "c": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-linux-without-userns.c",
+        "bytes": 32410,
+        "sha256": "04f4c4009c05c56f6f6dafb9a41c9bf8deb0b1e8c4b5c41ed24a6332edd6357b"
+      },
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-program-table-linux-without-userns.log",
+        "bytes": 45842,
+        "sha256": "aa1b3daea5d94a799103879f9697d25cfe3433640eb256b7b5d0069b038add8d"
+      },
+      "exit": 1,
+      "cause": "The existing mounted-proc-view scenario requires isolated mount authority; first direct host invocation lacked it. Final run used unshare --user --map-root-user --mount --fork and kept all assertions."
+    },
+    "counts": {
+      "system_programs_added": 0,
+      "default_boots_added": 0,
+      "host_tests_added": 0,
+      "manual_qemu_boots": 5,
+      "same_c_inputs": "main/interpreter invalid entry size, zero/oversize count, range overflow and short read; both raw exec APIs; same-inode writer recovery; legal table at offset 65 executes native exit code."
+    },
+    "remaining": "Class/data ABI policy, other segment arithmetic, PHDR auxiliary-vector behavior when the table is not mapped, PT_INTERP NUL padding, interpreter late failure protocol, independent domain review, performance and final-head CI remain."
+  },
+  "ci_d09445de51_cached_open_terminal": {
+    "recorded_at": "2026-11-18T10:32:32.299677+00:00",
+    "ci_head": "d09445de51cb714f498aa210df77e7d6f0e738b3",
+    "snapshot": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-terminal.json",
+      "bytes": 18794,
+      "sha256": "9d5a87a5cb5b0b92cef037711ee5dd7573c35ed5f59d9ee04fc60c6cfe4580c1"
+    },
+    "counts": {
+      "SUCCESS": 44,
+      "SKIPPED": 5
+    },
+    "runs": {
+      "44278790861": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-run-44278790861.json",
+        "bytes": 12690,
+        "sha256": "7ae8bf11554bd618bbd2a3f4f1ec1a403a8830732fb32c849ed3ca414927fee4"
+      },
+      "44278799692": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-run-44278799692.json",
+        "bytes": 12677,
+        "sha256": "c436e0c91e19ee836af5976c433c4c0e5527186e1070f472dd4540eec55f297b"
+      }
+    },
+    "duplicate_skips": "All five skipped checks belong to the successful same-head pull_request wrapper; push matrix actually ran.",
+    "external_checks": [
+      {
+        "name": "artifact.ci",
+        "url": "https://artifact.ci",
+        "conclusion": "SUCCESS"
+      }
+    ],
+    "std": {
+      "packages": 88,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-std.log",
+        "bytes": 1091887,
+        "sha256": "7262fd6658ac37a8a4d09f53875aae310b55163348f0e135d5214605586c86c1"
+      },
+      "stop_and_dac_profiles_passed": 2
+    },
+    "clippy": {
+      "packages": 5,
+      "checks": 133,
+      "failed": 0,
+      "skipped": 0,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-clippy.log",
+        "bytes": 400382,
+        "sha256": "741f86af2971af7e91b136ccfd7a171af046a0155dacb6beb3321836c6ba2028"
+      }
+    },
+    "starry": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-starry-x86_64.log",
+          "bytes": 2303662,
+          "sha256": "1ebe05b9c1feac7d53a91a6d28d4648d666a3eb614304276e663214c4e19792f"
+        },
+        "system_summaries": [
+          [
+            1,
+            1,
+            0
+          ],
+          [
+            541,
+            541,
+            0
+          ]
+        ]
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-starry-riscv64.log",
+          "bytes": 2166032,
+          "sha256": "0696c12a4f740317fb2ef701b95e8cc4c92e1a55df742f02e5f36a1c981e9cbe"
+        },
+        "system_summaries": [
+          [
+            538,
+            538,
+            0
+          ]
+        ]
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-starry-loongarch64.log",
+          "bytes": 876637,
+          "sha256": "e3a632dfc8ec4b9fe340d4913486dda4fc53bb4c7025167f33b0ac1c68e47771"
+        },
+        "system_summaries": [
+          [
+            538,
+            538,
+            0
+          ]
+        ]
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-starry-aarch64.log",
+          "bytes": 2199825,
+          "sha256": "f7d3491902f26c32d0fed223bf8106b55cb6cbd8c90bd21280dfc2b1da0d0d66"
+        },
+        "system_summaries": [
+          [
+            513,
+            513,
+            0
+          ],
+          [
+            23,
+            23,
+            0
+          ],
+          [
+            1,
+            1,
+            0
+          ],
+          [
+            1,
+            1,
+            0
+          ]
+        ]
+      }
+    },
+    "axvisor_loongarch64": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-axvisor-loongarch64.log",
+        "bytes": 212921,
+        "sha256": "a89a05d13a1f183ee55a1de186b1a280b215e37504374de58fb5dce93f513031"
+      },
+      "summary": "1/1"
+    },
+    "board": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-d09445de51-axvisor-orangepi-uvc.log",
+        "bytes": 396063,
+        "sha256": "07845dadcc2704e50904f7e494c1cdeaef4cc3fa22a698f196f927bfa9d61622"
+      },
+      "allocations": [
+        "OrangePi-5-Plus-1",
+        "OrangePi-5-Plus-3",
+        "OrangePi-5-Plus-3",
+        "OrangePi-5-Plus-2"
+      ],
+      "shell_ready_count": 4,
+      "applications": [
+        {
+          "board_id": "OrangePi-5-Plus-1",
+          "target": "native Starry",
+          "effective_fps": 29.84,
+          "loopback_tx": 401,
+          "loopback_errors": 0
+        },
+        {
+          "board_id": "OrangePi-5-Plus-3",
+          "target": "Axvisor Linux",
+          "effective_fps": 29.87,
+          "loopback_tx": 402,
+          "loopback_errors": 0
+        },
+        {
+          "board_id": "OrangePi-5-Plus-2",
+          "target": "Axvisor Starry",
+          "effective_fps": 29.88,
+          "loopback_tx": 401,
+          "loopback_errors": 0
+        }
+      ]
+    },
+    "equivalence": "CACHED final C and all four production files plus ax-block test are byte-identical to current source 2cef6047db.",
+    "scope": "Proves the published cached-writer and component-test input on the full matrix. It does not include the later 2cef6047db program-header implementation or its 366-assertion C. Older board1 prompt timeout and earlier LoongArch stalls remain unexplained."
   }
 }
