@@ -16,4 +16,3 @@ mbarrier.workspace = true
 mmio-api.workspace = true
 rdif-eth.workspace = true
 thiserror.workspace = true
-

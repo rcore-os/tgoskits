@@ -1778,7 +1778,6 @@ dependencies = [
  "ax-hal",
  "ax-memory-addr",
  "ax-memory-set",
- "ax-percpu",
  "ax-plat",
  "ax-runtime",
  "ax-std",

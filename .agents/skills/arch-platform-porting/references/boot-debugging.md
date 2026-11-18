@@ -540,6 +540,13 @@ ARM 的 `prepare_vcpu` 在 CPU pin 前失效并 disarm 旧等待，退休物理
 `finish_exit` 执行；DBCn 使用受控客户机内存复制及规范允许的部分传输，
 不在硬件绑定内按客户机长度分配缓冲区。
 
+AxVM 的 `vcpu_runtime` 在 `Jumping to main entry point` 后没有运行时输出时，
+检查 Cargo 实际解析的 `cpu-local` 特性。`dev-dependencies` 也会参与内核测试
+构建，不能在那里无条件启用 `ax-percpu/host-test`，否则 AArch64 的真实 CPU
+寄存器后端会被线程局部存储模拟替换。宿主测试已经由 `axvm/host-test` 经
+`ax-std/host-test` 传递同一能力；内核测试保持真实寄存器路径。复用原双 vCPU
+测例验证重置、定向中断、宿主调度策略和完整套件结果，不延长超时掩盖启动失败。
+
 ## QEMU 调试模式
 
 ### 测试资产 prebuild 的 system emulator
