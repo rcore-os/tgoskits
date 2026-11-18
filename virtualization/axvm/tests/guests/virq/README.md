@@ -48,16 +48,19 @@ flowchart TD
 | --- | --- | --- |
 | `ZEPHYR_REVISION` | `32229d0b6cc60a1906307311b8e79ec483ad1e88` | 客户机源码唯一来源，校验失败即中止 |
 | `TOOLCHAIN_ARCHIVE_URL` | ARM GNU-A `10.3-2021.07` 交叉工具链 | 与旧流程一致的编译器；`CROSS_COMPILE` 必须是绝对前缀 |
+| `TOOLCHAIN_ARCHIVE_SHA256` | `6f74b1ee370caeb716688d2e467e5b44727fdc0ed56023fe5c72c0620019ecef` | 下载与复用归档前的默认 SHA-256 校验值 |
 | `PINNED_PYTHON_PACKAGES` | `cmake==4.4.3`、`ninja==1.13.2`、`pyelftools==0.33`、`PyYAML==6.0.3`、`packaging==26.3`、`pykwalify==1.8.0` | CMake/Ninja、ELF 解析与 Zephyr 板级 YAML 校验依赖 |
 | `BOARD` | `qemu_cortex_a53/qemu_cortex_a53/smp` | Zephyr 双核板级定义 |
 | `MAILBOX_SYMBOL`、`MAILBOX_SIZE` | `virq_mailbox`、20 字节 | ELF 符号校验对象；大小不符即中止 |
 
-`VIRQ_CACHE_DIR` 可把缓存移到共享位置，缓存内部分为 `zephyr`、`toolchain`、`venv` 三项，`VIRQ_TOOLCHAIN_SHA256` 可在需要时校验工具链压缩包摘要。源码校验要求检出提交等于 `ZEPHYR_REVISION` 且工作树无改动，避免“用了别人的分支”这种无法复现的输入。
+`VIRQ_CACHE_DIR` 可把缓存移到共享位置，缓存内部分为 `zephyr`、`toolchain`、`venv` 三项；工具链归档默认按 `TOOLCHAIN_ARCHIVE_SHA256` 校验，非空 `VIRQ_TOOLCHAIN_SHA256` 可覆盖预期摘要，十六进制字母不区分大小写。源码校验要求检出提交等于 `ZEPHYR_REVISION` 且工作树无改动，避免“用了别人的分支”这种无法复现的输入。
 
 `TOOLCHAIN_ARCHIVE_URL` 直接使用 `armkeil.blob.core.windows.net` 上的固定归档，
 该存储路径也用于 [Arm 的工具链安装文档](https://documentation-service.arm.com/static/685d474547e98523f168f3ab)。
 原 `developer.arm.com/-/media` 下载入口持续返回 HTTP 503 时，冷缓存准备会在编译前失败。
 归档名和解包目录保持不变，已有工具链仍由 `install_toolchain()` 直接复用。
+
+需要解包时，`install_toolchain()` 先校验缓存归档，删除摘要不符的文件后重新下载。`curl` 对包括空响应在内的传输错误最多重试 3 次，下载写入缓存同目录的临时文件，只有摘要匹配后才原子替换最终归档；下载或校验失败会清理临时文件并报错，避免后续运行反复解包残缺归档。有效归档可直接解包，无需再次访问网络。
 
 ### 2.2 产物与校验
 
