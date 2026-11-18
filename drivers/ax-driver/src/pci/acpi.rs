@@ -30,6 +30,9 @@ crate::model_register!(
 );
 
 fn probe_acpi_ecam(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
+    if !super::has_pci_endpoint_drivers() {
+        return Err(OnProbeError::NotMatch);
+    }
     let (info, plat_dev) = probe.into_parts();
     let mut registered = false;
     for region in info.root.pci_ecam_regions() {
@@ -38,16 +41,38 @@ fn probe_acpi_ecam(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
             crate::binding_resolver::dma_coherency_from_acpi_cca(region.dma_coherent)?,
             dma_api::DmaCoherency::Coherent
         );
-        super::register_ecam_controller(
+        let base = usize::try_from(region.base_address).map_err(|_| {
+            OnProbeError::other("ACPI PCI configuration address exceeds pointer width")
+        })?;
+        let driver = pcie::PcieGeneric::new_with_layout(
+            base,
+            region.size(),
+            region.layout,
+            axklib::mmio::op(),
+        )
+        .map_err(|error| {
+            OnProbeError::other(format!(
+                "failed to map ACPI PCI configuration window: {error}"
+            ))
+        })?;
+        super::register_config_controller(
             PlatformDevice {
                 descriptor: plat_dev.descriptor.clone(),
             },
-            region.base_address as usize,
-            region.size(),
+            pcie::PcieController::new(driver),
             None,
             None,
             dma_coherent,
-        )?;
+        );
+        log::info!(
+            "registered ACPI PCI configuration window: segment={} buses={}..={} base={:#x} \
+             layout={:?}",
+            region.segment_group,
+            region.bus_start,
+            region.bus_end,
+            region.base_address,
+            region.layout,
+        );
         registered = true;
     }
 

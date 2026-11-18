@@ -580,7 +580,10 @@ AArch64 内核 axtest `lazy_mm_failed_notification_retries_on_the_production_rec
 真实 `MmHandle::scheduler_address_space()` 与 user-context 任务实际安装页表，然后切换到
 同 CPU 的 kernel-lazy 任务。按 MM/CPU 限定的故障注入仅使首次 lazy 通知返回 `Timeout`，
 不改变普通调度和串口 IPI。目标用 250 ms 硬截止的 IRQ 关闭握手保留现场，恢复 IRQ 后的禁抢占观察最多 100 ms；
-正常路径观察到自主重试后立即解除握手，不用固定时长忙等作为成功条件。
+`release_user_ref()` 入队后，回收线程可能先取得通知资格，再在实际发送前被调度出去；
+协调者因此先在原 IRQ 关闭窗口内有界等待首次通知尝试，再检查活动 MM 仍被保留，
+不能把释放用户引用返回视为首次通知已经尝试。正常路径观察到自主重试后立即解除握手，
+不用固定时长忙等作为成功条件。
 纯状态机用例 `notification_backoff_bounds_traffic_without_abandoning_retries()` 使用受控时间
 验证到期边界、倍增、封顶后持续重试及 MM 之间互不延迟。协调者不再次调用
 request/retry/reap，而由固定在另一 CPU、运行同一 `run_reclaimer()` 的可停止工作线程

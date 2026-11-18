@@ -161,20 +161,44 @@ cases = ["smoke"]
 [[check]]
 id = "test-axvisor-loongarch64-qemu"
 impact_targets = ["axvisor:loongarch64"]
-name = "QEMU loongarch64 · Suites"
+name = "QEMU loongarch64 · Linux, IOCSR and timers"
 runner = "ubuntu-axvisor-lvz"
 cache_key = "test-axvisor-loongarch64"
 download_xtask_bin_artifact = true
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
+echo "==> axvm loongarch64 guest timer ownership"
+output="$(target/debug/tg-xtask cross-test --arch loongarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib guest_csr 2>&1)" || {
+  printf '%s\n' "$output"
+  exit 1
+}
+printf '%s\n' "$output"
+printf '%s\n' "$output" | grep -Eq 'test result: ok\. [1-9][0-9]* passed;' || {
+  echo "guest timer filter matched no passing test" >&2
+  exit 1
+}
+echo "==> axvisor loongarch64 Linux guests"
 target/debug/tg-xtask axvisor test qemu --arch loongarch64
+echo "==> axvm loongarch64 IOCSR isolation axtest"
+target/debug/tg-xtask ktest qemu --package axvm-kernel-tests --test loongarch_iocsr --arch loongarch64 \
+  --config virtualization/test_crates/axvm-kernel-tests/build-loongarch64-unknown-none-softfloat.toml \
+  --qemu-config virtualization/test_crates/axvm-kernel-tests/qemu-loongarch64.toml
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "loongarch64"
 cases = ["smoke"]
+
+[[check.suite]]
+kind = "ktest-qemu"
+package = "axvm-kernel-tests"
+test = "loongarch_iocsr"
+arch = "loongarch64"
+config = "virtualization/test_crates/axvm-kernel-tests/build-loongarch64-unknown-none-softfloat.toml"
+qemu_config = "virtualization/test_crates/axvm-kernel-tests/qemu-loongarch64.toml"
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-svm"
@@ -285,6 +309,22 @@ cargo xtask axvisor test board --test-group normal --test-case functional --boar
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-triple-guest-functional"
+
+[[check]]
+id = "test-axvisor-self-hosted-board-loongson-3a6000-ll-linux"
+impact_targets = ["axvisor:loongarch64"]
+name = "Board Loongson-3A6000-LL · Linux guest"
+runner = "board"
+timeout_minutes = 90
+cache_key = ""
+command = '''
+cargo xtask axvisor test board --board loongson-3a6000-ll --test-case smoke
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "loongson-3a6000-ll"
+cases = ["smoke"]
 
 [[check]]
 id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"

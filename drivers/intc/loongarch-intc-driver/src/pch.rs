@@ -24,10 +24,20 @@ register_structs! {
         (0x008 => _reserved0),
         (0x020 => mask: [ReadWrite<u32>; 2]),
         (0x028 => _reserved1),
+        (0x040 => htmsi_enable: [ReadWrite<u32>; 2]),
+        (0x048 => _reserved2),
         (0x060 => edge: [ReadWrite<u32>; 2]),
-        (0x068 => _reserved2),
+        (0x068 => _reserved3),
+        (0x080 => clear: [ReadWrite<u32>; 2]),
+        (0x088 => _reserved4),
+        (0x0c0 => auto0: [ReadWrite<u32>; 2]),
+        (0x0c8 => _reserved5),
+        (0x0e0 => auto1: [ReadWrite<u32>; 2]),
+        (0x0e8 => _reserved6),
+        (0x100 => route: [ReadWrite<u8>; MAX_PCH_INPUTS]),
+        (0x140 => _reserved7),
         (0x200 => htvec: [ReadWrite<u8>; MAX_PCH_INPUTS]),
-        (0x240 => _reserved3),
+        (0x240 => _reserved8),
         (0x3e0 => polarity: [ReadWrite<u32>; 2]),
         (0x3e8 => @END),
     }
@@ -236,6 +246,9 @@ impl PchPicController {
             self.write_vector(input)?;
         }
         let (register, bit) = pch_register_bit(input);
+        if enabled {
+            self.registers().clear[register].set(bit);
+        }
         let mask = self.registers().mask[register].get();
         self.registers().mask[register].set(if enabled { mask & !bit } else { mask | bit });
         Ok(())
@@ -249,11 +262,20 @@ impl PchPicController {
 
     fn initialize(&self) {
         let registers = self.registers();
-        for edge in &registers.edge {
-            edge.set(0);
+        for bank in 0..2 {
+            registers.mask[bank].set(u32::MAX);
+            registers.clear[bank].set(u32::MAX);
+            registers.edge[bank].set(0);
+            registers.polarity[bank].set(0);
+            registers.auto0[bank].set(0);
+            registers.auto1[bank].set(0);
+            // Native PCI INTx must be transformed into HT messages before
+            // the EIOINTC can observe the selected external vector.
+            registers.htmsi_enable[bank].set(u32::MAX);
         }
-        for polarity in &registers.polarity {
-            polarity.set(0);
+        for input in 0..self.config.input_count {
+            registers.route[input].set(1); // HT0 low route, as on LS7A Linux.
+            registers.htvec[input].set((self.config.base_vector + input) as u8);
         }
     }
 

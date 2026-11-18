@@ -23,6 +23,11 @@ unsafe extern "C" {
 /// binding and must never be restored from the bind-time snapshot.
 const ECFG_VS_MASK: usize = 0x70000;
 
+// The paged host entry contract: PLV0, IRQ-off, coherent instruction/data
+// access and Watch disabled. Refill itself returns through the hardware ERTN.
+const HOST_CRMD_RETURN_MASK: usize = 0x3ff;
+const HOST_CRMD_RETURN_STATE: usize = 0xb0;
+
 /// Running addresses of the three LVZ entries.
 ///
 /// The owner translates each address into its executable direct-map alias
@@ -39,30 +44,41 @@ pub fn entry_addresses() -> [VirtAddr; 3] {
 #[derive(Clone, Copy, Debug)]
 pub struct EntryAddresses {
     run: usize,
-    refill: usize,
+    refill_phys: PhysAddr,
     vectors: usize,
 }
 
 impl EntryAddresses {
-    /// Installs direct-map aliases corresponding to [`entry_addresses`].
+    /// Installs executable aliases and the physical root refill vector.
     ///
     /// # Safety
     /// Each address must refer to the corresponding CPU entry, remain executable
     /// in direct-address mode, and stay valid throughout every associated binding.
-    pub unsafe fn new(addresses: [VirtAddr; 3]) -> Result<Self, VirtualizationError> {
+    /// `refill_phys` must be the host memory owner's valid `virt_to_phys`
+    /// translation of the original, currently loaded refill symbol returned by
+    /// [`entry_addresses`]. It must name the same retained code as the refill
+    /// alias and lie in this CPU's physically reachable loaded memory.
+    pub unsafe fn new(
+        addresses: [VirtAddr; 3],
+        refill_phys: PhysAddr,
+    ) -> Result<Self, VirtualizationError> {
         let [run, refill, vectors] = addresses.map(VirtAddr::as_usize);
-        if refill & 4095 != 0 || vectors & 4095 != 0 || run & 3 != 0 {
+        if refill & 4095 != 0
+            || refill_phys.as_usize() & 4095 != 0
+            || vectors & 4095 != 0
+            || run & 3 != 0
+        {
             return Err(VirtualizationError::InvalidVector);
         }
         Ok(Self {
             run,
-            refill,
+            refill_phys,
             vectors,
         })
     }
 }
 
-/// The vector class that returned control to the host.
+/// The exit class determined from the saved host exception state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExitKind {
     /// Synchronous exception, hypercall or nested translation fault.
@@ -74,11 +90,11 @@ pub enum ExitKind {
 /// Machine exit information copied before host dispatch can change CSRs.
 #[derive(Clone, Copy, Debug)]
 pub struct Exit {
-    /// Vector class selected by entry assembly.
+    /// Exit class determined from saved host TLBRERA and ESTAT.
     pub kind: ExitKind,
     /// Saved host ESTAT, including exception and interrupt status.
     pub status: usize,
-    /// Saved faulting instruction.
+    /// Raw saved host BADI; it does not identify the current instruction on IRQ exits.
     pub instruction: usize,
     /// Saved faulting guest PC.
     pub pc: usize,
@@ -198,7 +214,7 @@ impl Vcpu {
             // remaining host interrupt fields stay live for the whole binding.
             self.context.host_ecfg = read::<4>();
         }
-        self.context.guest_tlbrentry = entries.refill;
+        self.context.guest_tlbrentry = entries.refill_phys.as_usize();
         self.context.guest_eentry = entries.vectors;
         self.entry = entries.run;
         // SAFETY: this binding owns the local bank; physical IRQ passthrough
@@ -208,6 +224,10 @@ impl Vcpu {
     }
 
     /// Enters the selected guest and restores the host translation before returning.
+    ///
+    /// The live host must use paged PLV0 with IRQs and Watch disabled and
+    /// DATF/DATM both set to 01; other modes return
+    /// [`VirtualizationError::UnsupportedHostState`] without entering the guest.
     ///
     /// # Safety
     /// The binding contract must still hold, the guest ID must be unique among
@@ -223,9 +243,12 @@ impl Vcpu {
             return Err(VirtualizationError::NotEnabled);
         }
         // SAFETY: the live binding excludes concurrent CSR access and migration.
-        let kind = unsafe {
+        unsafe {
+            let crmd = read::<0>();
+            if crmd & HOST_CRMD_RETURN_MASK != HOST_CRMD_RETURN_STATE {
+                return Err(VirtualizationError::UnsupportedHostState { crmd });
+            }
             update::<0x50>(0xff0004, ((guest_id as usize) << 16) | 4);
-            update::<0x15>(0xff1000, ((guest_id as usize) << 16) | 0x1000);
             // Preserve the existing LVZ interception configuration: guest CSR,
             // CPUCFG and IOCSR traps are handled by the VM owner after exit.
             update::<0x51>(
@@ -240,14 +263,20 @@ impl Vcpu {
                 (1 << 4) | (2 << 20),
             );
             super::invalidate_guest_translations();
-            run_guest(state_address.as_usize() as *mut core::ffi::c_void)
-        };
+            self.context.update_timer();
+            run_guest(state_address.as_usize() as *mut core::ffi::c_void);
+        }
+        // IsTLBR is cleared before entry and saved on exit, so it identifies a
+        // refill fault from this run even when ESTAT still describes an old exit.
+        // Pending interrupts must not override a synchronous exception's ECODE.
+        let kind =
+            if self.context.host_tlbrera & 1 != 0 || (self.context.host_estat >> 16) & 0x3f != 0 {
+                ExitKind::Synchronous
+            } else {
+                ExitKind::Irq
+            };
         Ok(Exit {
-            kind: match kind {
-                0 => ExitKind::Synchronous,
-                1 => ExitKind::Irq,
-                _ => unreachable!("LVZ entry returned an invalid vector class"),
-            },
+            kind,
             status: self.context.host_estat,
             instruction: self.context.host_badi,
             pc: self.context.guest_exception_pc(),
@@ -300,7 +329,7 @@ unsafe fn update<const CSR: u16>(mask: usize, value: usize) {
 }
 
 #[unsafe(naked)]
-unsafe extern "C" fn run_guest(_vcpu: *mut core::ffi::c_void) -> usize {
+unsafe extern "C" fn run_guest(_vcpu: *mut core::ffi::c_void) {
     core::arch::naked_asm!(
         "addi.d $sp, $sp, -14 * 8",
         "st.d $ra, $sp, 0",

@@ -64,14 +64,10 @@ impl LoongArch64Arch {
         let ports = vm.device_access_ports();
         vm.prepare_resources_with(|resources, config| {
             let placements = resources.vcpu_placements(config);
-            let state_count = placements
-                .iter()
-                .map(|placement| placement.id)
-                .max()
-                .map_or(0, |vcpu_id| vcpu_id + 1);
-            let iocsr_state =
-                loongarch_result(super::policy::LoongArchIocsrState::new(state_count))
-                    .map_err(|error| AxVmError::vcpu("create LoongArch IOCSR state", error))?;
+            let state_ids: std::vec::Vec<_> =
+                placements.iter().map(|placement| placement.id).collect();
+            let iocsr_state = loongarch_result(super::policy::LoongArchIocsrState::new(&state_ids))
+                .map_err(|error| AxVmError::vcpu("create LoongArch IOCSR state", error))?;
             let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
             let firmware_boot = uses_firmware_boot(config);
             let boot_args = direct_boot_args(firmware_boot);

@@ -390,6 +390,7 @@ fn route_to_irq_framework(route: AcpiGsiRoute) -> irq_framework::AcpiGsiRoute {
         controller: match route.controller {
             rdif_intc::AcpiGsiController::IoApic => irq_framework::AcpiGsiController::IoApic,
             rdif_intc::AcpiGsiController::PchPic => irq_framework::AcpiGsiController::PchPic,
+            rdif_intc::AcpiGsiController::LioPic => irq_framework::AcpiGsiController::LioPic,
         },
         controller_id: route.controller_id,
         controller_address: route.controller_address,
@@ -412,6 +413,7 @@ fn route_to_rdif(route: irq_framework::AcpiGsiRoute) -> AcpiGsiRoute {
         controller: match route.controller {
             irq_framework::AcpiGsiController::IoApic => rdif_intc::AcpiGsiController::IoApic,
             irq_framework::AcpiGsiController::PchPic => rdif_intc::AcpiGsiController::PchPic,
+            irq_framework::AcpiGsiController::LioPic => rdif_intc::AcpiGsiController::LioPic,
         },
         controller_id: route.controller_id,
         controller_address: route.controller_address,

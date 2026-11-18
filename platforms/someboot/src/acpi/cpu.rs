@@ -159,8 +159,9 @@ mod x86_64_impl {
     pub fn x86_64_cpu_info() -> Option<impl Iterator<Item = CpuInfo>> {
         let tables = tables().ok()?;
         let madt_mapping = tables.find_table::<Madt>()?;
-        let madt_ptr = madt_mapping.virtual_start.as_ptr() as *const u8;
-        let madt_len = madt_mapping.region_length;
+        // SAFETY: The iterator retains the mapping for every access to its bytes.
+        let madt_ptr = unsafe { madt_mapping.as_ptr().cast::<u8>() };
+        let madt_len = madt_mapping.raw().region_length();
 
         non_empty_cpu_info_iter(X86CpuIter {
             _madt_mapping: madt_mapping,
@@ -258,8 +259,9 @@ mod aarch64_impl {
     pub fn aarch64_cpu_info() -> Option<impl Iterator<Item = CpuInfo>> {
         let tables = tables().ok()?;
         let madt_mapping = tables.find_table::<Madt>()?;
-        let madt_ptr = madt_mapping.virtual_start.as_ptr() as *const u8;
-        let madt_len = madt_mapping.region_length;
+        // SAFETY: The iterator retains the mapping for every access to its bytes.
+        let madt_ptr = unsafe { madt_mapping.as_ptr().cast::<u8>() };
+        let madt_len = madt_mapping.raw().region_length();
 
         non_empty_cpu_info_iter(Aarch64CpuIter {
             _madt_mapping: madt_mapping,
@@ -404,8 +406,9 @@ mod riscv64_impl {
     pub fn riscv64_cpu_info() -> Option<impl Iterator<Item = CpuInfo>> {
         let tables = tables().ok()?;
         let madt_mapping = tables.find_table::<Madt>()?;
-        let madt_ptr = madt_mapping.virtual_start.as_ptr() as *const u8;
-        let madt_len = madt_mapping.region_length;
+        // SAFETY: The iterator retains the mapping for every access to its bytes.
+        let madt_ptr = unsafe { madt_mapping.as_ptr().cast::<u8>() };
+        let madt_len = madt_mapping.raw().region_length();
 
         non_empty_cpu_info_iter(Riscv64CpuIter {
             _madt_mapping: madt_mapping,
@@ -526,8 +529,9 @@ mod loongarch64_impl {
     pub fn loongarch64_cpu_info() -> Option<impl Iterator<Item = CpuInfo>> {
         let tables = tables().ok()?;
         let madt_mapping = tables.find_table::<Madt>()?;
-        let madt_ptr = madt_mapping.virtual_start.as_ptr() as *const u8;
-        let madt_len = madt_mapping.region_length;
+        // SAFETY: The iterator retains the mapping for every access to its bytes.
+        let madt_ptr = unsafe { madt_mapping.as_ptr().cast::<u8>() };
+        let madt_len = madt_mapping.raw().region_length();
 
         non_empty_cpu_info_iter(LoongArch64CpuIter {
             _madt_mapping: madt_mapping,

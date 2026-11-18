@@ -81,29 +81,44 @@ fn ax_driver_binding_irq_sources_convert_to_framework_sources() {
 
 #[test]
 fn ax_driver_converts_rdif_intc_acpi_routes_without_losing_metadata() {
-    let rdif_route = rdif_intc::AcpiGsiRoute {
-        gsi: 77,
-        vector: 88,
-        controller: rdif_intc::AcpiGsiController::PchPic,
-        controller_id: 2,
-        controller_address: 0x1000,
-        controller_input: 9,
-        trigger: rdif_intc::AcpiIrqTrigger::Edge,
-        polarity: rdif_intc::AcpiIrqPolarity::ActiveHigh,
-    };
+    for (controller, expected) in [
+        (
+            rdif_intc::AcpiGsiController::PchPic,
+            AcpiGsiController::PchPic,
+        ),
+        (
+            rdif_intc::AcpiGsiController::LioPic,
+            AcpiGsiController::LioPic,
+        ),
+    ] {
+        let rdif_route = rdif_intc::AcpiGsiRoute {
+            gsi: 77,
+            vector: 88,
+            controller,
+            controller_id: 2,
+            controller_address: 0x1000,
+            controller_input: 9,
+            trigger: rdif_intc::AcpiIrqTrigger::Edge,
+            polarity: rdif_intc::AcpiIrqPolarity::ActiveHigh,
+        };
 
-    let source = BindingIrqSource::from(rdif_route);
-    let converted = match source.as_irq_source().unwrap() {
-        IrqSource::AcpiGsiRoute(route) => route,
-        _ => panic!("expected route source"),
-    };
-    assert_eq!(converted.gsi, 77);
-    assert_eq!(converted.controller, AcpiGsiController::PchPic);
-    assert_eq!(converted.trigger, AcpiIrqTrigger::Edge);
-    assert_eq!(converted.polarity, AcpiIrqPolarity::ActiveHigh);
+        let source = BindingIrqSource::from(rdif_route);
+        let converted = match source.as_irq_source().unwrap() {
+            IrqSource::AcpiGsiRoute(route) => route,
+            _ => panic!("expected route source"),
+        };
+        assert_eq!(converted.gsi, rdif_route.gsi);
+        assert_eq!(converted.vector, rdif_route.vector);
+        assert_eq!(converted.controller, expected);
+        assert_eq!(converted.controller_id, rdif_route.controller_id);
+        assert_eq!(converted.controller_address, rdif_route.controller_address);
+        assert_eq!(converted.controller_input, rdif_route.controller_input);
+        assert_eq!(converted.trigger, AcpiIrqTrigger::Edge);
+        assert_eq!(converted.polarity, AcpiIrqPolarity::ActiveHigh);
 
-    let info = binding_info_from_acpi_route("mock", Some(rdif_route)).unwrap();
-    assert_eq!(info.irq_cloned(), Some(BindingIrq::Source(source)));
+        let info = binding_info_from_acpi_route("mock", Some(rdif_route)).unwrap();
+        assert_eq!(info.irq_cloned(), Some(BindingIrq::Source(source)));
+    }
 }
 
 #[test]
