@@ -333,9 +333,20 @@ static void cached_links(int rootfd, int file)
     fd = -1;
     expect_open(cached_open(rootfd, "cached-relative/", O_PATH, 0), ENOTDIR,
                 "CACHED link traversal preserves a trailing directory requirement");
+    expect_open(cached_open(rootfd, "cached-relative", O_RDONLY | O_NOFOLLOW, 0),
+                ELOOP, "CACHED ordinary nofollow rejects the final text link");
     fd = cached_open(rootfd, "cached-directory", O_PATH, 0);
     CHECK(fd >= 0 && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode),
           "CACHED follows a directory link with a trailing slash fd=%d errno=%d",
+          fd, errno);
+    close_fd(fd);
+    fd = -1;
+    expect_open(cached_open(rootfd, "cached-directory",
+                            O_PATH | O_NOFOLLOW | O_DIRECTORY, 0), ENOTDIR,
+                "CACHED directory flag does not override final nofollow");
+    fd = cached_open(rootfd, "cached-directory/", O_PATH | O_NOFOLLOW, 0);
+    CHECK(fd >= 0 && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode),
+          "CACHED input trailing slash follows its directory link fd=%d errno=%d",
           fd, errno);
     close_fd(fd);
     fd = -1;
