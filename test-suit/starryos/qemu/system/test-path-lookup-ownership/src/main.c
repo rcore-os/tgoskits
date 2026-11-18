@@ -395,6 +395,48 @@ out:
     close_fd(fd);
 }
 
+static void path_commands(int fd, const char *name)
+{
+    const int denied[] = {
+        F_SETFL, F_SETOWN, F_GETOWN, F_GETPIPE_SZ, F_SETPIPE_SZ,
+        F_GET_SEALS, F_ADD_SEALS, F_GETLK, F_SETLK, F_SETLKW,
+        F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW,
+        F_SETSIG, F_GETSIG, F_SETOWN_EX, F_GETOWN_EX,
+        1035, 1036, 1037, 1038, /* Linux read/write hint commands. */
+        0x7fffffff,
+    };
+    int duplicate = -1, cloexec = -1;
+    int initial = (int)syscall(SYS_fcntl, fd, F_GETFL, 0);
+    int descriptor = (int)syscall(SYS_fcntl, fd, F_GETFD, 0);
+    REQUIRE(initial >= 0 && (initial & O_PATH) && descriptor >= 0);
+    for (size_t i = 0; i < sizeof(denied) / sizeof(denied[0]); i++) {
+        errno = 0;
+        long result = syscall(SYS_fcntl, fd, denied[i], 0);
+        int error = errno;
+        CHECK(result == -1 && error == EBADF,
+              "%s rejects restricted fcntl before arguments cmd=%d result=%ld errno=%d",
+              name, denied[i], result, error);
+    }
+    CHECK(syscall(SYS_fcntl, fd, F_SETFD, descriptor ^ FD_CLOEXEC) == 0
+              && syscall(SYS_fcntl, fd, F_GETFD, 0) == (descriptor ^ FD_CLOEXEC),
+          "%s permits descriptor flag changes", name);
+    duplicate = (int)syscall(SYS_fcntl, fd, F_DUPFD, 0);
+    cloexec = (int)syscall(SYS_fcntl, fd, F_DUPFD_CLOEXEC, 0);
+    CHECK(duplicate >= 0 && cloexec >= 0
+              && syscall(SYS_fcntl, duplicate, F_GETFL, 0) == initial
+              && syscall(SYS_fcntl, cloexec, F_GETFL, 0) == initial
+              && syscall(SYS_fcntl, duplicate, F_GETFD, 0) == 0
+              && syscall(SYS_fcntl, cloexec, F_GETFD, 0) == FD_CLOEXEC,
+          "%s permits both fcntl duplication forms with independent fd flags", name);
+out:
+    if (descriptor >= 0)
+        CHECK(syscall(SYS_fcntl, fd, F_SETFD, descriptor) == 0
+                  && syscall(SYS_fcntl, fd, F_GETFL, 0) == initial,
+              "%s restores fd flags and preserves path status", name);
+    close_fd(cloexec);
+    close_fd(duplicate);
+}
+
 static void description_status(int fd, int independent, const char *name)
 {
     const int mutable = O_APPEND | O_NONBLOCK;
@@ -450,6 +492,7 @@ static void cached_readonly(int rootfd, int original)
           path_status);
     CHECK(syscall(SYS_fcntl, path, F_GETFD, 0) == FD_CLOEXEC,
           "ordinary O_PATH descriptor retains close-on-exec separately");
+    path_commands(path, "ordinary O_PATH file");
     first = cached_open(rootfd, "file", O_RDONLY | O_NONBLOCK | O_CLOEXEC
                         | O_NOCTTY, 0);
     CHECK(first >= 0, "CACHED opens a pinned ordinary reader fd=%d errno=%d",
@@ -506,6 +549,17 @@ out:
             description_status(native, directory, "ordinary directory");
         }
         close_fd(native);
+        int native_path = open_at(rootfd, ".", O_PATH | O_DIRECTORY);
+        int cached_path = cached_open(rootfd, ".", O_PATH | O_DIRECTORY, 0);
+        CHECK(native_path >= 0 && cached_path >= 0,
+              "ordinary/CACHED O_PATH directory fixtures fd=%d/%d",
+              native_path, cached_path);
+        if (native_path >= 0)
+            path_commands(native_path, "ordinary O_PATH directory");
+        if (cached_path >= 0)
+            path_commands(cached_path, "CACHED O_PATH directory");
+        close_fd(cached_path);
+        close_fd(native_path);
     }
     close_fd(directory);
 }
@@ -594,6 +648,16 @@ static void mount_boundary(int rootfd)
           cached, errno);
     if (cached < 0)
         goto out;
+    path_commands(cached, "CACHED O_PATH file");
+    errno = 0;
+    CHECK(syscall(SYS_fcntl, -1, 0x7fffffff, 0) == -1 && errno == EBADF,
+          "fcntl validates a missing descriptor before an unknown command errno=%d", errno);
+    errno = 0;
+    CHECK(syscall(SYS_fcntl, -1, 1035, 0) == -1 && errno == EBADF,
+          "fcntl validates a missing descriptor before hint user memory errno=%d", errno);
+    errno = 0;
+    CHECK(syscall(SYS_fcntl, file, 0x7fffffff, 0) == -1 && errno == EINVAL,
+          "ordinary file keeps unsupported command EINVAL errno=%d", errno);
     cached_readonly(mountfd, file);
     cached_fd_admission(mountfd, cached);
     cached_links(mountfd, file);
