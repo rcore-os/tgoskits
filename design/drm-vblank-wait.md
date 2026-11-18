@@ -74,3 +74,43 @@ Starry 的 `sys_ioctl()` 经 `KapiFile::ioctl()`、`drm_ioctl()` 进入
 off/on/get 路径，精确检查增量 2 及其时间戳；系统测试判据还须拒绝把关闭期间
 100 个周期补入计数的结果。宿主夹具验证共享核心规则，Starry 定向 QEMU 继续
 验证实际 ioctl、计时器、事件边沿与最外层失败传播。
+
+### 2.4 查询与序号起点
+
+查询当前序号使用 `_DRM_VBLANK_RELATIVE` 和零增量；立即事件使用
+`DRM_CRTC_SEQUENCE_RELATIVE` 和零增量。绝对零不是这两个操作的通用写法。
+旧 `WAIT_VBLANK` 先把 32 位绝对值扩展到当前计数附近，事件到期判定还使用
+有限的比较窗口。计数超过窗口或经过 32 位回绕后，绝对零可以成为未来目标，
+也可以留在尚未送达的事件队列中。固定 Linux 的
+[纯查询条件](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L1685)、
+[序号比较](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_internal.h#L109)
+和 `drm_crtc_queue_sequence_ioctl()` 决定这些语义。
+
+系统程序的 `query_vblank()` 与 `queue_immediate_sequence()` 统一构造实际请求，
+保留事件归属、每个打开描述的容量、部分 readv 和错误后事件留队的原有判据。
+`vblank_wait_child()` 通过已有同步管道回传实际等待回复，父进程要求它等于
+禁用事件的冻结序号，时间戳只差旧接口的微秒截断，且尚未经过请求的相对增量。
+禁用后的 `CRTC_GET_SEQUENCE` 本来返回 EINVAL，不能用它取得冻结快照。
+测试不要求绝对序号小于相对增量。受控 C 回放覆盖较小起点、CI 的高计数及 32 位回绕附近，并要求
+把目标序号伪装成完成回复时失败；该回放验证测试本身，不代替真实内核运行。
+
+### 2.5 计时器的时间锚
+
+启用过程可以在定时器已设定截止时间后发布一个较晚的时钟采样。任务定时器
+尚未前推时，`expiry - interval` 可能早于这个采样。若落后超过半个周期，
+`drm_update_vblank_count()` 的无符号时间差和最近整数取整会得到巨量帧数。
+该风险属于本地任务定时器与共享核心的接入边界，不能靠系统测试只接受小计数规避。
+
+`drm_crtc_vblank_get_vblank_timeout()` 在 `interval_lock` 下读取周期，并通过
+`hrtimer_get_expires()` 取得受定时器队列锁保护的截止时间；校验序号快照后，
+返回推导边沿与已发布边沿中的较晚值。锁顺序为 vblank 调用方保护、
+`interval_lock`、定时器队列锁，定时器执行器在运行回调前已释放队列锁。
+没有更晚边沿时保留已发布的实际采样，不推进计数；后续边沿仍按原规则补算。
+这是对任务定时器的适配差异，固定 Linux 的计数算法保持不变。
+
+核心测试 `timer_vblank_preserves_the_published_edge_until_the_next_frame()`
+使用真实 hrtimer 存储及真实时间戳 producer，受控建立周期 4 ms、已发布时间
+3 ms、截止时间 4 ms 的状态。旧实现把推导的 0 ms 与 3 ms 相减，错误得到
+3186109819 个序号；修后保留原边沿，并在截止时间前推后验证真实边沿只计入一次。
+夹具在观察前同步取消计时器以固定交错，不能据此声称验证了真实调度时序；
+系统程序继续负责实际 Starry 定时器、ioctl、等待和事件读取链路。

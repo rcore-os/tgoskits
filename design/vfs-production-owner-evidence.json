@@ -9029,5 +9029,125 @@
     },
     "component_scope": "The existing real MemoryFs lookup integration test now applies CachedLookup to a symlink prefix with an original final-component suffix, verifying one shared 40-link budget and actual final inode identity. No new test case or boot was added.",
     "implementation_scope": "Immutable MemoryFs link text is owned once by FileContent as Arc<str>; the cache capability only tries its original producer lock. CachedLookup owns text path frames and shares SYMLINKS_MAX with ordinary resolution. No ordinary LinkOps/lookup or dynamic display-text fallback is used. Kernel Rust is unchanged; the two changed packages pass nine Clippy selections and the real x86 syscall runs. Symlink atime/mount policy, dynamic object/text producers, ordinary cached opens, native cached metadata, other target runtime and the complete PR remain unfinished."
+  },
+  "vblank_timer_epoch": {
+    "source": "bcfae703e1c925358d5dc58f0a11181faca34fd3",
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "deciding_functions": [
+        "drm_wait_vblank_is_query",
+        "widen_32_to_64",
+        "drm_vblank_passed",
+        "drm_crtc_queue_sequence_ioctl",
+        "drm_crtc_get_sequence_ioctl",
+        "drm_crtc_vblank_get_vblank_timeout"
+      ],
+      "local_timer_adaptation": "Preserve the published edge until expiry minus the locked interval is later; the common Linux frame-count formula is unchanged."
+    },
+    "source_hashes": {
+      "components/kdrm-core/src/drm_vblank_upstream.rs": "e65de71fc0b3936cd7e17f810591ebbd1f32d2e514b1ec32e39700de0806d317",
+      "test-suit/starryos/qemu/system/drm-test-drm-modeset/src/main.c": "faf7a83be7c6cbb609a7d68af5da116365c5eb877805ac5a1e9086b292584ff8"
+    },
+    "core_regression": {
+      "before_source": "866ca1cdc21f183d60b07ec54d6d855562794b83",
+      "test_module_byte_identical": true,
+      "frame_ns": 4000000,
+      "published_ns": 3000000,
+      "expiry_ns": 4000000,
+      "old_count": 3186109819,
+      "required_count": 0,
+      "subsequent_edge_counts_once": true,
+      "before": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-sequence-std-final-before.log",
+        "sha256": "65edf49599317e35a5cb9d0eb08d6adc09568cfa5663444eb51abe13a0721942",
+        "outer_exit": 1
+      },
+      "after": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-sequence-std-final-after.log",
+        "sha256": "2e6bbe47a28969232733a9be25303d981f94868d87ecec99005cd6262d434646",
+        "outer_exit": 0
+      },
+      "scope": "Real timer storage and timestamp producer, serialized by cancelling the callback before observation; this component proof does not replace real scheduling evidence."
+    },
+    "system_oracle": {
+      "before_source": "f99c6c8011e399aa1c75bccc0373da7e28d77678",
+      "input_c": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-sequence-replay-before-main.c",
+      "input_c_sha256": "e90dd36b0291cd9bee94b82080aba3903a14388f0d7791c12d3ed84bfae98c33",
+      "harness": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-sequence-request-oracle.c",
+      "harness_sha256": "9441bd09ebe5574dbf998629e4250ca899fd92a65e2fd8dfe2b27df708aefda7",
+      "only_harness_difference_is_included_test_source": true,
+      "counter_origins": [
+        37,
+        2234328706,
+        4294967293
+      ],
+      "before_failures": 6,
+      "rejects_target_as_completed_reply": true,
+      "before": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-sequence-request-final-before.log",
+        "sha256": "48dc0b4167024e02f5a4e323f7a3114fbfb6fd118282f95fce76bca7faeb066d",
+        "outer_exit": 1
+      },
+      "after": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-sequence-request-final-after.log",
+        "sha256": "1a5dac9a74d80ee8ceb59ea489d65f6030591fa1685ae3d733444fbbfcf37861",
+        "outer_exit": 0
+      },
+      "scope": "Executes actual C request constructors and waiter against a controlled Linux-source model, not a native Linux DRM runtime."
+    },
+    "loongarch64": {
+      "case": "qemu/system/drm-test-drm-modeset",
+      "programs_passed": 1,
+      "before_normal_run": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-sequence-before.log",
+        "sha256": "096846562a1499418f38da9eedd8014af4e352ae636575fb293dbc1588a8a79e",
+        "outer_exit": 0
+      },
+      "before_is_not_a_deterministic_reproduction": true,
+      "after": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-sequence-after.log",
+        "sha256": "dbff3e0e0e9a3f62f1a1e3e9d7206bbadf448c8fc7c84e3308cb4eb8aa23dbfd",
+        "outer_exit": 0
+      },
+      "elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/loongarch64-bcfae703e1.elf",
+        "sha256": "243b30bfe33c9ac175e47fa85e69b16e55f426bcf34f560ad06553499b2ff9cc"
+      }
+    },
+    "validation": {
+      "std_packages": 3,
+      "core_unit_tests": 119,
+      "clippy": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/drm-sequence-clippy-final.log",
+        "sha256": "249a76ee5d99e2a6864a5a0d11fc4794432bbb491b6b8c0a25b0c8db68001c49",
+        "outer_exit": 0
+      },
+      "clippy_checks": 4,
+      "format_exit": 0
+    },
+    "test_organization": {
+      "new_component_tests": 1,
+      "new_system_programs": 0,
+      "new_default_boots": 0
+    },
+    "preserved_failed_attempts": {
+      "insufficient_negative_window": "drm-sequence-std-insufficient-negative-window.log: a quarter-frame lag rounds to zero and does not reproduce the error.",
+      "disabled_query_fixture": "drm-sequence-invalid-disabled-query.log: 346/1; querying CRTC_GET_SEQUENCE after disable returns EINVAL, so the final test receives the wait reply through the existing pipe and compares it to the delivered disable event.",
+      "earlier_request_model": "drm-sequence-request-invalid-disabled-query.log: earlier model incorrectly allowed GET_SEQUENCE after disable; the final model refuses it."
+    },
+    "limits": [
+      "Native Linux DRM runtime comparison has not been performed.",
+      "This local QEMU record covers LoongArch only; other architectures require current-head CI evidence.",
+      "The old CI high counter is consistent with this arithmetic failure, but its exact timer interleaving was not captured.",
+      "fa5a8830aa CI also has an unresolved Axvisor LoongArch guest boot timeout; this DRM result does not resolve that job.",
+      "The PR remains draft and the VFS delivery remains incomplete."
+    ],
+    "musl_poll_reference": {
+      "tag": "v1.2.5",
+      "url": "https://git.musl-libc.org/cgit/musl/tree/src/select/poll.c?h=v1.2.5",
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/musl-v1.2.5-poll.c",
+      "sha256": "8be43ce3826bc12035299d8d88443856cc2c5f139e7d2ddfdfe3fa83f9a7dedb",
+      "scope": "Source cross-check of fallback to ppoll when SYS_poll is absent; not an attestation of the runtime image libc version."
+    }
   }
 }

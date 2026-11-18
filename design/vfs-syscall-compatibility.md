@@ -294,7 +294,7 @@ gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| ioctl/MODE_SETCRTC 重新启用；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_vblank_on_config](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L1482) | 模式切换重设时间锚并增加一个序号；关闭到启用之间的时间不纳入新纪元计数 | sys_ioctl → retained KapiFile → FileOperations.unlocked_ioctl → drm_ioctl → drm_mode_setcrtc → atomic simple CRTC enable → drm_crtc_vblank_on_config → DrmVblankCrtc count/time | 部分正确 | 9b8e29fd84 的真实核心夹具关闭 100 个周期后验证 reset 增量 1；a8cc3944a1 的 LoongArch 原完整 DRM 程序 1/1；其余目标和真实 Linux DRM 运行对照未在本阶段闭合 |
+| ioctl/MODE_SETCRTC 重新启用；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_vblank_on_config](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L1482) | 模式切换重设时间锚并增加一个序号；关闭到启用之间的时间不纳入新纪元计数 | sys_ioctl → retained Card0File.ioctl → drm_ioctl → drm_mode_setcrtc → atomic simple CRTC enable → drm_crtc_vblank_on_config → DrmVblankCrtc count/time | 部分正确 | 9b8e29fd84 的真实核心夹具关闭 100 个周期后验证 reset 增量 1；a8cc3944a1 的 LoongArch 原完整 DRM 程序 1/1；其余目标和真实 Linux DRM 运行对照未在本阶段闭合 |
 
 ### 11.2 首次查询
 
@@ -303,7 +303,7 @@ gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| ioctl/CRTC_GET_SEQUENCE 首次活动查询；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_get_sequence_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L2006) 与 [drm_update_vblank_count](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L339) | 按实际 CRTC 取得引用并读取一致的 count/time；时间戳推导帧数四舍五入，不能用向下取整的耗时上界拒绝合法结果 | sys_ioctl → KapiFile.ioctl → drm_ioctl → drm_crtc_get_sequence_ioctl → vblank_get/enable → drm_update_vblank_count → DrmVblankCrtc seqlock | 部分正确 | 原引用旅程精确断言 3/4 周期的活动时间得到总增量 2 及对应时间戳；实际 C 判据同一回放在 8d412dbfe7 失败、a8cc3944a1 通过，修后仍拒绝增量 102 和序号回退；LoongArch ioctl 程序 1/1，其他目标和真实 Linux DRM 运行对照仍有缺口 |
+| ioctl/CRTC_GET_SEQUENCE 首次活动查询；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_get_sequence_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L2006) 与 [drm_update_vblank_count](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L339) | 按实际 CRTC 取得引用并读取一致的 count/time；时间戳推导帧数四舍五入，不能用向下取整的耗时上界拒绝合法结果 | sys_ioctl → Card0File.ioctl → drm_ioctl → drm_crtc_get_sequence_ioctl → vblank_get/enable → drm_update_vblank_count → DrmVblankCrtc seqlock | 部分正确 | 原引用旅程精确断言 3/4 周期的活动时间得到总增量 2 及对应时间戳；实际 C 判据同一回放在 8d412dbfe7 失败、a8cc3944a1 通过，修后仍拒绝增量 102 和序号回退；LoongArch ioctl 程序 1/1，其他目标和真实 Linux DRM 运行对照仍有缺口 |
 
 ## 12. 伪文件系统实体
 
@@ -519,3 +519,41 @@ NO_SYMLINKS、NO_MAGICLINKS、最终 nofollow 和尾斜杠也在同一旅程中�
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
 | readlinkat/MemoryFs 文本；x86_64 267；其余三架构 78 | v7.1 [do_readlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L524) | 读取实际链接文字并按缓冲区长度复制，不把目标作为新路径跟随 | sys_readlinkat → FsView.read_link → DirEntry.read_link → MemoryNode.read_at；原生查询将 FileContent 的 Arc 文本转换为 NamespaceRead.LinkText String | 无法确认 | 同一 C 的普通与缓存解析实际消费同一目标，标准库通过；本轮没有原始 SYS_readlinkat 的 MemoryFs 文本读取旅程，不能代替此入口的直接证据 |
+
+## 16. 显示时钟与事件序号
+
+本轮在真实计时器 producer 保留已发布边沿，避免尚未前推的截止时间产生负帧差。
+同时纠正系统程序对绝对零和相对零的混用。以下调用链已从当前 card0 的实际
+打开描述追踪；`Card0File` 与匿名 DRM-KAPI 文件的 `KapiFile` 是不同入口。
+完整时间锚和测试边界见 [DRM 等待契约](drm-vblank-wait.md)。
+
+### 16.1 控制与计数
+
+固定 Linux 的计数算法和用户请求语义分别核实。本地任务定时器保留旧边沿的
+适配另有真实核心组件回归，不能把受控 C 请求回放当作 Linux DRM 运行对照。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| ioctl/WAIT_VBLANK 当前查询；x86_64 16；其余三架构 29 | v7.1 [drm_wait_vblank_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L1734) | RELATIVE 和零增量查询当前计数；32 位绝对零不具有通用查询语义 | sys_ioctl → retained Card0File.ioctl → drm_ioctl → drm_wait_vblank_ioctl → per-CRTC DrmVblankCrtc count/time | 部分正确 | 实际 C 请求的受控回放在旧实现的高计数和回绕起点失败，修后通过；真实 Linux DRM 对照及四架构当前提交终态仍需分别核实 |
+| ioctl/WAIT_VBLANK 相对等待与禁用；x86_64 16；其余三架构 29 | v7.1 [drm_wait_vblank_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L1734) | 活动计数到达目标或 CRTC 禁用结束等待；禁用回复为当前冻结边沿，不是目标序号 | sys_ioctl → Card0File.ioctl → drm_wait_vblank_ioctl → vblank queue 与 DrmVblankCrtc.enabled/count/time；SETCRTC 的 off 路径发布冻结状态并唤醒 | 部分正确 | 子进程通过已有管道回传等待回复，父进程与实际禁用事件核对冻结序号和微秒截断；C 回放还拒绝伪造目标回复，保持原三秒 EBUSY 截止时间和信号测试 |
+| ioctl/CRTC_QUEUE_SEQUENCE 相对零与未来事件；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_queue_sequence_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L2063) | RELATIVE 零增量立即送达；未来目标保留在队列，并共同消耗所属打开描述的 event_space | sys_ioctl → Card0File.ioctl → drm_crtc_queue_sequence_ioctl → per-open DrmFile event_space/event_list 与 per-device vblank_event_list | 部分正确 | 原程序保留另一 open 的事件隔离、128 个未来事件及容量耗尽判据；受控回放证明高计数时旧绝对零请求不能表示立即事件 |
+| ioctl/CRTC_GET_SEQUENCE 定时器时间锚；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_get_sequence_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L2006) | 返回同一 CRTC 的一致计数和边沿时间；计时器尚无更晚边沿时不能因负差产生巨量帧数 | sys_ioctl → Card0File.ioctl → drm_crtc_get_sequence_ioctl → vblank_get/enable → timer timestamp producer → DrmVblankCrtc seqlock | 部分正确 | 真实核心受控旧实现从 0 跳到 3186109819，修后保留旧边沿并让后续真实边沿只计入一次；119 项核心标准库通过，仍不等同原生 Linux 高精度时钟 |
+| ioctl/MODE_SETCRTC 时钟禁用与恢复；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_vblank_off](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L1339) | 禁用冻结当前边沿并送出未完成事件；恢复建立新时间锚，关闭期间不计入活动帧数 | sys_ioctl → Card0File.ioctl → drm_mode_setcrtc → atomic simple CRTC disable/enable → drm_crtc_vblank_off/on → per-CRTC state | 部分正确 | 原程序的禁用事件、另一打开描述的冻结边沿和恢复计数判据继续保留；本地任务定时器适配的并发边界见 DRM 等待契约 |
+| ioctl/MODE_PAGE_FLIP 事件边沿；x86_64 16；其余三架构 29 | v7.1 [drm_mode_page_flip_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_plane.c) | 已提交翻转的事件返回实际完成序号和边沿，不能把尚未发生的目标当作完成 | sys_ioctl → Card0File.ioctl → drm_mode_page_flip_ioctl → atomic simple CRTC flush → arm/send_vblank_event → per-open DrmFile | 部分正确 | 原完整程序核对新 framebuffer 绑定、FLIP_COMPLETE 类型、user_data、CRTC 和时间戳；四目标终态与真实 Linux DRM 对照仍分别记录 |
+
+### 16.2 事件消费者
+
+时钟产生的事件最终由原打开描述消费，读故障不能丢失尚未复制的事件。
+普通读取、向量读取和就绪查询分别经过其实际系统调用入口，没有把同一设备的
+共享核心测试当作每个用户入口都已完成的证明。
+musl 的 [poll 实现](https://git.musl-libc.org/cgit/musl/tree/src/select/poll.c?h=v1.2.5)
+在体系结构没有 `SYS_poll` 时调用 `SYS_ppoll`；不能把该包装调用直接记为
+x86 独有 `poll` 入口的验证，也没有据此断言运行镜像的 musl 版本。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| read/DRM 事件；x86_64 0；其余三架构 63 | v7.1 [drm_read](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_file.c) | 从当前打开描述取完整事件；非阻塞空队列返回 EAGAIN | sys_read → FileLike.read → Card0File.read/read_events → drm_read_kernel_to → per-open DrmFile.event_list | 部分正确 | 原程序读翻转、当前及禁用事件，并验证独立 open 隔离；修正请求构造保持这些消费者断言有效，真实 Linux DRM 对照未执行 |
+| readv/DRM 事件部分故障；x86_64 19；其余三架构 65 | v7.1 [drm_read](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_file.c) | 第二事件复制故障时返回第一事件已复制字节，并保留故障事件供下次读取 | sys_readv → IoDst/UserIoVecCursor → Card0File.read_events → drm_read_kernel_to/copy_event_to_io_dst → DrmFile.event_list | 部分正确 | 同一程序通过原始 SYS_readv 向第二个 PROT_NONE 向量复制，随后 SYS_read 必须取回第二事件；没有放宽原判据 |
+| poll/DRM 就绪；x86_64 7；其余三架构无此入口 | v7.1 [do_sys_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/select.c) | 只在所属打开描述有已送达事件时报告可读，未来事件不提前可读 | sys_poll → do_poll → Card0File.poll/poll_events → drm_poll → per-open DrmFile.event_list/event_wait | 无法确认 | 程序保留未来事件零超时不可读和真实事件唤醒判据；本轮定向目标为 LoongArch，其 libc poll 使用 ppoll，不能代替 x86 poll 入口证据 |
+| ppoll/DRM 就绪；x86_64 271；其余三架构 73 | v7.1 [do_ppoll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/select.c) | 同一事件状态控制可读与等待唤醒；超时或信号不伪造完成事件 | sys_ppoll → do_poll → Card0File.poll/poll_events → drm_poll → DrmFile.event_wait 与 Card0File.poll | 部分正确 | LoongArch 程序的 poll 经 libc 到 ppoll，覆盖未来事件和真实事件；本轮未增加原始 ppoll 的信号掩码或超时边界证明 |
+| close/DRM 打开描述；x86_64 3；其余三架构 57 | v7.1 [drm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_file.c) | 关闭所属描述取消未完成事件并释放 event_space，不影响其他打开描述 | sys_close → table.remove → Card0File drop → drm_release → DrmFile event cancellation | 部分正确 | 原程序关闭持有 128 个未来事件的另一 open，要求原 open 不出现该描述的事件；更多并发关闭和 fd 共享状态不由此单独证明 |
