@@ -76,6 +76,38 @@ pub type RunOnCpuSync = unsafe fn(usize, unsafe fn(*mut ()), *mut ()) -> Result<
 
 static RUN_ON_CPU_SYNC: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(target_arch = "riscv64")]
+struct HostIrqReservations {
+    claim: fn(IrqId) -> Result<(), IrqError>,
+    release: fn(IrqId),
+}
+
+#[cfg(target_arch = "riscv64")]
+static HOST_IRQ_RESERVATIONS: OnceLock<Option<HostIrqReservations>> = OnceLock::new();
+
+/// Installs optional controller reservations before the first host IRQ request.
+/// The pair is fixed for the boot lifetime so every successful claim has the
+/// same release implementation. Platforms without reservations omit this call.
+/// Both callbacks must support IRQ context, and failed claims must leave the
+/// original reservation state intact.
+#[cfg(target_arch = "riscv64")]
+pub fn init_host_irq_reservations(
+    claim: fn(IrqId) -> Result<(), IrqError>,
+    release: fn(IrqId),
+) -> Result<(), IrqError> {
+    let _irq = ax_sync::IrqSaveGuard::new();
+    let mut installed = false;
+    HOST_IRQ_RESERVATIONS.call_once(|| {
+        installed = true;
+        Some(HostIrqReservations { claim, release })
+    });
+    if installed {
+        Ok(())
+    } else {
+        Err(IrqError::Busy)
+    }
+}
+
 /// Installs the runtime-provided synchronous cross-CPU call implementation.
 pub fn set_run_on_cpu_sync(run_on_cpu_sync: RunOnCpuSync) {
     RUN_ON_CPU_SYNC.store(run_on_cpu_sync as usize, Ordering::Release);
@@ -150,6 +182,25 @@ impl IrqOps for PlatIrqOps {
 
     fn set_affinity(&self, irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
         set_affinity(irq, affinity)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn claim_line(&self, irq: IrqId) -> Result<(), IrqError> {
+        let reservations = HOST_IRQ_RESERVATIONS.get().unwrap_or_else(|| {
+            let _irq = ax_sync::IrqSaveGuard::new();
+            HOST_IRQ_RESERVATIONS.call_once(|| None)
+        });
+        match reservations {
+            Some(reservations) => (reservations.claim)(irq),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn release_line(&self, irq: IrqId) {
+        if let Some(Some(reservations)) = HOST_IRQ_RESERVATIONS.get() {
+            (reservations.release)(irq);
+        }
     }
 
     fn is_enabled(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {

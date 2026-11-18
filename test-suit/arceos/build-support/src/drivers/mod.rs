@@ -1,8 +1,8 @@
 pub mod catalog;
 
 use std::{env, fs, path::PathBuf};
-/// Generate the selected driver calls during the target build.
-pub fn generate_bindings() {
+/// Generate the selected driver calls and return the batch identifier.
+pub fn generate_bindings(default_batch: Option<&str>) -> String {
     println!("cargo:rerun-if-changed=suite.toml");
     for key in [catalog::BATCH_ENV, catalog::CASES_ENV] {
         println!("cargo:rerun-if-env-changed={key}");
@@ -15,7 +15,10 @@ pub fn generate_bindings() {
         .ok()
         .filter(|text| !text.is_empty());
     let selected = suite
-        .select(&arch, members.as_deref().or(batch.as_deref()))
+        .select(
+            &arch,
+            members.as_deref().or(batch.as_deref()).or(default_batch),
+        )
         .expect("valid drivers selection");
     assert_eq!(selected.len(), 1, "one batch per driver image");
     assert_eq!(
@@ -30,6 +33,7 @@ pub fn generate_bindings() {
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
     fs::write(output.join("selected_drivers.rs"), generate(&selected[0]))
         .expect("write driver calls");
+    selected[0].id.to_owned()
 }
 
 fn generate(selection: &catalog::Selection<'_>) -> String {

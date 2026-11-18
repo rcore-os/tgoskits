@@ -96,10 +96,22 @@ fn plan_devices(config: &AxVMConfig) -> AxVmResult<RiscvVmPlan> {
         .plic_profile()
         .ok_or_else(|| AxVmError::invalid_config("RISC-V machine profile has no PLIC"))?;
     let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
-    let physical_target_cpu = placements
+    let (_, affinity, _) = placements
         .first()
-        .map(|(_, _, physical_id)| *physical_id)
         .ok_or_else(|| AxVmError::invalid_config("a RISC-V VM must contain at least one vCPU"))?;
+    let physical_target_cpu = if config.pass_through_irqs().is_empty() {
+        0
+    } else {
+        // The hart ID is guest-visible. Use the same host mask as vCPU startup.
+        let available = crate::percpu::enabled_cpu_mask();
+        let targets = affinity.unwrap_or(available) & available;
+        if targets == 0 {
+            return Err(AxVmError::invalid_config(
+                "RISC-V physical IRQ affinity has no enabled virtualization CPU",
+            ));
+        }
+        targets.trailing_zeros() as usize
+    };
     let controller_id = DeviceNodeId::new("plic")?;
     let controller = DeviceNodeSpec::host_replacement(
         controller_id.clone(),

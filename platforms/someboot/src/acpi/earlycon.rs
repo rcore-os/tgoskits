@@ -46,7 +46,7 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
         clock = freq.into();
     }
 
-    let (vaddr, is_mmio) = match spsr.interface_type() {
+    let vaddr = match spsr.interface_type() {
         acpi::sdt::spcr::SpcrInterfaceType::Full16550
         | acpi::sdt::spcr::SpcrInterfaceType::Generic16550 => match base_address.address_space {
             AddressSpace::SystemIo => {
@@ -57,7 +57,7 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
                     crate::console::set_earlycon_serial(EarlySerial::new(
                         EarlySerialRaw::Ns16550Port(uart),
                     ));
-                    (None, false)
+                    None
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
@@ -66,7 +66,6 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
                 }
             }
             AddressSpace::SystemMemory => {
-                let mapped = _fixmap_io(base_address.address as _);
                 // GAS access_size is an encoding (3 means 32 bits), not a
                 // byte count. SPCR has no separate register-spacing field.
                 let width = match base_address.standard_access_size().ok()? {
@@ -81,16 +80,22 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
                     StandardAccessSize::DWordAccess => 4,
                     StandardAccessSize::QWordAccess => return None,
                 };
-                // SPCR identifies this interface as Full16550 or Generic16550.
-                crate::console::bind_earlycon_ns16550(
-                    base_address.address as _,
-                    clock,
-                    width,
-                    width,
-                    some_serial::ns16550::UartVariant::Standard,
-                )
+                // SPCR identifies a 16550 but provides no resource size.
+                let paddr = usize::try_from(base_address.address).ok()?;
+                // SAFETY: the firmware SPCR names the console UART and
+                // specifies the access width of its mapped registers.
+                unsafe {
+                    crate::console::bind_earlycon_ns16550(
+                        paddr,
+                        None,
+                        clock,
+                        width,
+                        width,
+                        some_serial::ns16550::UartVariant::Standard,
+                    )
+                }
                 .ok()?;
-                (Some(mapped), true)
+                Some(_fixmap_io(paddr))
             }
             space => {
                 println!("Unsupported SPCR address space `{space:?}` for early console.");
@@ -102,11 +107,6 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
             return None;
         }
     };
-
-    unsafe {
-        crate::console::DEBUG_BASE = base_address.address as usize;
-        crate::console::DEBUG_IS_MMIO = is_mmio;
-    }
 
     if let Some(vaddr) = vaddr {
         println!("Early console initialized at vaddr {:#x}", vaddr as usize);

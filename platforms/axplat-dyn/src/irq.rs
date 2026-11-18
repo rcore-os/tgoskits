@@ -17,7 +17,13 @@ impl IrqIf for IrqIfImpl {
     fn prepare(_vector: TrapVector) {}
 
     fn init_boot_irqs(cpu_id: usize) -> Result<(), IrqError> {
-        somehal::irq::init_boot_irqs(cpu_id)
+        somehal::irq::init_boot_irqs(cpu_id)?;
+        #[cfg(target_arch = "riscv64")]
+        ax_plat::irq::init_host_irq_reservations(
+            somehal::irq::claim_host_external_line,
+            somehal::irq::release_host_external_line,
+        )?;
+        Ok(())
     }
 
     #[cfg(feature = "smp")]

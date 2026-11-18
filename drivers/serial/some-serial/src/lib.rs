@@ -41,13 +41,18 @@
 //! let mut uart = Pl011::new(NonNull::new(0x9000000 as *mut u8).unwrap(), 24_000_000);
 //!
 //! #[cfg(not(target_arch = "aarch64"))]
-//! let mut uart = Ns16550::new_mmio(
-//!     NonNull::new(0x9000000 as *mut u8).unwrap(),
-//!     1_843_200,
-//!     1,
-//!     1,
-//!     UartVariant::Standard,
-//! )
+//! // SAFETY: this example assumes the platform provides and retains this
+//! // eight-byte NS16550 mapping, with no concurrent register access.
+//! let mut uart = unsafe {
+//!     Ns16550::new_mmio(
+//!         NonNull::new(0x9000000 as *mut u8).unwrap(),
+//!         8,
+//!         1_843_200,
+//!         1,
+//!         1,
+//!         UartVariant::Standard,
+//!     )
+//! }
 //! .unwrap();
 //!
 //! // 配置串口

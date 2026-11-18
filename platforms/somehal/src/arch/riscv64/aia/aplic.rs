@@ -171,13 +171,22 @@ struct RiscvAplicIrqHandler {
     state: RawSpinLock<AplicIrqState>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum AplicSourceOwner {
+    #[default]
+    Unassigned,
+    Host,
+    Guest,
+}
+
 #[derive(Clone, Copy, Default)]
 struct AplicSourceState {
-    enabled: bool,
+    // Configuring or opening a source fixes its owner until reset.
+    owner: AplicSourceOwner,
+    host_actions: usize,
     // Masking cannot withdraw an MSI already queued in the old IMSIC file.
     ever_enabled: bool,
     deferred: bool,
-    guest_owned: bool,
     retired: bool,
 }
 
@@ -227,12 +236,10 @@ impl RiscvAplic {
         let mode = source_mode(trigger)?;
         let target = self.target(source, self.affinity_by_source[index])?;
         let mut state = self.irq.state.lock_irqsave();
-        if state.sources[index].retired
-            || state.sources[index].guest_owned
-            || state.sources[index].deferred
-        {
+        if state.sources[index].owner == AplicSourceOwner::Guest {
             return Err(IrqError::Busy);
         }
+        state.sources[index].owner = AplicSourceOwner::Host;
         state
             .registers
             .set_target(source, target)
@@ -254,35 +261,25 @@ impl RiscvAplic {
 
     fn set_source_enabled(&mut self, source: NonZeroU32, enabled: bool) -> Result<(), IrqError> {
         let index = self.checked_source_index(source)?;
+        if enabled && self.mode_by_source[index] == SourceMode::Inactive {
+            self.configure_source(source, Some(rdif_intc::Trigger::LevelHigh))?;
+        }
+        let mut state = self.irq.state.lock_irqsave();
+        if state.sources[index].owner == AplicSourceOwner::Guest {
+            return Err(IrqError::Busy);
+        }
         if enabled {
             let target = self.target(source, self.affinity_by_source[index])?;
-            if self.mode_by_source[index] == SourceMode::Inactive {
-                self.configure_source(source, Some(rdif_intc::Trigger::LevelHigh))?;
-            }
-            let mut state = self.irq.state.lock_irqsave();
-            if state.sources[index].retired {
-                return Err(IrqError::Busy);
-            }
             state
                 .registers
                 .set_target(source, target)
                 .expect("validated source");
-            state.sources[index].enabled = true;
             state.sources[index].ever_enabled = true;
-            if !state.sources[index].deferred {
-                state
-                    .registers
-                    .set_enabled(source, true)
-                    .expect("validated source");
-            }
-        } else {
-            let mut state = self.irq.state.lock_irqsave();
-            state.sources[index].enabled = false;
-            state
-                .registers
-                .set_enabled(source, false)
-                .expect("validated source");
         }
+        state
+            .registers
+            .set_enabled(source, enabled)
+            .expect("validated source");
         Ok(())
     }
 
@@ -295,9 +292,7 @@ impl RiscvAplic {
         let target = self.target(source, affinity)?;
         let previous_target = self.target(source, self.affinity_by_source[index])?;
         let mut state = self.irq.state.lock_irqsave();
-        if state.sources[index].retired
-            || state.sources[index].guest_owned
-            || state.sources[index].deferred
+        if state.sources[index].owner == AplicSourceOwner::Guest
             || (state.sources[index].ever_enabled && target != previous_target)
         {
             return Err(IrqError::Busy);
@@ -329,6 +324,29 @@ impl RiscvAplic {
     }
 }
 
+pub(in crate::arch) fn claim_host_line(hwirq: rdif_intc::HwIrq) -> Result<(), IrqError> {
+    if !APLIC_HANDLER.is_init() {
+        return Err(IrqError::Unsupported);
+    }
+    let index = hwirq.0 as usize;
+    if !(1..=APLIC_HANDLER.sources).contains(&index) {
+        return Err(IrqError::InvalidIrq);
+    }
+    let mut state = APLIC_HANDLER.state.lock_irqsave();
+    let source = &mut state.sources[index];
+    if source.owner == AplicSourceOwner::Guest {
+        return Err(IrqError::Busy);
+    }
+    source.host_actions = source.host_actions.checked_add(1).ok_or(IrqError::Busy)?;
+    Ok(())
+}
+
+pub(in crate::arch) fn release_host_line(hwirq: rdif_intc::HwIrq) {
+    let mut state = APLIC_HANDLER.state.lock_irqsave();
+    let actions = &mut state.sources[hwirq.0 as usize].host_actions;
+    *actions = actions.checked_sub(1).expect("reserved host APLIC IRQ");
+}
+
 impl RiscvAplicIrqHandler {
     fn complete(&self, source: NonZeroU32) {
         let index = source.get() as usize;
@@ -349,8 +367,7 @@ impl RiscvAplicIrqHandler {
         }
         let mut state = self.state.lock_irqsave();
         let source_state = &mut state.sources[index];
-        if !source_state.enabled
-            || !source_state.guest_owned
+        if source_state.owner != AplicSourceOwner::Guest
             || source_state.deferred
             || source_state.retired
         {
@@ -376,12 +393,10 @@ impl RiscvAplicIrqHandler {
         state.sources[index].deferred = false;
         if !state.sources[index].retired {
             state.registers.resample(source).expect("validated source");
-            if state.sources[index].enabled {
-                state
-                    .registers
-                    .set_enabled(source, true)
-                    .expect("validated source");
-            }
+            state
+                .registers
+                .set_enabled(source, true)
+                .expect("validated source");
         }
         true
     }
@@ -395,58 +410,68 @@ pub(in crate::arch) fn finish_deferred(source: NonZeroU32) -> bool {
     APLIC_HANDLER.is_init() && APLIC_HANDLER.finish_deferred(source)
 }
 
-pub(in crate::arch) fn activate_guest_source(
-    source: NonZeroU32,
+pub(in crate::arch) fn activate_guest_sources(
+    sources: &[(u32, Option<rdif_intc::Trigger>)],
     target_cpu: usize,
-    trigger: rdif_intc::Trigger,
 ) -> Result<(), IrqError> {
     let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::RiscvAplic)
         .ok_or(IrqError::Unsupported)?;
     let intc = crate::irq::intc_by_domain(domain)?;
     let mut intc = intc.lock().map_err(|_| IrqError::Controller)?;
     let aplic = intc.typed_mut::<RiscvAplic>().ok_or(IrqError::Controller)?;
-    let index = aplic.checked_source_index(source)?;
-    // Resolve all fallible input before committing ownership or registers.
-    let mode = source_mode(Some(trigger))?;
+    if sources.len() > aplic.sources {
+        return Err(IrqError::InvalidIrq);
+    }
     let affinity = IrqAffinity::Fixed { cpu_id: target_cpu };
-    let target = aplic.target(source, affinity)?;
-    let previous_target = aplic.target(source, aplic.affinity_by_source[index])?;
+    let mut plan = Vec::new();
+    plan.try_reserve_exact(sources.len())
+        .map_err(|_| IrqError::NoMemory)?;
+    for &(source, trigger) in sources {
+        let source = NonZeroU32::new(source).ok_or(IrqError::InvalidIrq)?;
+        let index = aplic.checked_source_index(source)?;
+        let mode = source_mode(Some(trigger.ok_or(IrqError::Unsupported)?))?;
+        let target = aplic.target(source, affinity)?;
+        plan.push((index, source, mode, target));
+    }
+    plan.sort_unstable_by_key(|route| route.0);
+    if plan.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(IrqError::InvalidIrq);
+    }
+
     let mut state = aplic.irq.state.lock_irqsave();
-    let source_state = &state.sources[index];
-    if source_state.retired
-        || source_state.guest_owned
-        || source_state.enabled
-        || source_state.deferred
-        || (source_state.ever_enabled && target != previous_target)
-    {
+    // Host masking/configuration and retirement use this same lock. Check all
+    // owners before enabling any source that might send a late MSI.
+    if plan.iter().any(|&(index, ..)| {
+        let source = &state.sources[index];
+        source.owner != AplicSourceOwner::Unassigned || source.host_actions != 0
+    }) {
         return Err(IrqError::Busy);
     }
-    state
-        .registers
-        .set_enabled(source, false)
-        .expect("validated source");
-    // An inactive source may ignore target writes. Activate its mode while
-    // masked, then install the target before opening delivery (AIA 4.5.3).
-    state
-        .registers
-        .set_source_mode(source, mode)
-        .expect("validated source");
-    state
-        .registers
-        .set_target(source, target)
-        .expect("validated source");
-    aplic.mode_by_source[index] = mode;
-    aplic.affinity_by_source[index] = affinity;
-    state.sources[index].guest_owned = true;
-    state.sources[index].enabled = true;
-    state.sources[index].ever_enabled = true;
-    if mode.is_level() {
-        state.registers.resample(source).expect("validated source");
+    for (index, source, mode, target) in plan.iter().copied() {
+        state
+            .registers
+            .set_enabled(source, false)
+            .expect("validated source");
+        // Inactive sources may ignore target writes (AIA 4.5.3).
+        state
+            .registers
+            .set_source_mode(source, mode)
+            .expect("validated source");
+        state
+            .registers
+            .set_target(source, target)
+            .expect("validated source");
+        aplic.mode_by_source[index] = mode;
+        aplic.affinity_by_source[index] = affinity;
+        state.sources[index].owner = AplicSourceOwner::Guest;
+        if mode.is_level() {
+            state.registers.resample(source).expect("validated source");
+        }
+        state
+            .registers
+            .set_enabled(source, true)
+            .expect("validated source");
     }
-    state
-        .registers
-        .set_enabled(source, true)
-        .expect("validated source");
     Ok(())
 }
 
@@ -459,8 +484,7 @@ pub(in crate::arch) fn retire_guest_source(source: NonZeroU32) -> Result<(), Irq
         return Err(IrqError::InvalidIrq);
     }
     let mut state = APLIC_HANDLER.state.lock_irqsave();
-    if state.sources[index].guest_owned {
-        state.sources[index].enabled = false;
+    if state.sources[index].owner == AplicSourceOwner::Guest {
         state.sources[index].retired = true;
         state
             .registers

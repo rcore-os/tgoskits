@@ -298,6 +298,11 @@ StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直
 `open()`、清收发 FIFO 或改写 IER/MCR。更换物理设备仍执行首次初始化。
 绑定在早期所有权守卫与现有寄存器锁内完成，运行时接管后不再触碰硬件。
 
+FDT `reg` 必须覆盖驱动访问的全部寄存器，包括最后一次访问的宽度。SPCR 和显式
+命令行没有提供区间长度，启动层根据寄存器步长和访问宽度计算需要的字节数。
+AArch64 和 RISC-V 的启动页表使用绑定记录的范围，覆盖物理恒等窗口和重定位后
+的 `__io()` 窗口。AArch64 EL1 启动时用同一张页表根，两个窗口共享页表项。
+
 诊断 MMU 切换日志截断时，用 QEMU `serial_write` 跟踪检查第一次初始化
 确实写入 FCR，而 `MMU enabled, jumping to ...` 到 `Trap vector at ...`
 之间没有控制寄存器写入。仅匹配后续 Shell 或应用成功不足以证明 FIFO 被保留。
@@ -368,11 +373,11 @@ Axvisor 客户机身份由 `phys_cpu_ids` 与 `phys_cpu_sets` 分开表达：同
 
 宿主 APLIC／IMSIC 的 MMIO 由 AxVM 的 `interrupt::is_host_owned_interrupt_provider()` 识别并预留，显式设备树路径直通应拒绝。恒等直通还须由 `build_guest_dtb()` 从宿主树调用 `reserve_host_interrupt_controllers()`，客户机省略节点不能撤销物理范围保护；完全虚拟化的 GPA 则独立于宿主地址布局。客户机设备树需要保留的虚拟控制器由 `is_machine_interrupt_provider()` 单独判断，不能因此继承宿主 AIA 节点。中断控制器连到上游的 `interrupts-extended` 不属于设备来源列表，例如 IMSIC 的 CPU-local cause 9 不能排除物理 APLIC source 9。相关资源选择与排除逻辑位于 [`boot/fdt/core/parser.rs`](../../../../virtualization/axvm/src/boot/fdt/core/parser.rs)。
 
-`somehal::arch::irq` 持有陷阱分类、完成责任、本地中断和 SBI IPI，次核通过 `irq::init_secondary_cpu()` 初始化控制器后再开放本地输入；`plic` 与 `aia` 模块只提供各自控制器操作。APLIC 首次配置先写 SOURCECFG，再写 TARGET，并保留宿主 DTB 的完整触发方式。延期期间 enable 不解除屏蔽，完成时按期望状态重采样；边沿不补发。缺少在途 MSI 排空协议时，激活后固定亲和，停止后来源退休到板级复位；寄存器访问保留 I/O 屏障。恒等映射不提供 DMA 隔离；客户机设备树须保留物理总线的 `dma-noncoherent`，以及驱动需要的时钟、复位和引脚依赖。
+`somehal::arch::irq` 持有陷阱分类、完成责任、本地中断和 SBI IPI，次核通过 `irq::init_secondary_cpu()` 初始化控制器后再开放本地输入。`plic` 与 `aia` 模块分别提供各自控制器操作。APLIC 配置客户机来源时先写 SOURCECFG，再写 TARGET，并保留宿主 DTB 的触发方式。宿主的启用和屏蔽操作拒绝客户机来源。客户机完成延期中断时重采样电平，边沿不补发。缺少在途 MSI 排空协议时，激活后固定亲和，停止后来源退休到板级复位。寄存器访问保留 I/O 屏障。恒等映射不提供 DMA 隔离，客户机设备树须保留物理总线的 `dma-noncoherent`，以及驱动需要的时钟、复位和引脚依赖。
 
 APLIC 寄存器操作和监管者 IMSIC 的 CSR/文件几何由 `drivers/intc/riscv-aia-driver` 提供，保持 `no_std` 且不依赖堆分配。`somehal::arch::aia` 负责 FDT、映射、CPU 对应和共享来源锁，保留延期与退休状态；不能把客户机分配策略移入驱动。`RiscvExternalIrqClaim` 的内部完成表示仅由 SomeHAL 构造，`axplat-dyn` 通过 `RiscvExternalIrqClaimSlot` 转移整个令牌，不按 PLIC/APLIC 再编码。显式完成先取走责任，析构只完成剩余责任；槽冲突返回原令牌。槽锁内不完成、不访问 MMIO，避免与来源事务锁嵌套。
 
-`AplicSourceState::ever_enabled` 在来源首次开放后保留，即使随后暂时屏蔽也不能清除。普通 `set_source_affinity()` 和客户机 `activate_guest_source()` 均按实际 MSI 目标拒绝迁移；`Any` 与 CPU0 等价时不误拒绝。来源 45 的真实 MSI 回归与既有延期完成测试共用同一次 QEMU 启动。
+`AplicSourceState::ever_enabled` 记录宿主来源首次开放，即使随后屏蔽也不能迁移；`Any` 与 CPU0 等价。宿主配置或注册即保留来源。`activate_guest_external_sources()` 在同一个来源事务内确认整批均可分配，再配置并开放投递。`plan_devices()` 从启动 vCPU 的宿主亲和性选择投递核，客户机 hart ID 只用于客户机拓扑。来源 45 的 MSI 和批量申请回归与延期完成测试共用同一次 QEMU 启动。
 
 ### QEMU AIA 回归
 
@@ -391,7 +396,11 @@ AxVisor 的 RISC-V 回归通过以下用例区分宿主控制器、客户机中�
 cargo xtask axvisor test qemu --arch riscv64 --test-case smoke,qemu-riscv-aplic,qemu-aplic-passthrough,smp-ipi
 ```
 
-同一目标的不同配置共用构建产物，构建和镜像准备阶段串行执行。修改 `qemu-riscv-aplic/riscv-plic-guest.dts` 或 `qemu-aplic-passthrough/guest.dts` 后，按源码顶部命令同步生成 DTB。客户机 PLIC 说明符不提供物理 APLIC 的触发属性，后者从宿主树解析。
+同一目标的不同配置共用构建产物，构建和镜像准备阶段串行执行。APLIC/IMSIC 宿主上的 Linux 当前通过 `dtb_path` 或静态镜像提供带虚拟 PLIC 的客户机 DTB。修改 `qemu-riscv-aplic/riscv-plic-guest.dts` 或 `qemu-aplic-passthrough/guest.dts` 后，按源码顶部命令同步生成 DTB。直通设备的客户机 PLIC 中断号必须和宿主 PLIC 或 APLIC 来源号一致，APLIC 触发属性由宿主树提供。
+
+PLIC 和 APLIC 批量启用前检查整批来源的归属。每个宿主 IRQ 登记都持有一份预留，直到登记失败回滚或动作释放。宿主已配置或已打开的线路保留宿主归属，单独屏蔽空闲线路不改变归属。客户机占用期间，宿主的配置、登记、使能和亲和性操作返回 `Busy`。
+
+PLIC 退休来源时，在原上下文仍使能的情况下完成已认领中断，再屏蔽线路。认领、完成和退休共享中断安全锁，迟到令牌不会重复写入完成寄存器。来源在宿主复位前不能再次分配。`cargo xtask arceos test qemu --arch riscv64 --test-group drivers --test-case riscv-plic` 用 VirtIO RNG 核对原认领已完成、各上下文已屏蔽、迟到令牌不能完成后续中断。完成写入前的原上下文使能条件由驱动读取控制器确认。
 
 APLIC 完成令牌、延期屏蔽、禁用后完成及退休后迟到完成由[平台状态用例](../../../../test-suit/arceos/drivers/APLIC.md)覆盖，入口为 `cargo xtask arceos test qemu --arch riscv64 --test-group drivers --test-case aplic`。该用例检查真实控制器状态；物理盘用例检查完整客户机 I/O 链路。两者均不证明设备 DMA 已停稳或来源可以安全复用。
 

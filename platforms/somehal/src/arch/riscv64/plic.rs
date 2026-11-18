@@ -3,6 +3,7 @@ use alloc::{format, vec, vec::Vec};
 use core::{num::NonZeroU32, ptr::NonNull};
 
 use ax_riscv_plic::{PLICRegs, Plic, PlicIrqHandler};
+use ax_sync::RawSpinLock;
 use kernutil::StaticCell;
 use rdif_intc::Interface;
 use rdrive::{
@@ -19,6 +20,7 @@ use crate::{
 const SUPERVISOR_EXTERNAL_INTERRUPT: u32 = 9;
 const DEFAULT_PRIORITY: u32 = 1;
 const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
+const MAX_PLIC_SOURCE: usize = 1023;
 static IRQ_HANDLER: StaticCell<RiscvPlicIrqHandler> = StaticCell::uninit();
 
 module_driver!(
@@ -39,11 +41,16 @@ module_driver!(
 pub(super) struct PlicClaim {
     context: usize,
     source: NonZeroU32,
+    pub(super) guest_owned: bool,
 }
 
 impl PlicClaim {
-    const fn new(context: usize, source: NonZeroU32) -> Self {
-        Self { context, source }
+    const fn new(context: usize, source: NonZeroU32, guest_owned: bool) -> Self {
+        Self {
+            context,
+            source,
+            guest_owned,
+        }
     }
 
     pub(super) const fn into_parts(self) -> (usize, NonZeroU32) {
@@ -56,24 +63,69 @@ struct RiscvPlic {
     context_by_cpu: Vec<Option<usize>>,
     affinity_by_source: Vec<crate::irq::IrqAffinity>,
     enabled_by_source: Vec<bool>,
+    host_reserved: Vec<bool>,
     sources: usize,
 }
 
 struct RiscvPlicIrqHandler {
     inner: PlicIrqHandler,
     context_by_cpu: Vec<Option<usize>>,
+    // Serialize claim/complete with guest retirement. The IRQ path never
+    // acquires the controller device lock.
+    sources: RawSpinLock<Vec<PlicSourceState>>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct PlicSourceState {
+    host_actions: usize,
+    guest: GuestSource,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum GuestSource {
+    #[default]
+    Free,
+    Active {
+        claimed_context: Option<usize>,
+    },
+    Retired,
+}
+
+pub(crate) fn claim_host_line(hwirq: rdif_intc::HwIrq) -> Result<(), rdif_intc::IrqError> {
+    use crate::irq::IrqError;
+
+    let index = NonZeroU32::new(hwirq.0).ok_or(IrqError::InvalidIrq)?.get() as usize;
+    let handler = get_irq_handler().ok_or(IrqError::Controller)?;
+    let mut sources = handler.sources.lock_irqsave();
+    let source = sources.get_mut(index).ok_or(IrqError::InvalidIrq)?;
+    if source.guest != GuestSource::Free {
+        return Err(IrqError::Busy);
+    }
+    source.host_actions = source.host_actions.checked_add(1).ok_or(IrqError::Busy)?;
+    Ok(())
+}
+
+pub(crate) fn release_host_line(hwirq: rdif_intc::HwIrq) {
+    let handler = get_irq_handler().expect("reserved host PLIC IRQ has a controller");
+    let mut sources = handler.sources.lock_irqsave();
+    let actions = &mut sources[hwirq.0 as usize].host_actions;
+    *actions = actions.checked_sub(1).expect("reserved host PLIC IRQ");
 }
 
 pub(super) fn irq_set_affinity(
     hwirq: rdif_intc::HwIrq,
     affinity: crate::irq::IrqAffinity,
 ) -> Result<(), crate::irq::IrqError> {
-    let source = NonZeroU32::new(hwirq.0).ok_or(crate::irq::IrqError::InvalidIrq)?;
+    use crate::irq::IrqError;
+
+    let source = NonZeroU32::new(hwirq.0).ok_or(IrqError::InvalidIrq)?;
     with_plic("setting PLIC IRQ affinity", |plic| {
+        let index = plic.source_from_hwirq(hwirq)?;
+        plic.check_host_access(index)?;
         plic.set_source_affinity(source, affinity)
+            .ok_or(IrqError::InvalidIrq)
     })
-    .flatten()
-    .ok_or(crate::irq::IrqError::InvalidIrq)
+    .ok_or(IrqError::Controller)?
 }
 
 pub(super) fn source_from_hwirq(hwirq: rdif_intc::HwIrq) -> Result<usize, crate::irq::IrqError> {
@@ -81,6 +133,107 @@ pub(super) fn source_from_hwirq(hwirq: rdif_intc::HwIrq) -> Result<usize, crate:
         plic.source_from_hwirq(hwirq)
     })
     .ok_or(crate::irq::IrqError::Controller)?
+}
+
+pub(super) fn activate_guest_sources(
+    sources: &[(u32, Option<rdif_intc::Trigger>)],
+    target_cpu: usize,
+) -> Result<(), crate::irq::IrqError> {
+    use crate::irq::{IrqAffinity, IrqError};
+
+    let handler = get_irq_handler().ok_or(IrqError::Controller)?;
+    with_plic("activating guest PLIC sources", |plic| {
+        if plic
+            .context_by_cpu
+            .get(target_cpu)
+            .copied()
+            .flatten()
+            .is_none()
+        {
+            return Err(IrqError::InvalidCpu);
+        }
+        {
+            // Keep host action reservations stable through the whole batch commit.
+            let mut states = handler.sources.lock_irqsave();
+            let mut seen = [0u64; (MAX_PLIC_SOURCE + 1) / u64::BITS as usize];
+            for &(source, _) in sources {
+                let index = plic.source_from_hwirq(rdif_intc::HwIrq(source))?;
+                let word = &mut seen[index / u64::BITS as usize];
+                let bit = 1 << (index % u64::BITS as usize);
+                if *word & bit != 0 {
+                    return Err(IrqError::InvalidIrq);
+                }
+                *word |= bit;
+                let state = &states[index];
+                if plic.host_reserved[index]
+                    || state.host_actions != 0
+                    || state.guest != GuestSource::Free
+                {
+                    return Err(IrqError::Busy);
+                }
+            }
+            for &(source, _) in sources {
+                states[source as usize].guest = GuestSource::Active {
+                    claimed_context: None,
+                };
+            }
+        }
+        // SAFETY: this fence orders publication of the validated owner and
+        // bridge state before the PLIC MMIO writes that allow delivery.
+        unsafe { core::arch::asm!("fence w, o", options(nostack)) };
+        let affinity = IrqAffinity::Fixed { cpu_id: target_cpu };
+        for &(source, _) in sources {
+            let source = NonZeroU32::new(source).expect("validated PLIC source");
+            plic.set_source_affinity(source, affinity)
+                .expect("validated PLIC source and CPU");
+            plic.enable_source(source).expect("validated PLIC source");
+        }
+        // SAFETY: commit context enables before another hart can acquire the
+        // controller lock and retire those sources.
+        unsafe { core::arch::asm!("fence o, w", options(nostack)) };
+        Ok(())
+    })
+    .ok_or(IrqError::Controller)?
+}
+
+pub(super) fn deactivate_guest_source(source: NonZeroU32) -> Result<(), crate::irq::IrqError> {
+    use crate::irq::IrqError;
+
+    let handler = get_irq_handler().ok_or(IrqError::Controller)?;
+    with_plic("deactivating guest PLIC source", |plic| {
+        let index = plic.source_from_hwirq(rdif_intc::HwIrq(source.get()))?;
+        let mut states = handler.sources.lock_irqsave();
+        let guest = &mut states[index].guest;
+        let completion = match *guest {
+            GuestSource::Free => return Err(IrqError::Busy),
+            GuestSource::Retired => return Ok(()),
+            GuestSource::Active {
+                claimed_context: Some(context),
+            } => {
+                // SAFETY: observe the enable bit after acquiring the controller lock.
+                unsafe { core::arch::asm!("fence r, i", options(nostack)) };
+                if plic.inner.is_enabled(source, context) {
+                    // SAFETY: order the enable read before the completion write.
+                    unsafe { core::arch::asm!("fence i, o", options(nostack)) };
+                    handler.inner.complete(context, source);
+                    // SAFETY: order completion before clearing the enables.
+                    unsafe { core::arch::asm!("fence o, o", options(nostack)) };
+                    Ok(())
+                } else {
+                    Err(IrqError::Controller)
+                }
+            }
+            GuestSource::Active {
+                claimed_context: None,
+            } => Ok(()),
+        };
+        plic.disable_source(source)?;
+        // SAFETY: publish the hardware masks before releasing the claim lock.
+        unsafe { core::arch::asm!("fence o, w", options(nostack)) };
+        *guest = GuestSource::Retired;
+        completion
+    })
+    .ok_or(IrqError::Controller)?
 }
 
 pub(super) fn claim_external_irq() -> Option<PlicClaim> {
@@ -100,7 +253,7 @@ pub(super) fn complete_deferred_claim(context: usize, source: NonZeroU32) -> boo
         warn!("RISC-V PLIC IRQ handler is not registered when completing a deferred claim");
         return false;
     };
-    handler.complete_claim(PlicClaim::new(context, source));
+    handler.complete_claim(PlicClaim::new(context, source, true));
     true
 }
 
@@ -134,7 +287,10 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .as_node()
         .get_property("riscv,ndev")
         .and_then(|prop| prop.get_u32())
-        .unwrap_or(1024) as usize;
+        .map_or(MAX_PLIC_SOURCE, |count| count as usize);
+    if !(1..=MAX_PLIC_SOURCE).contains(&ndev) {
+        return Err(OnProbeError::other("invalid PLIC source count"));
+    }
     let mut plic = plic;
     plic.disable_all_sources(ndev);
     let contexts = parse_supervisor_contexts(&info);
@@ -145,6 +301,7 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let irq_handler = RiscvPlicIrqHandler {
         inner: plic.irq_handler(),
         context_by_cpu: contexts.clone(),
+        sources: RawSpinLock::new(vec![PlicSourceState::default(); ndev.saturating_add(1)]),
     };
     IRQ_HANDLER.init(irq_handler);
     if let Some(handler) = get_irq_handler() {
@@ -155,6 +312,7 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         context_by_cpu: contexts,
         affinity_by_source: vec![crate::irq::IrqAffinity::Any; ndev.saturating_add(1)],
         enabled_by_source: vec![false; ndev.saturating_add(1)],
+        host_reserved: vec![false; ndev.saturating_add(1)],
         sources: ndev,
     };
     super::irq::enable_local_irq_inputs();
@@ -238,15 +396,52 @@ impl RiscvPlicIrqHandler {
             warn_missing_current_context();
             return None;
         };
+        let mut states = self.sources.lock_irqsave();
+        // SAFETY: order the acquired lock before reading the claim register.
+        unsafe { core::arch::asm!("fence r, i", options(nostack)) };
         let Some(source) = self.inner.claim(context) else {
+            drop(states);
             debug!("Spurious external IRQ");
             return None;
         };
-        Some(PlicClaim::new(context, source))
+        // SAFETY: publish the context only after the hardware claim.
+        unsafe { core::arch::asm!("fence i, rw", options(nostack)) };
+        let guest_owned = if let Some(state) = states.get_mut(source.get() as usize)
+            && let GuestSource::Active { claimed_context } = &mut state.guest
+        {
+            debug_assert!(claimed_context.is_none());
+            *claimed_context = Some(context);
+            true
+        } else {
+            false
+        };
+        Some(PlicClaim::new(context, source, guest_owned))
+    }
+
+    fn check_host_access(&self, source: usize) -> Result<(), rdif_intc::IrqError> {
+        if self.sources.lock_irqsave()[source].guest != GuestSource::Free {
+            return Err(rdif_intc::IrqError::Busy);
+        }
+        Ok(())
     }
 
     fn complete_claim(&self, claim: PlicClaim) {
-        self.inner.complete(claim.context, claim.source);
+        if !claim.guest_owned {
+            self.inner.complete(claim.context, claim.source);
+            return;
+        }
+        let mut states = self.sources.lock_irqsave();
+        if let GuestSource::Active { claimed_context } =
+            &mut states[claim.source.get() as usize].guest
+            && *claimed_context == Some(claim.context)
+        {
+            // SAFETY: order the locked claim state before its completion.
+            unsafe { core::arch::asm!("fence r, o", options(nostack)) };
+            self.inner.complete(claim.context, claim.source);
+            // SAFETY: order completion before another hart can claim.
+            unsafe { core::arch::asm!("fence o, w", options(nostack)) };
+            *claimed_context = None;
+        }
     }
 }
 
@@ -257,6 +452,14 @@ impl RiscvPlic {
 
     fn source_from_hwirq(&self, hwirq: rdif_intc::HwIrq) -> Result<usize, crate::irq::IrqError> {
         riscv_source_from_plic_hwirq(hwirq, self.sources)
+    }
+
+    fn check_host_access(&self, index: usize) -> Result<(), crate::irq::IrqError> {
+        use crate::irq::IrqError;
+
+        get_irq_handler()
+            .ok_or(IrqError::Controller)?
+            .check_host_access(index)
     }
 
     fn enable_source(&mut self, source: NonZeroU32) -> Result<(), crate::irq::IrqError> {
@@ -361,14 +564,27 @@ impl Interface for RiscvPlic {
         ))
     }
 
+    fn configure(
+        &mut self,
+        translation: &rdif_intc::IrqTranslation,
+    ) -> Result<(), rdif_intc::IrqError> {
+        let index = self.source_from_hwirq(translation.id.hwirq)?;
+        self.check_host_access(index)?;
+        self.host_reserved[index] = true;
+        Ok(())
+    }
+
     fn set_enabled(
         &mut self,
         hwirq: rdif_intc::HwIrq,
         enabled: bool,
     ) -> Result<(), rdif_intc::IrqError> {
-        let source = NonZeroU32::new(self.source_from_hwirq(hwirq)? as u32)
-            .ok_or(rdif_intc::IrqError::InvalidIrq)?;
+        let index = self.source_from_hwirq(hwirq)?;
+        let source = NonZeroU32::new(index as u32).ok_or(rdif_intc::IrqError::InvalidIrq)?;
+        self.check_host_access(index)?;
         if enabled {
+            // Masking an opened host source does not drain its old claims.
+            self.host_reserved[index] = true;
             self.enable_source(source)
         } else {
             self.disable_source(source)
@@ -393,10 +609,8 @@ fn with_plic<R>(op: &str, f: impl FnOnce(&mut RiscvPlic) -> R) -> Option<R> {
 }
 
 fn get_plic() -> Option<Device<rdif_intc::Intc>> {
-    if !rdrive::is_initialized() {
-        return None;
-    }
-    rdrive::get_one()
+    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::RiscvPlic)?;
+    crate::irq::intc_by_domain(domain).ok()
 }
 
 fn get_irq_handler() -> Option<&'static RiscvPlicIrqHandler> {

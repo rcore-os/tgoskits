@@ -101,8 +101,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
 
-    let mmio_size = base_reg.size.unwrap_or(0x1000) as usize;
-    let mmio_base = crate::mmio::iomap(base_reg.address as usize, mmio_size)?;
+    let paddr = usize::try_from(base_reg.address)
+        .map_err(|_| OnProbeError::other("NS16550 MMIO address exceeds address width"))?;
     let node = info.node.as_node();
     let reg_width = prop_u32(node, "reg-io-width").unwrap_or(1) as usize;
     let mut serial: Option<ProbedUart> = None;
@@ -118,6 +118,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
                 serial_ns16550::dw_apb::SG2002_UART_CLOCK
             };
             let clock_freq = prop_u32(node, "clock-frequency").unwrap_or(default_clock);
+            let mmio_size = usize::try_from(base_reg.size.unwrap_or(0x1000)).map_err(|_| {
+                OnProbeError::other("DesignWare UART MMIO size exceeds address width")
+            })?;
+            let mmio_base = crate::mmio::iomap(paddr, mmio_size)?;
             let raw = serial_ns16550::DwApbUart::new_raw(mmio_base, clock_freq);
             serial = Some(erase_uart(raw));
             break;
@@ -143,12 +147,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             let stride = 1usize
                 .checked_shl(shift)
                 .ok_or_else(|| OnProbeError::other("NS16550 reg-shift exceeds address width"))?;
-            let raw = serial_ns16550::Ns16550::new_mmio(
-                mmio_base, clock_freq, stride, reg_width, variant,
-            )
-            .map_err(|error| {
-                OnProbeError::other(format!("invalid NS16550 MMIO layout: {error}"))
-            })?;
+            let mmio_size = base_reg
+                .size
+                .and_then(|size| usize::try_from(size).ok())
+                .ok_or_else(|| OnProbeError::other("invalid NS16550 MMIO resource size"))?;
+            let raw = map_ns16550(paddr, mmio_size, clock_freq, stride, reg_width, variant)?;
             serial = Some(erase_uart(raw));
             break;
         }
@@ -239,16 +242,39 @@ fn acpi_mmio_serial(info: &AcpiInfo<'_>) -> Result<AcpiSerialResource, OnProbeEr
             info.path, range.base
         ))
     })?;
-    let mmio_size = usize::try_from(range.size).unwrap_or(0x1000).max(0x1000);
-    let mmio_base = crate::mmio::iomap(paddr, mmio_size)?;
-    let raw = serial_ns16550::Ns16550::new_mmio(
-        mmio_base,
+    let mmio_size = usize::try_from(range.size)
+        .map_err(|_| OnProbeError::other("invalid ACPI NS16550 MMIO resource size"))?;
+    let raw = map_ns16550(
+        paddr,
+        mmio_size,
         ACPI_NS16550_CLOCK,
         ACPI_NS16550_REG_WIDTH,
-        1,
+        ACPI_NS16550_REG_WIDTH,
         serial_ns16550::UartVariant::Standard,
-    )
-    .map_err(|error| OnProbeError::other(format!("invalid ACPI NS16550 MMIO layout: {error}")))?;
+    )?;
     let serial = erase_uart(raw);
     Ok(AcpiSerialResource { serial, paddr })
+}
+
+fn map_ns16550(
+    paddr: usize,
+    mmio_size: usize,
+    clock: u32,
+    stride: usize,
+    width: usize,
+    variant: serial_ns16550::UartVariant,
+) -> Result<serial_ns16550::Ns16550<serial_ns16550::Mmio>, OnProbeError> {
+    let required_len = serial_ns16550::Mmio::required_len(stride, width)
+        .map_err(|error| OnProbeError::other(format!("invalid NS16550 MMIO layout: {error}")))?;
+    if required_len > mmio_size || paddr.checked_add(mmio_size).is_none() {
+        return Err(OnProbeError::other("invalid NS16550 MMIO resource range"));
+    }
+
+    let mmio_base = crate::mmio::iomap(paddr, mmio_size)?;
+    // SAFETY: the firmware resource describes this UART and iomap retains the
+    // register mapping. The runtime serial device coordinates endpoint access.
+    unsafe {
+        serial_ns16550::Ns16550::new_mmio(mmio_base, mmio_size, clock, stride, width, variant)
+    }
+    .map_err(|error| OnProbeError::other(format!("invalid NS16550 MMIO layout: {error}")))
 }

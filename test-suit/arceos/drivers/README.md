@@ -1,6 +1,6 @@
 # ArceOS驱动集成测试
 
-本目录是normal方式的驱动测试程序，实际驱动实现位于仓库根drivers目录。x86_64 使用 Q35、cpu=max、UEFI、512MiB、SMP1，一次启动执行 ACPICA 和 HDA；RISC-V 使用 virt APLIC/IMSIC、256MiB、SMP2，一次启动执行 APLIC。两个架构共用 freestanding/无内核TLS 测试包，按当前架构选择批次。
+本目录通过 normal 方式运行驱动测试，驱动实现位于仓库根目录的 `drivers/`。x86_64 使用 Q35、UEFI、512 MiB 和单核，一次启动执行 ACPICA 和 HDA。RISC-V 使用双核 QEMU virt、256 MiB，分别在 PLIC 和 APLIC/IMSIC 模式下启动。两个架构共用 freestanding 测试包，按架构选择批次。
 
 ```text
 drivers/
@@ -11,11 +11,13 @@ drivers/
 │   ├── main.rs                 唯一薄入口，整批结束后退出
 │   ├── acpica.rs               原ACPICA测试，run入口
 │   ├── intel_hda.rs            原HDA测试，run入口
-│   └── aplic.rs                APLIC真实IRQ与完成令牌，run入口
+│   ├── aplic.rs                APLIC真实IRQ与完成令牌，run入口
+│   └── plic.rs                 PLIC宿主线路与客户机批量申请
 ├── build-x86_64-unknown-none.toml
 ├── qemu-x86_64.toml             共同运行环境及波形捕获
 ├── build-riscv64gc-unknown-none-elf.toml
 ├── qemu-riscv64.toml             双核APLIC/IMSIC运行环境
+├── qemu-riscv64-plic.toml        双核PLIC运行环境
 ├── APLIC.md                     来源生命周期与证明边界
 └── README.md
 
@@ -25,6 +27,9 @@ x86-q35                         1次启动，2项
 
 riscv-aia                       1次启动，1项
 └── aplic                        完成令牌、延期屏蔽与来源退休
+
+riscv-plic                      1次启动，1项
+└── plic-ownership               宿主线路归属和批量申请回滚
 ```
 
 ## 登记与执行
@@ -41,7 +46,7 @@ ACPICA运行真实解释器和ArceOS线程/分配器/计时，输入为合成ACP
 
 HDA通过公共Playback接口运行QEMU设备，保留配置、提交拷贝、完成顺序、排空、取消和shutdown后的状态检查。原48kHz、双声道、1024帧/周期、4周期保持。内核打印INTEL_HDA_QEMU_OK后，宿主还须检查完整4096帧WAV的格式、声道、内容和顺序，输出PCM_WAVEFORM_OK；只看内核标记不能认定整项成功。
 
-APLIC 的 `src/aplic.rs::run()` 保留双核真实中断、opaque claim 析构与槽冲突、延期屏蔽、禁用后完成及退休后迟到完成断言，正常返回后才发布整批完成标记；详见 [APLIC 来源生命周期](APLIC.md)。RISC-V APLIC/IMSIC 与 x86 Q35 音频设备不能在同一架构镜像内运行，因此保留两个架构批次。迁移后共有三项测试、两个批次，各目标默认仍只启动一次，未增加该目标的启动数。
+两个 RISC-V 批次都验证宿主登记、失败回滚、共享线路释放和整批申请的归属检查。APLIC 验证真实 MSI、延期完成和退休后迟到完成。PLIC 用 VirtIO RNG 生成真实中断，验证退休会完成原认领，迟到令牌不会重复写入完成寄存器。两种控制器各启动一次。 [APLIC 来源生命周期](APLIC.md)
 
 单项ACPICA仍保留共同音频设备和捕获后端，但不调用HDA，不要求不存在的音频输出；选择HDA或整批必须有有效host_pcm_waveform配置并验证。临时WAV在target下独占创建，成功/失败后均清理，不手写第二个-audiodev。波形验证不代表物理声卡可听效果，无需扬声器。
 
@@ -64,14 +69,16 @@ cargo xtask arceos test qemu --arch x86_64 --test-group drivers --test-case inte
 cargo xtask arceos test qemu --arch x86_64 --test-group drivers --list
 cargo xtask arceos test qemu --arch x86_64 --test-group drivers --plan
 
-# RISC-V 单项仍由统一声明执行器选择，与默认 riscv-aia 批次均只启动一次
+# RISC-V 默认执行两个控制器批次，也可单独选择
+cargo xtask arceos test qemu --arch riscv64 --test-group drivers
 cargo xtask arceos test qemu --arch riscv64 --test-group drivers --test-case aplic
+cargo xtask arceos test qemu --arch riscv64 --test-group drivers --test-case riscv-plic
 cargo xtask arceos test qemu --arch riscv64 --test-group drivers --plan
 ```
 
 plan输出JSON，展示架构、所选成员、features、生成环境/构建身份、配置及是否验证波形。保存文件请写已忽略的target目录。未知、空和不支持架构的显式选择报错，不静默跳过。
 
-CI的drivers组仍使用原ubuntu-base runner和空cache_key，只执行一个共同批次，不重复跑单项。PCI/音频轮询的时间要求不放宽，不改模拟器制造通过；共享宿主长停顿导致的真实失败须记录首错。
+x86 驱动 CI 使用 `ubuntu-base` 执行 Q35 批次。RISC-V 驱动由处理器契约作业执行 PLIC 和 APLIC 批次。各任务的 `cache_key` 为空。
 
 ## 新增、修改和删除
 

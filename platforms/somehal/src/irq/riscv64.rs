@@ -2,7 +2,7 @@
 
 use ax_sync::RawSpinLock;
 
-use super::IrqError;
+use super::{IrqError, IrqId};
 
 /// A detached external interrupt completion, consumable on any host CPU.
 ///
@@ -85,16 +85,37 @@ impl RiscvExternalIrqClaimSlot {
     }
 }
 
-/// Configures and enables a guest-owned APLIC source from physical firmware.
-/// The source stays at this target until retired, and cannot be reused before
-/// platform reset. This operation does not provide device DMA isolation.
-pub fn activate_guest_aplic_source(
-    source: u32,
+/// Configures and enables guest-owned APLIC sources after validating the whole batch.
+/// The sources stay at this target until retired and cannot be reused before reset.
+pub fn activate_guest_aplic_sources(
+    sources: &[(u32, Option<rdif_intc::Trigger>)],
     target_cpu: usize,
-    trigger: rdif_intc::Trigger,
 ) -> Result<(), IrqError> {
+    crate::arch::activate_guest_aplic_sources(sources, target_cpu)
+}
+
+/// Routes and enables PLIC sources after validating the whole batch.
+pub fn activate_guest_plic_sources(
+    sources: &[(u32, Option<rdif_intc::Trigger>)],
+    target_cpu: usize,
+) -> Result<(), IrqError> {
+    crate::arch::activate_guest_plic_sources(sources, target_cpu)
+}
+
+/// Reserves an external line until the corresponding host action is removed.
+pub fn claim_host_external_line(irq: IrqId) -> Result<(), IrqError> {
+    crate::arch::claim_host_external_line(irq)
+}
+
+/// Releases a reservation made for a host action.
+pub fn release_host_external_line(irq: IrqId) {
+    crate::arch::release_host_external_line(irq);
+}
+
+/// Finishes an in-service guest claim before masking its PLIC source until reset.
+pub fn deactivate_guest_plic_source(source: u32) -> Result<(), IrqError> {
     let source = core::num::NonZeroU32::new(source).ok_or(IrqError::InvalidIrq)?;
-    crate::arch::activate_guest_aplic_source(source, target_cpu, trigger)
+    crate::arch::deactivate_guest_plic_source(source)
 }
 
 /// Masks and permanently retires a guest-owned APLIC source until reset.

@@ -31,12 +31,44 @@ pub(crate) fn complete_external_claim(claim: ExternalIrqClaim) -> bool {
     }
 }
 
-pub(crate) fn activate_guest_aplic_source(
-    source: core::num::NonZeroU32,
+pub(crate) fn activate_guest_aplic_sources(
+    sources: &[(u32, Option<rdif_intc::Trigger>)],
     target_cpu: usize,
-    trigger: rdif_intc::Trigger,
 ) -> Result<(), IrqError> {
-    aia::activate_guest_source(source, target_cpu, trigger)
+    aia::activate_guest_sources(sources, target_cpu)
+}
+
+pub(crate) fn activate_guest_plic_sources(
+    sources: &[(u32, Option<rdif_intc::Trigger>)],
+    target_cpu: usize,
+) -> Result<(), IrqError> {
+    plic::activate_guest_sources(sources, target_cpu)
+}
+
+pub(crate) fn claim_host_external_line(irq: IrqId) -> Result<(), IrqError> {
+    use crate::irq::{IrqDomainKind, domain_is_kind};
+
+    if domain_is_kind(irq.domain, IrqDomainKind::RiscvPlic) {
+        plic::claim_host_line(irq.hwirq)
+    } else if domain_is_kind(irq.domain, IrqDomainKind::RiscvAplic) {
+        aia::claim_host_line(irq.hwirq)
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn release_host_external_line(irq: IrqId) {
+    use crate::irq::{IrqDomainKind, domain_is_kind};
+
+    if domain_is_kind(irq.domain, IrqDomainKind::RiscvPlic) {
+        plic::release_host_line(irq.hwirq);
+    } else if domain_is_kind(irq.domain, IrqDomainKind::RiscvAplic) {
+        aia::release_host_line(irq.hwirq);
+    }
+}
+
+pub(crate) fn deactivate_guest_plic_source(source: core::num::NonZeroU32) -> Result<(), IrqError> {
+    plic::deactivate_guest_source(source)
 }
 
 pub(crate) fn retire_guest_aplic_source(source: core::num::NonZeroU32) -> Result<(), IrqError> {

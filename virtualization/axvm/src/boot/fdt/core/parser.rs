@@ -15,7 +15,7 @@
 //! Architecture-neutral FDT parsing and guest configuration enrichment.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     format,
     string::{String, ToString},
     vec::Vec,
@@ -25,9 +25,9 @@ use axvmconfig::{
     GuestConfig, GuestType, HostDeviceAssignment, ReservedAddressConfig, VmMemConfig,
     VmMemMappingType,
 };
-use fdt_edit::{Fdt, Node, NodeType, PciRange, PciSpace};
+use fdt_edit::{Fdt, Node, NodeId, NodeType, PciRange, PciSpace};
 
-use super::policy::DecodedInterrupt;
+use super::{policy::DecodedInterrupt, references};
 use crate::{config::*, *};
 
 const PAGE_SIZE_4K: usize = 0x1000;
@@ -284,6 +284,7 @@ pub fn reserve_excluded_device_ranges(
     }
     let mut reserved_ranges = Vec::new();
     let decode_interrupt = super::selected_guest_fdt_policy().decode_interrupt;
+    let handles = references::phandle_index(&fdt)?;
 
     for node_id in fdt.iter_node_ids() {
         let node_path = fdt.path_of(node_id);
@@ -299,7 +300,15 @@ pub fn reserve_excluded_device_ranges(
         {
             continue;
         }
-        exclude_node_interrupt_sources(vm_cfg, &fdt, node_id, decode_interrupt)?;
+        if let Some(view) = fdt.view_typed(node_id) {
+            for interrupt in references::interrupts(&fdt, &handles, view)? {
+                if let Some(interrupt) =
+                    decode_host_controller_interrupt(&fdt, &handles, &interrupt, decode_interrupt)?
+                {
+                    vm_cfg.exclude_pass_through_irq_source(interrupt.source);
+                }
+            }
+        }
         for reg in node_regs(&fdt, node_id) {
             push_reserved_address_range(
                 &mut reserved_ranges,
@@ -368,33 +377,15 @@ pub(super) fn reserve_host_interrupt_controllers(
     Ok(())
 }
 
-fn exclude_node_interrupt_sources(
-    vm_cfg: &mut AxVMConfig,
-    fdt: &Fdt,
-    node_id: usize,
-    decode_interrupt: fn(&[u32]) -> AxVmResult<Option<DecodedInterrupt>>,
-) -> AxVmResult {
-    let Some(view) = fdt.view_typed(node_id) else {
-        return Ok(());
-    };
-    for interrupt in view.interrupts() {
-        if let Some(interrupt) =
-            decode_host_controller_interrupt(fdt, &interrupt, decode_interrupt)?
-        {
-            vm_cfg.exclude_pass_through_irq_source(interrupt.source);
-        }
-    }
-    Ok(())
-}
-
 fn decode_host_controller_interrupt(
     fdt: &Fdt,
+    handles: &BTreeMap<u32, NodeId>,
     interrupt: &fdt_edit::InterruptRef,
     decode_interrupt: fn(&[u32]) -> AxVmResult<Option<DecodedInterrupt>>,
 ) -> AxVmResult<Option<DecodedInterrupt>> {
-    let controller = fdt
-        .get_by_phandle_id(interrupt.interrupt_parent)
-        .and_then(|id| fdt.node(id))
+    let controller = handles
+        .get(&interrupt.interrupt_parent.raw())
+        .and_then(|&id| fdt.node(id))
         .ok_or_else(|| AxVmError::invalid_config("physical interrupt parent is missing"))?;
     // A guest-owned secondary controller demultiplexes its own pins. Only its
     // upstream host-controller line may be forwarded or excluded here.
@@ -830,6 +821,12 @@ pub fn parse_vm_interrupt(
         AxVmError::invalid_config(format!("invalid host interrupt firmware: {error:?}"))
     })?;
     let physical_fdt = host_fdt.as_ref().unwrap_or(&fdt);
+    let physical_handles = references::phandle_index(physical_fdt)?;
+    #[cfg(target_arch = "riscv64")]
+    let guest_handles = host_fdt
+        .as_ref()
+        .map(|_| references::phandle_index(&fdt))
+        .transpose()?;
     let selected_paths = super::device::find_all_passthrough_devices(vm_cfg, &fdt)?
         .into_iter()
         .collect::<BTreeSet<_>>();
@@ -853,6 +850,8 @@ pub fn parse_vm_interrupt(
             || path == "/cpus"
             || path.starts_with("/cpus/")
             || name.starts_with("memory")
+            || is_reserved_memory_path(&path)
+            || is_partition_like_node(node, &path)
             || super::interrupt::is_host_owned_interrupt_provider(node)
             || host_owned_serial_paths.contains(&path)
         {
@@ -871,10 +870,15 @@ pub fn parse_vm_interrupt(
                 "passthrough device {path} has no host firmware view"
             ))
         })?;
-        for interrupt in view.interrupts() {
-            if let Some(interrupt) =
-                decode_host_controller_interrupt(physical_fdt, &interrupt, decode_interrupt)?
-            {
+        #[cfg(target_arch = "riscv64")]
+        let first_route = passthrough_interrupts.len();
+        for interrupt in references::interrupts(physical_fdt, &physical_handles, view)? {
+            if let Some(interrupt) = decode_host_controller_interrupt(
+                physical_fdt,
+                &physical_handles,
+                &interrupt,
+                decode_interrupt,
+            )? {
                 if vm_cfg
                     .excluded_passthrough_irq_sources()
                     .contains(&interrupt.source)
@@ -886,6 +890,14 @@ pub fn parse_vm_interrupt(
                 }
                 passthrough_interrupts.push((path.clone(), interrupt));
             }
+        }
+        #[cfg(target_arch = "riscv64")]
+        if let Some(handles) = &guest_handles {
+            let physical_sources = passthrough_interrupts[first_route..]
+                .iter()
+                .map(|(_, irq)| irq.source)
+                .collect::<Vec<_>>();
+            validate_guest_plic_sources(&fdt, handles, node_id, &path, &physical_sources)?;
         }
     }
 
@@ -903,6 +915,39 @@ pub fn parse_vm_interrupt(
 
     Ok(())
 }
+
+#[cfg(target_arch = "riscv64")]
+fn validate_guest_plic_sources(
+    fdt: &Fdt,
+    handles: &BTreeMap<u32, NodeId>,
+    node: NodeId,
+    path: &str,
+    physical_sources: &[u32],
+) -> AxVmResult {
+    let guest_device = fdt.view_typed(node).ok_or_else(|| {
+        AxVmError::invalid_config(format!("passthrough device {path} is missing"))
+    })?;
+    let guest_sources = references::interrupts(fdt, handles, guest_device)?
+        .into_iter()
+        .filter_map(|interrupt| {
+            let &parent = handles.get(&interrupt.interrupt_parent.raw())?;
+            super::interrupt::is_plic_provider(fdt.node(parent)?).then_some(interrupt.specifier)
+        })
+        .collect::<Vec<_>>();
+    // The bridge injects the physical source number into the virtual PLIC.
+    if !guest_sources
+        .iter()
+        .map(Vec::as_slice)
+        .eq(physical_sources.iter().map(core::slice::from_ref))
+    {
+        return Err(AxVmError::invalid_config(format!(
+            "passthrough device {path} guest PLIC interrupts {guest_sources:?} must match host \
+             external interrupt sources {physical_sources:?}"
+        )));
+    }
+    Ok(())
+}
+
 pub fn update_provided_fdt(
     provided_dtb: &[u8],
     host_dtb: Option<&[u8]>,
@@ -2097,6 +2142,52 @@ mod tests {
         };
 
         reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
+        #[cfg(target_arch = "riscv64")]
+        for (controller, physical_dtb) in [("PLIC", dtb.as_slice()), ("APLIC", host_dtb.as_ref())] {
+            for (property, sources) in [
+                ("interrupts", &[8][..]),
+                ("interrupts", &[9, 8][..]),
+                ("interrupts", &[][..]),
+                ("interrupts-extended", &[1, 8][..]),
+            ] {
+                let mut guest = Fdt::from_bytes(&dtb).unwrap();
+                let ethernet = guest.get_by_path_id("/ethernet@10001000").unwrap();
+                guest
+                    .node_mut(ethernet)
+                    .unwrap()
+                    .set_property(prop_u32_list(property, sources));
+                let result = parse_vm_interrupt(
+                    &mut vm_cfg,
+                    &crate_cfg,
+                    guest.encode().as_ref(),
+                    Some(physical_dtb),
+                );
+                assert!(
+                    result.is_err(),
+                    "{controller} accepted guest PLIC sources {sources:?}"
+                );
+                assert!(vm_cfg.pass_through_irqs().is_empty());
+            }
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            host_fdt
+                .node_mut(ethernet)
+                .unwrap()
+                .set_property(prop_u32_list("interrupts", &[]));
+            assert!(
+                parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &dtb, Some(&host_fdt.encode()))
+                    .is_err(),
+                "accepted a guest PLIC source without a physical route"
+            );
+            assert!(vm_cfg.pass_through_irqs().is_empty());
+            parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &dtb, Some(&dtb)).unwrap();
+            let [plic_irq] = vm_cfg.pass_through_irqs() else {
+                panic!("matching host PLIC source must create exactly one route");
+            };
+            assert_eq!(plic_irq.source, 9);
+            assert!(plic_irq.controller_trigger.is_none());
+        }
         parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &dtb, Some(host_dtb.as_ref())).unwrap();
         parse_passthrough_devices_address(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
 
@@ -2130,9 +2221,11 @@ mod tests {
             node.set_property(super::super::tree::prop_string("compatible", compatible));
             node.set_property(prop_u32("#interrupt-cells", device_irq.len() as u32));
             let ethernet = fdt.get_by_path_id("/ethernet@10001000").unwrap();
-            fdt.node_mut(ethernet)
-                .unwrap()
-                .set_property(prop_u32_list("interrupts", &device_irq));
+            let node = fdt.node_mut(ethernet).unwrap();
+            node.remove_property("interrupts");
+            let mut extended = vec![1];
+            extended.extend_from_slice(&device_irq);
+            node.set_property(prop_u32_list("interrupts-extended", &extended));
 
             let gpio = fdt.get_by_path_id("/gpio@10002000").unwrap();
             let node = fdt.node_mut(gpio).unwrap();
@@ -2208,6 +2301,22 @@ mod tests {
         crate_cfg.base.phys_cpu_ids = Some(vec![0]);
 
         let guest_dtb = setup_guest_fdt_from_vmm(&dtb, &mut vm_cfg, &crate_cfg).unwrap();
+        #[cfg(target_arch = "riscv64")]
+        {
+            let mut guest = Fdt::from_bytes(&guest_dtb).unwrap();
+            let reserved = guest.add_node(guest.root_id(), Node::new("reserved-memory"));
+            let node = guest.node_mut(reserved).unwrap();
+            node.set_property(prop_u32("#address-cells", 2));
+            node.set_property(prop_u32("#size-cells", 2));
+            node.set_property(fdt_edit::Property::new("ranges", vec![]));
+            let buffer = guest.add_node(reserved, Node::new("guest-buffer@90000000"));
+            guest
+                .view_typed_mut(buffer)
+                .unwrap()
+                .set_regs(&[RegInfo::new(0x9000_0000, Some(0x1000))]);
+            parse_vm_interrupt(&mut vm_cfg, &crate_cfg, guest.encode().as_ref(), Some(&dtb))
+                .unwrap();
+        }
         parse_passthrough_devices_address(&mut vm_cfg, &crate_cfg, &guest_dtb).unwrap();
 
         for (base, length) in [

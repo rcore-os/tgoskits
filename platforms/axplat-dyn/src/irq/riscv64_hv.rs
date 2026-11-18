@@ -108,31 +108,27 @@ fn resolve_external_irq(source: u32) -> Result<IrqId, IrqError> {
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 #[impl_plat_interface]
 impl RiscvHvIrqIf for IrqIfImpl {
-    fn activate_guest_external_source(
-        source: u32,
+    fn activate_guest_external_sources(
+        sources: &[(u32, Option<ControllerIrqTrigger>)],
         target_cpu: usize,
-        trigger: Option<ControllerIrqTrigger>,
     ) -> Result<(), IrqError> {
-        let irq = resolve_external_irq(source)?;
+        let Some(&(first_source, _)) = sources.first() else {
+            return Ok(());
+        };
+        if sources
+            .iter()
+            .any(|&(source, _)| !(1..RISCV_EXTERNAL_SOURCE_COUNT).contains(&(source as usize)))
+        {
+            return Err(IrqError::InvalidIrq);
+        }
+        let irq = resolve_external_irq(first_source)?;
         if !ax_plat::irq::is_cpu_online(target_cpu) {
             return Err(IrqError::CpuOffline);
         }
         if somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::RiscvAplic) {
-            return somehal::irq::activate_guest_aplic_source(
-                source,
-                target_cpu,
-                trigger.ok_or(IrqError::Unsupported)?,
-            );
+            return somehal::irq::activate_guest_aplic_sources(sources, target_cpu);
         }
-        somehal::irq::irq_set_affinity(
-            irq,
-            somehal::irq::IrqAffinity::Fixed { cpu_id: target_cpu },
-        )?;
-        if let Err(error) = somehal::irq::irq_set_enable(irq, true) {
-            let _ = somehal::irq::irq_set_affinity(irq, somehal::irq::IrqAffinity::Any);
-            return Err(error);
-        }
-        Ok(())
+        somehal::irq::activate_guest_plic_sources(sources, target_cpu)
     }
 
     fn deactivate_guest_external_source(source: u32) -> Result<(), IrqError> {
@@ -140,8 +136,7 @@ impl RiscvHvIrqIf for IrqIfImpl {
         if somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::RiscvAplic) {
             return somehal::irq::retire_guest_aplic_source(source);
         }
-        somehal::irq::irq_set_enable(irq, false)?;
-        somehal::irq::irq_set_affinity(irq, somehal::irq::IrqAffinity::Any)
+        somehal::irq::deactivate_guest_plic_source(source)
     }
 
     fn complete_guest_external_source(source: u32) -> bool {

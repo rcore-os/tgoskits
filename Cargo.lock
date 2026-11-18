@@ -374,6 +374,7 @@ dependencies = [
  "ax-sync",
  "rdrive",
  "somehal",
+ "virtio-drivers",
 ]
 
 [[package]]

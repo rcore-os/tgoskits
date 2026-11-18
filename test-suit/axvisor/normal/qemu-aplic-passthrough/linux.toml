@@ -3,7 +3,8 @@ id = 1
 name = "linux-aplic-passthrough"
 guest_type = "virtualized"
 cpu_num = 1
-phys_cpu_ids = [0]
+# The guest hart ID is outside the two-CPU host topology.
+phys_cpu_ids = [2]
 phys_cpu_sets = [2]
 
 [kernel]

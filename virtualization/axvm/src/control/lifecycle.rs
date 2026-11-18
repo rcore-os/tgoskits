@@ -95,6 +95,7 @@ impl Owner {
             joined_activations: vec![0; count],
             topology,
             failure: None,
+            retained_halt_started: false,
             pending_memory: None,
             memory_operation: None,
             retired_entries: 0,
@@ -313,9 +314,17 @@ impl Owner {
         if self.host_dma_blocker().is_none() {
             return self.stop(operation);
         }
-        // Architecture teardown can have partially failed. Retrying must not
-        // turn an unproven physical retirement into a successful shutdown.
-        if self.state == VmStatus::Failed {
+        #[cfg(all(feature = "fault-injection", target_arch = "aarch64"))]
+        tests::before_retained_shutdown(self);
+        // Only an earlier halt can leave architecture teardown incomplete.
+        // Failure during another operation still needs its execution stopped.
+        if self.state == VmStatus::Failed
+            && self
+                .run
+                .as_ref()
+                .expect("physical DMA run")
+                .retained_halt_started
+        {
             return Err(self
                 .last_failure
                 .clone()
@@ -332,6 +341,10 @@ impl Owner {
     }
 
     fn halt_retaining_run(&mut self, operation: OperationId) -> AxVmResult {
+        self.run
+            .as_mut()
+            .expect("physical DMA run")
+            .retained_halt_started = true;
         self.halt_run(operation)?;
         // No guest or virtual worker can access these ports now. Keep the
         // run, page tables, DMA backing and IVC mappings until board reset.

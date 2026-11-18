@@ -73,6 +73,7 @@ struct RunState {
     joined_activations: Vec<u64>,
     topology: Vec<(usize, u64)>,
     failure: Option<AxVmError>,
+    retained_halt_started: bool,
     pending_memory: Option<memory::PreparedMemoryUpdate>,
     memory_operation: Option<OperationId>,
     retired_entries: u64,

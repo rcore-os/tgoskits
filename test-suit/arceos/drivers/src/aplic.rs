@@ -2,24 +2,23 @@ extern crate ax_std as std;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_plat::irq::{ControllerIrqTrigger, HwIrq, IrqError, IrqId, riscv64_hv as hv};
+use ax_plat::irq::{
+    self as host, AutoEnable, ControllerIrqTrigger, HwIrq, IrqError, IrqId, IrqRequest, IrqReturn,
+    ShareMode, riscv64_hv as hv,
+};
 
 // QEMU virt leaves source 42 unwired; this test exclusively owns it.
 const SOURCE: u32 = 42;
 
 static RECEIVED: AtomicUsize = AtomicUsize::new(0);
 static IRQ_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
-struct Ingress;
-#[ax_crate_interface::impl_interface]
-impl hv::RiscvHvIrqSink for Ingress {
-    fn publish_physical_external_claim(source: u32) -> bool {
-        if source != SOURCE {
-            return false;
-        }
-        IRQ_CPU.store(ax_hal::percpu::this_cpu_id(), Ordering::Relaxed);
-        RECEIVED.fetch_add(1, Ordering::Release);
-        true
+pub(super) fn publish_physical_external_claim(source: u32) -> bool {
+    if source != SOURCE {
+        return false;
     }
+    IRQ_CPU.store(ax_hal::percpu::this_cpu_id(), Ordering::Relaxed);
+    RECEIVED.fetch_add(1, Ordering::Release);
+    true
 }
 fn wait(expected: usize) {
     let began = std::time::Instant::now();
@@ -87,6 +86,8 @@ pub fn run() {
         somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvAplic).unwrap();
     let host_irq = IrqId::new(domain, HwIrq(45));
     let affinity = |cpu_id| somehal::irq::IrqAffinity::Fixed { cpu_id };
+    let edge = Some(ControllerIrqTrigger::EdgeRising);
+    let activate = |source, cpu| hv::activate_guest_external_sources(&[(source, edge)], cpu);
     somehal::irq::intc_by_domain(domain)
         .unwrap()
         .lock()
@@ -96,6 +97,11 @@ pub fn run() {
             somehal::irq::rdif_intc::Trigger::EdgeRising,
         ))
         .unwrap();
+    assert_eq!(
+        activate(45, 0),
+        Err(IrqError::Busy),
+        "a guest took over a configured host source before its first enable"
+    );
     // Initial placement is free until delivery first opens.
     somehal::irq::irq_set_affinity(host_irq, affinity(1)).unwrap();
     somehal::irq::irq_set_affinity(host_irq, affinity(0)).unwrap();
@@ -113,6 +119,12 @@ pub fn run() {
         );
         assert_eq!(target(45), original_target);
         somehal::irq::irq_set_affinity(host_irq, somehal::irq::IrqAffinity::Any).unwrap();
+        assert_eq!(
+            activate(45, 0),
+            Err(IrqError::Busy),
+            "a guest took ownership of a masked host source on the same CPU"
+        );
+        assert!(!enabled(45));
         somehal::irq::irq_set_enable(host_irq, true).unwrap();
         let began = std::time::Instant::now();
         loop {
@@ -131,16 +143,34 @@ pub fn run() {
             "completing one MSI does not establish migration quiescence"
         );
         assert_eq!(
-            hv::activate_guest_external_source(45, 1, Some(ControllerIrqTrigger::EdgeRising)),
+            activate(45, 1),
             Err(IrqError::Busy),
             "guest activation migrated a previously opened host source"
         );
         assert_eq!(target(45), original_target);
     }
-    for source in [43, 44] {
-        hv::activate_guest_external_source(source, 0, Some(ControllerIrqTrigger::EdgeRising))
-            .unwrap();
-    }
+    let dormant = IrqId::new(domain, HwIrq(43));
+    let request = || {
+        IrqRequest::new(|_| IrqReturn::Handled)
+            .share_mode(ShareMode::Shared)
+            .auto_enable(AutoEnable::No)
+    };
+    let first = host::request_irq(dormant, request()).unwrap();
+    let last = host::request_irq(dormant, request()).unwrap();
+    assert_eq!(
+        host::request_irq(dormant, request().share_mode(ShareMode::Exclusive)),
+        Err(IrqError::Busy)
+    );
+    host::free_irq(first).unwrap();
+    assert_eq!(activate(43, 0), Err(IrqError::Busy));
+    host::free_irq(last).unwrap();
+    assert_eq!(
+        hv::activate_guest_external_sources(&[(43, edge), (45, edge)], 0),
+        Err(IrqError::Busy)
+    );
+    assert!(!enabled(43), "a rejected batch opened a free source");
+    hv::activate_guest_external_sources(&[(43, edge), (44, edge)], 0)
+        .expect("a rejected batch must leave its free sources available");
     // Exercise ownership through real supervisor MSI claims. IRQ exclusion
     // prevents the runtime dispatcher from taking these CPU0-targeted sources.
     {
@@ -186,14 +216,18 @@ pub fn run() {
         }
     }
     let irq = IrqId::new(domain, HwIrq(SOURCE));
-    hv::activate_guest_external_source(SOURCE, 1, Some(ControllerIrqTrigger::EdgeRising)).unwrap();
+    somehal::irq::irq_set_enable(irq, false).unwrap();
+    activate(SOURCE, 1).expect("masking an unclaimed APLIC line must leave it available");
+    assert_eq!(
+        somehal::irq::irq_set_enable(irq, false),
+        Err(IrqError::Busy)
+    );
     assert!(enabled(SOURCE));
-    // A claimed source stays masked even if a remote caller enables it.
+    // Only guest completion can unmask a deferred source.
     inject(SOURCE);
     wait(1);
     assert!(!enabled(SOURCE));
-    somehal::irq::irq_set_enable(irq, false).unwrap();
-    somehal::irq::irq_set_enable(irq, true).unwrap();
+    assert_eq!(somehal::irq::irq_set_enable(irq, true), Err(IrqError::Busy));
     assert!(!enabled(SOURCE), "enable bypassed a deferred completion");
     assert!(hv::complete_guest_external_source(SOURCE));
     assert!(
@@ -201,24 +235,13 @@ pub fn run() {
         "completion consumed twice"
     );
     assert!(enabled(SOURCE));
-    // Completing a claim must not undo an explicit disable.
-    inject(SOURCE);
-    wait(2);
-    assert!(!enabled(SOURCE));
-    somehal::irq::irq_set_enable(irq, false).unwrap();
-    assert!(hv::complete_guest_external_source(SOURCE));
-    assert!(!enabled(SOURCE), "EOI undid disable");
-    somehal::irq::irq_set_enable(irq, true).unwrap();
     // A late EOI consumes its claim but cannot revive a retired source.
     inject(SOURCE);
-    wait(3);
+    wait(2);
     hv::deactivate_guest_external_source(SOURCE).unwrap();
     assert!(hv::complete_guest_external_source(SOURCE));
     assert!(!enabled(SOURCE), "old EOI undid source retirement");
     assert_eq!(somehal::irq::irq_set_enable(irq, true), Err(IrqError::Busy));
-    assert_eq!(
-        hv::activate_guest_external_source(SOURCE, 1, Some(ControllerIrqTrigger::EdgeRising)),
-        Err(IrqError::Busy)
-    );
+    assert_eq!(activate(SOURCE, 1), Err(IrqError::Busy));
     std::println!("APLIC_DEFERRED_STATE_OK");
 }

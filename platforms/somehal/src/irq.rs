@@ -17,8 +17,9 @@ use crate::{arch::Plat, common::PlatOp};
 mod riscv64;
 #[cfg(target_arch = "riscv64")]
 pub use riscv64::{
-    RiscvExternalIrqClaim, RiscvExternalIrqClaimSlot, activate_guest_aplic_source,
-    retire_guest_aplic_source,
+    RiscvExternalIrqClaim, RiscvExternalIrqClaimSlot, activate_guest_aplic_sources,
+    activate_guest_plic_sources, claim_host_external_line, deactivate_guest_plic_source,
+    release_host_external_line, retire_guest_aplic_source,
 };
 
 /// CPU-local interrupt domain for architecture trap causes such as timers/IPIs.
@@ -343,6 +344,7 @@ impl ActiveIrq {
     }
 
     /// Transfers this external interrupt's completion to the hypervisor.
+    /// A PLIC claim can be deferred only for an activated guest source.
     /// APLIC is masked until the returned claim is completed. A duplicate MSI
     /// cannot acquire the already outstanding completion responsibility.
     #[cfg(target_arch = "riscv64")]

@@ -30,6 +30,12 @@ pub(super) fn is_host_owned_interrupt_provider(node: &fdt_edit::Node) -> bool {
             }))
 }
 
+#[cfg(target_arch = "riscv64")]
+pub(super) fn is_plic_provider(node: &fdt_edit::Node) -> bool {
+    node.get_property("interrupt-controller").is_some()
+        && node.compatibles().any(plic::is_supported)
+}
+
 /// Identifies supported machine controllers independently of firmware node names.
 pub(super) fn is_machine_interrupt_provider(node: &fdt_edit::Node) -> bool {
     node.compatibles()

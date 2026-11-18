@@ -19,6 +19,7 @@ const FAILED_VM: usize = 99;
 const ENTRY: usize = 0x4000_0000;
 const MAILBOX: usize = ENTRY + 0x1000;
 static FAIL_START: AtomicBool = AtomicBool::new(false);
+static FAIL_BEFORE_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 static FAILED_SIGNALS: Mutex<Option<Weak<RunSignals>>> = Mutex::new(None);
 
 pub(super) fn after_start(owner: &Owner) -> AxVmResult {
@@ -32,6 +33,17 @@ pub(super) fn after_start(owner: &Owner) -> AxVmResult {
         ));
     }
     Ok(())
+}
+
+pub(super) fn before_retained_shutdown(owner: &mut Owner) {
+    if owner.vm.id() == 102 && FAIL_BEFORE_SHUTDOWN.swap(false, Ordering::AcqRel) {
+        // A failed CPU_ON transfer can mark the run failed before queueing
+        // execution cleanup. Its other vCPUs still need to be joined.
+        owner.record_failure(AxVmError::invalid_state(
+            "test CPU_ON cleanup",
+            "injected failure before execution shutdown",
+        ));
+    }
 }
 
 // Position-independent, stackless guest. CPU0 starts CPU1 when requested,
@@ -226,6 +238,7 @@ mod cases {
             }
             let before = vm.snapshot();
             assert_eq!(before.cpu.running_vcpu_count, cpus);
+            FAIL_BEFORE_SHUTDOWN.store(cpus == 2, Ordering::Release);
             memory
                 .write_bytes((MAILBOX + 8).into(), &1u32.to_le_bytes())
                 .unwrap();
@@ -239,7 +252,17 @@ mod cases {
             }
             let after = vm.snapshot();
             assert_retained(&before, &after);
-            assert!(after.last_failure.is_none());
+            if cpus == 2 {
+                assert!(matches!(
+                    after.last_failure,
+                    Some(AxVmError::InvalidState {
+                        operation: "test CPU_ON cleanup",
+                        ..
+                    })
+                ));
+            } else {
+                assert!(after.last_failure.is_none());
+            }
             assert_eq!(after.run, Some(run), "DMA guest was restarted");
             assert!(memory.read_bytes(MAILBOX.into(), &mut [0; 4]).is_err());
             assert!(vm.start().unwrap().wait().is_err());

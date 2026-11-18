@@ -373,6 +373,14 @@ pub trait IrqOps {
         Err(IrqError::Unsupported)
     }
 
+    /// Reserves a line for one host action, including while the action is disabled.
+    fn claim_line(&self, _irq: IrqId) -> Result<(), IrqError> {
+        Ok(())
+    }
+
+    /// Releases one successful claim after rollback or removal of the action.
+    fn release_line(&self, _irq: IrqId) {}
+
     /// Enables or disables an IRQ line.
     fn set_enabled(&self, irq: IrqId, cpu: Option<CpuId>, enabled: bool) -> Result<(), IrqError>;
 

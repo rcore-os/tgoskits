@@ -38,6 +38,8 @@ pub(super) fn publish_physical_claim_from_irq(source: u32) -> bool {
 pub(super) struct PhysicalIrqBridge {
     shared: Arc<PhysicalBridgeShared>,
     bindings: Box<[Arc<PhysicalSourceBinding>]>,
+    sources: Box<[(u32, Option<ax_plat::irq::ControllerIrqTrigger>)]>,
+    target_cpu: usize,
     registrations: Mutex<Vec<PhysicalRouteRegistration>>,
     worker: Mutex<Option<ThreadHandle>>,
     running: AtomicBool,
@@ -61,6 +63,7 @@ impl PhysicalIrqBridge {
             stopping: AtomicBool::new(false),
         });
         let mut bindings = Vec::with_capacity(routes.len());
+        let mut sources = Vec::with_capacity(routes.len());
         for route in routes {
             let source = route.source as usize;
             if source == 0 || source >= PLIC_NUM_SOURCES {
@@ -86,17 +89,17 @@ impl PhysicalIrqBridge {
             bindings.push(Arc::new(PhysicalSourceBinding {
                 source,
                 trigger: route.trigger,
-                target_cpu,
-                controller_trigger: route.controller_trigger,
                 shared: shared.clone(),
                 accepting: AtomicBool::new(false),
-                activated: AtomicBool::new(false),
                 claim_state: AtomicU8::new(CLAIM_IDLE),
             }));
+            sources.push((route.source, route.controller_trigger));
         }
         Ok(Arc::new(Self {
             shared,
             bindings: bindings.into_boxed_slice(),
+            sources: sources.into_boxed_slice(),
+            target_cpu,
             registrations: Mutex::new(Vec::new()),
             worker: Mutex::new(None),
             running: AtomicBool::new(false),
@@ -134,9 +137,6 @@ impl PhysicalIrqBridge {
 
         let mut first_error = None;
         for binding in &self.bindings {
-            if !binding.activated.swap(false, Ordering::AcqRel) {
-                continue;
-            }
             if let Err(error) =
                 ax_plat::irq::riscv64_hv::deactivate_guest_external_source(binding.source as u32)
                 && first_error.is_none()
@@ -213,30 +213,19 @@ impl PhysicalIrqBridge {
 
         for binding in &self.bindings {
             binding.accepting.store(true, Ordering::Release);
-            if let Err(error) = ax_plat::irq::riscv64_hv::activate_guest_external_source(
-                binding.source as u32,
-                binding.target_cpu,
-                binding.controller_trigger,
-            ) {
-                binding.accepting.store(false, Ordering::Release);
-                return Err(AxVmError::interrupt(
-                    "activate RISC-V guest external IRQ source",
-                    std::format!("{error:?}"),
-                ));
-            }
-            binding.activated.store(true, Ordering::Release);
         }
-        Ok(())
+        ax_plat::irq::riscv64_hv::activate_guest_external_sources(&self.sources, self.target_cpu)
+            .map_err(|error| {
+                AxVmError::interrupt(
+                    "activate RISC-V guest external IRQs",
+                    std::format!("{error:?}"),
+                )
+            })
     }
 
     fn rollback_start(&self) -> AxVmResult {
         for binding in &self.bindings {
             binding.accepting.store(false, Ordering::Release);
-            if binding.activated.swap(false, Ordering::AcqRel) {
-                let _ = ax_plat::irq::riscv64_hv::deactivate_guest_external_source(
-                    binding.source as u32,
-                );
-            }
         }
         self.registrations.lock_unpoisoned().clear();
         let stop_result = self.stop_worker();
@@ -314,11 +303,8 @@ struct PhysicalBridgeShared {
 struct PhysicalSourceBinding {
     source: usize,
     trigger: InterruptTriggerMode,
-    target_cpu: usize,
-    controller_trigger: Option<ax_plat::irq::ControllerIrqTrigger>,
     shared: Arc<PhysicalBridgeShared>,
     accepting: AtomicBool,
-    activated: AtomicBool,
     claim_state: AtomicU8,
 }
 

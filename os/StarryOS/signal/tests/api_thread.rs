@@ -187,10 +187,19 @@ fn restore() {
     assert_eq!(action, SignalOSAction::NoFurtherAction);
 
     prepare_restore_context(&mut uctx);
+    // Model a difference between the saved signal frame and the current
+    // kernel-owned return state without entering the context.
+    #[cfg(target_arch = "riscv64")]
+    let return_status = {
+        uctx.sstatus.set_sum(false);
+        uctx.sstatus.bits()
+    };
     thr.restore(&mut vm(), &mut uctx).unwrap();
 
     assert_eq!(uctx.ip(), initial.ip());
     assert_eq!(uctx.sp(), initial.sp());
+    #[cfg(target_arch = "riscv64")]
+    assert_eq!(uctx.sstatus.bits(), return_status);
 }
 
 #[test]

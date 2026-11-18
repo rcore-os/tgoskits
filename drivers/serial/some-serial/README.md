@@ -73,7 +73,7 @@ concrete 驱动直接持有寄存器和状态；allocator 初始化前的 early 
 采用轮询还是中断；中断接管时，`rearm()` 会打开 MCR.OUT2 输出门控，同时保留固件的
 波特率、FIFO 和其他 MCR 位。
 
-构造参数 `register_stride` 表示相邻寄存器的字节间隔，`access_width` 表示每次总线访问的字节数（1、2 或 4），两者独立。设备树的 `reg-shift` 决定前者，`reg-io-width` 决定后者；例如 K3 使用步长 4 和宽度 4，字节访问但四字节间隔的 UART 则使用步长 4 和宽度 1。不支持的宽度、未对齐地址或步长通过 `InvalidMmioLayout` 返回，构造失败前不访问硬件。
+构造参数 `register_stride` 表示相邻寄存器的字节间隔，`access_width` 表示每次总线访问的字节数（1、2 或 4），两者独立。设备树的 `reg-shift` 决定前者，`reg-io-width` 决定后者；例如 K3 使用步长 4 和宽度 4，字节访问但四字节间隔的 UART 则使用步长 4 和宽度 1。`mapped_len` 是从基址起可用的映射长度，至少要覆盖驱动访问的最后一个寄存器及其完整访问宽度。布局无效时返回 `InvalidMmioLayout`，构造过程不访问硬件。平台必须保留映射，直至驱动及其所有端点使用结束。
 
 ```rust
 use core::ptr::NonNull;
@@ -83,7 +83,9 @@ use some_serial::{
 };
 
 let base_addr = NonNull::new(0x9000000 as *mut u8).unwrap();
-let mut uart = Ns16550::new_mmio(base_addr, 1_843_200, 1, 1, UartVariant::Standard).unwrap();
+// 假设平台已映射此处的 8 字节寄存器，且只有此驱动访问。
+let mut uart = unsafe { Ns16550::new_mmio(base_addr, 8, 1_843_200, 1, 1, UartVariant::Standard) }
+    .unwrap();
 
 let config = Config::new()
     .baudrate(115200)
@@ -137,13 +139,17 @@ let mut uart = some_serial::pl011::Pl011::new(
 );
 
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-let mut uart = some_serial::ns16550::Ns16550::new_mmio(
-    NonNull::new(0x40000000 as *mut u8).unwrap(),
-    16_000_000,
-    1,
-    1,
-    some_serial::ns16550::UartVariant::Standard,
-).unwrap();
+let mut uart = unsafe {
+    // 假设平台已映射此处的 8 字节寄存器，且只有此驱动访问。
+    some_serial::ns16550::Ns16550::new_mmio(
+        NonNull::new(0x40000000 as *mut u8).unwrap(),
+        8,
+        16_000_000,
+        1,
+        1,
+        some_serial::ns16550::UartVariant::Standard,
+    )
+}.unwrap();
 ```
 
 ### 高级功能
@@ -192,13 +198,17 @@ use core::ptr::NonNull;
 use rdif_serial::{Config, SplitUart as _, UartPort as _};
 use some_serial::ns16550::{Ns16550, UartVariant};
 
-let uart = Ns16550::new_mmio(
-    NonNull::new(0x40000000 as *mut u8).unwrap(),
-    16_000_000,
-    1,
-    1,
-    UartVariant::Standard,
-).unwrap();
+// 假设平台为各端点保留此处的映射，并协调端点访问。
+let uart = unsafe {
+    Ns16550::new_mmio(
+        NonNull::new(0x40000000 as *mut u8).unwrap(),
+        8,
+        16_000_000,
+        1,
+        1,
+        UartVariant::Standard,
+    )
+}.unwrap();
 let parts = uart.split();
 let mut control = parts.control;
 control

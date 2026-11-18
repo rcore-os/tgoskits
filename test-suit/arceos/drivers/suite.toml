@@ -1,5 +1,5 @@
 schema_version = 1
-run_order = ["x86-q35", "riscv-aia"]
+run_order = ["x86-q35", "riscv-aia", "riscv-plic"]
 
 [execution]
 batch_env = "AX_DRIVERS_BATCH"
@@ -40,3 +40,17 @@ features = ["ax-std"]
 id = "aplic"
 name = "APLIC延期完成与来源退休"
 entry = "crate::aplic::run"
+
+[batches.riscv-plic]
+package = "arceos-driver-tests"
+image = "freestanding"
+mode = "normal"
+arch = "riscv64"
+build_config = "build-riscv64gc-unknown-none-elf.toml"
+qemu_config = "qemu-riscv64-plic.toml"
+features = ["ax-std", "plic-retirement"]
+
+[[batches.riscv-plic.tests]]
+id = "plic-ownership"
+name = "PLIC宿主线路与客户机批量申请"
+entry = "crate::plic::run"

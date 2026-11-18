@@ -67,36 +67,26 @@ impl ActiveIrq {
     }
 
     pub(super) fn take_external_claim(&mut self) -> Option<crate::irq::RiscvExternalIrqClaim> {
-        if let Completion::Aplic(claim) = &self.completion
-            && !aia::defer(claim.source)
-        {
-            return None;
-        }
-        match core::mem::replace(&mut self.completion, Completion::None) {
-            Completion::None => None,
-            Completion::Plic(claim) => {
+        let claim = match self.completion {
+            Completion::Plic(claim) if claim.guest_owned => {
                 let (context, source) = claim.into_parts();
-                Some(crate::irq::RiscvExternalIrqClaim::new(
-                    ExternalIrqClaim::Plic { context, source },
-                ))
+                ExternalIrqClaim::Plic { context, source }
             }
-            Completion::Aplic(claim) => Some(crate::irq::RiscvExternalIrqClaim::new(
-                ExternalIrqClaim::Aplic {
-                    source: claim.source,
-                },
-            )),
-        }
+            Completion::Aplic(claim) if aia::defer(claim.source) => ExternalIrqClaim::Aplic {
+                source: claim.source,
+            },
+            _ => return None,
+        };
+        self.completion = Completion::None;
+        Some(crate::irq::RiscvExternalIrqClaim::new(claim))
     }
 
-    pub(super) fn take_plic_claim(&mut self) -> Option<PlicClaim> {
-        match core::mem::replace(&mut self.completion, Completion::None) {
-            Completion::None => None,
-            Completion::Plic(claim) => Some(claim),
-            Completion::Aplic(claim) => {
-                self.completion = Completion::Aplic(claim);
-                None
-            }
-        }
+    fn take_plic_claim(&mut self) -> Option<PlicClaim> {
+        let Completion::Plic(claim) = self.completion else {
+            return None;
+        };
+        self.completion = Completion::None;
+        Some(claim)
     }
 }
 
