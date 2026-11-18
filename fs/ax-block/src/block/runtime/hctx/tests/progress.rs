@@ -138,8 +138,12 @@ fn concurrent_stop_does_not_wait_for_a_single_consumer_notification() {
         controller,
     )
     .unwrap();
+    let (result_tx, result_rx) = mpsc::channel();
     let first_hctx = Arc::clone(&hctx);
-    let first = thread::spawn(move || first_hctx.stop());
+    let first_result_tx = result_tx.clone();
+    let first = thread::spawn(move || {
+        let _ = first_result_tx.send(first_hctx.stop());
+    });
     let entered = entered_rx.recv_timeout(Duration::from_secs(1));
     if entered.is_err() {
         let _ = release_tx.send(());
@@ -147,16 +151,17 @@ fn concurrent_stop_does_not_wait_for_a_single_consumer_notification() {
         panic!("first stop did not reach queue shutdown");
     }
 
-    let (second_tx, second_rx) = mpsc::channel();
     let second = thread::spawn(move || {
-        let _ = second_tx.send(hctx.stop());
+        let _ = result_tx.send(hctx.stop());
     });
-    let second_result = second_rx.recv_timeout(Duration::from_secs(1));
+    // Either caller may take the join slot. The other must return while the
+    // queue is blocked, and the join owner must observe completed shutdown.
+    let early_result = result_rx.recv_timeout(Duration::from_secs(1));
     release_tx.send(()).unwrap();
-    assert_eq!(first.join().unwrap(), Ok(()));
+    assert_eq!(early_result, Ok(Err(BlkError::Io)));
+    assert_eq!(result_rx.recv_timeout(Duration::from_secs(1)), Ok(Ok(())));
+    first.join().unwrap();
     second.join().unwrap();
-
-    assert_eq!(second_result, Ok(Err(BlkError::Io)));
 }
 
 #[test]
