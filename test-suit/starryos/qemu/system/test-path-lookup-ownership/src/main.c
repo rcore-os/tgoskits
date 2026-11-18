@@ -564,6 +564,64 @@ out:
     close_fd(directory);
 }
 
+/* Complete a cached lookup through a real writable open description. */
+static void cached_write_completion(int rootfd, int original)
+{
+    char saved[64], bytes[8];
+    int first = -1, second = -1, shared = -1;
+    int changed = 0;
+    ssize_t length = syscall(SYS_pread64, original, saved, sizeof(saved), 0);
+    REQUIRE(length >= 8 && length < (ssize_t)sizeof(saved));
+    first = cached_open(rootfd, "file", O_RDWR | O_NONBLOCK | O_CLOEXEC, 0);
+    CHECK(first >= 0, "CACHED completes an ordinary writable open fd=%d errno=%d",
+          first, errno);
+    if (first < 0)
+        goto out;
+    int status = (int)syscall(SYS_fcntl, first, F_GETFL, 0);
+    CHECK(status == (O_RDWR | O_NONBLOCK | KERNEL_O_LARGEFILE),
+          "CACHED writer exposes its actual read/write status flags status=%d",
+          status);
+    second = cached_open(rootfd, "file", O_RDWR, 0);
+    REQUIRE(second >= 0);
+    description_status(first, second, "CACHED writable file");
+    shared = (int)syscall(SYS_dup, first);
+    REQUIRE(shared >= 0);
+    CHECK(syscall(SYS_read, first, bytes, 2) == 2
+              && memcmp(bytes, saved, 2) == 0,
+          "CACHED writable description reads the original inode");
+    changed = 1;
+    CHECK(syscall(SYS_write, shared, "WX", 2) == 2,
+          "dup of a CACHED writer writes at the shared cursor");
+    CHECK(syscall(SYS_pread64, original, bytes, 2, 2) == 2
+              && memcmp(bytes, "WX", 2) == 0,
+          "ordinary reader observes the CACHED writer's actual bytes");
+    CHECK(syscall(SYS_read, second, bytes, 4) == 4
+              && memcmp(bytes, saved, 2) == 0
+              && memcmp(bytes + 2, "WX", 2) == 0,
+          "independent CACHED writer starts with its own cursor");
+    CHECK(syscall(SYS_pwrite64, first, "Q", 1, 6) == 1
+              && syscall(SYS_pread64, original, bytes, 1, 6) == 1
+              && bytes[0] == 'Q',
+          "positioned CACHED write reaches the retained inode");
+    CHECK(syscall(SYS_read, shared, bytes, 2) == 2
+              && memcmp(bytes, saved + 4, 2) == 0,
+          "positioned CACHED write preserves the shared cursor");
+    close_fd(first);
+    first = -1;
+    CHECK(syscall(SYS_write, shared, "YZ", 2) == 2
+              && syscall(SYS_pread64, original, bytes, 2, 6) == 2
+              && memcmp(bytes, "YZ", 2) == 0,
+          "retained dup continues writing after the original fd closes");
+out:
+    close_fd(shared);
+    close_fd(second);
+    close_fd(first);
+    if (changed)
+        CHECK(syscall(SYS_pwrite64, original, saved, length, 0) == length,
+              "restore original data after the CACHED writer journey");
+}
+
+
 static void cached_fd_admission(int rootfd, int held)
 {
     struct rlimit saved, limited;
@@ -659,6 +717,7 @@ static void mount_boundary(int rootfd)
     CHECK(syscall(SYS_fcntl, file, 0x7fffffff, 0) == -1 && errno == EINVAL,
           "ordinary file keeps unsupported command EINVAL errno=%d", errno);
     cached_readonly(mountfd, file);
+    cached_write_completion(mountfd, file);
     cached_fd_admission(mountfd, cached);
     cached_links(mountfd, file);
     CHECK(fstat(cached, &retained) == 0 && retained.st_dev == original.st_dev
