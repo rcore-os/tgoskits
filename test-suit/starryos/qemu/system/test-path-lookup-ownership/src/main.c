@@ -320,6 +320,13 @@ static void cached_links(int rootfd, int file)
     REQUIRE(mkdirat(rootfd, "cached-dir", 0700) == 0);
     REQUIRE(syscall(SYS_symlinkat, "cached-dir/", rootfd,
                     "cached-directory") == 0);
+    /* The private mount is noatime; prime every name before cached traversal. */
+    expect_same(open_at(rootfd, "cached-relative", O_PATH), file,
+                "ordinary lookup primes the relative cached link");
+    expect_same(open2(rootfd, "cached-absolute", O_PATH, RESOLVE_IN_ROOT), file,
+                "ordinary IN_ROOT lookup primes the absolute cached link");
+    expect_open(open_at(rootfd, "cached-directory", O_PATH | O_DIRECTORY), 0,
+                "ordinary lookup primes the cached directory link");
     expect_same(cached_open(rootfd, "cached-relative", O_PATH, 0), file,
                 "CACHED follows an in-memory relative link");
     expect_same(cached_open(rootfd, "cached-absolute", O_PATH, RESOLVE_IN_ROOT),
@@ -375,7 +382,7 @@ static void cached_links(int rootfd, int file)
             snprintf(target, sizeof(target), "cached-chain-%d", count - 1);
         REQUIRE(syscall(SYS_symlinkat, target, rootfd, name) == 0);
     }
-    /* Prime every target and atime: pick_link cannot touch atime in CACHED. */
+    /* Prime every target on the private noatime mount. */
     expect_same(open_at(rootfd, "cached-chain-40", O_PATH), file,
                 "ordinary lookup primes the complete cached link chain");
     expect_open(open_at(rootfd, "cached-chain-41", O_PATH), ELOOP,
@@ -515,7 +522,8 @@ static void mount_boundary(int rootfd)
     struct stat original, retained;
     REQUIRE(mkdirat(rootfd, "mount", 0700) == 0);
     /* The suite gives each program a private mount namespace. */
-    REQUIRE(syscall(SYS_mount, "none", "mount", "tmpfs", 0, NULL) == 0);
+    /* Fresh symlink atime equal to ctime may require an RCU exit on Linux. */
+    REQUIRE(syscall(SYS_mount, "none", "mount", "tmpfs", MS_NOATIME, NULL) == 0);
     mounted = 1;
     mountfd = open_at(rootfd, "mount", O_RDONLY | O_DIRECTORY);
     REQUIRE(mountfd >= 0);

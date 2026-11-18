@@ -4898,6 +4898,12 @@ PreparedFileDescriptor 原有的 entry-count 上限保持独立。
 预留回滚；所有描述仍在原唯一 O_PATH 卸载判据前关闭。相同 C 先取得 Linux
 及旧实现结果，再实现，不新增系统程序或默认启动。
 
+链接 fixture 的私有 tmpfs 明确使用 MS_NOATIME，并通过普通路径预热名称。
+普通预热若仍与 ctime 同一粗粒度时间，后续时刻仍可能需要更新 atime；
+固定 noatime 条件让 CACHED 链接成功判据不依赖该时间边界。初始未预热 Linux
+夹具的六项 EAGAIN 单独保留，不作为 Starry 产品红绿；此条件也不代表已完成
+Starry 的链接 atime 或挂载时间策略实现。
+
 ## 8. 迁移与验收
 
 本设计改变共享 VFS 契约，迁移需要覆盖实际调用方与后端，而不是只修改 Starry syscall。
