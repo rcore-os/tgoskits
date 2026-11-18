@@ -1517,3 +1517,39 @@ DRM 运行。最初错误允许禁用查询的模型及对应 LoongArch 346/1 �
 QEMU 运行也通过，不能把它当作 CI 的确定性复现。记录为 vblank_timer_epoch，
 系统调用表为 174 行，并修正 card0 实际使用 Card0File 的调用链。
 fa5a8830aa 的 Axvisor LoongArch 客机启动超时尚待处理，PR 继续保持草稿。
+
+### 9.57 当前编译器的完整终态
+
+02baa6365f 的 CI 为 44 成功、0 失败、5 个既有重复 PR 包装跳过。实际 push
+任务执行四架构路径及 DRM 程序，完整 system 为 x86 541、RISC-V/LoongArch
+各 538 全过，AArch64 的 513/23/1/1 四组全过。Native 为 x86 265、
+AArch64 275、RISC-V 264、LoongArch 265，均无失败或跳过。
+
+该 head 的 Axvisor LoongArch CI 和同镜像本地运行均为 1/1，完成宿主读写
+及两个 Linux 客机的只读挂载。没有 Axvisor 代码改动，也没有复现或归因
+先前 fa5a8830aa 的超时；本地 bridge 网络下载失败在启动 QEMU 前独立保留。
+本地实际 ELF SHA-256 为
+4c387426b839ea0bfb2fdd77ca8dff95ccf1716f3a09111b6c60797154f856e1。
+`ci_02baa6365f_terminal` 保存终态、四架构日志与该本地观察；此终态早于
+后续普通缓存只读打开，不把后续实现或完整计划记为完成。
+
+### 9.58 缓存只读打开的实际数据
+
+536b9c90af 从原 inode 的 userdata 尝试锁克隆已有 FileUserData::Strong，
+只接受实际 backing 为 None 且未退休的缓存。最终 cached 属性检查当前
+DAC，路径、页数据及挂载 use 仍由原所有者保留；每次打开的游标和预读状态
+独立，dup 共享打开描述。没有普通打开、缓存创建或节点 flags 回调。
+
+同一最终 C 在 Linux 通过、4c2ab40a5e 旧 Starry 失败四项，修后实际 x86
+QEMU 1/1。文件和目录普通只读、原载荷、dup/独立游标、pread 不改游标、
+EBADF、非阻塞、CLOEXEC、目录枚举及原唯一 O_PATH 卸载判据均通过。
+最终 nofollow、O_DIRECTORY 和输入尾斜杠分别核对，避免读取未跟随链接的
+目标文本来改变最终类型要求。实际 ELF SHA-256 为
+af6332243ec71de393d8aa22cfa1c6e70da8880ecb3e09b2fa90fd5ff0d7f951。
+
+组件使用真实 MemoryFs 检查冷缓存拒绝及热缓存的当前 DAC。初始 uid 和 vfs
+条件夹具错误保留为 cached-readonly-std-invalid-fixture，不记为产品红绿。
+最终 18 包标准库、三包 Clippy 81/81 和格式检查通过，六列表为 185 行，记录键为
+cached_readonly_descriptions。没有新增系统程序或默认启动；其他架构的本轮
+运行、写入和端点、额外策略、原生缓存、链接 atime 及受控任务/fd 发布仍需
+继续。先前 02baa6365f 的完整 CI 不替代本阶段，PR 仍保持草稿。

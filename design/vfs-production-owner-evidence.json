@@ -9149,5 +9149,344 @@
       "sha256": "8be43ce3826bc12035299d8d88443856cc2c5f139e7d2ddfdfe3fa83f9a7dedb",
       "scope": "Source cross-check of fallback to ppoll when SYS_poll is absent; not an attestation of the runtime image libc version."
     }
+  },
+  "ci_02baa6365f_terminal": {
+    "source": "02baa6365f48f9912bc0a03a0804763a10a8494e",
+    "snapshot": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-02baa6365f-terminal.json",
+      "sha256": "e05b5cfa2b7af3f6bac27a16731db5a24e738dba91eec8c5c09b2819c6dff121",
+      "bytes": 18897
+    },
+    "status_counts": {
+      "SUCCESS": 44,
+      "SKIPPED": 5
+    },
+    "architectures": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-02baa6365f-starry-x86_64.log",
+          "sha256": "63ce31c95c3252b8d5541e1e263dc8b47f1d3afbf40b3a03ea36e11ade60e4d5",
+          "bytes": 2272330
+        },
+        "system_summaries": [
+          [
+            "1",
+            "1",
+            "0"
+          ],
+          [
+            "541",
+            "541",
+            "0"
+          ]
+        ],
+        "native": [
+          "265",
+          "0",
+          "0",
+          "265"
+        ],
+        "programs": {
+          "test-drm-modeset": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-drm-modeset elapsed_s=7.023"
+          ],
+          "test-path-lookup-ownership": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-path-lookup-ownership elapsed_s=0.211"
+          ],
+          "test-execve": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-execve elapsed_s=4.100"
+          ]
+        }
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-02baa6365f-starry-aarch64.log",
+          "sha256": "686ec9e756d472ede732bf8c2902beb7dbc07e3bddbdca43245bf0ee7ae57495",
+          "bytes": 2167455
+        },
+        "system_summaries": [
+          [
+            "513",
+            "513",
+            "0"
+          ],
+          [
+            "23",
+            "23",
+            "0"
+          ],
+          [
+            "1",
+            "1",
+            "0"
+          ],
+          [
+            "1",
+            "1",
+            "0"
+          ]
+        ],
+        "native": [
+          "275",
+          "0",
+          "0",
+          "275"
+        ],
+        "programs": {
+          "test-drm-modeset": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-drm-modeset elapsed_s=7.061"
+          ],
+          "test-path-lookup-ownership": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-path-lookup-ownership elapsed_s=0.179"
+          ],
+          "test-execve": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-execve elapsed_s=2.829"
+          ]
+        }
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-02baa6365f-starry-riscv64.log",
+          "sha256": "fe325cf946aaea9c7ae50b27fe78593daf612bd0b71376720727e6df767e452e",
+          "bytes": 2134272
+        },
+        "system_summaries": [
+          [
+            "538",
+            "538",
+            "0"
+          ]
+        ],
+        "native": [
+          "264",
+          "0",
+          "0",
+          "264"
+        ],
+        "programs": {
+          "test-drm-modeset": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-drm-modeset elapsed_s=8.406"
+          ],
+          "test-path-lookup-ownership": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-path-lookup-ownership elapsed_s=0.501"
+          ],
+          "test-execve": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-execve elapsed_s=9.745"
+          ]
+        }
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-02baa6365f-starry-loongarch64.log",
+          "sha256": "b4ca50891e96987ffca4dc1ebef894271f7283d8cf47a40f6fa7942d3d1f3a7e",
+          "bytes": 875928
+        },
+        "system_summaries": [
+          [
+            "538",
+            "538",
+            "0"
+          ]
+        ],
+        "native": [
+          "265",
+          "0",
+          "0",
+          "265"
+        ],
+        "programs": {
+          "test-drm-modeset": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-drm-modeset elapsed_s=7.173"
+          ],
+          "test-path-lookup-ownership": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-path-lookup-ownership elapsed_s=0.128"
+          ],
+          "test-execve": [
+            "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-execve elapsed_s=2.082"
+          ]
+        }
+      }
+    },
+    "skipped_scope": "Five duplicate pull_request wrappers skip by the existing same-head push routing. The successful push matrix supplies all actual validation.",
+    "axvisor_loongarch64": {
+      "ci_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-02baa6365f-axvisor-loongarch64.log",
+        "sha256": "dda69f9c6e2e97071169f5fa7dab4cd79c79700027f2e92d3b2271d4d68e403d",
+        "bytes": 210647
+      },
+      "local_observation": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-loong-local-observation.json",
+        "sha256": "6ae0359bbcd8c33a081b43bc75b134bc954b51ff9f026e79f9751577a95ff685",
+        "bytes": 1291
+      },
+      "local_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/axvisor-loong-before.log",
+        "sha256": "3aff540063ee9b9a035d374fe53d1851741920dcbbd02ddb863c9c0b4fe850b4",
+        "bytes": 78483
+      },
+      "elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/axvisor-loongarch64-02baa6365f.elf",
+        "sha256": "4c387426b839ea0bfb2fdd77ca8dff95ccf1716f3a09111b6c60797154f856e1",
+        "bytes": 14319840
+      },
+      "image": "ghcr.io/rcore-os/tgoskits-container-axvisor-lvz@sha256:cee0f57874370ccff680d736d39b2571f09de5070d3b8699db1ed52ad189dcee",
+      "implementation_changed": false,
+      "scope": "Current-head CI and the local run in the exact CI container passed host read/write and both Linux guest readonly-mount journeys. This does not reproduce or explain the earlier fa5a8830aa timeout."
+    },
+    "scope": "Terminal current compiler, cached O_PATH/link and DRM epoch phase. This predates the later cached readonly implementation and does not prove the remaining VFS plan complete."
+  },
+  "cached_readonly_descriptions": {
+    "before_source": "4c2ab40a5e1346ac2e8df4511d0f63e845b55360",
+    "after_source": "536b9c90af01d6ae5386a2c4e19ede122612642f",
+    "test_source": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-readonly-main.c",
+      "sha256": "c7967b20edf10070c994d4f58d5d252e79d2302b249c1eda974be5437902c577",
+      "bytes": 23906
+    },
+    "test_byte_identical_before_and_after": true,
+    "source_files": {
+      "fs/ax-fs-ng/src/file/cache/mod.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/fs/ax-fs-ng/src/file/cache/mod.rs",
+        "sha256": "d8c449a93d37064c4205678f9025abeaf48abaece1776c74a7b8d65128da288c",
+        "bytes": 51135
+      },
+      "fs/ax-fs-ng/src/file/handle/mod.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/fs/ax-fs-ng/src/file/handle/mod.rs",
+        "sha256": "a280a90be76952a5a33833a058bc0c389c8b89f875e0922d6369efbd343eea4d",
+        "bytes": 21419
+      },
+      "fs/ax-fs-ng/src/file/open.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/fs/ax-fs-ng/src/file/open.rs",
+        "sha256": "fdd1dc4dc9bedf096c375aeb6ad74540e45304a951b5f7ee93954a4d79613de6",
+        "bytes": 50785
+      },
+      "fs/axfs-ng-vfs/src/lookup/cached.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/fs/axfs-ng-vfs/src/lookup/cached.rs",
+        "sha256": "4a26912b996a191ed44875f54dc566807f09b2634dc11a7329036e9edd62dceb",
+        "bytes": 9360
+      },
+      "fs/axfs-ng-vfs/src/node/mod.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/fs/axfs-ng-vfs/src/node/mod.rs",
+        "sha256": "783b4e7dda312ea210a28dff4db121a84544e5fa3ea8f6cb65d7121bc40ff7f9",
+        "bytes": 20496
+      },
+      "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/os/StarryOS/kernel/src/syscall/fs/fd_ops.rs",
+        "sha256": "530f76068d734bd3467b94c726d8fdeb6056bb37360be346645f86301a554c22",
+        "bytes": 34325
+      },
+      "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c": {
+        "path": "/home/zhourui/.codex/worktrees/400f/tgoskits-dev/test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c",
+        "sha256": "c7967b20edf10070c994d4f58d5d252e79d2302b249c1eda974be5437902c577",
+        "bytes": 23906
+      }
+    },
+    "checks": {
+      "linux": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-readonly-linux.log",
+          "sha256": "7ad7462ddcee00cb62c8322d96d334b953bc94b1db71c963a20c6406be138c0d",
+          "bytes": 6369
+        },
+        "outer_exit": 0
+      },
+      "before": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-readonly-before.log",
+          "sha256": "72006fa4293a5527bf58dd347d7e9387fa74060ac27a91e152c5df59a5c0333e",
+          "bytes": 35019
+        },
+        "outer_exit": 1,
+        "source": "4c2ab40a5e1346ac2e8df4511d0f63e845b55360"
+      },
+      "after": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-readonly-after.log",
+          "sha256": "33532f344dcf120663a37d85fc053d4a9db28aa14b1be82ed748de24d61a0249",
+          "bytes": 36257
+        },
+        "outer_exit": 0,
+        "source": "536b9c90af01d6ae5386a2c4e19ede122612642f"
+      },
+      "std": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-readonly-std.log",
+          "sha256": "e1f613437a8632ba5194d7ae2ddffbe9bbf11f78f135379d3bad3e70068952fb",
+          "bytes": 313585
+        },
+        "outer_exit": 0,
+        "source": "536b9c90af01d6ae5386a2c4e19ede122612642f"
+      },
+      "clippy": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-readonly-clippy.log",
+          "sha256": "097ca5869b3397559bda669f75d4fff879a4f723e6252666573226e311f69fc4",
+          "bytes": 182267
+        },
+        "outer_exit": 0,
+        "source": "536b9c90af01d6ae5386a2c4e19ede122612642f"
+      },
+      "format": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-readonly-format-final.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        "outer_exit": 0,
+        "source": "536b9c90af01d6ae5386a2c4e19ede122612642f"
+      }
+    },
+    "before_failures": [
+      "FAIL: CACHED opens a pinned ordinary reader fd=-1 errno=11",
+      "FAIL: CACHED opens a pinned directory reader fd=-1 errno=11",
+      "FAIL: CACHED ordinary nofollow rejects the final text link: fd=-1 errno=11 expected=40",
+      "FAIL: CACHED directory flag does not override final nofollow: fd=8 errno=0 expected=20"
+    ],
+    "before_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-4c2ab40a5e-baseline.elf",
+      "sha256": "666c1c31cb33dbf5e3bc11653e1466d5d9d377dbe4a2a84005597e0c3847243e",
+      "bytes": 217801248
+    },
+    "after_elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-536b9c90af.elf",
+      "sha256": "af6332243ec71de393d8aa22cfa1c6e70da8880ecb3e09b2fa90fd5ff0d7f951",
+      "bytes": 218166888
+    },
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "deciding_functions": [
+        "complete_walk",
+        "lookup_fast_for_open",
+        "do_open",
+        "may_open"
+      ],
+      "host_kernel": "6.8.0-149-generic",
+      "scope": "The fixed v7.1 source decides the contract; the same raw C ran on the local Linux 6.8 host, not a v7.1 guest."
+    },
+    "ownership": {
+      "cache": "Try the real inode userdata lock; clone the existing FileUserData::Strong and accept only a live cache with no backing. No ordinary open, cache creation, filesystem-name policy, or alternate inode registry.",
+      "description": "Fresh readahead state and zero cursor for each open, shared by dup; retain the original path and omit writer rights. Final DAC reads explicit current cached inode attributes.",
+      "retirement": "Only clone retained owners while the userdata lock is held. All retained owners and failed paths retire outside capture and userdata guards.",
+      "nofollow": "O_DIRECTORY checks the final type without forcing a final link follow. An input trailing slash forces following; target trailing slash matters only after that target is actually followed."
+    },
+    "validation": {
+      "std_packages": 18,
+      "clippy_checks": 81,
+      "qemu_programs": 1,
+      "new_component_tests": 1,
+      "new_system_programs": 0,
+      "new_default_boots": 0
+    },
+    "preserved_attempts": {
+      "initial_subset": "cached-readonly-initial-main.c and cached-readonly-initial-before.*: earlier C has two failures and omits the final nofollow/directory checks. The final identical C is the authoritative four-failure proof.",
+      "component_fixture": "cached-readonly-std-invalid-fixture.*: creation derives ownership from the actual credentials, not requested uid/gid, and the test initially lacked its vfs feature condition. Both test preparation errors are corrected without changing the frozen C."
+    },
+    "limits": [
+      "Writes, endpoints, extra policies such as O_NOATIME, native cached metadata/data admission and dynamic link producers remain incomplete.",
+      "F_GETFL currently exposes O_CLOEXEC and omits forced O_LARGEFILE: the C only checks access/nonblocking, while raw host/Starry values are 34816/526336. A subsequent exact status regression must close this observable gap.",
+      "Symlink atime and mount time policy, controlled task/fd publication and EMFILE ordering remain separate obligations.",
+      "This runtime proof covers x86_64. The earlier 02baa6365f terminal CI predates this readonly change.",
+      "The PR remains draft; independent qualified design/implementation review and the remaining VFS plan are not completed by this slice."
+    ]
   }
 }

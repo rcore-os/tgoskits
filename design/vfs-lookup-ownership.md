@@ -4673,6 +4673,43 @@ CRTC_GET_SEQUENCE 本来返回 EINVAL，最初误用该入口的夹具失败独�
 实际经过 Card0File 的调用链。真实 Linux DRM 运行对照和其他架构的本轮
 QEMU 仍有限制；fa5a8830aa 的 Axvisor LoongArch 客机启动超时另行处理。
 
+### 6.36 发布提交的完整终态
+
+02baa6365f 的当前编译器 CI 已到终态，44 项成功、0 失败，5 项重复 PR 包装
+按既有同 head push 路由跳过；实际 push 矩阵执行验证。四架构的原路径与 DRM
+程序均通过，完整 system 为 x86 541/541、RISC-V 和 LoongArch 各 538/538，
+AArch64 为 513/23/1/1 四组。Native 分别为 x86 265、AArch64 275、
+RISC-V 264、LoongArch 265，均无失败或跳过。
+
+同一 head 的 Axvisor LoongArch smoke 通过。使用相同 CI 镜像摘要及编译器的
+本地运行也为 1/1，实际完成宿主磁盘读写和两个 Linux 客机的只读挂载。
+没有修改 Axvisor 实现；这两次通过不能解释 fa5a8830aa 的先前 300 秒超时。
+最初容器 bridge 网络下载超时发生在 QEMU 启动前，与产品运行分开保留。
+记录为 `ci_02baa6365f_terminal`，覆盖缓存 O_PATH、文本链接及 DRM 边沿阶段，
+早于后续普通缓存只读打开，不能替代后者或整个 VFS 计划的验收。
+
+### 6.37 缓存只读数据描述
+
+536b9c90af 的普通缓存只读打开直接保留原 inode 已有的无 backing 页缓存，
+最终准入读取实际 cached 属性并检查本次 DAC。它不调用普通缓存创建、节点
+flags 或设备工厂。每次打开创建零位置和独立预读状态，dup 保留同一描述；
+原 PathHandle 继续持有挂载 use，没有 writer lease。
+
+相同最终 C 在 Linux 通过，4c2ab40a5e 的旧 Starry 稳定失败四项：文件和目录
+只读打开缺失、普通 nofollow 返回 EAGAIN，以及目录标志错误覆盖 nofollow。
+修后真实 x86 QEMU 1/1。原 writer 载荷、共享与独立游标、pread 不改游标、
+EBADF、非阻塞和 CLOEXEC、目录枚举及原唯一缓存 fd 的卸载旅程均通过。
+输入尾斜杠的跟随要求与 O_DIRECTORY 的最终类型要求分开，目标文本尾斜杠
+只有在实际跟随该链接后生效。
+
+真实 MemoryFs 组件检查冷缓存拒绝、预热准入、chmod 后新打开拒绝及旧描述
+继续读取。初始夹具误把请求 uid 当作属主，并缺少 vfs 条件，失败另行保留；
+修正的是测试准备，最终 C 没有变化。18 包标准库、三包 Clippy 81/81 和格式
+检查通过，系统调用表
+为 185 行。生产记录键为 cached_readonly_descriptions，没有新增系统程序或
+默认启动。写入、端点、额外策略、原生缓存属性、链接 atime 和受控发布仍在
+原计划内；02baa6365f 的完整 CI 早于本次只读改动。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
@@ -4759,7 +4796,7 @@ EXDEV。既有私有 tmpfs 旅程验证这些差异，并在普通查询预热�
 ### 7.5 已解析路径的只读打开
 
 普通只读描述需要读取实际内容，并让每次打开拥有独立游标，dup 继续共享
-同一打开描述。计划由 `OpenOptions::open_cached_path()` 接收缓存查找已经
+同一打开描述。`OpenOptions::open_cached_path()` 接收缓存查找已经
 完成的 `PathHandle` 和同次捕获的 `MutationCredentials`，返回既有 `OpenResult`。
 它不重新选 root/cwd、凭据或 fd 表，也不调用普通打开或设备工厂。
 Linux 的 `complete_walk()` 在取得路径引用时清除 LOOKUP_CACHED，随后执行
@@ -4791,6 +4828,29 @@ flags 回调。用户数据锁只用于克隆引用，成功和失败的最后�
 相同 C 先在 Linux 与旧实现运行，再核对实现后的结果；组件层复用真实
 MemoryFs 检查缓存准入和最终 DAC。代码回滚不迁移持久数据，独立领域设计及
 实现审查仍是合入前要求。
+
+### 7.6 打开标志的分类
+
+原始日志已经暴露普通只读描述的另一项差异：相同请求的 F_GETFL 在 Linux
+为 34816，在 Starry 为 526336。现有 C 只检查访问模式和 O_NONBLOCK；后者
+仍包含 O_CLOEXEC，并缺少 Linux 64 位路径打开强制设置的 O_LARGEFILE。
+这一差异需要单独的原始状态判定，不能因内容和游标正确而忽略。
+
+计划在普通 openat 及非 O_PATH 的 openat2 入口按 64 位 Linux 规则补入
+O_LARGEFILE。openat2 对原始 O_PATH 组合的严格校验保持在自动补位之前，
+普通 O_PATH 的忽略规则继续由既有选项解释承担。F_GETFL 的公共投影集中
+在原 sys_fcntl 分支：O_PATH 仅保留 O_PATH、O_DIRECTORY、O_NOFOLLOW；
+普通描述清除 O_CLOEXEC、O_CREAT、O_EXCL、O_NOCTTY、O_TRUNC，再读取
+原描述的动态 append、nonblocking 和 async 状态。FD_CLOEXEC 仍由 fd 表持有。
+
+不直接裁剪所有 FileLike 构造方的原参数：设备关闭等业务回调仍需要原
+O_EXCL 信息。共享投影避免逐类生产者复制同一掩码，也不建立第二份描述
+状态。回归继续增强原私有 tmpfs 旅程，比较普通写描述、缓存只读及 O_PATH
+的原始 F_GETFL，并继续用 F_GETFD 验证描述符状态没有随投影丢失。
+O_LARGEFILE 的直接系统调用位按 Linux UAPI 区分 AArch64 的 0400000 与
+其余三个目标的 asm-generic 00100000，不能用 64 位 libc 映射为零的宏代替。
+相同最终 C 先在 Linux 和旧实现执行，再修复并核对原内容未被忽略的截断位
+修改。此阶段不新增测试程序、配置或后台状态。
 
 ## 8. 迁移与验收
 
