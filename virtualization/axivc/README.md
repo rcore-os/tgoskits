@@ -133,8 +133,6 @@ consumers from racing on `UnsafeCell` slot bytes.
   each ring occupies 8448 bytes and its slots begin at offset 256.
   `protocol_header_matches` rejects incompatible v3 layouts as well as v2.
 - Message V1 does not interleave messages, retransmit, reorder, or allocate.
-- Peer-reset reporting is reserved in the API; the current HVC backend has no
-  queue generation and cannot produce it yet.
 - Peers must use the same region layout and slot parameters; matching region
   versions alone does not guarantee compatibility.
 - ivshmem, PCI BARs, doorbells, MSI-X, and owner-RW/peer-RO sections are outside

@@ -110,7 +110,4 @@ pub enum IvcMessageError {
     /// The peer explicitly aborted the active message.
     #[error("the peer aborted the active IVC message")]
     TransferAborted,
-    /// The slot transport reset while a message was active.
-    #[error("the IVC peer reset the slot transport")]
-    PeerReset,
 }

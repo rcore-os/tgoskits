@@ -121,7 +121,6 @@ unsafe attach 契约负责阻止重复 producer/consumer 在 `UnsafeCell` slot b
 - `IvcRegion` 总大小为 17152 字节，两个 ring 的偏移为 256 和 8704；每个
   `IvcRing` 大小为 8448 字节，slots 从 ring 内偏移 256 开始。
 - Message V1 不支持消息交错、重传、乱序重排，也不进行分配。
-- API 预留 `PeerReset`；当前 HVC backend 没有 queue generation，暂不会产生该错误。
 - 通信双方必须使用相同的 region 布局和 slot 参数，仅 region 版本相同不足以保证兼容。
 - ivshmem、PCI BAR、doorbell、MSI-X 和 owner-RW/peer-RO section 不属于本次协议。
 

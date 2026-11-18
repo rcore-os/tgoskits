@@ -460,7 +460,7 @@ command = "cargo xtask clippy --all"
         # Only registered nightly suites route here; disabled suites fail planning.
         for path in (
             "apps/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
-            # "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
+            "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml",
             "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml",
@@ -1230,7 +1230,7 @@ command = "true"
             )["axvisor_performance_matrix"]["include"]
         )
         self.assertNotIn("test-orangepi-5-plus-dualguest-robot", benchmark_rows)
-        self.assertNotIn(
+        self.assertIn(
             "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
             benchmark_rows,
         )
@@ -1920,12 +1920,16 @@ node_version = "latest"
                     selection.command,
                 )
 
-    def test_arceos_ivc_app_changes_select_their_qemu_cases(self) -> None:
+    def test_ivc_input_changes_select_their_qemu_cases(self) -> None:
         scenarios = (
-            ("apps/arceos/ivc_publisher/src/main.rs", "qemu/aarch64/ivc-local"),
-            ("apps/arceos/ivc_subscriber/src/main.rs", "qemu/aarch64/ivc-arceos"),
+            ("apps/arceos/ivc_publisher/src/main.rs", {"qemu/aarch64/ivc-local"}),
+            ("apps/arceos/ivc_subscriber/src/main.rs", {"qemu/aarch64/ivc-arceos"}),
+            (
+                "virtualization/axivc/src/message/receiver.rs",
+                {"qemu/aarch64/ivc-local", "qemu/aarch64/ivc-arceos"},
+            ),
         )
-        for path, case in scenarios:
+        for path, expected_cases in scenarios:
             with self.subTest(path=path):
                 impact = ci_impact.analyze_changed_paths(
                     ci_plan.WORKSPACE_ROOT, [Path(path)], {}
@@ -1942,7 +1946,8 @@ node_version = "latest"
                     if row["id"]
                     == "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
                 )
-                self.assertIn(case, selected_test_cases(check["command"]))
+                selected_cases = selected_test_cases(check["command"])
+                self.assertTrue(expected_cases.issubset(selected_cases))
 
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]

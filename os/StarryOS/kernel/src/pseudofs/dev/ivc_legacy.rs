@@ -3,8 +3,11 @@
 //! Derived from `virtualization/axivc/src/{region,ring,endpoint,message}.rs` at
 //! `714accd8f636c540b2c3554b0b1e5cb885be42a4`. Keep the wire layout and SPSC
 //! ownership contract compatible with existing v2 guests, independently of the
-//! workspace Message V1 implementation. Remove this module when Starry's legacy
-//! IVC devices are replaced by ivshmem; do not add new transport features here.
+//! workspace Message V1 implementation. Migration is tracked in
+//! <https://github.com/rcore-os/tgoskits/issues/2720>. Remove this module only
+//! after the Starry `/dev/axivc` device and every v2 caller have moved to
+//! ivshmem and the replacement passes the board and QEMU interoperability
+//! coverage. Do not add new transport features here.
 
 use core::{
     cell::UnsafeCell,
@@ -449,6 +452,9 @@ mod tests {
     #[test]
     fn initialization_retains_the_v2_wire_contract_and_rejects_v3() {
         // These are peer-visible v2 ABI values, not Message V1 constants.
+        assert_eq!(IVC_REGION_VERSION, 2);
+        assert_eq!(IVC_SLOT_PAYLOAD_SIZE, 48);
+        assert_eq!(IVC_RING_CAPACITY, 16);
         assert_eq!(size_of::<IvcRegion>(), 2240);
         assert_eq!(align_of::<IvcRegion>(), 64);
         assert_eq!(offset_of!(IvcRegion, header), 16);

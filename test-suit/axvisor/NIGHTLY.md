@@ -34,8 +34,7 @@ and restoration in [issue #2676](https://github.com/rcore-os/tgoskits/issues/267
 Only that manifest feeds the nightly matrix; the default `axvisor.toml` checks
 do not run at night, and performance measurements are not part of this
 workflow. Performance checks live in `.github/ci/checks/benchmarks.toml` and
-run through `.github/workflows/benchmarks.yml` (the IVC benchmark registration
-is temporarily commented out; the benchmark and manual run command are retained). This is not a claim that every
+run through `.github/workflows/benchmarks.yml`. This is not a claim that every
 AxVisor feature or every test-suit directory has a corresponding nightly test.
 
 Nightly applications live under `apps/axvisor/<group>/...` and run through
