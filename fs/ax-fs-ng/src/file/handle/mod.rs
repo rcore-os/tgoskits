@@ -47,20 +47,6 @@ impl File {
         }
     }
 
-    /// Wraps an admitted regular memory cache without backend flag callbacks.
-    #[cfg(feature = "vfs")]
-    pub(super) fn from_cached_readonly(inner: crate::file::CachedFile) -> Self {
-        let path = inner.path_handle().clone();
-        Self {
-            inner: FileBackend::Cached(inner),
-            flags: AtomicU8::new(FileFlags::READ.bits()),
-            position: Some(Mutex::new(0)),
-            access_flags: AtomicU8::new(0),
-            write_access: None,
-            path,
-        }
-    }
-
     /// Creates a low-level file without registering inode write access.
     ///
     /// Use [`OpenOptions`] for ordinary opens. Anonymous pseudo files such as

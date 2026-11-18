@@ -315,61 +315,6 @@ impl OpenOptions {
         })
     }
 
-    /// Opens an already resolved cache-only path with the captured DAC identity.
-    ///
-    /// Path-only descriptions retain the original path. Readonly directories
-    /// and regular memory files use explicit cached attributes and existing
-    /// inode data. Unsupported admission or missing capabilities returns
-    /// `WouldBlock`; final symlinks and sockets retain their type errors.
-    /// This never invokes ordinary open or creates a data cache.
-    #[cfg(feature = "vfs")]
-    pub fn open_cached_path(
-        &self,
-        path: PathHandle,
-        credentials: &MutationCredentials<'_>,
-    ) -> VfsResult<OpenResult> {
-        if !self.is_valid() {
-            return Err(VfsError::InvalidInput);
-        }
-        let location = path.location();
-        if self.directory && !location.is_dir() {
-            return Err(VfsError::NotADirectory);
-        }
-        if self.path {
-            return Ok(if location.is_dir() {
-                OpenResult::Dir(path)
-            } else {
-                OpenResult::File(File::path_only(path))
-            });
-        }
-        if !self.read
-            || self.write
-            || self.append
-            || self.truncate
-            || self.create
-            || self.create_new
-            || self.direct
-        {
-            return Err(VfsError::WouldBlock);
-        }
-        match location.node_type() {
-            NodeType::Symlink => return Err(VfsError::FilesystemLoop),
-            NodeType::Socket => return Err(VfsError::NoSuchDeviceOrAddress),
-            NodeType::RegularFile | NodeType::Directory => {}
-            _ => return Err(VfsError::WouldBlock),
-        }
-        credentials.check_permission(
-            &location.entry().cached_metadata()?,
-            NodePermission::OTHER_READ,
-        )?;
-        Ok(if location.is_dir() {
-            OpenResult::Dir(path)
-        } else {
-            let cached = super::cache::CachedFile::try_existing_memory(path)?;
-            OpenResult::File(File::from_cached_readonly(cached))
-        })
-    }
-
     /// Opens a file at the given [`Location`] using these options.
     #[cfg(feature = "vfs")]
     pub fn open_loc(&self, loc: Location) -> VfsResult<OpenResult> {
@@ -858,7 +803,7 @@ mod tests {
 
     #[cfg(feature = "vfs")]
     #[test]
-    fn cached_readonly_requires_existing_contents_and_current_dac() {
+    fn resolved_open_rechecks_dac_without_revoking_open_files() {
         let filesystem = crate::MemoryFs::new();
         let root = axfs_ng_vfs::Mountpoint::new_root(&filesystem).root_location();
         let location = root
@@ -875,24 +820,13 @@ mod tests {
                 },
             )
             .unwrap();
-        let path = PathHandle::acquire(location.clone()).unwrap();
         let owner = credentials(1000, 1000, &[]);
         let mut options = OpenOptions::new();
         options.read(true);
-        assert_eq!(
-            options.open_cached_path(path.clone(), &owner).map(|_| ()),
-            Err(VfsError::WouldBlock)
-        );
-
-        let ordinary = options
+        let opened = options
             .open_loc_with_credentials(location.clone(), &owner)
             .and_then(OpenResult::into_file)
             .unwrap();
-        let cached = options
-            .open_cached_path(path.clone(), &owner)
-            .and_then(OpenResult::into_file)
-            .unwrap();
-        drop(ordinary);
         location
             .change_metadata(
                 axfs_ng_vfs::MetadataChange::Chmod(NodePermission::empty()),
@@ -900,11 +834,11 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            options.open_cached_path(path, &owner),
+            options.open_loc_with_credentials(location, &owner),
             Err(VfsError::PermissionDenied)
         ));
         let mut bytes = [0];
-        assert_eq!(cached.read_at(&mut bytes[..], 0), Ok(0));
+        assert_eq!(opened.read_at(&mut bytes[..], 0), Ok(0));
     }
 
     #[test]

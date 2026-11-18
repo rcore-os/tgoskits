@@ -615,36 +615,6 @@ fn filesystem_uses_unbounded_page_cache(name: &str) -> bool {
 }
 
 impl CachedFile {
-    /// Retains an already published, live memory cache through the inode owner.
-    /// Neither a missing cache nor a native backing invokes ordinary open or
-    /// cache registration. All retained owners retire after the userdata lock.
-    #[cfg(feature = "vfs")]
-    pub(super) fn try_existing_memory(path: PathHandle) -> VfsResult<Self> {
-        let shared = {
-            let user_data = path
-                .location()
-                .entry()
-                .as_file()?
-                .inode_user_data()
-                .ok_or(VfsError::WouldBlock)?;
-            let guard = user_data.try_lock().ok_or(VfsError::WouldBlock)?;
-            guard
-                .get::<FileUserData>()
-                .as_deref()
-                .map(FileUserData::get)
-        }
-        .ok_or(VfsError::WouldBlock)?;
-        if shared.backing.is_some() || shared.retired.load(Ordering::Acquire) {
-            return Err(VfsError::WouldBlock);
-        }
-        Ok(Self {
-            shared,
-            readahead: Arc::new(Mutex::new(ReadAheadState::new())),
-            in_memory: true,
-            inner: path,
-        })
-    }
-
     /// Shares or creates the inode cache while retaining this exact path use.
     /// Path acquisition belongs outside all cache and backend locks.
     pub fn get_or_create(path: PathHandle) -> VfsResult<Self> {

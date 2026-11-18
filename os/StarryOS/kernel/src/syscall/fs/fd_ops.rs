@@ -565,9 +565,11 @@ fn open_cached_path(
     if policy.scope == LookupScope::Beneath && path.starts_with('/') {
         return Err(StarryError::CrossesDevices);
     }
-    let readonly_flags = O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_LARGEFILE;
-    if flags & O_PATH == 0 && (flags & O_ACCMODE != O_RDONLY || flags & !readonly_flags != 0) {
-        // Extra open policies require their own cache-only admission.
+    let ordinary_flags =
+        O_ACCMODE | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_LARGEFILE;
+    if flags & O_PATH == 0 && (flags & O_ACCMODE == O_ACCMODE || flags & !ordinary_flags != 0) {
+        // Completion adds conventional read/write modes. Deferred open
+        // policies retain their existing admission until separately supported.
         return Err(StarryError::WouldBlock);
     }
     let start = if dirfd == AT_FDCWD {
@@ -590,7 +592,25 @@ fn open_cached_path(
     )?;
     let credentials = binding.credentials.as_mutation_credentials();
     let options = flags_to_options(flags as c_int, 0, (credentials.fsuid, credentials.fsgid));
-    let file: Arc<dyn FileLike> = match options.open_cached_path(path, &credentials)? {
+    let opened = if flags & O_PATH != 0 {
+        if path.location().is_dir() {
+            OpenResult::Dir(path)
+        } else {
+            OpenResult::File(ax_fs_ng::file::File::path_only(path))
+        }
+    } else {
+        match path.location().node_type() {
+            NodeType::Symlink => return Err(VfsError::FilesystemLoop.into()),
+            NodeType::Socket => return Err(VfsError::NoSuchDeviceOrAddress.into()),
+            NodeType::RegularFile | NodeType::Directory => {}
+            _ => return Err(StarryError::WouldBlock),
+        }
+        // Cache-only name resolution has completed. Retain its selected path
+        // while ordinary open acquires the description's own path and writer
+        // authority, without resolving the caller's pathname again.
+        options.open_loc_with_credentials(path.location().clone(), &credentials)?
+    };
+    let file: Arc<dyn FileLike> = match opened {
         OpenResult::Dir(path) => Arc::new(Directory::new(path, flags)),
         OpenResult::File(file) => Arc::new(File::new(file, flags)),
     };
