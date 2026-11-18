@@ -855,6 +855,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "vfs")]
     #[test]
     fn cached_readonly_requires_existing_contents_and_current_dac() {
         let filesystem = crate::MemoryFs::new();
@@ -866,17 +867,21 @@ mod tests {
                 NodePermission::from_bits_truncate(0o600),
                 1000,
                 1000,
-                &MutationCredentials::root(),
+                &MutationCredentials {
+                    fsuid: 1000,
+                    fsgid: 1000,
+                    ..MutationCredentials::root()
+                },
             )
             .unwrap();
         let path = PathHandle::acquire(location.clone()).unwrap();
         let owner = credentials(1000, 1000, &[]);
         let mut options = OpenOptions::new();
         options.read(true);
-        assert!(matches!(
-            options.open_cached_path(path.clone(), &owner),
+        assert_eq!(
+            options.open_cached_path(path.clone(), &owner).map(|_| ()),
             Err(VfsError::WouldBlock)
-        ));
+        );
 
         let ordinary = options
             .open_loc_with_credentials(location.clone(), &owner)
