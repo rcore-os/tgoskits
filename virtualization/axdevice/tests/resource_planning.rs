@@ -64,6 +64,63 @@ fn planning_is_fixed_first_deterministic_and_reports_exhaustion() {
 }
 
 #[test]
+fn owner_extra_mmio_is_scoped_and_uses_global_allocation_state() {
+    let host = DeviceNodeId::new("host").unwrap();
+    let mut pools = ResourcePools::new();
+    pools.add_auto_mmio(0x1000..0x1100).unwrap();
+    pools
+        .add_auto_mmio_for_owner(&host, 0x1080..0x1480)
+        .unwrap();
+    pools.reserve_mmio("retained", 0x1200..0x1208).unwrap();
+
+    let host_request = DevicePlanRequest::new(
+        "host",
+        DeviceRequirements::new()
+            .with_mmio(slot("first"), 0x100, 0x100, ResourceRequest::Auto)
+            .unwrap()
+            .with_mmio(slot("second"), 0x100, 0x100, ResourceRequest::Auto)
+            .unwrap(),
+    )
+    .unwrap();
+    let plan = VmResourcePlanner::new(pools.clone())
+        .plan([
+            mmio_request("a-ordinary", ResourceRequest::Auto),
+            host_request,
+        ])
+        .unwrap();
+
+    assert_eq!(
+        plan.resources("a-ordinary")
+            .unwrap()
+            .mmio(&slot("registers")),
+        Ok((0x1000, 0x100))
+    );
+    assert_eq!(
+        plan.resources("host").unwrap().mmio(&slot("first")),
+        Ok((0x1100, 0x100))
+    );
+    assert_eq!(
+        plan.resources("host").unwrap().mmio(&slot("second")),
+        Ok((0x1300, 0x100))
+    );
+
+    let error = VmResourcePlanner::new(pools)
+        .plan([
+            mmio_request("a-ordinary", ResourceRequest::Auto),
+            mmio_request("z-ordinary", ResourceRequest::Auto),
+        ])
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ResourcePlanningError::Exhausted {
+            namespace: ResourceNamespace::Mmio,
+            requester,
+            slot: planned_slot,
+        } if requester == "z-ordinary" && planned_slot == slot("registers")
+    ));
+}
+
+#[test]
 fn fixed_mmio_still_conflicts_with_reserved_guest_memory() {
     let mut pools = ResourcePools::new();
     pools.allow_fixed_mmio(0x8000_0000..0x8000_1000).unwrap();

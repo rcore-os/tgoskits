@@ -95,10 +95,14 @@ def main():
     parser.add_argument("--since", help="Skip only when the dependency/source boundary is unaffected")
     args = parser.parse_args()
     root = args.workspace.resolve()
+    toolchain_file = root / "rust-toolchain.toml"
+    toolchain = tomllib.loads(toolchain_file.read_text())["toolchain"]["channel"]
+    cargo_env = os.environ.copy()
+    cargo_env["RUSTUP_TOOLCHAIN"] = toolchain
     metadata = json.loads(subprocess.check_output([
         "cargo", "metadata", "--manifest-path", str(root / "Cargo.toml"),
         "--no-deps", "--format-version", "1", "--locked",
-    ], cwd=root, text=True))
+    ], cwd=root, env=cargo_env, text=True))
     packages = path_dependencies(metadata, "axbuild")
     check_source_boundaries(root)
     if args.since:
@@ -128,12 +132,12 @@ def main():
                    "--no-verify", "--allow-dirty", "--target-dir", output / "packaging"]
         for name in sorted(packages):
             command += ["-p", name]
-        run(command, cwd=directory)
+        run(command, cwd=directory, env=cargo_env)
         if args.registry_sources:
             shutil.copytree(args.registry_sources.resolve(), sources, dirs_exist_ok=True)
         else:
             run(["cargo", "vendor", "--locked", "--versioned-dirs", "--manifest-path",
-                 root / "Cargo.toml", sources], cwd=directory)
+                 root / "Cargo.toml", sources], cwd=directory, env=cargo_env)
     archives = output / "packaging/package"
     for name, package in packages.items():
         install_package(archives / f"{name}-{package['version']}.crate", sources)
@@ -151,8 +155,7 @@ def main():
             '[source.crates-io]\nreplace-with="sealed"\n[source.sealed]\n'
             f'directory={json.dumps(str(sources))}\n'
         )
-        toolchain = tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
-        env = os.environ.copy()
+        env = cargo_env.copy()
         env.update(CARGO_HOME=str(home), CARGO_TARGET_DIR=str(output / "target"), RUSTUP_TOOLCHAIN=toolchain)
         consumer = Path(directory) / "consumer"
         consumer.mkdir(exist_ok=True)

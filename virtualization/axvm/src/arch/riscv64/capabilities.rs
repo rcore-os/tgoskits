@@ -142,6 +142,8 @@ pub(super) fn patch_runtime_fdt(
             additional_serials: &additional_serials,
             gic_profile: None,
             plic_profile: Some(&plic_profile),
+            #[cfg(test)]
+            pci_host: None,
             timer_profile: None,
             initrd_start_size: initrd,
             create_chosen: false,

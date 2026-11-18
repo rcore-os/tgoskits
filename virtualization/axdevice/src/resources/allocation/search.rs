@@ -6,11 +6,33 @@ use crate::resources::pool::{RangeOwner, ranges_overlap};
 
 pub(super) fn find_u64_range(
     pools: &[Range<u64>],
+    owner_pools: &[Range<u64>],
     occupied: &[RangeOwner<u64>],
     size: u64,
     alignment: u64,
 ) -> Option<u64> {
-    for pool in pools {
+    let mut pool_index = 0;
+    let mut owner_pool_index = 0;
+    loop {
+        let pool = match (pools.get(pool_index), owner_pools.get(owner_pool_index)) {
+            (Some(default), Some(owner)) if default.start <= owner.start => {
+                pool_index += 1;
+                default
+            }
+            (Some(_), Some(owner)) => {
+                owner_pool_index += 1;
+                owner
+            }
+            (Some(default), None) => {
+                pool_index += 1;
+                default
+            }
+            (None, Some(owner)) => {
+                owner_pool_index += 1;
+                owner
+            }
+            (None, None) => return None,
+        };
         let mut candidate = align_up(pool.start, alignment)?;
         while candidate.checked_add(size)? <= pool.end {
             let end = candidate + size;
@@ -21,7 +43,6 @@ pub(super) fn find_u64_range(
             }
         }
     }
-    None
 }
 
 pub(super) fn find_u16_range(

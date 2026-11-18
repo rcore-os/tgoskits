@@ -92,21 +92,29 @@ pub(super) fn patch_runtime_fdt(
 ) -> AxVmResult<std::vec::Vec<u8>> {
     let initrd =
         super::fdt::initrd_start_size_from_image_config(vm.config().image_config.ramdisk.as_ref());
-    let (serial_profile, serial_identity, additional_serials, devices, gic_profile, timer_profile) =
-        vm.with_architecture_plan(|plan| {
-            Ok((
-                plan.serial_profile(),
-                plan.serial_fdt_identity().cloned(),
-                plan.serial_devices()
-                    .iter()
-                    .filter(|serial| serial.id() != "console0")
-                    .map(crate::machine::ResolvedSerialDevice::profile)
-                    .collect::<std::vec::Vec<_>>(),
-                plan.firmware_devices().to_vec(),
-                plan.gic_profile().clone(),
-                plan.timer_profile().clone(),
-            ))
-        })?;
+    let (
+        serial_profile,
+        serial_identity,
+        additional_serials,
+        devices,
+        gic_profile,
+        timer_profile,
+        pci_host,
+    ) = vm.with_architecture_plan(|plan| {
+        Ok((
+            plan.serial_profile(),
+            plan.serial_fdt_identity().cloned(),
+            plan.serial_devices()
+                .iter()
+                .filter(|serial| serial.id() != "console0")
+                .map(crate::machine::ResolvedSerialDevice::profile)
+                .collect::<std::vec::Vec<_>>(),
+            plan.firmware_devices().to_vec(),
+            plan.gic_profile().clone(),
+            plan.timer_profile().clone(),
+            plan.pci_firmware(),
+        ))
+    })?;
     crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
         crate::boot::fdt::core::create::GuestFdtRuntimePatch {
             fdt_bytes,
@@ -118,6 +126,7 @@ pub(super) fn patch_runtime_fdt(
             additional_serials: &additional_serials,
             gic_profile: Some(&gic_profile),
             plic_profile: None,
+            pci_host: pci_host.as_ref(),
             timer_profile: Some(&timer_profile),
             initrd_start_size: initrd,
             create_chosen: true,
