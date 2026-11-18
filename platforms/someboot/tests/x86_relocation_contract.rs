@@ -103,12 +103,16 @@ fn verify_three_runtime_load_biases(archive: &Path) {
     let full_object = temp.join("someboot-head.o");
     extract_archive_member_with_symbol(archive, "x86_64_raw_entry", &full_object);
     let fixture_object = temp.join("someboot-head-fixture.o");
+    // A codegen unit may also contain Rust/EFI entry definitions. Let the
+    // fixture's strong stubs replace them regardless of compiler partitioning.
     run_checked(
         Command::new("objcopy")
+            .arg("--weaken-symbol=kernel_entry")
+            .arg("--weaken-symbol=__x86_64_efi_pe_entry")
             .arg("--remove-relocations=.head.text.000.header")
             .arg(&full_object)
             .arg(&fixture_object),
-        "remove non-executed image-header relocations from the loader fixture",
+        "prepare the raw entry with fixture exits and no image-header relocations",
     );
 
     let stub_source = temp.join("fixture.S");

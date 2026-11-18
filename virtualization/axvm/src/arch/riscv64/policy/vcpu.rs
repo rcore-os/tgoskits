@@ -11,12 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use core::marker::PhantomData;
+use core::{cell::UnsafeCell, marker::PhantomData, mem::size_of, ptr::NonNull};
+use std::vec::Vec;
 
 use ax_cpu::{
     registers::GprIndex,
     virtualization::{
-        Exception, GuestBinding, GuestInterrupt, Vcpu, VirtualizationError, enter_guest,
+        Exception, GuestBinding, GuestInterrupt, StateMemory, Vcpu, VirtualizationError,
+        enter_guest,
     },
 };
 use riscv_decode::{
@@ -54,13 +56,60 @@ fn instr_is_pseudo(ins: u32) -> bool {
     ins == TINST_PSEUDO_STORE || ins == TINST_PSEUDO_LOAD
 }
 
+/// Host allocation policy for independently owned vector register banks.
+#[derive(Debug)]
+struct VectorMemory(UnsafeCell<Vec<usize>>);
+
+impl Clone for VectorMemory {
+    fn clone(&self) -> Self {
+        // SAFETY: this private, !Sync lease has no concurrent buffer access.
+        // Hardware uses it only under the exclusive Vcpu entry borrow.
+        Self(UnsafeCell::new(unsafe { &*self.0.get() }.clone()))
+    }
+}
+
+impl VectorMemory {
+    fn allocate(vlenb: usize) -> RiscvVcpuResult<Self> {
+        if !(16..=8192).contains(&vlenb) || !vlenb.is_power_of_two() {
+            return Err(RiscvVcpuError::InvalidInput);
+        }
+        let words = vlenb.checked_mul(32).ok_or(RiscvVcpuError::InvalidInput)? / size_of::<usize>();
+        let mut storage = Vec::new();
+        storage
+            .try_reserve_exact(words)
+            .map_err(|_| RiscvVcpuError::OutOfMemory)?;
+        storage.resize(words, 0);
+        Ok(Self(UnsafeCell::new(storage)))
+    }
+}
+
+// SAFETY: the private Vec exclusively owns initialized usize-aligned storage
+// and never resizes while leased. Forgetting this wrapper retains its backing.
+// Clone deep-copies the Vec, preserving length, contents and usize alignment
+// with independent backing. UnsafeCell permits writable pointer derivation
+// through &self and makes the lease !Sync. No operation resizes the Vec;
+// hardware access requires the exclusive Vcpu entry borrow. Accessors neither
+// allocate nor block.
+unsafe impl StateMemory for VectorMemory {
+    fn virtual_address(&self) -> NonNull<u8> {
+        // SAFETY: the !Sync private wrapper excludes concurrent access; as_mut_ptr
+        // does not materialize a reference to the register buffer.
+        NonNull::new(unsafe { &mut *self.0.get() }.as_mut_ptr().cast()).unwrap()
+    }
+    fn byte_len(&self) -> usize {
+        // SAFETY: length never changes after construction; this !Sync lease
+        // has no concurrent Vec access.
+        unsafe { &*self.0.get() }.len() * size_of::<usize>()
+    }
+}
+
 /// A virtual CPU within a guest.
 ///
 /// The value is confined to the architecture adapter; it is not part of any
 /// crate-public API. Its block-local hardware binding is installed and retired
 /// only through the crate-private [`Self::bind`]/[`Self::unbind`] pair.
 pub(crate) struct RiscvVcpu<H: RiscvHostOps> {
-    regs: Vcpu,
+    regs: Vcpu<VectorMemory>,
     sbi: RISCVVCpuSbi,
     binding: Option<GuestBinding>,
     hart_id: usize,
@@ -68,6 +117,7 @@ pub(crate) struct RiscvVcpu<H: RiscvHostOps> {
     /// the owner value lets pause/resume re-install the same deadline without
     /// exposing the bound CSR state to a shared service.
     timer_deadline: Option<usize>,
+    vector_host_cpu_id: Option<usize>,
     _host: PhantomData<fn() -> H>,
 }
 
@@ -87,9 +137,10 @@ pub(crate) struct RiscvVcpu<H: RiscvHostOps> {
 // [`RiscvVcpu::bind`] rejects a second load, so the field carries a binding only
 // while the value is pinned. Moving the value between execution contexts
 // (construction, `Default`, and after `unbind`) always happens with an empty
-// binding. Every other field (`regs`, `sbi`, `hart_id`, and the `fn() -> H`
-// phantom) is `Send` and owns no hart-local hardware capability. Making the
-// whole crate trusted is why this `unsafe impl` is sound even though safe crate
+// binding. All other fields, including the owned vector banks in `regs` and
+// the integer `vector_host_cpu_id`, are `Send` and own no hart-local hardware
+// capability. Making the whole crate trusted is why this `unsafe impl` is
+// sound even though safe crate
 // code could, in principle, invoke `VmArchVcpuOps::bind` through the
 // `AxvmRiscvVcpu` wrapper; that is a private capability the engine never
 // exposes, and the review in the migration notes records this as the single
@@ -138,6 +189,7 @@ impl<H: RiscvHostOps> Default for RiscvVcpu<H> {
             binding: None,
             hart_id: 0,
             timer_deadline: None,
+            vector_host_cpu_id: None,
             _host: PhantomData,
         }
     }
@@ -150,7 +202,26 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         _vcpu_id: usize,
         config: RiscvVcpuCreateConfig,
     ) -> RiscvVcpuResult<Self> {
-        let mut regs = Vcpu::default();
+        let vector_host_cpu_id = if config.vector_register_bytes == 0 {
+            None
+        } else {
+            Some(
+                config
+                    .vector_host_cpu_id
+                    .ok_or(RiscvVcpuError::InvalidInput)?,
+            )
+        };
+        let bytes = config.vector_register_bytes;
+        let mut regs = if bytes == 0 {
+            Vcpu::default()
+        } else {
+            Vcpu::with_vector_memory(
+                bytes,
+                VectorMemory::allocate(bytes)?,
+                VectorMemory::allocate(bytes)?,
+            )
+            .map_err(binding_error)?
+        };
         // Setup the guest's general purpose registers.
         // `a0` is the hartid
         regs.guest_regs.gprs.set_reg(GprIndex::A0, config.hart_id);
@@ -163,6 +234,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             binding: None,
             hart_id: config.hart_id,
             timer_deadline: None,
+            vector_host_cpu_id,
             _host: PhantomData,
         })
     }
@@ -216,6 +288,14 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         self.regs
             .set_page_table(config.root_paddr.as_usize().into(), mode)
             .map_err(binding_error)?;
+        if let Some(binding) = &mut self.binding {
+            // SAFETY: validation above checked the root encoding. The memory
+            // transaction retains both roots and backing until owner acks and
+            // remote invalidation; this vCPU remains pinned to its binding CPU.
+            unsafe {
+                binding.sync_page_table(&self.regs);
+            }
+        }
         Ok(())
     }
 
@@ -256,6 +336,16 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     pub(crate) fn bind(&mut self) -> RiscvVcpuResult {
         if self.binding.is_some() {
             return Err(RiscvVcpuError::BadState);
+        }
+        if let Some(host_cpu_id) = self.vector_host_cpu_id {
+            use crate::host::HostCpu;
+            let cpu_id = crate::host::default_host().this_cpu_id();
+            if cpu_id != host_cpu_id
+                || crate::percpu::cpu_vector_register_bytes(cpu_id)
+                    != Some(self.regs.vector_register_bytes())
+            {
+                return Err(RiscvVcpuError::Unsupported);
+            }
         }
         // SAFETY: AxVM holds the current-CPU scope through the matching unload;
         // this vCPU's roots remain owned by the VM for that complete scope.
@@ -424,6 +514,33 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         Ok(())
     }
 
+    fn handle_guest_read_fault(
+        &mut self,
+        fault: ax_cpu::virtualization::GuestAccessFault,
+    ) -> RiscvVcpuResult<RiscvVmExit> {
+        let address = RiscvGuestVirtAddr::from_usize(fault.stval);
+        match fault.scause {
+            cause if cause == Exception::LoadPageFault as usize => {
+                self.inject_guest_exception(Exception::LoadPageFault, address)?;
+            }
+            cause if cause == Exception::LoadFault as usize => {
+                self.inject_guest_exception(Exception::LoadFault, address)?;
+            }
+            cause if cause == Exception::LoadGuestPageFault as usize => {
+                return Ok(RiscvVmExit::NestedPageFault {
+                    addr: RiscvGuestPhysAddr::from_usize(
+                        ax_cpu::virtualization::guest_page_fault_addr(fault.htval, fault.stval),
+                    ),
+                    access_flags: RiscvAccessFlags::READ,
+                });
+            }
+            _ => return Err(RiscvVcpuError::Unsupported),
+        }
+        // The guest exception points to the ECALL, including a fault in a
+        // partially copied mask. Only the guest's handler may advance it.
+        Ok(RiscvVmExit::Nothing)
+    }
+
     fn handle_guest_instruction_fetch_fault(
         &mut self,
         fault: guest_mem::GuestInstructionFetchFault,
@@ -513,6 +630,26 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                                     true,
                                 )
                             });
+                        }
+                        legacy::LEGACY_REMOTE_FENCE_I
+                        | legacy::LEGACY_REMOTE_SFENCE_VMA
+                        | legacy::LEGACY_REMOTE_SFENCE_VMA_ASID => {
+                            let (mask, base) = if param[0] == 0 {
+                                (0, usize::MAX)
+                            } else {
+                                match guest_mem::read_guest_word(RiscvGuestVirtAddr::from(param[0]))
+                                {
+                                    Ok(mask) => (mask, 0),
+                                    Err(fault) => return self.handle_guest_read_fault(fault),
+                                }
+                            };
+                            // Legacy and v0.2 requests share one task-side
+                            // topology validation and synchronous fence path.
+                            return Ok(self.task_sbi_call(
+                                extension_id,
+                                0,
+                                [mask, base, param[1], param[2], param[3], 0],
+                            ));
                         }
                         legacy::LEGACY_CLEAR_IPI => {
                             self.set_virtual_interrupt_pending(S_SOFT, false)?;
@@ -691,21 +828,31 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         if self.binding.is_some() {
             return Err(RiscvVcpuError::BadState);
         }
-        if call.extension == rfnc::EID_RFNC {
-            match call.function {
-                rfnc::REMOTE_FENCE_I => self.sbi.pmu.record_fence_i_sent(),
-                rfnc::REMOTE_SFENCE_VMA => self.sbi.pmu.record_sfence_vma_sent(),
-                rfnc::REMOTE_SFENCE_VMA_ASID => self.sbi.pmu.record_sfence_vma_asid_sent(),
-                rfnc::REMOTE_HFENCE_GVMA => self.sbi.pmu.record_hfence_gvma_sent(),
-                rfnc::REMOTE_HFENCE_GVMA_VMID => self.sbi.pmu.record_hfence_gvma_vmid_sent(),
-                rfnc::REMOTE_HFENCE_VVMA => self.sbi.pmu.record_hfence_vvma_sent(),
-                rfnc::REMOTE_HFENCE_VVMA_ASID => self.sbi.pmu.record_hfence_vvma_asid_sent(),
-                _ => {}
-            }
+        // RFENCE must pass through the VMM's guest topology and VS-stage
+        // invalidation path, never through firmware with guest hart IDs.
+        if call.extension == rfnc::EID_RFNC
+            || (legacy::LEGACY_REMOTE_FENCE_I..=legacy::LEGACY_REMOTE_SFENCE_VMA_ASID)
+                .contains(&call.extension)
+        {
+            return Ok(SbiRet::not_supported());
         }
         Ok(self
             .sbi
             .handle_ecall(call.extension, call.function, call.arguments))
+    }
+
+    /// Accounts only remote fences successfully completed by the VMM.
+    pub(crate) fn record_remote_fence(&mut self, function: usize) {
+        match function {
+            rfnc::REMOTE_FENCE_I => self.sbi.pmu.record_fence_i_sent(),
+            rfnc::REMOTE_SFENCE_VMA => self.sbi.pmu.record_sfence_vma_sent(),
+            rfnc::REMOTE_SFENCE_VMA_ASID => self.sbi.pmu.record_sfence_vma_asid_sent(),
+            rfnc::REMOTE_HFENCE_GVMA => self.sbi.pmu.record_hfence_gvma_sent(),
+            rfnc::REMOTE_HFENCE_GVMA_VMID => self.sbi.pmu.record_hfence_gvma_vmid_sent(),
+            rfnc::REMOTE_HFENCE_VVMA => self.sbi.pmu.record_hfence_vvma_sent(),
+            rfnc::REMOTE_HFENCE_VVMA_ASID => self.sbi.pmu.record_hfence_vvma_asid_sent(),
+            _ => {}
+        }
     }
 
     #[inline]
@@ -1168,9 +1315,9 @@ mod tests {
 
 fn binding_error(error: VirtualizationError) -> RiscvVcpuError {
     match error {
-        VirtualizationError::InvalidRoot | VirtualizationError::InvalidVector => {
-            RiscvVcpuError::InvalidInput
-        }
+        VirtualizationError::InvalidRoot
+        | VirtualizationError::InvalidVector
+        | VirtualizationError::InvalidVectorState => RiscvVcpuError::InvalidInput,
         VirtualizationError::Unavailable
         | VirtualizationError::UnsupportedPaging
         | VirtualizationError::UnsupportedTimer => RiscvVcpuError::Unsupported,

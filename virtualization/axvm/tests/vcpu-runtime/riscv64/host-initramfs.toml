@@ -1,0 +1,2 @@
+source = "virtualization/axvm/tests/vcpu-runtime/riscv64"
+vm_configs = []

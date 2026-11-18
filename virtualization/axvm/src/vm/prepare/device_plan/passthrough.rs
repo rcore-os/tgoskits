@@ -275,6 +275,11 @@ mod tests {
 
     #[test]
     fn host_replacement_range_is_not_reserved_as_passthrough() {
+        use crate::{
+            layout::build_address_layout,
+            vm::{HostDmaBlocker, host_access::host_dma_blocker},
+        };
+
         let config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
             pass_through_devices: std::vec![HostDeviceAssignment {
@@ -286,15 +291,84 @@ mod tests {
             ..Default::default()
         });
 
-        let mut builder = DeviceGraphBuilder::new();
-        let replacement = 0xfd7c_0000..0xfd81_0000;
-        add_host_nodes(&config, std::slice::from_ref(&replacement), &mut builder).unwrap();
-        let declared = builder.declare().unwrap();
-        let requests = declared.requests().unwrap();
-        let mut pools = ResourcePools::new();
-        super::super::pools::allow_fixed_requirements(&requests, &mut pools).unwrap();
-        let graph = declared.resolve(pools).unwrap();
+        for (replacement, expected) in [
+            (0xfd7c_0000..0xfd81_0000, None),
+            (
+                0xfd7c_0000..0xfd80_0000,
+                Some(HostDmaBlocker::HostMapping {
+                    guest_base: 0xfd80_0000.into(),
+                    host_base: 0xfd80_0000.into(),
+                    length: 0x1_0000,
+                }),
+            ),
+        ] {
+            let mut builder = DeviceGraphBuilder::new();
+            add_host_nodes(&config, std::slice::from_ref(&replacement), &mut builder).unwrap();
+            let declared = builder.declare().unwrap();
+            let requests = declared.requests().unwrap();
+            let mut pools = ResourcePools::new();
+            super::super::pools::allow_fixed_requirements(&requests, &mut pools).unwrap();
+            let graph = declared.resolve(pools).unwrap();
+            let mappings = graph
+                .host_mappings()
+                .map(|mapping| HostDeviceAssignment {
+                    base_gpa: mapping.guest_base() as usize,
+                    base_hpa: mapping.host_base() as usize,
+                    length: mapping.length() as usize,
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>();
+            let layout = build_address_layout(
+                config.address_space_policy(),
+                0,
+                0x1_0000_0000,
+                &mappings,
+                &[],
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert_eq!(host_dma_blocker(&config, Some(&layout)), expected);
+        }
 
-        assert!(graph.host_mappings().next().is_none());
+        let identity_layout = build_address_layout(
+            AddressSpacePolicy::Passthrough,
+            0,
+            0x1_0000,
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            host_dma_blocker(&config, Some(&identity_layout)),
+            Some(HostDmaBlocker::HostMapping {
+                guest_base: 0.into(),
+                host_base: 0.into(),
+                length: 0x1_0000,
+            }),
+        );
+        let port_config = AxVMConfig::new(AxVMConfigParams {
+            pass_through_ports: std::vec![HostPortAssignment {
+                base: 0x6000,
+                length: 0x80,
+            }],
+            ..Default::default()
+        });
+        assert_eq!(
+            host_dma_blocker(
+                &port_config,
+                Some(&crate::layout::VmAddressLayout::default())
+            ),
+            Some(HostDmaBlocker::Port {
+                base: 0x6000,
+                length: 0x80,
+            }),
+        );
+        assert_eq!(
+            host_dma_blocker(&config, None),
+            Some(HostDmaBlocker::UnpreparedAddressSpace),
+        );
     }
 }

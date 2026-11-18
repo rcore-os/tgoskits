@@ -1,5 +1,5 @@
 schema_version = 1
-run_order = ["x86-q35"]
+run_order = ["x86-q35", "riscv-aia", "riscv-plic"]
 
 [execution]
 batch_env = "AX_DRIVERS_BATCH"
@@ -26,3 +26,31 @@ id = "intel-hda"
 name = "Intel HDA播放、取消与输出波形"
 entry = "crate::intel_hda::run"
 pcm_waveform = true
+
+[batches.riscv-aia]
+package = "arceos-driver-tests"
+image = "freestanding"
+mode = "normal"
+arch = "riscv64"
+build_config = "build-riscv64gc-unknown-none-elf.toml"
+qemu_config = "qemu-riscv64.toml"
+features = ["ax-std"]
+
+[[batches.riscv-aia.tests]]
+id = "aplic"
+name = "APLIC延期完成与来源退休"
+entry = "crate::aplic::run"
+
+[batches.riscv-plic]
+package = "arceos-driver-tests"
+image = "freestanding"
+mode = "normal"
+arch = "riscv64"
+build_config = "build-riscv64gc-unknown-none-elf.toml"
+qemu_config = "qemu-riscv64-plic.toml"
+features = ["ax-std", "plic-retirement"]
+
+[[batches.riscv-plic.tests]]
+id = "plic-ownership"
+name = "PLIC宿主线路与客户机批量申请"
+entry = "crate::plic::run"

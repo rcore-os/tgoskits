@@ -82,7 +82,12 @@ pub fn prepare_dtb_guest(
     }
 
     let guest_dtb = build_guest_dtb(vm_config, vm_create_config, provided_dtb, host_fdt_bytes)?;
-    enrich_guest_config(vm_config, vm_create_config, guest_dtb.as_ref())?;
+    enrich_guest_config(
+        vm_config,
+        vm_create_config,
+        guest_dtb.as_ref(),
+        host_fdt_bytes,
+    )?;
     Ok(guest_dtb)
 }
 
@@ -328,6 +333,11 @@ fn build_guest_dtb(
             let host_fdt = parse_host_fdt(host_bytes)?;
             set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config)?;
             info!("VM[{}] found DTB, parsing...", vm_config.id());
+            // Identity passthrough must retain host controller holes even when
+            // guest firmware omits them. Fully virtualized GPAs are independent.
+            if vm_config.uses_passthrough_address_space() {
+                parser::reserve_host_interrupt_controllers(vm_config, vm_create_config, &host_fdt)?;
+            }
             reserve_excluded_device_ranges(vm_config, vm_create_config, &provided)?;
             update_provided_fdt(&provided, Some(host_bytes), vm_create_config)
                 .map(GuestDtbImage::new)
@@ -392,6 +402,7 @@ fn enrich_guest_config(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut GuestConfig,
     guest_dtb: Option<&GuestDtbImage>,
+    host_dtb: Option<&[u8]>,
 ) -> AxVmResult {
     let Some(dtb) = guest_dtb.map(GuestDtbImage::as_bytes) else {
         clear_unresolved_dtb_config(vm_config, vm_create_config);
@@ -401,7 +412,7 @@ fn enrich_guest_config(
     parse_reserved_memory_regions(vm_create_config, dtb)?;
     // Interrupt discovery needs the original FDT selectors. Address resolution
     // replaces them with MMIO mappings whose names need not be node paths.
-    parse_vm_interrupt(vm_config, vm_create_config, dtb)?;
+    parse_vm_interrupt(vm_config, vm_create_config, dtb, host_dtb)?;
     parse_passthrough_devices_address(vm_config, vm_create_config, dtb)
 }
 

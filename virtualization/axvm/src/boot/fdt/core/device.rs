@@ -81,8 +81,8 @@ pub(crate) fn find_all_passthrough_devices_from_paths(
                     if dependency != provider && excluded_path(&path) {
                         continue;
                     }
-                    // Machine interrupt providers are installed by their device models.
-                    if super::interrupt::is_machine_interrupt_provider(
+                    // A dependency on host interrupt routing never grants its MMIO.
+                    if super::interrupt::is_host_owned_interrupt_provider(
                         fdt.node(dependency).unwrap(),
                     ) {
                         continue;
@@ -177,7 +177,7 @@ fn provider_nodes(fdt: &Fdt, provider: NodeId, reference: &str) -> Vec<NodeId> {
     nodes
 }
 
-fn owns_device_resources(node: &fdt_edit::Node) -> bool {
+pub(super) fn owns_device_resources(node: &fdt_edit::Node) -> bool {
     ["reg", "ranges", "interrupts", "interrupts-extended"]
         .iter()
         .any(|name| node.get_property(name).is_some_and(|p| !p.data.is_empty()))

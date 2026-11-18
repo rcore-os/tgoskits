@@ -21,6 +21,11 @@ features = ["uspace"]
 name = "loongarch64-runtime"
 target = "loongarch64-unknown-none-softfloat"
 
+[[package.metadata.clippy.configurations]]
+name = "riscv64-hypervisor"
+target = "riscv64gc-unknown-none-elf"
+features = ["hv", "tls"]
+
 [features]
 efi = ["someboot/efi"]
 efi-handoff = ["someboot/efi-handoff"]
@@ -59,6 +64,7 @@ arm-gic-driver = {workspace = true, features = ["rdif"]}
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-riscv-plic = { workspace = true }
+riscv-aia-driver.workspace = true
 riscv.workspace = true
 sbi-rt = { workspace = true, features = ["legacy"] }
 

@@ -2,7 +2,7 @@
 
 pub(crate) use crate::config::GuestBootPolicy;
 use crate::{
-    GuestPhysAddr,
+    AxVmError, AxVmResult, GuestPhysAddr,
     config::{AxVMConfig, VMBootProtocol},
 };
 
@@ -22,11 +22,53 @@ impl BootImagePlan {
         }
     }
 
-    pub(crate) fn apply_to_config(&self, config: &mut AxVMConfig) {
+    pub(crate) fn apply_to_config(&self, config: &mut AxVMConfig) -> AxVmResult {
         let Some(kernel_load_gpa) = self.adjusted_kernel_load_gpa(config) else {
-            return;
+            return Ok(());
         };
+        let old_kernel = config.image_config.kernel_load_gpa.as_usize();
+        let new_kernel = kernel_load_gpa.as_usize();
+        // Identical RAM is placed at its allocated HPA. An initramfs belongs
+        // to the same boot layout, so preserve its offset from the kernel.
+        // Validate before mutating any boot address, including entry points.
+        let ramdisk_gpa = config
+            .image_config
+            .ramdisk
+            .as_ref()
+            .map(|ramdisk| {
+                let old_ramdisk = ramdisk.load_gpa.as_usize();
+                let primary = config.memory_regions().first().ok_or_else(|| {
+                    AxVmError::invalid_config(
+                        "initramfs relocation requires the configured primary RAM",
+                    )
+                })?;
+                let primary_end = primary.gpa.checked_add(primary.size).ok_or_else(|| {
+                    AxVmError::invalid_config(
+                        "configured primary RAM exceeds the guest address width",
+                    )
+                })?;
+                // A separately configured fixed RAM region does not move with the
+                // primary identical allocation. Its absolute image address stays.
+                if !(primary.gpa..primary_end).contains(&old_ramdisk) {
+                    return Ok(ramdisk.load_gpa);
+                }
+                let relocated = if let Some(offset) = old_ramdisk.checked_sub(old_kernel) {
+                    new_kernel.checked_add(offset)
+                } else {
+                    new_kernel.checked_sub(old_kernel - old_ramdisk)
+                };
+                relocated.map(GuestPhysAddr::from).ok_or_else(|| {
+                    AxVmError::invalid_config(
+                        "initramfs relocation exceeds the guest address width",
+                    )
+                })
+            })
+            .transpose()?;
         config.relocate_kernel_image(kernel_load_gpa);
+        if let (Some(ramdisk), Some(address)) = (&mut config.image_config.ramdisk, ramdisk_gpa) {
+            ramdisk.load_gpa = address;
+        }
+        Ok(())
     }
 
     fn adjusted_kernel_load_gpa(&self, config: &AxVMConfig) -> Option<GuestPhysAddr> {
@@ -81,7 +123,7 @@ mod tests {
         let mut config = config_for_boot_policy(VMBootProtocol::Multiboot, Some(0x8000));
         let plan = BootImagePlan::new(GuestPhysAddr::from(0x4000_0000), true);
 
-        plan.apply_to_config(&mut config);
+        plan.apply_to_config(&mut config).unwrap();
 
         assert_eq!(
             config.image_config().kernel_load_gpa.as_usize(),
@@ -96,7 +138,7 @@ mod tests {
         let mut config = config_for_boot_policy(VMBootProtocol::Uefi, Some(0x2000_0000));
         let plan = BootImagePlan::new(GuestPhysAddr::from(0x4000_0000), true);
 
-        plan.apply_to_config(&mut config);
+        plan.apply_to_config(&mut config).unwrap();
 
         assert_eq!(config.image_config().kernel_load_gpa.as_usize(), 0x100000);
         assert_eq!(config.bsp_entry().as_usize(), 0x101000);
@@ -109,7 +151,7 @@ mod tests {
         config.set_boot_policy(GuestBootPolicy::KeepConfigured);
         let plan = BootImagePlan::new(GuestPhysAddr::from(0x4000_0000), true);
 
-        plan.apply_to_config(&mut config);
+        plan.apply_to_config(&mut config).unwrap();
 
         assert_eq!(config.image_config().kernel_load_gpa.as_usize(), 0x100000);
         assert_eq!(config.bsp_entry().as_usize(), 0x101000);

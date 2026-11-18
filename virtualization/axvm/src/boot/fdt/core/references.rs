@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, vec::Vec};
 
-use fdt_edit::{Fdt, NodeId, Property};
+use fdt_edit::{Fdt, InterruptRef, NodeId, NodeType, Property};
 
 use super::tree::checked_node_phandle;
 use crate::{AxVmResult, ax_err_type};
@@ -24,6 +24,38 @@ pub(super) fn phandle_index(fdt: &Fdt) -> AxVmResult<BTreeMap<u32, NodeId>> {
         }
     }
     Ok(handles)
+}
+
+/// Reads the effective interrupt references used by the device driver.
+pub(super) fn interrupts(
+    source: &Fdt,
+    handles: &BTreeMap<u32, NodeId>,
+    node: NodeType<'_>,
+) -> AxVmResult<Vec<InterruptRef>> {
+    let Some(property) = node.as_node().get_property("interrupts-extended") else {
+        return Ok(node.interrupts());
+    };
+    // DTSpec 2.4.1.3 gives this property precedence over `interrupts`.
+    let offsets = reference_offsets(source, handles, node.id(), property)?
+        .expect("interrupts-extended uses provider argument cells");
+    let cells = property.get_u32_iter().collect::<Vec<_>>();
+    let end_offsets = offsets.iter().copied().skip(1).chain(Some(cells.len()));
+    let mut names = node
+        .as_node()
+        .get_property("interrupt-names")
+        .into_iter()
+        .flat_map(Property::as_str_iter);
+    Ok(offsets
+        .iter()
+        .copied()
+        .zip(end_offsets)
+        .map(|(start, end)| InterruptRef {
+            name: names.next().map(Into::into),
+            interrupt_parent: cells[start].into(),
+            cells: (end - start - 1) as u32,
+            specifier: cells[start + 1..end].to_vec(),
+        })
+        .collect())
 }
 
 /// Returns only phandle positions, never provider-specific argument cells.

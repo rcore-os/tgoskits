@@ -142,7 +142,11 @@ pub(crate) async fn run_qemu_case(
         arceos.app.target_dir(),
         &mut qemu,
     )?;
-    qemu_test::append_backtrace_map(&mut qemu, map_path, &case.request.target)?;
+    let symbol_initramfs =
+        qemu_test::prepare_qemu_initramfs_with_symbols(&qemu, map_path, &case.request.target)?;
+    if let Some(archive) = &symbol_initramfs {
+        qemu.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+    }
     let serial_rx = if case.case.feature.as_deref() == Some("serial-rx") {
         Some(super::serial_rx::SerialRxFixture::start(&mut qemu).await?)
     } else {

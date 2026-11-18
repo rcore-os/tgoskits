@@ -55,6 +55,7 @@ ax-arm-pl031
 someboot
 ranges-ext
 arm-gic-driver
+riscv-aia-driver
 x86-apic-driver
 ax-memory-set
 ax-cpumask

@@ -17,6 +17,25 @@ use crate::{
     machine::{GuestGicProfile, GuestPlicProfile},
 };
 
+/// Identifies physical controllers whose resources must remain host-owned.
+/// The guest machine may expose a different controller, such as PLIC on AIA.
+pub(super) fn is_host_owned_interrupt_provider(node: &fdt_edit::Node) -> bool {
+    is_machine_interrupt_provider(node)
+        || (node.get_property("interrupt-controller").is_some()
+            && node.compatibles().any(|compatible| {
+                matches!(
+                    compatible,
+                    "riscv,aplic" | "spacemit,k3-aplic" | "riscv,imsics" | "spacemit,k3-imsics"
+                )
+            }))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(super) fn is_plic_provider(node: &fdt_edit::Node) -> bool {
+    node.get_property("interrupt-controller").is_some()
+        && node.compatibles().any(plic::is_supported)
+}
+
 /// Identifies supported machine controllers independently of firmware node names.
 pub(super) fn is_machine_interrupt_provider(node: &fdt_edit::Node) -> bool {
     node.compatibles()

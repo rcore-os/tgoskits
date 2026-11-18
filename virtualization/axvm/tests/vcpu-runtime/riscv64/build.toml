@@ -1,0 +1,4 @@
+features = ["sstc"]
+log = "Info"
+max_cpu_num = 2
+target = "riscv64gc-unknown-none-elf"

@@ -99,6 +99,20 @@ pub(crate) fn copy_from_guest_va(
     }
 }
 
+pub(crate) fn read_guest_word(gva: RiscvGuestVirtAddr) -> Result<usize, cpu::GuestAccessFault> {
+    let mut bytes = [0; core::mem::size_of::<usize>()];
+    // SAFETY: the SBI emulator retains the pinned vCPU binding and guest
+    // translation; this stack buffer belongs exclusively to the VMM.
+    unsafe {
+        cpu::read_guest_virtual(
+            &mut bytes,
+            gva.as_usize().into(),
+            GuestPrivilege::Supervisor,
+        )
+    }?;
+    Ok(usize::from_ne_bytes(bytes))
+}
+
 pub(crate) fn fetch_guest_instruction(
     gva: RiscvGuestVirtAddr,
     supervisor: bool,

@@ -23,6 +23,8 @@ pub use axvm_types::{
     HostPortAssignment, ReservedAddressConfig, VMBootProtocol, VmMemConfig, VmMemMappingType,
 };
 use axvmconfig::VirtualDeviceRequest;
+/// Electrical trigger semantics retained for physical-controller activation.
+pub use rdif_intc::Trigger as ControllerIrqTrigger;
 
 use crate::{arch::current::CurrentArch, architecture::MachinePlatform, machine::*};
 
@@ -77,6 +79,8 @@ pub struct PassthroughInterrupt {
     pub source: u32,
     /// Trigger mode declared by firmware for the physical device.
     pub trigger: InterruptTriggerMode,
+    /// Electrical trigger retained from the physical controller firmware.
+    pub controller_trigger: Option<ControllerIrqTrigger>,
 }
 
 /// Runtime configuration for one VM.
@@ -264,7 +268,39 @@ impl AxVMConfig {
     }
 
     /// Adds a guest address range reserved from default passthrough mapping.
-    pub fn add_reserved_address_range(&mut self, range: ReservedAddressConfig) {
+    /// Coalesces overlapping or adjacent reservations from multiple firmware
+    /// sources. Invalid ranges remain intact for address-layout validation.
+    pub fn add_reserved_address_range(&mut self, mut range: ReservedAddressConfig) {
+        let Some(mut end) = range
+            .base_gpa
+            .checked_add(range.length)
+            .filter(|_| range.length != 0)
+        else {
+            self.reserved_address_ranges.push(range);
+            return;
+        };
+        let mut index = 0;
+        while index < self.reserved_address_ranges.len() {
+            let existing = &self.reserved_address_ranges[index];
+            let Some(existing_end) = existing
+                .base_gpa
+                .checked_add(existing.length)
+                .filter(|_| existing.length != 0)
+            else {
+                index += 1;
+                continue;
+            };
+            if existing.base_gpa > end || range.base_gpa > existing_end {
+                index += 1;
+                continue;
+            }
+            range.base_gpa = range.base_gpa.min(existing.base_gpa);
+            end = end.max(existing_end);
+            self.reserved_address_ranges.swap_remove(index);
+            // Merging can connect earlier, unsorted reservations as well.
+            index = 0;
+        }
+        range.length = end - range.base_gpa;
         self.reserved_address_ranges.push(range);
     }
 
@@ -319,11 +355,20 @@ impl AxVMConfig {
     }
 
     /// Adds a physical interrupt source forwarded to the guest.
-    pub fn add_pass_through_irq(&mut self, source: u32, trigger: InterruptTriggerMode) {
+    pub fn add_pass_through_irq(
+        &mut self,
+        source: u32,
+        trigger: InterruptTriggerMode,
+        controller_trigger: Option<ControllerIrqTrigger>,
+    ) {
         if self.excluded_passthrough_irq_sources.contains(&source) {
             return;
         }
-        let route = PassthroughInterrupt { source, trigger };
+        let route = PassthroughInterrupt {
+            source,
+            trigger,
+            controller_trigger,
+        };
         if let Some(existing) = self
             .passthrough_irq_list
             .iter_mut()

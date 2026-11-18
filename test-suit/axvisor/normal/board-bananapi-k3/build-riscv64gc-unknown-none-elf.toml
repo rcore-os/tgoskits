@@ -1,0 +1,8 @@
+target = "riscv64gc-unknown-none-elf"
+features = ["sstc"]
+log = "Info"
+max_cpu_num = 16
+vm_configs = [
+    "test-suit/axvisor/normal/board-bananapi-k3/linux.toml",
+    "test-suit/axvisor/normal/board-bananapi-k3/starryos.toml",
+]

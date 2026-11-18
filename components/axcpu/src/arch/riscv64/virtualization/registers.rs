@@ -1,6 +1,7 @@
 //! Guest reset and virtual interrupt register controls.
 
 use super::{Exception, GuestBinding, GuestPrivilege, Vcpu};
+use crate::virtualization::StateMemory;
 
 /// Virtual interrupt bit in HIE/HVIP, independent of host IRQ routing.
 #[repr(usize)]
@@ -14,7 +15,7 @@ pub enum GuestInterrupt {
     External = 10,
 }
 
-impl Vcpu {
+impl<M: StateMemory> Vcpu<M> {
     /// Installs supervisor reset controls without changing guest GPRs or memory.
     pub fn initialize_supervisor(&mut self) {
         // SPP=Supervisor, FS=Initial; global interrupt enables remain clear.
@@ -45,7 +46,11 @@ impl Vcpu {
 impl GuestBinding {
     /// Synchronizes one pending bit without overwriting other hardware events.
     /// The binding's CPU pin and exclusive ownership must remain active.
-    pub fn sync_interrupt(&mut self, registers: &Vcpu, interrupt: GuestInterrupt) {
+    pub fn sync_interrupt<M: StateMemory>(
+        &mut self,
+        registers: &Vcpu<M>,
+        interrupt: GuestInterrupt,
+    ) {
         let bit = 1usize << interrupt as usize;
         // SAFETY: this live binding owns the current hart. CSR set/clear touches
         // only the selected source, preserving independently raised pending bits.
@@ -60,7 +65,7 @@ impl GuestBinding {
 
     /// Programs the bound virtual supervisor comparator and its saved image.
     #[cfg(feature = "riscv-sstc")]
-    pub fn set_timer_compare(&mut self, registers: &mut Vcpu, deadline: usize) {
+    pub fn set_timer_compare<M: StateMemory>(&mut self, registers: &mut Vcpu<M>, deadline: usize) {
         let _irqs = super::binding::LocalIrqs::disable();
         registers.vs_csrs.vstimecmp = deadline;
         // SAFETY: successful binding validated STCE and owns this hart's timer.
@@ -70,7 +75,7 @@ impl GuestBinding {
     }
 }
 
-impl Vcpu {
+impl<M: StateMemory> Vcpu<M> {
     /// Returns the privilege captured on the most recent guest exit.
     pub const fn guest_privilege(&self) -> GuestPrivilege {
         if self.guest_regs.hstatus & (1 << 8) != 0 {
@@ -84,9 +89,9 @@ impl Vcpu {
 impl GuestBinding {
     /// Delivers a synchronous exception through the guest's current VS vector.
     /// Updates the installed bank and saved image together before reentry.
-    pub fn inject_exception(
+    pub fn inject_exception<M: StateMemory>(
         &mut self,
-        registers: &mut Vcpu,
+        registers: &mut Vcpu<M>,
         exception: Exception,
         address: crate::virtualization::GuestVirtAddr,
     ) {

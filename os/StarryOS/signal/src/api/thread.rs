@@ -552,7 +552,12 @@ impl ThreadSignalManager {
         #[cfg(target_arch = "x86_64")]
         let restored_fpstate = crate::arch::SignalFpState::restore(vm, frame.ucontext.fpstate())?;
 
-        *uctx = frame.uctx;
+        // RISC-V mcontext restores every user-visible register. Preserve the
+        // live kernel-owned sstatus instead of copying it from the user stack.
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            *uctx = frame.uctx;
+        }
         frame.ucontext.mcontext.restore(uctx);
 
         *self.blocked.lock_irqsave() = frame.ucontext.sigmask;

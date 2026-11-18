@@ -19,6 +19,9 @@ use crate::{
     services::{DevicePorts, RunServices, RunSignalWorker, RunSignals},
 };
 
+#[cfg(all(feature = "fault-injection", target_arch = "aarch64"))]
+mod tests;
+
 impl Owner {
     pub(super) fn prepare_run(
         &mut self,
@@ -92,6 +95,7 @@ impl Owner {
             joined_activations: vec![0; count],
             topology,
             failure: None,
+            retained_halt_started: false,
             pending_memory: None,
             memory_operation: None,
             retired_entries: 0,
@@ -102,6 +106,9 @@ impl Owner {
     }
 
     pub(super) fn start(&mut self, operation: OperationId) -> AxVmResult<RunId> {
+        // A guest shutdown may retain a stopped run whose physical devices
+        // still own its backing. It must not start another activation.
+        self.require_host_dma_quiescence()?;
         if self.run.is_none() {
             let generation = next_generation(&mut self.run_generation, "VM run")?;
             let id = RunId::new(self.shared.key(), generation);
@@ -111,6 +118,11 @@ impl Owner {
                 Arc::downgrade(&self.shared),
                 self.cpu_freq_backend.clone(),
             );
+            // Publish a non-stopped snapshot before provisioning replacement
+            // backends; lifecycle observers must not close their new generation
+            // using the previous run's Stopped state.
+            self.state = VmStatus::Ready;
+            self.publish();
             if let Err(error) = self.prepare_run(id, signals, ports) {
                 self.record_failure(error.clone());
                 return Err(error);
@@ -120,15 +132,7 @@ impl Owner {
         let id = run.id;
         run.worker = Some(RunSignalWorker::start(run.signals.clone())?);
         if let Err(error) = CurrentArch::enter_runtime(&mut self.vm, &run.signals) {
-            return match self.stop(operation) {
-                Ok(()) => Err(error),
-                Err(cleanup) => {
-                    let failure =
-                        AxVmError::lifecycle_rollback("start IRQ runtime", error, cleanup);
-                    self.record_failure(failure.clone());
-                    Err(failure)
-                }
-            };
+            return Err(self.rollback_start(operation, "start IRQ runtime", error));
         }
         self.last_run = Some(id);
         self.last_stop_reason = None;
@@ -140,6 +144,8 @@ impl Owner {
                 instances.push(self.spawn_vcpu(cpu, operation, None)?);
             }
             self.wait_confirm(operation, &instances, Confirmation::Started)?;
+            #[cfg(all(feature = "fault-injection", target_arch = "aarch64"))]
+            tests::after_start(self)?;
             self.resume_participants(operation)?;
             let run = self.run.as_ref().expect("started run");
             run.signals
@@ -153,21 +159,54 @@ impl Owner {
             Ok(())
         })();
         if let Err(error) = result {
-            let cleanup = self.stop(operation);
-            if let Err(cleanup) = cleanup {
-                self.record_failure(cleanup);
-            }
-            return Err(error);
+            return Err(self.rollback_start(operation, "start vCPUs", error));
         }
         self.state = VmStatus::Running;
         self.publish();
         Ok(id)
     }
 
+    fn rollback_start(
+        &mut self,
+        operation: OperationId,
+        context: &'static str,
+        error: AxVmError,
+    ) -> AxVmError {
+        // A failed startup still owns its tasks and interrupt producers. The
+        // DMA gate prevents reclamation, never execution rollback, including
+        // a run already marked Failed by a startup event.
+        let retain = self.host_dma_blocker().is_some();
+        let cleanup = if retain {
+            self.halt_retaining_run(operation)
+        } else {
+            self.stop(operation)
+        };
+        match cleanup {
+            Ok(()) => {
+                if retain {
+                    self.record_failure(error.clone());
+                }
+                error
+            }
+            Err(cleanup) => {
+                let failure = AxVmError::lifecycle_rollback(context, error, cleanup);
+                self.record_failure(failure.clone());
+                failure
+            }
+        }
+    }
+
     pub(super) fn pause(&mut self, operation: OperationId) -> AxVmResult {
         if self.state == VmStatus::Paused {
             return Ok(());
         }
+        self.require_host_dma_quiescence()?;
+        self.pause_run(operation)
+    }
+
+    // Quiesce CPU and modeled producers without claiming physical DMA is idle.
+    // Callers must enforce DMA policy before revoking mappings or backing.
+    pub(super) fn pause_run(&mut self, operation: OperationId) -> AxVmResult {
         self.state = VmStatus::Pausing;
         self.publish();
         let quiet = self.park_participants(operation).and_then(|()| {
@@ -248,17 +287,82 @@ impl Owner {
         Ok(())
     }
 
-    pub(super) fn require_stop_supported(&self) -> AxVmResult {
-        if !self.vm.config().pass_through_devices().is_empty()
-            && let Some(run) = &self.run
-        {
-            self.shared.ivc.require_no_endpoints(run.id)?;
+    pub(super) fn require_host_dma_quiescence(&self) -> AxVmResult {
+        // Host assignments do not participate in DeviceLifecycle yet. An empty
+        // lifecycle-device list therefore cannot prove their DMA has stopped.
+        // Keep the running owner and its backing intact on policy rejection.
+        if let Some(blocker) = self.host_dma_blocker() {
+            return Err(blocker.into_error("quiesce VM devices"));
         }
         Ok(())
     }
 
+    pub(super) fn host_dma_blocker(&self) -> Option<crate::vm::HostDmaBlocker> {
+        if self
+            .run
+            .as_ref()
+            .is_some_and(|run| self.last_run == Some(run.id))
+        {
+            self.vm.host_dma_blocker()
+        } else {
+            None
+        }
+    }
+
+    /// Stops guest execution while retaining assignments that cannot be reclaimed.
+    pub(super) fn shutdown_run(&mut self, operation: OperationId) -> AxVmResult {
+        if self.host_dma_blocker().is_none() {
+            return self.stop(operation);
+        }
+        #[cfg(all(feature = "fault-injection", target_arch = "aarch64"))]
+        tests::before_retained_shutdown(self);
+        // Only an earlier halt can leave architecture teardown incomplete.
+        // Failure during another operation still needs its execution stopped.
+        if self.state == VmStatus::Failed
+            && self
+                .run
+                .as_ref()
+                .expect("physical DMA run")
+                .retained_halt_started
+        {
+            return Err(self
+                .last_failure
+                .clone()
+                .unwrap_or_else(|| AxVmError::invalid_state("shut down guest", "run has failed")));
+        }
+        if self.state == VmStatus::Stopped {
+            return Ok(());
+        }
+        if let Err(error) = self.halt_retaining_run(operation) {
+            self.record_failure(error.clone());
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn halt_retaining_run(&mut self, operation: OperationId) -> AxVmResult {
+        self.run
+            .as_mut()
+            .expect("physical DMA run")
+            .retained_halt_started = true;
+        self.halt_run(operation)?;
+        // No guest or virtual worker can access these ports now. Keep the
+        // run, page tables, DMA backing and IVC mappings until board reset.
+        self.run
+            .as_ref()
+            .expect("retained shutdown run")
+            .ports
+            .close();
+        self.state = VmStatus::Stopped;
+        info!(
+            "VM[{}] guest execution stopped; retaining physical device resources until host reset",
+            self.vm.id()
+        );
+        Ok(())
+    }
+
     pub(super) fn stop(&mut self, operation: OperationId) -> AxVmResult {
-        self.require_stop_supported()?;
+        self.require_host_dma_quiescence()?;
         let result = self.stop_run(operation);
         if let Err(error) = &result {
             self.record_failure(error.clone());
@@ -266,7 +370,7 @@ impl Owner {
         result
     }
 
-    pub(super) fn stop_run(&mut self, operation: OperationId) -> AxVmResult {
+    fn stop_run(&mut self, operation: OperationId) -> AxVmResult {
         self.last_stop_reason
             .get_or_insert(crate::StopReason::Clean);
         self.shared.publish_run_services(None);
@@ -285,6 +389,28 @@ impl Owner {
             self.state = VmStatus::Stopped;
             return Ok(());
         }
+        self.halt_run(operation)?;
+        self.retire_failed_memory_update()?;
+        self.teardown_ivc(operation)?;
+        self.invalidate_root(self.vm.resources.nested_paging)?;
+        self.run
+            .as_ref()
+            .expect("retire stopped memory")
+            .services
+            .memory()
+            .retire()?;
+        self.shared.publish_run_services(None);
+        // Device routes, decode views and workers are now quiet. New starts
+        // prepare fresh controllers and fresh ports for another RunId.
+        self.run.as_ref().expect("close stopped run").ports.close();
+        self.run = None;
+        self.state = VmStatus::Stopped;
+        Ok(())
+    }
+
+    /// Closes execution and joins its owners without releasing guest memory.
+    fn halt_run(&mut self, operation: OperationId) -> AxVmResult {
+        self.shared.publish_run_services(None);
         // Retire the exact run generation before teardown. If a later teardown
         // step fails, this retired run must still be unable to influence host
         // CPU-frequency policy. The binding is released from `close()` once
@@ -355,21 +481,6 @@ impl Owner {
         if let Some(error) = failure {
             return Err(error);
         }
-        self.retire_failed_memory_update()?;
-        self.teardown_ivc(operation)?;
-        self.invalidate_root(self.vm.resources.nested_paging)?;
-        self.run
-            .as_ref()
-            .expect("retire stopped memory")
-            .services
-            .memory()
-            .retire()?;
-        self.shared.publish_run_services(None);
-        // Device routes, decode views and workers are now quiet. New starts
-        // prepare fresh controllers and fresh ports for another RunId.
-        self.run.as_ref().expect("close stopped run").ports.close();
-        self.run = None;
-        self.state = VmStatus::Stopped;
         Ok(())
     }
 }

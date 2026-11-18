@@ -139,6 +139,8 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 - 重定位或切换高地址后，使用运行时安全符号地址辅助函数，不直接使用编译期地址。
 - x86_64 直接位置无关可执行启动在进入 Rust 前，由裸函数和相对指令指针入口应用受支持的 `R_X86_64_RELATIVE`。统一可扩展固件接口头可以共用头部节，但原始入口符号仍是直接加载入口，加载偏移后其物理地址保持有效。
 - AArch64 需要在 Rust 全局保存异常级转换状态时，把它传入重定位后入口，不能在重定位前写可重定位静态变量。统一可扩展固件接口入口按通用固件重定位契约适配 `relocate::apply`，在公共异常级设置前初始化统一可扩展固件接口、扁平设备树和高级配置与电源接口，不能重进会清理未初始化数据段或覆盖已取得设备树地址的直接启动路径。
+- RISC-V RV64GC 裸机入口在进入任何 Rust 代码前启用 `sstatus.FS`，主核和 SBI HSM 次核入口均须建立该条件；不能依赖固件或 VS 客户机复位状态。早期内存大小格式化可能使用 F/D，`FS=Off` 会在最终陷阱向量安装前触发非法指令，并表现为客户机随后从地址 0 取指失败。Axvisor 的宿主 `sstatus.FS` 与客户机 `vsstatus.FS` 所有权保持独立，由客户机启动代码建立自身浮点状态。
+- RISC-V Axvisor 的 SBI DBCN 缓冲区由 [`console::ConsoleBuffer`](../../../virtualization/axvm/src/arch/riscv64/console.rs) 持有直映物理页，限制每次传输为 512 字节并在同步固件调用后释放。运行时任务栈位于 vmap，不能把栈缓冲区传给只处理直映地址的 `HostMemory::virt_to_phys()`。Linux `earlycon=sbi` 在支持 DBCN 的 QEMU 固件上可能首先触发此路径；固件读取错误物理地址后可能在异常输出时再次等待控制台锁。此时检查 GDB 的 M-mode `mepc`、`mcause`、`mtval`，并对缓冲区的宿主页表映射作物理地址核对，不能仅凭客户机无输出或 CPU0 失去响应就归因于 vCPU 亲和性。
 - 未初始化数据段只清理一次，且先保存其中的入口数据。
 - `tls` 与 `uspace` 同时启用时采用 `uspace` 的寄存器所有权，不启用内核 TLS。相关软件包在 `build.rs` 由 `CARGO_FEATURE_TLS` 存在且 `CARGO_FEATURE_USPACE` 不存在派生内部 `kernel_tls` cfg；Cargo feature 必须完整转发到 `cpu-local` 和启动层，自定义 cfg 不跨包传播。`someboot::Build::kernel_tls` 与源码 cfg 消费同一次计算结果，不能使用 AArch64 启动调整后的 `Build::uspace` 反推内核 TLS。
 - 线程局部存储与无线程局部存储使用不同链接布局。后者拒绝 `.tdata` 和 `.tbss` 并省略 `PT_TLS`；前者保留线程局部存储程序头和启动数据。
@@ -154,6 +156,12 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 - LoongArch 的四级 4 KiB 页表 walker 是构建期契约，CPUCFG `VALEN` 是运行期 canonical 地址能力，两者不能混为动态页表层数。平台按 Linux 的 `vm_map_base = 0 - (1 << cpu_vabits)` 原理发布类型化 lower/upper half：CPUCFG wrapper 返回的 `VALEN` 先减一得到 `cpu_vabits`；PGDL/PGDH 由 `VA[VALEN-1]` 选择。用户 `TASK_SIZE` 和 page-table-backed kernel allocator 必须消费同一不可变布局，不得用板卡 feature 维护第二套地址常量；位宽超出 walker 时返回类型化不支持并停止启动。DMW 的 `PABITS`、缓存属性和物理直映所有权保持独立，不能随 `VALEN` 裁剪。
 - LoongArch 的 someboot 和运行期通过 `ax_cpu::boot::tlb_refill_entry()` 引用唯一填充入口，不能从普通异常向量表加固定偏移推导 refill 地址。入口地址通过 PC-relative 方式取得，平台按自身映射转换为 TLBRENTRY 要求的物理地址。遇到零中间目录项立即停止并写入两个零 `TLBRELO`，使原始装载、存储或取指错误进入虚拟内存处理器。不得从物理地址零继续 `lddir` 或 `ldpte`，也不得把含错误虚拟页号的 `TLBREHI` 当作 EntryLo。以延迟 `mmap` 后第一次存储回归和分配器测试验证。
 - `ExitBootServices` 之后不得调用启动服务。退出前重试必须使用正确内存映射键序列。
+
+## RISC-V 虚拟化启动
+
+分别核对宿主中断控制器、客户机设备树和逐核虚拟化能力。CPU 硬件身份从 `reg` 取得，客户机 hart ID 与宿主亲和性分开表达；客户机只能使用运行时探测确认支持虚拟化的 CPU。
+
+控制器所有权、CSR 切换和 QEMU 入口见[启动调试参考的 RISC-V 部分](references/boot-debugging.md#risc-v-扁平设备树多处理器)。K3 的串口、镜像及处理器差异见[板卡部分](references/boot-debugging.md#banana-pi-bpi-sm10-k3)，不作为其他平台的默认配置。
 
 ## CPU 启动容量
 

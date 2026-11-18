@@ -149,12 +149,9 @@ impl Owner {
         // the CPU owners install the new root. Revocation still needs a driver
         // or IOMMU quiescence capability; CPU stop is not evidence of DMA stop.
         if matches!(&update, MemoryUpdate::Unmap(_))
-            && !self.vm.config().pass_through_devices().is_empty()
+            && let Some(blocker) = self.vm.host_dma_blocker()
         {
-            return Err(AxVmError::unsupported(
-                "update guest memory",
-                "assigned host devices do not provide DMA quiescence",
-            ));
+            return Err(blocker.into_error("update guest memory"));
         }
         let prepared = self.prepare_memory_update(update)?;
         self.run
@@ -188,7 +185,9 @@ impl Owner {
             return Err(self.transition_error(VmStatus::Paused, "update memory"));
         }
         if was_running {
-            self.pause(operation)?;
+            // update_memory rejected physical revocation before this point;
+            // additive mappings retain all translations and backing used by DMA.
+            self.pause_run(operation)?;
         } else if was_ready {
             let run = self.run.as_ref().expect("quiesce prepared devices");
             let quiet = run.ports.suspend().and_then(|()| {

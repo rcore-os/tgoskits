@@ -1,0 +1,247 @@
+extern crate ax_std as std;
+
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+use ax_plat::irq::{
+    self as host, AutoEnable, ControllerIrqTrigger, HwIrq, IrqError, IrqId, IrqRequest, IrqReturn,
+    ShareMode, riscv64_hv as hv,
+};
+
+// QEMU virt leaves source 42 unwired; this test exclusively owns it.
+const SOURCE: u32 = 42;
+
+static RECEIVED: AtomicUsize = AtomicUsize::new(0);
+static IRQ_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
+pub(super) fn publish_physical_external_claim(source: u32) -> bool {
+    if source != SOURCE {
+        return false;
+    }
+    IRQ_CPU.store(ax_hal::percpu::this_cpu_id(), Ordering::Relaxed);
+    RECEIVED.fetch_add(1, Ordering::Release);
+    true
+}
+fn wait(expected: usize) {
+    let began = std::time::Instant::now();
+    while RECEIVED.load(Ordering::Acquire) < expected {
+        if began.elapsed() >= std::time::Duration::from_secs(3) {
+            panic!("APLIC IRQ not delivered");
+        }
+        std::thread::yield_now();
+    }
+    assert_eq!(RECEIVED.load(Ordering::Acquire), expected);
+    assert_eq!(
+        IRQ_CPU.load(Ordering::Acquire),
+        1,
+        "APLIC targeted the wrong CPU"
+    );
+}
+pub fn run() {
+    assert_eq!(std::os::arceos::modules::ax_hal::cpu_num(), 2);
+    use std::os::arceos::api::task::{AxCpuMask, ax_set_current_affinity};
+    ax_set_current_affinity(AxCpuMask::one_shot(0)).unwrap();
+    while ax_hal::percpu::this_cpu_id() != 0 {
+        std::thread::yield_now();
+    }
+    let address = rdrive::with_fdt(|tree| {
+        tree.find_compatible(&["riscv,aplic"])
+            .into_iter()
+            .find(|node| {
+                node.as_node()
+                    .get_property("msi-parent")
+                    .and_then(|p| p.get_u32())
+                    .and_then(|ph| tree.get_by_phandle(rdrive::Phandle::from(ph)))
+                    .and_then(|p| p.as_node().get_property("interrupts-extended"))
+                    .and_then(|p| p.get_u32_iter().nth(1))
+                    == Some(9)
+            })
+            .unwrap()
+            .regs()[0]
+            .address as usize
+    })
+    .unwrap();
+    let base = ax_mm::iomap(address.into(), 0x4000).unwrap();
+    let inject = |source: u32| {
+        // SAFETY: this fixture exclusively owns sources 42 through 45; the retained 16 KiB
+        // mapping contains its aligned APLIC SETIPNUM command register.
+        unsafe {
+            core::arch::asm!("fence iorw, iorw", options(nostack));
+            ((base.as_usize() + 0x2000) as *mut u32).write_volatile(source);
+            core::arch::asm!("fence iorw, iorw", options(nostack));
+        }
+    };
+    let enabled = |source: u32| {
+        // SAFETY: The source SETIE word is aligned and inside the retained APLIC map.
+        unsafe {
+            ((base.as_usize() + 0x1e00 + (source as usize / 32) * 4) as *const u32).read_volatile()
+                & (1 << (source % 32))
+                != 0
+        }
+    };
+    let target = |source: u32| {
+        // SAFETY: sources 42 through 45 have aligned TARGET registers inside
+        // the retained APLIC map. This observation does not change ownership.
+        unsafe { ((base.as_usize() + 0x3000 + source as usize * 4) as *const u32).read_volatile() }
+    };
+    let domain =
+        somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvAplic).unwrap();
+    let host_irq = IrqId::new(domain, HwIrq(45));
+    let affinity = |cpu_id| somehal::irq::IrqAffinity::Fixed { cpu_id };
+    let edge = Some(ControllerIrqTrigger::EdgeRising);
+    let activate = |source, cpu| hv::activate_guest_external_sources(&[(source, edge)], cpu);
+    somehal::irq::intc_by_domain(domain)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .configure(&somehal::irq::rdif_intc::IrqTranslation::with_trigger(
+            host_irq,
+            somehal::irq::rdif_intc::Trigger::EdgeRising,
+        ))
+        .unwrap();
+    assert_eq!(
+        activate(45, 0),
+        Err(IrqError::Busy),
+        "a guest took over a configured host source before its first enable"
+    );
+    // Initial placement is free until delivery first opens.
+    somehal::irq::irq_set_affinity(host_irq, affinity(1)).unwrap();
+    somehal::irq::irq_set_affinity(host_irq, affinity(0)).unwrap();
+    {
+        let _irq = ax_sync::IrqSaveGuard::new();
+        somehal::irq::irq_set_enable(host_irq, true).unwrap();
+        let original_target = target(45);
+        inject(45);
+        // Masking the APLIC cannot withdraw an MSI already sent to CPU0.
+        somehal::irq::irq_set_enable(host_irq, false).unwrap();
+        assert_eq!(
+            somehal::irq::irq_set_affinity(host_irq, affinity(1)),
+            Err(IrqError::Busy),
+            "masked source migrated with an old MSI outstanding"
+        );
+        assert_eq!(target(45), original_target);
+        somehal::irq::irq_set_affinity(host_irq, somehal::irq::IrqAffinity::Any).unwrap();
+        assert_eq!(
+            activate(45, 0),
+            Err(IrqError::Busy),
+            "a guest took ownership of a masked host source on the same CPU"
+        );
+        assert!(!enabled(45));
+        somehal::irq::irq_set_enable(host_irq, true).unwrap();
+        let began = std::time::Instant::now();
+        loop {
+            if let Some(active) = somehal::irq::begin_irq((1usize << 63) | 9) {
+                assert_eq!(active.id(), host_irq);
+                drop(active);
+                break;
+            }
+            assert!(began.elapsed() < std::time::Duration::from_secs(3));
+            core::hint::spin_loop();
+        }
+        somehal::irq::irq_set_enable(host_irq, false).unwrap();
+        assert_eq!(
+            somehal::irq::irq_set_affinity(host_irq, affinity(1)),
+            Err(IrqError::Busy),
+            "completing one MSI does not establish migration quiescence"
+        );
+        assert_eq!(
+            activate(45, 1),
+            Err(IrqError::Busy),
+            "guest activation migrated a previously opened host source"
+        );
+        assert_eq!(target(45), original_target);
+    }
+    let dormant = IrqId::new(domain, HwIrq(43));
+    let request = || {
+        IrqRequest::new(|_| IrqReturn::Handled)
+            .share_mode(ShareMode::Shared)
+            .auto_enable(AutoEnable::No)
+    };
+    let first = host::request_irq(dormant, request()).unwrap();
+    let last = host::request_irq(dormant, request()).unwrap();
+    assert_eq!(
+        host::request_irq(dormant, request().share_mode(ShareMode::Exclusive)),
+        Err(IrqError::Busy)
+    );
+    host::free_irq(first).unwrap();
+    assert_eq!(activate(43, 0), Err(IrqError::Busy));
+    host::free_irq(last).unwrap();
+    assert_eq!(
+        hv::activate_guest_external_sources(&[(43, edge), (45, edge)], 0),
+        Err(IrqError::Busy)
+    );
+    assert!(!enabled(43), "a rejected batch opened a free source");
+    hv::activate_guest_external_sources(&[(43, edge), (44, edge)], 0)
+        .expect("a rejected batch must leave its free sources available");
+    // Exercise ownership through real supervisor MSI claims. IRQ exclusion
+    // prevents the runtime dispatcher from taking these CPU0-targeted sources.
+    {
+        let _irq = ax_sync::IrqSaveGuard::new();
+        let slot = somehal::irq::RiscvExternalIrqClaimSlot::new();
+        let claim = |source| {
+            inject(source);
+            let began = std::time::Instant::now();
+            loop {
+                if let Some(mut active) = somehal::irq::begin_irq((1usize << 63) | 9) {
+                    assert_eq!(active.id().hwirq.0, source);
+                    let token = active.defer_riscv_external_completion().unwrap();
+                    assert_eq!(token.source(), source);
+                    return token;
+                }
+                assert!(
+                    began.elapsed() < std::time::Duration::from_secs(3),
+                    "MSI claim timeout"
+                );
+                core::hint::spin_loop();
+            }
+        };
+        drop(claim(43));
+        assert!(enabled(43), "dropping a claim did not complete rollback");
+        slot.try_store(claim(43)).unwrap();
+        assert!(!enabled(43));
+        let rejected = slot.try_store(claim(44)).unwrap_err();
+        assert_eq!(rejected.source(), 44);
+        assert!(!enabled(44));
+        drop(rejected);
+        assert!(enabled(44), "rejected claim lost its completion owner");
+        assert!(!enabled(43), "slot collision completed the stored claim");
+        slot.take().unwrap().complete().unwrap();
+        assert!(slot.take().is_none());
+        assert!(enabled(43));
+        // A fresh claim of the same source still has an independent owner.
+        slot.try_store(claim(43)).unwrap();
+        assert!(!enabled(43));
+        drop(slot.take().unwrap());
+        assert!(enabled(43));
+        for source in [43, 44] {
+            hv::deactivate_guest_external_source(source).unwrap();
+        }
+    }
+    let irq = IrqId::new(domain, HwIrq(SOURCE));
+    somehal::irq::irq_set_enable(irq, false).unwrap();
+    activate(SOURCE, 1).expect("masking an unclaimed APLIC line must leave it available");
+    assert_eq!(
+        somehal::irq::irq_set_enable(irq, false),
+        Err(IrqError::Busy)
+    );
+    assert!(enabled(SOURCE));
+    // Only guest completion can unmask a deferred source.
+    inject(SOURCE);
+    wait(1);
+    assert!(!enabled(SOURCE));
+    assert_eq!(somehal::irq::irq_set_enable(irq, true), Err(IrqError::Busy));
+    assert!(!enabled(SOURCE), "enable bypassed a deferred completion");
+    assert!(hv::complete_guest_external_source(SOURCE));
+    assert!(
+        !hv::complete_guest_external_source(SOURCE),
+        "completion consumed twice"
+    );
+    assert!(enabled(SOURCE));
+    // A late EOI consumes its claim but cannot revive a retired source.
+    inject(SOURCE);
+    wait(2);
+    hv::deactivate_guest_external_source(SOURCE).unwrap();
+    assert!(hv::complete_guest_external_source(SOURCE));
+    assert!(!enabled(SOURCE), "old EOI undid source retirement");
+    assert_eq!(somehal::irq::irq_set_enable(irq, true), Err(IrqError::Busy));
+    assert_eq!(activate(SOURCE, 1), Err(IrqError::Busy));
+    std::println!("APLIC_DEFERRED_STATE_OK");
+}

@@ -17,6 +17,15 @@
 use core::{arch::asm, marker::PhantomData};
 
 use super::{GuestVirtualHsCsrs, GuestVsCsrs, Vcpu, VirtualizationError};
+use crate::virtualization::StateMemory;
+
+const HENVCFG_CBIE: usize = 3 << 4;
+const HENVCFG_CBCFE: usize = 1 << 6;
+const HENVCFG_CBZE: usize = 1 << 7;
+const HENVCFG_PBMTE: usize = 1 << 62;
+const HSTATEEN0_ENVCFG: usize = 1 << 62;
+#[cfg(feature = "riscv-sstc")]
+const HENVCFG_STCE: usize = 1 << 63;
 
 macro_rules! read_csr {
     ($csr:literal) => {{ let value;
@@ -41,8 +50,8 @@ macro_rules! write_csr {
 pub struct GuestBinding {
     host_vs: GuestVsCsrs,
     host_hs: GuestVirtualHsCsrs,
-    #[cfg(feature = "riscv-sstc")]
     host_henvcfg: usize,
+    host_hstateen0: Option<usize>,
     _not_send_sync: PhantomData<*mut ()>,
 }
 
@@ -55,17 +64,26 @@ impl GuestBinding {
     /// binding. No other guest binding may overlap it. Guest roots and referenced
     /// memory must remain valid and owned until the binding has been destroyed.
     /// All register values must satisfy the implemented CSR modes and permissions.
-    pub unsafe fn load(registers: &Vcpu) -> Result<Self, VirtualizationError> {
+    pub unsafe fn load<M: StateMemory>(registers: &Vcpu<M>) -> Result<Self, VirtualizationError> {
         let _irqs = LocalIrqs::disable();
-        #[cfg(feature = "riscv-sstc")]
         let host_henvcfg = {
             let saved: usize = read_csr!("henvcfg");
-            write_csr!("henvcfg", saved | (1usize << 63));
-            let actual: usize = read_csr!("henvcfg");
-            if actual & (1usize << 63) == 0 {
-                write_csr!("henvcfg", saved);
-                return Err(VirtualizationError::UnsupportedTimer);
+            #[cfg(feature = "riscv-sstc")]
+            {
+                // Reject an unavailable timer before changing PBMT interpretation.
+                write_csr!("henvcfg", saved | HENVCFG_STCE);
+                let actual: usize = read_csr!("henvcfg");
+                if actual & HENVCFG_STCE == 0 {
+                    write_csr!("henvcfg", saved);
+                    return Err(VirtualizationError::UnsupportedTimer);
+                }
             }
+            // Optional extension fields are WARL and read as zero when absent.
+            // Guest ISA discovery must still describe the underlying hardware.
+            let enabled = saved | HENVCFG_CBIE | HENVCFG_CBCFE | HENVCFG_CBZE | HENVCFG_PBMTE;
+            #[cfg(feature = "riscv-sstc")]
+            let enabled = enabled | HENVCFG_STCE;
+            write_csr!("henvcfg", enabled);
             saved
         };
         // SAFETY: the caller owns the live HS and VS CSR banks exclusively.
@@ -73,10 +91,15 @@ impl GuestBinding {
         let binding = Self {
             host_vs,
             host_hs,
-            #[cfg(feature = "riscv-sstc")]
             host_henvcfg,
+            host_hstateen0: super::super::capability::read_hstateen0(),
             _not_send_sync: PhantomData,
         };
+        if let Some(saved) = binding.host_hstateen0 {
+            // Permit VS to configure its own userspace environment. All other
+            // state-enable permissions retain the host's existing policy.
+            write_csr!("0x60c", saved | HSTATEEN0_ENVCFG);
+        }
         // SAFETY: the caller validated the guest register image and its roots.
         unsafe {
             install_banks(&registers.vs_csrs, &registers.virtual_hs_csrs);
@@ -89,7 +112,7 @@ impl GuestBinding {
     /// # Safety
     /// The caller must remain pinned on the binding's original hart.
     /// `registers` must be the exclusively owned image loaded by this binding.
-    pub unsafe fn unload(self, registers: &mut Vcpu) {
+    pub unsafe fn unload<M: StateMemory>(self, registers: &mut Vcpu<M>) {
         let _irqs = LocalIrqs::disable();
         // SAFETY: the caller retains this binding's exclusive current-hart scope.
         let (vs, hs) = unsafe { capture_banks() };
@@ -105,11 +128,15 @@ impl Drop for GuestBinding {
         // IRQs also covers error unwinding outside the final entry window.
         let enabled = crate::interrupt::irqs_enabled();
         crate::interrupt::disable_irqs();
+        // PBMTE affects VS PTE interpretation. Restore it before the final
+        // translation fences performed by install_banks.
+        write_csr!("henvcfg", self.host_henvcfg);
         unsafe {
             install_banks(&self.host_vs, &self.host_hs);
         }
-        #[cfg(feature = "riscv-sstc")]
-        write_csr!("henvcfg", self.host_henvcfg);
+        if let Some(saved) = self.host_hstateen0 {
+            write_csr!("0x60c", saved);
+        }
         if enabled {
             crate::interrupt::enable_irqs();
         }
@@ -119,6 +146,7 @@ impl Drop for GuestBinding {
 unsafe fn capture_banks() -> (GuestVsCsrs, GuestVirtualHsCsrs) {
     (
         GuestVsCsrs {
+            senvcfg: read_csr!("senvcfg"),
             htimedelta: read_csr!("htimedelta"),
             vsstatus: read_csr!("vsstatus"),
             vsie: read_csr!("vsie"),
@@ -149,6 +177,8 @@ unsafe fn capture_banks() -> (GuestVsCsrs, GuestVirtualHsCsrs) {
 }
 
 unsafe fn install_banks(vs: &GuestVsCsrs, hs: &GuestVirtualHsCsrs) {
+    // S/VS share senvcfg: preserve each owner's userspace CBO permissions.
+    write_csr!("senvcfg", vs.senvcfg);
     write_csr!("htimedelta", vs.htimedelta);
     write_csr!("vsstatus", vs.vsstatus);
     write_csr!("vsie", vs.vsie);

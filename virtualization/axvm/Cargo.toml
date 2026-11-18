@@ -19,7 +19,7 @@ targets = [
 
 [package.metadata.axtest]
 runtime = "axvisor"
-target_triples = ["aarch64-unknown-none-softfloat"]
+target_triples = ["aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf"]
 
 [package.metadata.axtest.targets.vcpu_perf]
 board_only = true
@@ -30,7 +30,7 @@ board_only = true
 [[test]]
 name = "vcpu_runtime"
 harness = false
-required-features = ["axtest", "tls"]
+required-features = ["axtest", "tls", "fault-injection"]
 
 [[test]]
 name = "vcpu_perf"
@@ -47,15 +47,20 @@ host-fs = ["dep:ax-driver"]
 host-test = [
     "ax-std/host-test",
     "axdevice/host-test",
+    "dep:loom",
 ]
 axtest = ["ax-std/std-compat", "dep:axtest"]
+# Private real-kernel regressions, selected by vcpu_runtime.
+fault-injection = ["dep:axtest"]
 sstc = ["ax-cpu/riscv-sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
 
 [dependencies]
+rdif-intc.workspace = true
 ax-block.workspace = true
 axtest = { workspace = true, optional = true }
 log = "0.4"
+loom = { workspace = true, optional = true }
 bit_field = "0.10"
 bitflags = "2.9"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
@@ -126,7 +131,6 @@ arm_vgic = { workspace = true }
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 axklib.workspace = true
 mmio-api.workspace = true
-rdif-intc.workspace = true
 rdrive.workspace = true
 rdif-clk.workspace = true
 

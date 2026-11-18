@@ -1,12 +1,14 @@
-use core::ptr::NonNull;
-
-use acpi::{AcpiError, Handler, PhysicalMapping, address::AddressSpace, sdt::spcr::Spcr};
+use acpi::{
+    AcpiError, Handler, PhysicalMapping,
+    address::{AddressSpace, StandardAccessSize},
+    sdt::spcr::Spcr,
+};
+#[cfg(target_arch = "x86_64")]
 use some_serial::ns16550::Ns16550;
 
-use crate::{
-    console::{EarlySerial, EarlySerialRaw},
-    mem::_fixmap_io,
-};
+#[cfg(target_arch = "x86_64")]
+use crate::console::{EarlySerial, EarlySerialRaw};
+use crate::mem::_fixmap_io;
 
 pub(crate) fn acpi_setup_earlycon() -> Result<bool, AcpiError> {
     setup_earlycon_from_spcr()
@@ -44,7 +46,7 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
         clock = freq.into();
     }
 
-    let (vaddr, is_mmio) = match spsr.interface_type() {
+    let vaddr = match spsr.interface_type() {
         acpi::sdt::spcr::SpcrInterfaceType::Full16550
         | acpi::sdt::spcr::SpcrInterfaceType::Generic16550 => match base_address.address_space {
             AddressSpace::SystemIo => {
@@ -55,7 +57,7 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
                     crate::console::set_earlycon_serial(EarlySerial::new(
                         EarlySerialRaw::Ns16550Port(uart),
                     ));
-                    (None, false)
+                    None
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
@@ -64,17 +66,36 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
                 }
             }
             AddressSpace::SystemMemory => {
-                let mapped = _fixmap_io(base_address.address as _);
-                let mut uart = Ns16550::new_mmio(
-                    NonNull::new(mapped).unwrap(),
-                    clock,
-                    base_address.access_size as _,
-                );
-                uart.open();
-                crate::console::set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(
-                    uart,
-                )));
-                (Some(mapped), true)
+                // GAS access_size is an encoding (3 means 32 bits), not a
+                // byte count. SPCR has no separate register-spacing field.
+                let width = match base_address.standard_access_size().ok()? {
+                    StandardAccessSize::Undefined => match base_address.bit_width {
+                        0 | 8 => 1,
+                        16 => 2,
+                        32 => 4,
+                        _ => return None,
+                    },
+                    StandardAccessSize::ByteAccess => 1,
+                    StandardAccessSize::WordAccess => 2,
+                    StandardAccessSize::DWordAccess => 4,
+                    StandardAccessSize::QWordAccess => return None,
+                };
+                // SPCR identifies a 16550 but provides no resource size.
+                let paddr = usize::try_from(base_address.address).ok()?;
+                // SAFETY: the firmware SPCR names the console UART and
+                // specifies the access width of its mapped registers.
+                unsafe {
+                    crate::console::bind_earlycon_ns16550(
+                        paddr,
+                        None,
+                        clock,
+                        width,
+                        width,
+                        some_serial::ns16550::UartVariant::Standard,
+                    )
+                }
+                .ok()?;
+                Some(_fixmap_io(paddr))
             }
             space => {
                 println!("Unsupported SPCR address space `{space:?}` for early console.");
@@ -86,11 +107,6 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
             return None;
         }
     };
-
-    unsafe {
-        crate::console::DEBUG_BASE = base_address.address as usize;
-        crate::console::DEBUG_IS_MMIO = is_mmio;
-    }
 
     if let Some(vaddr) = vaddr {
         println!("Early console initialized at vaddr {:#x}", vaddr as usize);

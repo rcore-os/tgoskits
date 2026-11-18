@@ -42,6 +42,8 @@ __ax_cpu_riscv_run_guest:
     sd   s10, ({hyp_s10})(a0)
     sd   s11, ({hyp_s11})(a0)
     sd   sp, ({hyp_sp})(a0)
+    /* The descriptor and its borrowed buffers outlive this complete call. */
+    sd   a1, {vector_entry}(a0)
 
     /* Save host FP before exposing the guest bank; preserve exact host FS. */
     csrr  t1, sstatus
@@ -52,6 +54,16 @@ __ax_cpu_riscv_run_guest:
     PUSH_FLOAT_REGS t0
     frcsr t1
     sd    t1, {fcsr}(t0)
+
+    ld    t3, {vector_entry}(a0)
+    beqz  t3, .Lguest_vector_loaded
+    li    t1, 0x600
+    csrs  sstatus, t1
+    addi  t0, t3, {vector_host}
+    PUSH_VECTOR_REGS
+    addi  t0, t3, {vector_guest}
+    POP_VECTOR_REGS
+.Lguest_vector_loaded:
     addi  t0, a0, {guest_fp}
     POP_FLOAT_REGS t0
     ld    t1, {fcsr}(t0)
@@ -171,6 +183,16 @@ __ax_cpu_riscv_guest_exit:
     csrr  t1, sstatus
     sd    t1, ({guest_sstatus})(a0)
 
+    ld    t3, {vector_entry}(a0)
+    beqz  t3, .Lhost_vector_loaded
+    li    t1, 0x600
+    csrs  sstatus, t1
+    addi  t0, t3, {vector_guest}
+    PUSH_VECTOR_REGS
+    addi  t0, t3, {vector_host}
+    POP_VECTOR_REGS
+.Lhost_vector_loaded:
+
     /* Both FP banks use the CPU's shared save/restore fragments. */
     li    t1, 0x6000
     csrs  sstatus, t1
@@ -226,5 +248,7 @@ __ax_cpu_riscv_guest_exit:
     ld   s10, ({hyp_s10})(a0)
     ld   s11, ({hyp_s11})(a0)
     ld   sp, ({hyp_sp})(a0)
+    /* No borrowed pointer remains observable by Rust or a cloned image. */
+    sd   zero, {vector_entry}(a0)
 
     ret

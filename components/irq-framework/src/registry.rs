@@ -48,9 +48,17 @@ impl<O: IrqOps> Registry<O> {
     }
 
     /// Registers an IRQ action.
-    pub fn request(&self, irq: IrqId, mut request: IrqRequest) -> Result<IrqHandle, IrqError> {
+    pub fn request(&self, irq: IrqId, request: IrqRequest) -> Result<IrqHandle, IrqError> {
         self.validate_request(&request)?;
+        self.ops.claim_line(irq)?;
+        let result = self.install_action(irq, request);
+        if result.is_err() {
+            self.ops.release_line(irq);
+        }
+        result
+    }
 
+    fn install_action(&self, irq: IrqId, mut request: IrqRequest) -> Result<IrqHandle, IrqError> {
         let snapshot = self.snapshot_and_disable_scope_line(irq, request.scope)?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let action = Box::new(Action::new(id, &mut request));
@@ -87,16 +95,15 @@ impl<O: IrqOps> Registry<O> {
             return Err(IrqError::InIrqContext);
         }
         let (action, scope) = self.detach_action(handle)?;
-        let mut result = self.apply_scope_line_state(handle.irq, scope);
-        if let Err(err) = self.wait_and_remove_action(handle.irq, action)
-            && result.is_ok()
-        {
-            result = Err(err);
+        let result = self.apply_scope_line_state(handle.irq, scope);
+        let removed = self.wait_and_remove_action(handle.irq, action);
+        if removed.is_ok() {
+            unsafe {
+                drop(Box::from_raw(action));
+            }
+            self.ops.release_line(handle.irq);
         }
-        unsafe {
-            drop(Box::from_raw(action));
-        }
-        result
+        result.and(removed)
     }
 
     /// Enables an IRQ action and its backing line.

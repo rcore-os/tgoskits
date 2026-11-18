@@ -462,12 +462,15 @@ impl Starry {
         let mut qemu = prepared_case.qemu.clone();
         case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_execution);
 
-        qemu_test::append_target_backtrace_map(
+        let symbol_initramfs = qemu_test::prepare_target_initramfs_with_symbols(
             self.app.target_dir(),
             &request.target,
             request.debug,
-            &mut qemu,
+            &qemu,
         )?;
+        if let Some(archive) = &symbol_initramfs {
+            qemu.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+        }
 
         qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
         qemu_test::apply_timeout_scale(&mut qemu);

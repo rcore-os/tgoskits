@@ -14,7 +14,11 @@ use riscv::{
         Trap,
         supervisor::{Exception as E, Interrupt as I},
     },
-    register::{scause, sstatus::Sstatus, stval},
+    register::{
+        scause,
+        sstatus::{Sstatus, XLEN},
+        stval,
+    },
 };
 
 pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
@@ -39,6 +43,8 @@ impl UserContext {
     /// and the argument.
     pub fn new(entry: usize, ustack_top: VirtAddr, arg0: usize) -> Self {
         let mut sstatus = Sstatus::from_bits(0);
+        // RV64 user code must not depend on a hart's WARL choice for UXL=0.
+        sstatus.set_uxl(XLEN::XLEN64);
         sstatus.set_spie(true); // enable interrupts
         sstatus.set_sum(true); // enable user memory access in supervisor mode
         #[cfg(feature = "fp-simd")]
@@ -70,6 +76,8 @@ impl UserContext {
 
     /// Normalizes a cloned user context so it can safely return to user mode.
     pub fn prepare_clone_child_return_state(&mut self) {
+        self.0.sstatus.set_uxl(XLEN::XLEN64);
+        self.0.sstatus.set_sie(false);
         self.0.sstatus.set_spie(true);
         self.0.sstatus.set_sum(true);
         #[cfg(feature = "fp-simd")]
@@ -92,9 +100,13 @@ impl UserContext {
     }
 
     /// Returns whether this register image can be restored as an interruptible
-    /// user-mode context.
+    /// RV64 user-mode context.
     pub fn has_interruptible_user_return_mode(&self) -> bool {
-        matches!(self.0.sstatus.spp(), riscv::register::sstatus::SPP::User) && self.0.sstatus.spie()
+        matches!(self.0.sstatus.spp(), riscv::register::sstatus::SPP::User)
+            // SIE must stay clear while trap.S restores the remaining registers.
+            && !self.0.sstatus.sie()
+            && self.0.sstatus.spie()
+            && matches!(self.0.sstatus.try_uxl(), Ok(XLEN::XLEN64))
     }
 
     /// Enters user space without validating the runtime transition.

@@ -18,7 +18,7 @@ use core::{arch::asm, mem::offset_of};
 
 use crate::virtualization::{GuestPhysAddr, GuestVirtAddr};
 
-/// Machine exception recorded by an HLVX instruction fetch.
+/// Machine exception recorded by an HLV or HLVX guest access.
 #[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct GuestAccessFault {
@@ -46,7 +46,12 @@ core::arch::global_asm!(include_str!("../entry/guest_memory.S"),
 );
 
 unsafe extern "C" {
-    fn __ax_cpu_copy_from_guest(dst: *mut u8, gva: usize, length: usize) -> usize;
+    fn __ax_cpu_copy_from_guest(
+        dst: *mut u8,
+        gva: usize,
+        length: usize,
+        fault: *mut GuestAccessFault,
+    ) -> usize;
     fn __ax_cpu_copy_to_guest(gva: usize, src: *const u8, length: usize) -> usize;
     fn __ax_cpu_fetch_guest_instruction(
         gva: usize,
@@ -70,7 +75,43 @@ pub unsafe fn copy_from_guest_virtual(
     // SAFETY: the caller owns the active translation and its hardware bank.
     let _access = unsafe { AccessScope::new(privilege, false) };
     // SAFETY: the destination is a live exclusive slice; guest faults use fixups.
-    unsafe { __ax_cpu_copy_from_guest(dst.as_mut_ptr(), address.as_usize(), dst.len()) }
+    unsafe {
+        __ax_cpu_copy_from_guest(
+            dst.as_mut_ptr(),
+            address.as_usize(),
+            dst.len(),
+            core::ptr::null_mut(),
+        )
+    }
+}
+
+/// Reads guest virtual memory, retaining the hardware cause and fault address.
+/// On failure, the prefix before the fault may already have been copied.
+/// Exception injection and G-stage fault handling belong to the VMM.
+///
+/// # Safety
+/// Execute in HS mode with H enabled. The caller owns the installed guest
+/// translation and retains a CPU pin.
+/// Guest mappings must not alias `dst`. Normal CPU traps and initialized
+/// exception tables must remain active throughout the read.
+pub unsafe fn read_guest_virtual(
+    dst: &mut [u8],
+    address: GuestVirtAddr,
+    privilege: GuestPrivilege,
+) -> Result<(), GuestAccessFault> {
+    // SAFETY: the caller retains the current guest bank and translation.
+    let _access = unsafe { AccessScope::new(privilege, false) };
+    let mut fault = GuestAccessFault::default();
+    // SAFETY: both outputs are initialized, exclusive and live until the
+    // bounded copy completes; each HLV has an exception-table recovery entry.
+    let copied = unsafe {
+        __ax_cpu_copy_from_guest(dst.as_mut_ptr(), address.as_usize(), dst.len(), &mut fault)
+    };
+    if copied == dst.len() {
+        Ok(())
+    } else {
+        Err(fault)
+    }
 }
 
 /// Executes a nofault write to the current guest virtual address space.
@@ -101,7 +142,14 @@ pub unsafe fn copy_from_guest_physical(dst: &mut [u8], address: GuestPhysAddr) -
     // SAFETY: the caller owns both stages through restoration of VSATP.
     let _access = unsafe { AccessScope::new(GuestPrivilege::Supervisor, true) };
     // SAFETY: VSATP is temporarily Bare; all G-stage faults use fixups.
-    unsafe { __ax_cpu_copy_from_guest(dst.as_mut_ptr(), address.as_usize(), dst.len()) }
+    unsafe {
+        __ax_cpu_copy_from_guest(
+            dst.as_mut_ptr(),
+            address.as_usize(),
+            dst.len(),
+            core::ptr::null_mut(),
+        )
+    }
 }
 
 /// Writes guest physical memory using the installed G-stage translation.

@@ -3,7 +3,7 @@
 pub(super) mod context;
 
 pub use context::{
-    Exit, GuestCpuState, GuestVirtualHsCsrs, GuestVsCsrs, HypervisorCpuState, Vcpu,
+    Exit, GuestCpuState, GuestVirtualHsCsrs, GuestVsCsrs, HypervisorCpuState, NoVectorMemory, Vcpu,
     guest_page_fault_addr,
 };
 
@@ -17,10 +17,13 @@ use crate::virtualization::VirtualizationError;
 mod binding;
 pub use binding::GuestBinding;
 
+mod vector;
+pub(super) use vector::{VectorBank, VectorCsrs, VectorEntry};
+
 mod memory;
 pub use memory::{
     GuestAccessFault, GuestPrivilege, copy_from_guest_physical, copy_from_guest_virtual,
-    copy_to_guest_physical, copy_to_guest_virtual, fetch_guest_instruction,
+    copy_to_guest_physical, copy_to_guest_virtual, fetch_guest_instruction, read_guest_virtual,
 };
 
 mod registers;
@@ -33,4 +36,4 @@ pub use exit::{
 };
 
 mod paging;
-pub use paging::{GStageMode, invalidate_gstage_translations};
+pub use paging::{GStageMode, invalidate_gstage_translations, invalidate_vsstage_translations};

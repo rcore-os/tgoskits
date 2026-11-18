@@ -83,11 +83,14 @@ impl Starry {
                 write_policy: RootfsWritePolicy::Discard,
             },
         )?;
-        qemu_test::append_backtrace_map(
-            &mut qemu,
+        let symbol_initramfs = qemu_test::prepare_qemu_initramfs_with_symbols(
+            &qemu,
             &built_elf.with_extension("axbt"),
             &request.target,
         )?;
+        if let Some(archive) = &symbol_initramfs {
+            qemu.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+        }
         qemu_test::apply_timeout_scale(&mut qemu);
 
         let staging = if let Some(fixed) = &fixed_elf {

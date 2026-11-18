@@ -1,0 +1,16 @@
+# Host compilation matches the PLIC smoke case; these guests use an explicit
+# virtual PLIC DTB independently of the host APLIC/IMSIC topology.
+# See the aarch64 unified QEMU build for why `web-ui` rides along here.
+features = [
+    "ax-driver/nvme",
+    "web-ui",
+
+    "sstc",
+]
+log = "Info"
+target = "riscv64gc-unknown-none-elf"
+vm_configs = [
+    "test-suit/axvisor/normal/qemu-riscv-aplic/linux-aplic.toml",
+    "test-suit/axvisor/normal/qemu-riscv-aplic/linux-aplic-vm2.toml",
+]
+max_cpu_num = 4
