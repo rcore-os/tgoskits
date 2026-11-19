@@ -239,3 +239,5 @@ Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项�
 - `qemu-<arch>.toml`、`build-*.toml` 和操作系统配置只声明实际验证过的体系结构。
 - 新目标、容器或固件要求已写入相关技能、测试套件指南或文档。
 - 修改体系结构启动、someboot 启动顺序、统一可扩展固件接口交接、对称多处理调通、动态平台契约、目标 JSON 假设或推荐调试流程时，在同一修改中更新本技能或 `references/boot-debugging.md`。
+
+- **Axvisor AArch64 PCI 与 ivshmem 设备边界**：ivshmem 复用 typed `PciHostProvider`、资源池和同一份 `ResolvedDeviceGraph`，只通过引用 `aarch64-ecam` host key 的 `PciFunctionRequirement` 增加 BAR0、MSI-X BAR 和 link-sized BAR2；其他 typed PCI endpoint 同样可以物化 host。`IvshmemPciFunction::notify_bar_assignment()` 与 `notify_bar_relocated()` 必须通过 `Stage2Remap` 提交 BAR2 section 映射，单向量 MSI-X 由 `MsiResourceRequest` 解析，AArch64 仅在 guest ITS 唯一可用时生成 PCI requester `msi-map`。Message V1 已通过合并提交 `6e80b940d46167a59a795e158bb17a7eb28333af` 合入 `upstream/dev`。现有 `IvcMessageSender`/`IvcMessageReceiver` 仍绑定 `IvcRing`；后续先完成 ivshmem 的 Message V1 适配并迁移现有调用方，再提供面向示例应用的设备接口，使示例只调用设备、不直接依赖 `axivc`/`axhvc`。本轮 ivshmem suite 只验证设备 BAR、peer state、doorbell、Event Status 和 MSI-X，其 `suite_mailbox` 不消费 Message V1 线格式，也不代表后续设备接口已实现。

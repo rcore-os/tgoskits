@@ -1,5 +1,7 @@
 //! Unsealed runtime construction controlled by each architecture.
 
+use alloc::sync::Arc;
+
 use axdevice_base::DeviceId;
 
 use crate::*;
@@ -7,6 +9,7 @@ use crate::*;
 /// Builds one `DeviceRuntime` without prescribing architecture device order.
 pub struct DeviceRuntimeBuilder {
     runtime: DeviceRuntime,
+    stage2_remap: Option<Arc<dyn Stage2Remap>>,
 }
 
 impl DeviceRuntimeBuilder {
@@ -14,7 +17,16 @@ impl DeviceRuntimeBuilder {
     pub fn new(access_ports: RuntimeAccessPorts) -> Self {
         let mut runtime = DeviceRuntime::empty();
         runtime.attach_access_ports(access_ports);
-        Self { runtime }
+        Self {
+            runtime,
+            stage2_remap: None,
+        }
+    }
+
+    /// Attaches the VM-wide stage-2 update port for direct-mapping devices.
+    pub fn with_stage2_remap(mut self, remap: Arc<dyn Stage2Remap>) -> Self {
+        self.stage2_remap = Some(remap);
+        self
     }
 
     /// Atomically registers an architecture-created bundle.
@@ -39,6 +51,8 @@ impl DeviceRuntimeBuilder {
                 self.runtime.interrupt_registry(),
                 claims,
                 node.pci_host_topology(),
+                self.stage2_remap.clone(),
+                node.id().clone(),
             )
             .with_work_port(work_port, device_id);
             let bundle = model.build(&mut context)?;

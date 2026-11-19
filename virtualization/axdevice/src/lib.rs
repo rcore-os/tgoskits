@@ -38,6 +38,7 @@ mod graph;
 #[path = "../tests/common/mod.rs"]
 mod host_lock_provider;
 mod interrupt;
+mod ivshmem;
 mod model;
 mod pci;
 // Keep the LoongArch-only implementation out of other production targets, but
@@ -50,6 +51,7 @@ mod resources;
 mod runtime_resources;
 mod serial;
 mod service;
+mod stage2_remap;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
@@ -73,6 +75,14 @@ pub use graph::{
     ResolvedDeviceNode,
 };
 pub use interrupt::{ControllerRegistration, InterruptRegistrationError};
+pub use ivshmem::{
+    BackingAllocation, Bar2Section, DOORBELL_OFFSET, Doorbell, DoorbellEvent, EVENT_STATUS_OFFSET,
+    ID_OFFSET, INTERRUPT_CONTROL_OFFSET, IvshmemDirectPlan, IvshmemError, IvshmemEventSink,
+    IvshmemLink, IvshmemLinkRegistry, IvshmemMemoryLayout, IvshmemRegisters, LinkGeneration,
+    LinkId, LinkProfile, MAX_PEERS_LIMIT, MAXIMUM_PEERS_OFFSET, PeerAttachment, PeerId,
+    PeerReservation, REGISTER_PAGE_SIZE, SHARED_MEMORY_SIZE, STATE_OFFSET, SectionDesc,
+    SharedBackingAllocator, SharedBarBacking,
+};
 #[cfg(target_arch = "loongarch64")]
 // Reusable LoongArch device models. These are target-gated device packages,
 // not part of the architecture-neutral framework core.
@@ -86,15 +96,18 @@ pub use model::{
 };
 pub(crate) use pci::PciTopologyBuilder;
 pub use pci::{
-    ConfigOffset, EndpointIrqTransitionPermit, PciBarAccess, PciBarIndex, PciBarRoute, PciBdf,
-    PciCapabilityByteMode, PciCapabilityEffectAccess, PciCapabilityEffectRegion, PciCapabilityId,
-    PciCapabilityLayout, PciCapabilitySnapshot, PciCapabilitySpec, PciClass, PciCommandRevision,
-    PciCommandState, PciConfigEffectId, PciConfigReadEffect, PciConfigWriteEffect,
-    PciEcamConfigFrontend, PciEndpointContext, PciEndpointIdentity, PciError, PciFunction,
-    PciFunctionRequirement, PciFunctionSpec, PciHostKey, PciHostProvider, PciIntxPin,
-    PciIntxRequirement, PciIntxRouter, PciMemoryApertureDevice, PciMemoryBar, PciResult,
-    PciRootBinding, PciRootBindingKey, PciRootLifecycle, PciRootState, PciSegment, ResolvedPciBar,
-    ResolvedPciFunction, ResolvedPciIntx, ResolvedPciTopology,
+    BarAssignment, ConfigOffset, EndpointIrqTransitionPermit, MSIX_BAR_INDEX, MSIX_BAR_SIZE,
+    MSIX_CAPABILITY_ID, MSIX_MESSAGE_CONTROL_ENABLE, MSIX_MESSAGE_CONTROL_FUNCTION_MASK,
+    MSIX_PBA_OFFSET, MSIX_TABLE_ENTRY_SIZE, MSIX_TABLE_OFFSET, MsixState, MsixTableEntry,
+    PciBarAccess, PciBarDecodePolicy, PciBarIndex, PciBarRoute, PciBdf, PciCapabilityByteMode,
+    PciCapabilityEffectAccess, PciCapabilityEffectRegion, PciCapabilityId, PciCapabilityLayout,
+    PciCapabilitySnapshot, PciCapabilitySpec, PciClass, PciCommandRevision, PciCommandState,
+    PciConfigEffectId, PciConfigReadEffect, PciConfigWriteEffect, PciEcamConfigFrontend,
+    PciEndpointContext, PciEndpointIdentity, PciError, PciFunction, PciFunctionRequirement,
+    PciFunctionSpec, PciHostKey, PciHostProvider, PciIntxPin, PciIntxRequirement, PciIntxRouter,
+    PciMemoryApertureDevice, PciMemoryBar, PciResult, PciRootBinding, PciRootBindingKey,
+    PciRootLifecycle, PciRootState, PciSegment, ResolvedPciBar, ResolvedPciFunction,
+    ResolvedPciIntx, ResolvedPciTopology, msix_capability_spec,
 };
 #[cfg(target_arch = "x86_64")]
 pub(crate) use pci::{all_ones, read_bytes};
@@ -112,6 +125,7 @@ pub use serial::{
     Uart16550, build_16550_mmio, build_16550_port, build_pl011_mmio,
 };
 pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
+pub use stage2_remap::{DirectMapping, DirectMappingFault, GpaRange, Stage2Remap};
 #[cfg(target_arch = "x86_64")]
 // Reusable x86 device models and narrow typed services. These are target-gated
 // device packages, not part of the architecture-neutral framework core.

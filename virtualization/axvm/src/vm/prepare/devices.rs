@@ -1,6 +1,8 @@
 //! Device construction for VM preparation.
 
-use axdevice::{DeviceRuntime, DeviceRuntimeBuilder, RuntimeAccessPorts};
+use std::sync::Arc;
+
+use axdevice::{DeviceRuntime, DeviceRuntimeBuilder, RuntimeAccessPorts, Stage2Remap};
 
 use super::super::AxVMResources;
 use crate::AxVmResult;
@@ -15,7 +17,8 @@ impl PreparedDevices {
         access_ports: RuntimeAccessPorts,
     ) -> AxVmResult<Self> {
         let planned = resources.planned_devices();
-        let mut builder = DeviceRuntimeBuilder::new(access_ports);
+        let stage2_remap: Arc<dyn Stage2Remap> = resources.stage2_remap.clone();
+        let mut builder = DeviceRuntimeBuilder::new(access_ports).with_stage2_remap(stage2_remap);
         for node in planned.graph().nodes() {
             builder.build_graph_node(node, planned.graph().resource_plan())?;
         }

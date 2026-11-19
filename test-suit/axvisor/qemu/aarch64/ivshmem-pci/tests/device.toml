@@ -1,0 +1,10 @@
+timeout = 240
+
+# The primary peer prints the final marker only after the polling and MSI-X
+# phases, the ArceOS exchange, and both non-target isolation checks succeed.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+  "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?IVSHMEM_PCI_SUITE_PASSED\\s*$",
+]

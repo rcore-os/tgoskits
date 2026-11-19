@@ -136,6 +136,8 @@ impl PciTopologyBuilder {
                 .map(|bar| ResolvedBarPlan {
                     index: bar.index(),
                     size: bar.size(),
+                    prefetchable: bar.is_prefetchable(),
+                    policy: bar.decode_policy(),
                     address: bar_addresses[&(id.clone(), bar.index())],
                 })
                 .collect::<Vec<_>>();
@@ -301,6 +303,11 @@ impl ResolvedPciBar {
     /// Returns the fixed BAR size.
     pub const fn size(self) -> u64 {
         self.0.size
+    }
+
+    /// Returns whether the BAR is prefetchable.
+    pub const fn prefetchable(self) -> bool {
+        self.0.prefetchable
     }
 }
 

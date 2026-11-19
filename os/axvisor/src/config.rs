@@ -35,6 +35,7 @@ pub(crate) struct PreparedGuestVm {
 pub(crate) fn prepare_guest_vm(
     raw_cfg: &str,
     backend: Arc<dyn axvm::GuestCpuFreqBackend>,
+    ivshmem_registry: &Arc<axvm::IvshmemLinkRegistry>,
 ) -> Result<PreparedGuestVm> {
     let image_provider = AxvisorBootImageProvider;
     let mut vm_create_config =
@@ -53,7 +54,7 @@ pub(crate) fn prepare_guest_vm(
         );
     }
 
-    let mut vm_config = build_axvm_config(&vm_create_config)?;
+    let mut vm_config = build_axvm_config(&vm_create_config, ivshmem_registry)?;
     validate_guest_cpufreq_placement(&vm_config, backend.as_ref())?;
     let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
@@ -141,7 +142,10 @@ fn validate_guest_cpufreq_placement(
     Ok(())
 }
 
-pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
+pub(crate) fn build_axvm_config(
+    cfg: &GuestConfig,
+    ivshmem_registry: &alloc::sync::Arc<axvm::IvshmemLinkRegistry>,
+) -> Result<AxVMConfig> {
     let machine = axvm::machine::current_machine_profile(cfg.base.cpu_num);
     let serial_profile = machine.serial;
     let mut passthrough_devices = cfg.devices.unresolved_host_devices();
@@ -194,6 +198,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
         serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
         virtual_device_requests: cfg.devices.virtual_device_requests().to_vec(),
         virtual_device_catalog: alloc::sync::Arc::new(virtual_device_catalog),
+        ivshmem_link_registry: Some(alloc::sync::Arc::clone(ivshmem_registry)),
     }))
 }
 
@@ -290,7 +295,13 @@ mod tests {
             0x200000,
             VmMemMappingType::MapIdentical,
         ));
-        let mut vm_config = build_axvm_config(&crate_config).unwrap();
+        let mut vm_config = build_axvm_config(
+            &crate_config,
+            &alloc::sync::Arc::new(axvm::IvshmemLinkRegistry::new(
+                axvm::host::shared_backing::platform_shared_backing_allocator(),
+            )),
+        )
+        .unwrap();
 
         crate_config.kernel.memory_regions.push(memory_region(
             0x110000,

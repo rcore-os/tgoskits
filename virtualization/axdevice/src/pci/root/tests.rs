@@ -386,6 +386,57 @@ fn bar_probe_reports_size_without_changing_the_runtime_route() {
 }
 
 #[test]
+fn fixed_prefetchable_bar_keeps_its_decode_and_attributes() {
+    let bar2 = PciBarIndex::new(2).unwrap();
+    let endpoint = function("fixed")
+        .with_bar(
+            PciMemoryBar::new(bar2, BAR_SIZE)
+                .unwrap()
+                .prefetchable()
+                .with_decode_policy(PciBarDecodePolicy::Fixed)
+                .with_address(ResourceRequest::Fixed(APERTURE_START)),
+        )
+        .unwrap();
+    let mut builder = PciTopologyBuilder::new();
+    builder.add_function(endpoint).unwrap();
+    let topology = Arc::new(builder.resolve(APERTURE_START..APERTURE_END).unwrap());
+    let resolved = topology.function(&node("fixed")).unwrap();
+    assert!(resolved.bar(bar2).unwrap().prefetchable());
+    let bdf = resolved.bdf();
+    let root = PciRootState::new(topology);
+    root.write_config(bdf, offset(4), AccessWidth::Word, 2)
+        .unwrap();
+
+    let relocated = APERTURE_START + BAR_SIZE;
+    root.write_config(bdf, offset(0x18), AccessWidth::Dword, relocated)
+        .unwrap();
+    assert_eq!(
+        root.read_config(bdf, offset(0x18), AccessWidth::Dword)
+            .unwrap(),
+        APERTURE_START | 0x8
+    );
+    assert!(
+        root.resolve_bar(APERTURE_START, AccessWidth::Byte)
+            .is_some()
+    );
+    assert!(root.resolve_bar(relocated, AccessWidth::Byte).is_none());
+
+    root.write_config(bdf, offset(0x18), AccessWidth::Dword, u64::from(u32::MAX))
+        .unwrap();
+    assert_eq!(
+        root.read_config(bdf, offset(0x18), AccessWidth::Dword)
+            .unwrap(),
+        (!(BAR_SIZE - 1) & 0xffff_fff0) | 0x8
+    );
+    root.reset().unwrap();
+    assert_eq!(
+        root.read_config(bdf, offset(0x18), AccessWidth::Dword)
+            .unwrap(),
+        APERTURE_START | 0x8
+    );
+}
+
+#[test]
 fn valid_bar_relocation_moves_the_route() {
     let (root, endpoint_bdf, old_base) = enabled_root_with_bar();
     let new_base = APERTURE_START + 0x10_0000;

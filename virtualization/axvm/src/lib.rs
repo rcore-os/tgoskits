@@ -52,7 +52,7 @@ pub mod config;
 
 pub use ax_cpumask::CpuMask;
 pub use ax_std::os::arceos::task::sched::{RtPriority, SchedulePolicy};
-pub use axdevice::{SerialBackend, SerialBackendFactory};
+pub use axdevice::{IvshmemLinkRegistry, SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
     VMId, VmBackendError, VmVcpuState,

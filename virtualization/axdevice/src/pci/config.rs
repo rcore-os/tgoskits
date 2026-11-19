@@ -69,8 +69,9 @@ impl PowerOnConfig {
         }
         for bar in bars {
             let offset = bar.index.config_offset();
+            let attributes = if bar.prefetchable { 0x8 } else { 0 };
             bytes[offset..offset + 4].copy_from_slice(
-                &(bar.address as u32 & CONFIG_BAR_MEMORY_ADDRESS_MASK).to_le_bytes(),
+                &((bar.address as u32 & CONFIG_BAR_MEMORY_ADDRESS_MASK) | attributes).to_le_bytes(),
             );
         }
         if let Some(first) = capabilities.first() {
@@ -325,6 +326,8 @@ mod tests {
         let plan = ResolvedBarPlan {
             index: bar.index(),
             size: bar.size(),
+            prefetchable: false,
+            policy: super::super::PciBarDecodePolicy::RelocatableWithinHostAperture,
             address: 0x2000_0000,
         };
         let power_on = PowerOnConfig::build(identity, &[plan], &[], &[], None).unwrap();

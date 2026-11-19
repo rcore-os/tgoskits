@@ -206,6 +206,48 @@ pub struct GuestSystemRegisters {
 }
 
 impl GuestSystemRegisters {
+    /// Injects a synchronous external data abort for an AArch64 EL0 guest.
+    ///
+    /// The original instruction and PSTATE are saved for the EL1 exception
+    /// handler; the denied access is not performed or skipped. Returns `false`
+    /// without changing either context if the guest is not in EL0t or its EL1
+    /// exception vector is unavailable.
+    #[must_use]
+    pub fn inject_el0_external_data_abort(
+        &mut self,
+        context: &mut GuestContext,
+        fault_va: u64,
+    ) -> bool {
+        const VECTOR_LOWER_EL_AARCH64_SYNC: u64 = 0x400;
+        const ESR_DATA_ABORT_LOWER_EL: u32 = 0x24 << 26;
+        const ESR_IL: u32 = 1 << 25;
+        const ESR_EXTERNAL_ABORT: u32 = 0x10;
+        const PSTATE_MODE_MASK: u64 = 0x1f;
+        const PSTATE_DAIF_MASK: u64 = 0x3c0;
+        const PSTATE_EL1H: u64 = 0x5;
+        const PSTATE_BTYPE_MASK: u64 = 0xc00;
+        const PSTATE_SS: u64 = 1 << 21;
+
+        if context.spsr & PSTATE_MODE_MASK != 0 || self.vbar_el1 == 0 || self.vbar_el1 & 0x7ff != 0
+        {
+            return false;
+        }
+        let Some(vector) = self.vbar_el1.checked_add(VECTOR_LOWER_EL_AARCH64_SYNC) else {
+            return false;
+        };
+
+        self.elr_el1 = context.elr;
+        self.spsr_el1 = context.spsr as u32;
+        self.esr_el1 = ESR_DATA_ABORT_LOWER_EL | ESR_IL | ESR_EXTERNAL_ABORT;
+        self.far_el1 = fault_va;
+        context.elr = vector;
+        context.spsr = (context.spsr
+            & !(PSTATE_MODE_MASK | PSTATE_DAIF_MASK | PSTATE_BTYPE_MASK | PSTATE_SS))
+            | PSTATE_EL1H
+            | PSTATE_DAIF_MASK;
+        true
+    }
+
     /// Resets the VM context by setting all registers to zero.
     ///
     /// This method allows the `GuestSystemRegisters` instance to be reused by resetting

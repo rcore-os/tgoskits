@@ -110,17 +110,17 @@ cases = ["qemu/aarch64/memory-web"]
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · HTTP control-plane + browser console + IVC"
-timeout_minutes = 30
+name = "QEMU aarch64 · HTTP control-plane + browser console + IVC/ivshmem"
+timeout_minutes = 45
 node_version = "24"
 command = '''
-echo "==> axvisor aarch64 HTTP control-plane, browser console and source-built IVC peers"
+echo "==> axvisor aarch64 HTTP control-plane, browser console, source-built IVC and ivshmem peers"
 # Keep all cases in one axbuild invocation. The QEMU runner groups cases by
 # Cargo identity before building, so equal AxVisor kernels are compiled once
 # and their per-case initramfs/runtime inputs are still prepared independently.
 # Build ArceOS guests from this checkout rather than using prebuilt binaries.
 cargo xtask axvisor test qemu --arch aarch64 \
-  --test-case qemu/aarch64/http-control-plane,qemu/aarch64/ivc-local,qemu/aarch64/ivc-arceos
+  --test-case qemu/aarch64/http-control-plane,qemu/aarch64/ivc-local,qemu/aarch64/ivc-arceos,qemu/aarch64/ivshmem-pci
 '''
 
 [[check.suite]]
@@ -130,6 +130,7 @@ cases = [
   "qemu/aarch64/http-control-plane",
   "qemu/aarch64/ivc-local",
   "qemu/aarch64/ivc-arceos",
+  "qemu/aarch64/ivshmem-pci",
   # "qemu/aarch64/ivc", # Prebuilt guest images must match the publisher protocol.
 ]
 
@@ -287,6 +288,7 @@ id = "test-axvisor-self-hosted-board-orangepi-5-plus-triple-guest-functional"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
 name = "Board OrangePi 5 Plus · Linux + StarryOS + Zephyr"
 runner = "board"
+cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''

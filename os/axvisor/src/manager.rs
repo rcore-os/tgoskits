@@ -72,6 +72,21 @@ fn guest_took_host_storage(vm: &VmHandle, configured: bool) -> bool {
 }
 
 impl AxvmManager {
+    /// Returns the process-wide ivshmem link registry.
+    ///
+    /// A single registry instance keeps all peers of one link on the same
+    /// backing while still releasing each link with its last VM.
+    pub fn ivshmem_registry() -> Arc<axvm::IvshmemLinkRegistry> {
+        static IVSHMEM_REGISTRY: OnceLock<Arc<axvm::IvshmemLinkRegistry>> = OnceLock::new();
+        IVSHMEM_REGISTRY
+            .get_or_init(|| {
+                Arc::new(axvm::IvshmemLinkRegistry::new(
+                    axvm::host::shared_backing::platform_shared_backing_allocator(),
+                ))
+            })
+            .clone()
+    }
+
     /// Subscribes to authoritative AxVM lifecycle changes, including guest stops.
     pub fn subscribe_lifecycle(&self, waker: core::task::Waker) -> axvm::VmLifecycleSubscription {
         self.runtime.subscribe_lifecycle(waker)
@@ -107,7 +122,11 @@ impl AxvmManager {
     }
 
     fn create_vm_from_toml_locked(&self, raw_cfg: &str) -> Result<(VmOperation<VmHandle>, bool)> {
-        let prepared = crate::config::prepare_guest_vm(raw_cfg, self.cpu_freq_backend.clone())?;
+        let prepared = crate::config::prepare_guest_vm(
+            raw_cfg,
+            self.cpu_freq_backend.clone(),
+            &Self::ivshmem_registry(),
+        )?;
         let release_host_filesystem = prepared.release_host_filesystem;
         let operation = self.create_plan_locked(prepared.plan)?;
         Ok((operation, release_host_filesystem))

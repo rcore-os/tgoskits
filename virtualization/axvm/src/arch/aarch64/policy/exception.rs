@@ -54,7 +54,7 @@ use crate::arch::aarch64::policy::{
 /// syndrome register (ESR), and system control registers.
 pub fn handle_exception_sync(
     ctx: &mut TrapFrame,
-    system: &GuestSystemRegisters,
+    system: &mut GuestSystemRegisters,
     exit: &Exit,
 ) -> ArmVcpuResult<ArmVmExit> {
     match exception_class(exit) {
@@ -70,7 +70,7 @@ pub fn handle_exception_sync(
             // at the faulting instruction and reports the instruction length so
             // the successful path can advance it from an owned completion.
             let step = exception_next_instruction_step(exit);
-            handle_data_abort(ctx, exit, step)
+            handle_data_abort(ctx, system, exit, step)
         }
         Some(ESR_EL2::EC::Value::HVC64) => {
             // HVC records the preferred return address (the instruction after
@@ -147,6 +147,7 @@ fn handle_hvc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
 
 fn handle_data_abort(
     context_frame: &mut TrapFrame,
+    system: &mut GuestSystemRegisters,
     exit: &Exit,
     step: usize,
 ) -> ArmVcpuResult<ArmVmExit> {
@@ -176,11 +177,17 @@ fn handle_data_abort(
     }
 
     if !exception_data_abort_is_translate_fault(exit) {
-        if exception_data_abort_is_permission_fault(exit) {
-            return Err(ArmVcpuError::Unsupported);
-        } else {
-            panic!("Core data abort is not translate fault {:#x}", addr,);
+        // S1PTW faults are not data accesses by the guest instruction. Never
+        // inject or emulate an MMIO transaction for an unresolved walk.
+        const ESR_S1PTW: u64 = 1 << 7;
+        if exception_data_abort_is_permission_fault(exit)
+            && is_write
+            && exit.syndrome & ESR_S1PTW == 0
+            && system.inject_el0_external_data_abort(context_frame, exit.fault_address)
+        {
+            return Ok(ArmVmExit::Nothing);
         }
+        return Err(ArmVcpuError::Unsupported);
     }
 
     if is_write {

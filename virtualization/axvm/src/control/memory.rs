@@ -40,6 +40,7 @@ impl Owner {
             .vm
             .resources
             .address_space
+            .lock_irqsave()
             .linear_mappings()
             .map_err(|error| AxVmError::from_addrspace("snapshot guest translations", error))?;
         let mut leases = self.vm.resources.memory_leases.clone();
@@ -109,12 +110,10 @@ impl Owner {
         }
         let old = self.vm.resources.nested_paging;
         let table = ArchNestedPageTable::new(old.levels)?;
-        let mut space = AddrSpace::new_empty(
-            table,
-            self.vm.resources.address_space.base(),
-            self.vm.resources.address_space.size(),
-        )
-        .map_err(|error| AxVmError::from_addrspace("prepare translation root", error))?;
+        let address_space = self.vm.resources.address_space.lock_irqsave();
+        let mut space = AddrSpace::new_empty(table, address_space.base(), address_space.size())
+            .map_err(|error| AxVmError::from_addrspace("prepare translation root", error))?;
+        drop(address_space);
         for mapping in mappings {
             space
                 .map_linear(mapping.guest, mapping.host, mapping.size, mapping.flags)
@@ -261,7 +260,10 @@ impl Owner {
                 .pending_memory
                 .take()
                 .expect("published translation revision");
-            let old_space = std::mem::replace(&mut self.vm.resources.address_space, prepared.space);
+            let old_space = {
+                let mut address_space = self.vm.resources.address_space.lock_irqsave();
+                std::mem::replace(&mut *address_space, prepared.space)
+            };
             let old_leases =
                 std::mem::replace(&mut self.vm.resources.memory_leases, prepared.leases);
             self.vm.resources.nested_paging = prepared.root;
