@@ -325,6 +325,16 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
             .is_some_and(|arm| arm.is_active())
     }
 
+    /// Test-only observation of an in-progress cancellation: `Some(true)` once
+    /// a cancellation has claimed the current arm while its stable handle is
+    /// still retained, `Some(false)` once the handle has been handed over.
+    #[cfg(test)]
+    pub(crate) fn current_cancel_claim(&self) -> Option<bool> {
+        let arm = self.current.lock_irqsave().as_ref().cloned()?;
+        let state = arm.state.lock_irqsave();
+        state.cancel_requested.then_some(state.handle.is_some())
+    }
+
     /// Quiesces the current host registration, if any, behind the full cancel
     /// barrier and retires it.
     ///
