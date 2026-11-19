@@ -530,15 +530,8 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         pull_request = mapping_block(triggers, "pull_request", 2)
         paths = list_items_in_order(pull_request, "paths", 4)
 
-        self.assertEqual(paths[-2:], ["!docs/docs/**", "!docs/blog/**"])
-        self.assertNotIn("!**/*.md", paths)
-        for workflow_path in (
-            ".github/workflows/starry-apps.yml",
-            ".github/workflows/axvisor-nightly.yml",
-            ".github/workflows/benchmarks.yml",
-            ".github/workflows/docs.yml",
-        ):
-            self.assertIn(workflow_path, paths)
+        # Unknown paths and future workspace roots must reach conservative planning.
+        self.assertEqual(paths, ["**", "!docs/docs/**", "!docs/blog/**"])
 
     def test_benchmarks_workflow_owns_every_performance_matrix(self) -> None:
         workflow = BENCHMARKS_WORKFLOW.read_text(encoding="utf-8")

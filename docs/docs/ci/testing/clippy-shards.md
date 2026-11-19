@@ -58,6 +58,6 @@ cargo xtask clippy --verify-results target/ci/clippy-plan.json \
 
 ## 4. 触发与维护
 
-`scripts/test/ci_clippy.py classify`只允许`docs/docs/`和`docs/blog/`已确认静态说明树跳过Clippy。其他代码、README、配置、脚本、依赖及未知输入均完整检查，历史不可用、merge-base等于HEAD或基准不确定也全量；其他OS任务仍由原规划器选取。
+PR的workflow路径规则先包含全部路径，再排除两个静态说明树，确保未知路径与未来新增顶层目录也能进入规划；无需另写源码目录白名单。`scripts/test/ci_clippy.py classify`只允许`docs/docs/`和`docs/blog/`已确认静态说明树跳过Clippy。其他代码、README、配置、脚本、依赖及未知输入均完整检查，历史不可用、merge-base等于HEAD或基准不确定也全量；其他OS任务仍由原规划器选取。
 
 计划和结果写target或Actions制品，不加入Git。新增包不维护Clippy白名单；特殊排除必须给出理由。分组只改变排班，不改变功能覆盖；不得通过合并feature配置、忽略warnings或跳过错误制造提速。
