@@ -6,6 +6,9 @@ on:
       shards:
         type: number
         default: 4
+      timing_weights:
+        type: string
+        default: ''
       checkout_ref:
         type: string
         default: ''
@@ -37,21 +40,29 @@ jobs:
         id: plan
         env:
           CLIPPY_SHARDS: ${{ inputs.shards }}
+          CLIPPY_TIMING_WEIGHTS: ${{ inputs.timing_weights }}
         run: |
           set -euo pipefail
           mkdir -p target/ci
-          cargo xtask clippy --all --emit-plan target/ci/clippy-plan.json --shards "$CLIPPY_SHARDS"
+          plan_args=(clippy --all --emit-plan target/ci/clippy-plan.json --shards "$CLIPPY_SHARDS")
+          if [ -n "$CLIPPY_TIMING_WEIGHTS" ]; then
+            plan_args+=(--timing-weights "$CLIPPY_TIMING_WEIGHTS")
+          fi
+          cargo xtask "${plan_args[@]}"
+          python3 scripts/test/check_clippy_workspace.py --tool target/debug/tg-xtask
           python3 scripts/test/ci_clippy.py matrix target/ci/clippy-plan.json >> "$GITHUB_OUTPUT"
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          tar -cf target/ci/clippy-tool.tar -C target/debug tg-xtask
-          sha256sum target/ci/clippy-tool.tar > target/ci/clippy-tool.sha256
+          python3 scripts/test/ci_clippy_tool.py pack --binary target/debug/tg-xtask --output-dir target/ci/tool
       - uses: actions/upload-artifact@v7
         with:
           name: clippy-plan-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            target/ci/clippy-plan.json
-            target/ci/clippy-tool.tar
-            target/ci/clippy-tool.sha256
+          path: target/ci/clippy-plan.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: clippy-tool-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci/tool/*
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
@@ -80,12 +91,14 @@ jobs:
         with:
           name: clippy-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: clippy-tool-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci/tool
       - name: Verify and restore the exact tool
         run: |
           set -euo pipefail
-          sha256sum --check target/ci/clippy-tool.sha256
-          mkdir -p target/debug
-          tar -xf target/ci/clippy-tool.tar -C target/debug
+          python3 scripts/test/ci_clippy_tool.py unpack --input-dir target/ci/tool --destination target/debug/tg-xtask
           test -x target/debug/tg-xtask
       - name: Show effective resources
         run: |
@@ -144,10 +157,12 @@ jobs:
           pattern: clippy-result-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: target/ci/results
           merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: clippy-tool-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci/tool
       - name: Verify every planned check and shard result
         run: |
           set -euo pipefail
-          sha256sum --check target/ci/clippy-tool.sha256
-          mkdir -p target/debug
-          tar -xf target/ci/clippy-tool.tar -C target/debug
+          python3 scripts/test/ci_clippy_tool.py unpack --input-dir target/ci/tool --destination target/debug/tg-xtask
           target/debug/tg-xtask clippy --verify-results target/ci/clippy-plan.json --results-dir target/ci/results

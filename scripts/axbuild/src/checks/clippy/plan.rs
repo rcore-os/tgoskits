@@ -10,7 +10,8 @@ use super::{
     expand::expand_clippy_checks,
     partition::partition,
     runner::{ProcessCargoRunner, run_clippy_checks},
-    selection::{skip_unsupported_packages, workspace_packages},
+    selection::{skip_unsupported_packages, validate_package_coverage, workspace_packages},
+    weights::TimingWeights,
 };
 
 const SCHEMA: u32 = 1;
@@ -67,10 +68,15 @@ impl CheckPlan {
         root: &Path,
         checks: Vec<ClippyCheck>,
         count: usize,
+        timing_weights: Option<&Path>,
     ) -> anyhow::Result<Self> {
         let checks = relocate(&checks, &root.to_string_lossy(), WORKSPACE)?;
-        let shards = partition(&checks, count)?;
         let input = plan_input(root, &checks)?;
+        let weights = timing_weights
+            .map(|path| TimingWeights::load(path, &input.rustc))
+            .transpose()?
+            .flatten();
+        let shards = partition(&checks, count, weights.as_ref())?;
         let digest = hash(&serde_json::to_vec(&(SCHEMA, &input, &checks, &shards))?);
         let plan = Self {
             schema_version: SCHEMA,
@@ -147,12 +153,14 @@ pub(super) fn run_saved_plan(args: &crate::ClippyArgs) -> anyhow::Result<()> {
     // Re-expand the local catalog before accepting data from another runner.
     // It must match the saved commands and build inputs exactly, not merely
     // claim the same number of checks.
-    let packages = skip_unsupported_packages(workspace_packages(&metadata));
+    let discovered = workspace_packages(&metadata);
+    let packages = skip_unsupported_packages(discovered.clone());
     let local = relocate(
         &expand_clippy_checks(&packages, &metadata)?,
         &root.to_string_lossy(),
         WORKSPACE,
     )?;
+    validate_package_coverage(&discovered, &local)?;
     ensure!(
         local == plan.checks,
         "Clippy catalog differs from saved plan"
@@ -417,7 +425,7 @@ mod tests {
             })
             .collect();
         let root = tempfile::tempdir().unwrap();
-        let plan = CheckPlan::create(root.path(), checks, 2).unwrap();
+        let plan = CheckPlan::create(root.path(), checks, 2, None).unwrap();
         let output = tempfile::tempdir().unwrap();
         assert!(verify_results(&plan, output.path()).is_err());
         for (i, ids) in plan.shards.iter().enumerate() {

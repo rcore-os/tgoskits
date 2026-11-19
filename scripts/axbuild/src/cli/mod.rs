@@ -29,9 +29,6 @@ pub(crate) struct ClippyArgs {
     /// Run clippy only for the named workspace package(s)
     #[arg(long = "package", value_name = "PACKAGE")]
     pub(crate) packages: Vec<String>,
-    /// Run clippy for workspace packages affected since the git ref
-    #[arg(long, value_name = "REF")]
-    pub(crate) since: Option<String>,
     /// Number of independent Cargo workers (default: serial execution)
     #[arg(long, default_value_t = 1)]
     pub(crate) jobs: usize,
@@ -41,8 +38,11 @@ pub(crate) struct ClippyArgs {
     /// Number of independent CI shards in an emitted plan.
     #[arg(long, default_value_t = 4)]
     pub(crate) shards: usize,
+    /// Optional measured costs used only to balance an emitted plan.
+    #[arg(long, value_name = "FILE", requires = "emit_plan")]
+    pub(crate) timing_weights: Option<std::path::PathBuf>,
     /// Execute only the selected shard of a previously emitted plan.
-    #[arg(long, value_name = "FILE", conflicts_with_all = ["emit_plan", "verify_results", "all", "packages", "since"])]
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["emit_plan", "verify_results", "all", "packages"])]
     pub(crate) execute_plan: Option<std::path::PathBuf>,
     /// One-based shard number to execute.
     #[arg(long, requires = "execute_plan")]
@@ -51,7 +51,7 @@ pub(crate) struct ClippyArgs {
     #[arg(long, requires = "execute_plan")]
     pub(crate) result_file: Option<std::path::PathBuf>,
     /// Verify that every check in a plan has a successful shard result.
-    #[arg(long, value_name = "FILE", conflicts_with_all = ["emit_plan", "execute_plan", "all", "packages", "since"])]
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["emit_plan", "execute_plan", "all", "packages"])]
     pub(crate) verify_results: Option<std::path::PathBuf>,
     #[arg(long, requires = "verify_results")]
     pub(crate) results_dir: Option<std::path::PathBuf>,

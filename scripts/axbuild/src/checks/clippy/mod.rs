@@ -14,6 +14,7 @@ mod runner;
 mod selection;
 mod targets;
 mod timing;
+mod weights;
 
 #[cfg(test)]
 mod tests;
@@ -22,8 +23,8 @@ use expand::expand_clippy_checks;
 use report::print_report_summary;
 use runner::{ProcessCargoRunner, run_clippy_checks, run_parallel_clippy_checks};
 use selection::{
-    clippy_metadata_needs_deps, resolve_requested_packages, skip_unsupported_packages,
-    validate_clippy_args, workspace_packages,
+    resolve_requested_packages, skip_unsupported_packages, validate_clippy_args,
+    validate_package_coverage, workspace_packages,
 };
 use timing::print_clippy_timing;
 
@@ -55,7 +56,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
         started_at.format("%Y-%m-%d %H:%M:%S %z")
     );
     let workspace_manifest = crate::context::workspace_manifest_path()?;
-    let metadata = if clippy_metadata_needs_deps(args) || args.emit_plan.is_some() {
+    let metadata = if args.emit_plan.is_some() {
         crate::context::workspace_metadata_root_manifest_with_deps(&workspace_manifest)
     } else {
         crate::context::workspace_metadata_root_manifest(&workspace_manifest)
@@ -64,12 +65,8 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
     let target_dir = metadata.target_directory.clone().into_std_path_buf();
     let all_packages = workspace_packages(&metadata);
-    let packages = skip_unsupported_packages(resolve_requested_packages(
-        args,
-        &workspace_root,
-        &metadata,
-        &all_packages,
-    )?);
+    let selected = resolve_requested_packages(args, &all_packages)?;
+    let packages = skip_unsupported_packages(selected.clone());
     if packages.is_empty() {
         println!(
             "no clippy packages selected from {}; skipping",
@@ -79,6 +76,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
         return Ok(());
     }
     let checks = expand_clippy_checks(&packages, &metadata)?;
+    validate_package_coverage(&selected, &checks)?;
 
     println!(
         "running clippy for {} package(s) with {} check(s) from {}",
@@ -88,7 +86,12 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
     );
 
     if let Some(output) = &args.emit_plan {
-        let plan = plan::CheckPlan::create(&workspace_root, checks, args.shards)?;
+        let plan = plan::CheckPlan::create(
+            &workspace_root,
+            checks,
+            args.shards,
+            args.timing_weights.as_deref(),
+        )?;
         plan::write_json(output, &plan)?;
         println!("CLIPPY_PLAN: {}", serde_json::to_string(&plan.summary())?);
         return Ok(());

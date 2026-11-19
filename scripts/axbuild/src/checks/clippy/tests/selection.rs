@@ -1,9 +1,9 @@
-use std::{collections::HashSet, path::Path};
+use std::collections::HashSet;
 
 use super::common::{args, metadata_with_packages, pkg};
 use crate::checks::clippy::selection::{
-    resolve_requested_packages, skip_unsupported_packages, validate_clippy_args,
-    validate_requested_packages, workspace_packages,
+    resolve_requested_packages, skip_unsupported_packages, validate_requested_packages,
+    workspace_packages,
 };
 
 #[test]
@@ -37,44 +37,7 @@ fn default_mode_selects_every_workspace_package() {
         pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
         pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
     ];
-    let metadata = metadata_with_packages(
-        packages.clone(),
-        &[
-            "alpha 0.1.0 (path+file:///tmp/alpha)",
-            "beta 0.1.0 (path+file:///tmp/beta)",
-        ],
-    );
-    let resolved = resolve_requested_packages(
-        &args(false, &[]),
-        Path::new("/tmp/ws"),
-        &metadata,
-        &packages,
-    )
-    .unwrap();
-
-    assert!(resolved.iter().any(|pkg| pkg.name == "alpha"));
-    assert!(resolved.iter().any(|pkg| pkg.name == "beta"));
-}
-
-#[test]
-fn unavailable_since_ref_falls_back_to_every_workspace_package() {
-    let root = tempfile::tempdir().unwrap();
-    let packages = vec![
-        pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
-        pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
-    ];
-    let metadata = metadata_with_packages(
-        packages.clone(),
-        &[
-            "alpha 0.1.0 (path+file:///tmp/alpha)",
-            "beta 0.1.0 (path+file:///tmp/beta)",
-        ],
-    );
-    let mut clippy_args = args(false, &[]);
-    clippy_args.since = Some("missing-ref".into());
-
-    let resolved =
-        resolve_requested_packages(&clippy_args, root.path(), &metadata, &packages).unwrap();
+    let resolved = resolve_requested_packages(&args(false, &[]), &packages).unwrap();
 
     assert!(resolved.iter().any(|pkg| pkg.name == "alpha"));
     assert!(resolved.iter().any(|pkg| pkg.name == "beta"));
@@ -86,20 +49,7 @@ fn package_selection_overrides_default_workspace_selection() {
         pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
         pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
     ];
-    let metadata = metadata_with_packages(
-        packages.clone(),
-        &[
-            "alpha 0.1.0 (path+file:///tmp/alpha)",
-            "beta 0.1.0 (path+file:///tmp/beta)",
-        ],
-    );
-    let resolved = resolve_requested_packages(
-        &args(false, &["beta"]),
-        Path::new("/tmp/ws"),
-        &metadata,
-        &packages,
-    )
-    .unwrap();
+    let resolved = resolve_requested_packages(&args(false, &["beta"]), &packages).unwrap();
 
     assert!(resolved.iter().any(|pkg| pkg.name == "beta"));
     assert!(resolved.iter().all(|pkg| pkg.name != "alpha"));
@@ -117,21 +67,7 @@ fn unsupported_packages_are_filtered_from_generic_clippy() {
         ),
         pkg("mingo", "mingo 0.1.0 (path+file:///tmp/mingo)", &[], None),
     ];
-    let metadata = metadata_with_packages(
-        packages.clone(),
-        &[
-            "alpha 0.1.0 (path+file:///tmp/alpha)",
-            "axvisor 0.1.0 (path+file:///tmp/axvisor)",
-            "mingo 0.1.0 (path+file:///tmp/mingo)",
-        ],
-    );
-    let resolved = resolve_requested_packages(
-        &args(false, &[]),
-        Path::new("/tmp/ws"),
-        &metadata,
-        &packages,
-    )
-    .unwrap();
+    let resolved = resolve_requested_packages(&args(false, &[]), &packages).unwrap();
 
     let filtered = skip_unsupported_packages(resolved);
 
@@ -152,14 +88,29 @@ fn duplicate_explicit_packages_are_rejected() {
 }
 
 #[test]
-fn since_rejects_explicit_package_selection() {
-    let mut args = args(false, &["alpha"]);
-    args.since = Some("origin/main".to_string());
-
-    let err = validate_clippy_args(&args).unwrap_err();
-
+fn discovered_packages_cannot_disappear_between_selection_and_check_expansion() {
+    use super::common::expand;
+    use crate::checks::clippy::selection::validate_package_coverage;
+    let mut packages = vec![pkg("fixture-old", "fixture-old-id", &[], None)];
+    let mut checks = expand(&packages);
+    validate_package_coverage(&packages, &checks).unwrap();
+    packages.push(pkg(
+        "fixture-new",
+        "fixture-new-id",
+        &[("capability", &[])],
+        None,
+    ));
     assert!(
-        err.to_string()
-            .contains("cannot be combined with `--package`")
+        validate_package_coverage(&packages, &checks)
+            .unwrap_err()
+            .to_string()
+            .contains("fixture-new")
     );
+    checks = expand(&packages);
+    validate_package_coverage(&packages, &checks).unwrap();
+    assert!(checks.iter().any(|check| check.package == "fixture-new"));
+    let mut unknown = checks[0].clone();
+    unknown.package = "not-a-member".into();
+    checks.push(unknown);
+    assert!(validate_package_coverage(&packages, &checks).is_err());
 }
