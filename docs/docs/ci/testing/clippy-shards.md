@@ -12,11 +12,11 @@
 
 新增feature按原规则展开，不自动穷举所有feature组合；特殊构建组合在包内`package.metadata.clippy`声明。无法准备的配置直接失败。清单总数动态计算，不固定为某次验收的数量。
 
-### 1.2 数量与耗时分配
+### 1.2 数量分配
 
-`partition`将同包/target/env检查成块，较大域按32项切分。没有权重时按数量平衡；显式`--timing-weights`按估计耗时平衡，保持块内顺序和确定性。一个包可分布在多个组，新增包可能使其他组归属改变。
+`partition`将同包/target/env检查成块，较大域按32项切分，先安排较大的任务块，再依次放入当前检查数量最少的组；平局按组编号选择。各组继续按原检查ID顺序执行。一个包可分布在多个组，新增包可能使其他组归属改变，相同清单下分组确定。
 
-权重文件由CI显式传入，`weights::TimingWeights`以归一化后的实际检查对象SHA256为键，避免新增包使数组下标错套。当前`.github/ci/clippy-timings.json`记录已有两次实际运行的估计与来源。未知检查采用已知检查平均成本；工具链改变时明确输出日志并回退数量平衡。读取或格式错误直接失败，权重永远不删除检查。axbuild脱离仓库且不提供权重时仍可正常使用。
+CI固定四组，不维护四份包名单，也不依赖历史耗时文件。此前试验的耗时权重、文件和开关已移除，避免维护两套调度策略。axbuild脱离仓库仍直接使用同一算法。
 
 ## 2. 计划与判定
 
@@ -24,11 +24,10 @@
 
 ### 2.1 本地命令
 
-`--emit-plan`必须与`--all`一起使用，默认四组；分组编号从1开始，所有组执行结束后才能汇总。可选权重参数只在生成计划时读取。
+`--emit-plan`必须与`--all`一起使用，默认四组；分组编号从1开始，所有组执行结束后才能汇总。计划仅由当前完整目录和组数生成。
 
 ```sh
-cargo xtask clippy --all --emit-plan target/ci/clippy-plan.json --shards 4 \
-  --timing-weights .github/ci/clippy-timings.json
+cargo xtask clippy --all --emit-plan target/ci/clippy-plan.json --shards 4
 cargo xtask clippy --execute-plan target/ci/clippy-plan.json \
   --shard 1 --result-file target/ci/results/shard-1.json
 cargo xtask clippy --verify-results target/ci/clippy-plan.json \
@@ -53,12 +52,12 @@ cargo xtask clippy --verify-results target/ci/clippy-plan.json \
 
 ### 3.2 同源实际对照
 
-手动CI设置`clippy_only=true`，可选`clippy_shards=1/4`和`clippy_balance=count/time`。count不传权重，time使用版本化权重；这仅运行Clippy必要链，不执行QEMU、板卡或std矩阵。普通CI保留其他作业。
+手动CI设置`clippy_only=true`，可选`clippy_shards=1/4`；这仅运行Clippy必要链，不执行QEMU、板卡或std矩阵。普通CI保留其他作业。
 
-同SHA顺序比较完整检查集合、逐项实际命令、准备/传输/检查/汇总和端到端耗时，并记录runner资源。工具制品大小乘下载次数只是对应payload估计，不代表整个CI网络流量；权重收益必须实测，不能把预计耗时当实际结果。
+同SHA顺序比较完整检查集合、逐项实际命令、准备/传输/检查/汇总和端到端耗时，并记录runner资源。工具制品大小乘下载次数只是对应payload估计，不代表整个CI网络流量；数量平衡不保证耗时相同，不能将检查数直接换算成提速比例。
 
 ## 4. 触发与维护
 
-`scripts/test/ci_clippy.py classify`只允许`docs/docs/`和`docs/blog/`已确认静态说明树跳过Clippy。其他代码、README、配置、脚本、依赖及未知输入均完整检查，历史不可用也全量；其他OS任务仍由原规划器选取。
+`scripts/test/ci_clippy.py classify`只允许`docs/docs/`和`docs/blog/`已确认静态说明树跳过Clippy。其他代码、README、配置、脚本、依赖及未知输入均完整检查，历史不可用、merge-base等于HEAD或基准不确定也全量；其他OS任务仍由原规划器选取。
 
-计划和结果写target或Actions制品，不加入Git。新增包不维护Clippy白名单；特殊排除必须给出理由。权重调整只改变排班，不改变功能覆盖；不得通过合并feature配置、忽略warnings或跳过错误制造提速。
+计划和结果写target或Actions制品，不加入Git。新增包不维护Clippy白名单；特殊排除必须给出理由。分组只改变排班，不改变功能覆盖；不得通过合并feature配置、忽略warnings或跳过错误制造提速。

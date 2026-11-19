@@ -14,14 +14,17 @@ def needs_clippy(paths):
 
 def classify(root, since):
     try:
-        changed = subprocess.check_output(
-            ["git", "diff", "--name-only", "--no-renames", f"{since}...HEAD", "--"],
-            cwd=root, text=True, stderr=subprocess.PIPE,
-        ).splitlines()
-    except subprocess.CalledProcessError:
+        def git(*arguments):
+            return subprocess.check_output(["git", *arguments], cwd=root, text=True, stderr=subprocess.PIPE).strip()
+        base = git("merge-base", since, "HEAD")
+        head = git("rev-parse", "HEAD")
+        if base == head:
+            return True, "comparison base is HEAD; use the full Clippy matrix"
+        changed = git("diff", "--name-only", "--no-renames", f"{base}..{head}", "--").splitlines()
+    except (subprocess.CalledProcessError, OSError):
         return True, "comparison unavailable; use the full Clippy matrix"
     if not changed:
-        return False, "no changed files"
+        return False, "no changed files between distinct commits"
     return needs_clippy(changed), "code/configuration or unknown input" if needs_clippy(changed) else "static documentation only"
 
 

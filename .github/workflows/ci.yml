@@ -60,12 +60,6 @@ on:
         default: '4'
         type: choice
         options: ['1', '4']
-      clippy_balance:
-        description: Compare count-balanced or measured-time Clippy shards.
-        required: false
-        default: 'time'
-        type: choice
-        options: ['count', 'time']
 
 permissions:
   contents: read
@@ -541,7 +535,6 @@ jobs:
     uses: ./.github/workflows/clippy-checks.yml
     with:
       shards: ${{ fromJSON(inputs.clippy_shards || '4') }}
-      timing_weights: ${{ inputs.clippy_balance == 'time' && '.github/ci/clippy-timings.json' || '' }}
       checkout_ref: ${{ github.sha }}
 
   clippy_checks:
@@ -555,5 +548,4 @@ jobs:
     uses: ./.github/workflows/clippy-checks.yml
     with:
       shards: 4
-      timing_weights: .github/ci/clippy-timings.json
       checkout_ref: ${{ github.sha }}

@@ -63,7 +63,7 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 | `scripts/axbuild/src/checks/clippy/targets.rs` | 从 docs.rs metadata 提取包支持的 target，以及 feature↔target 兼容性判断 |
 | `scripts/axbuild/src/checks/clippy/runner.rs` | `CargoRunner` trait 与 `ProcessCargoRunner`，fail-fast 执行 |
 | `scripts/axbuild/src/checks/clippy/report.rs` | `ClippyRunReport` 聚合与人类可读报告 |
-| `scripts/axbuild/src/checks/clippy/partition.rs`, `weights.rs` | 仅影响调度的数量/可选耗时分组，不筛选检查 |
+| `scripts/axbuild/src/checks/clippy/partition.rs` | 按数量分组，不筛选检查 |
 | `scripts/axbuild/src/checks/clippy/plan.rs` | 同源计划、身份及逐项结果完整性校验 |
 | `scripts/axbuild/src/checks/clippy/timing.rs` | 起止时间记录与耗时打印 |
 | `scripts/axbuild/src/checks/clippy/tests.rs`, `tests/` | 展开与选择逻辑的回归测试 |
@@ -213,4 +213,4 @@ cargo xtask clippy --package starry-kernel --jobs 4
 
 > `aic8800` 的 crate build script 会根据固定 manifest 从本地 cache 读取并校验 Wi-Fi 固件 blob；cache 缺失时才从固定 upstream 下载。首次构建因此需要网络或预置且校验通过的 cache，后续 `starry`、`clippy` 等命令复用同一供应路径。
 
-CI分组、工具分发和耗时权重见[完整矩阵与独立作业](../ci/testing/clippy-shards)。
+CI数量分组、工具分发和完整性校验见[完整矩阵与独立作业](../ci/testing/clippy-shards)。

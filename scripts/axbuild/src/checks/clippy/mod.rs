@@ -14,7 +14,6 @@ mod runner;
 mod selection;
 mod targets;
 mod timing;
-mod weights;
 
 #[cfg(test)]
 mod tests;
@@ -86,12 +85,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
     );
 
     if let Some(output) = &args.emit_plan {
-        let plan = plan::CheckPlan::create(
-            &workspace_root,
-            checks,
-            args.shards,
-            args.timing_weights.as_deref(),
-        )?;
+        let plan = plan::CheckPlan::create(&workspace_root, checks, args.shards)?;
         plan::write_json(output, &plan)?;
         println!("CLIPPY_PLAN: {}", serde_json::to_string(&plan.summary())?);
         return Ok(());

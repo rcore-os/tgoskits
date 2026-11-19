@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Exercise workspace discovery, new-member scheduling and lint failure via the CLI."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -42,16 +41,10 @@ def check(tool):
         before = json.loads(plan.read_text())
         if {row["package"] for row in before["checks"]} != {"fixture-original"}:
             raise AssertionError("workspace discovery selected a non-member")
-        weights = root / "weights.json"
-        weights.write_text(json.dumps({
-            "schema_version": 1, "rustc": before["input"]["rustc"], "source": "fixture measured inputs",
-            "checks": {hashlib.sha256(json.dumps(row, separators=(",", ":")).encode()).hexdigest(): 1.0
-                       for row in before["checks"]},
-        }))
         new = root / "members/new"
         package(new, "fixture-new")
         # The workspace manifest is unchanged: its existing wildcard discovers this package.
-        invoke("--all", "--emit-plan", plan, "--shards", "4", "--timing-weights", weights)
+        invoke("--all", "--emit-plan", plan, "--shards", "4")
         after = json.loads(plan.read_text())
         if {row["package"] for row in after["checks"]} != {"fixture-original", "fixture-new"}:
             raise AssertionError("new workspace package was omitted")

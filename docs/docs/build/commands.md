@@ -93,7 +93,6 @@ cargo xtask ktest board -p arceos-axtest-sg2002-usb-msc --test axtest -b aka-00-
 | `--all` | 审计全部支持的 workspace 包 |
 | `--package <PACKAGE>`（可重复） | 仅检查指定的 workspace 包 |
 | `--emit-plan <FILE>`、`--shards <N>` | 将全量检查分为N组并写出计划 |
-| `--timing-weights <FILE>` | 可选耗时估计，仅改变分组，不筛选检查 |
 
 ```bash
 cargo xtask clippy

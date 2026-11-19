@@ -11,7 +11,6 @@ use super::{
     partition::partition,
     runner::{ProcessCargoRunner, run_clippy_checks},
     selection::{skip_unsupported_packages, validate_package_coverage, workspace_packages},
-    weights::TimingWeights,
 };
 
 const SCHEMA: u32 = 1;
@@ -68,15 +67,10 @@ impl CheckPlan {
         root: &Path,
         checks: Vec<ClippyCheck>,
         count: usize,
-        timing_weights: Option<&Path>,
     ) -> anyhow::Result<Self> {
         let checks = relocate(&checks, &root.to_string_lossy(), WORKSPACE)?;
         let input = plan_input(root, &checks)?;
-        let weights = timing_weights
-            .map(|path| TimingWeights::load(path, &input.rustc))
-            .transpose()?
-            .flatten();
-        let shards = partition(&checks, count, weights.as_ref())?;
+        let shards = partition(&checks, count)?;
         let digest = hash(&serde_json::to_vec(&(SCHEMA, &input, &checks, &shards))?);
         let plan = Self {
             schema_version: SCHEMA,
@@ -425,7 +419,7 @@ mod tests {
             })
             .collect();
         let root = tempfile::tempdir().unwrap();
-        let plan = CheckPlan::create(root.path(), checks, 2, None).unwrap();
+        let plan = CheckPlan::create(root.path(), checks, 2).unwrap();
         let output = tempfile::tempdir().unwrap();
         assert!(verify_results(&plan, output.path()).is_err());
         for (i, ids) in plan.shards.iter().enumerate() {

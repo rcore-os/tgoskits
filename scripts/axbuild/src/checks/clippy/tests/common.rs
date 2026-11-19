@@ -149,7 +149,6 @@ pub(super) fn args(all: bool, packages: &[&str]) -> crate::ClippyArgs {
         jobs: 1,
         emit_plan: None,
         shards: 4,
-        timing_weights: None,
         execute_plan: None,
         shard: None,
         result_file: None,
