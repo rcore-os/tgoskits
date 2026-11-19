@@ -19,7 +19,9 @@ use crate::{
 const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
 
 mod boot;
+pub(crate) mod checks;
 mod config;
+pub(crate) mod control;
 mod discovery;
 mod grouping;
 mod host_initramfs;

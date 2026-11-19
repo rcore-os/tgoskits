@@ -12,7 +12,7 @@
 //! This module is generic orchestration only: resolve the probe asset, spawn it
 //! once the forwarded port is reachable, and collect its exit code as the
 //! verdict. The runner's
-//! [`HostHttpProbeGuard`](super::host_probe::HostHttpProbeGuard) does the rest
+//! ordered QEMU check guard does the rest
 //! of the orchestration: wait for the forwarded port, invoke this probe, store
 //! its verdict, and quit QEMU over QMP.
 //!
@@ -69,6 +69,7 @@ fn run(
     run_bounded(addr, config, case_dir, builtin_configs, stop, None)
 }
 
+#[cfg(test)]
 pub(crate) fn run_bounded(
     addr: &str,
     config: &AxvisorHttpProbeConfig,
@@ -77,16 +78,30 @@ pub(crate) fn run_bounded(
     stop: Arc<AtomicBool>,
     timeout: Option<Duration>,
 ) -> HostHttpProbeOutcome {
+    let deadline = timeout
+        .map(|d| {
+            std::time::Instant::now()
+                .checked_add(d)
+                .context("HTTP deadline overflow")
+        })
+        .transpose();
+    match deadline {
+        Ok(deadline) => run_until(addr, config, case_dir, builtin_configs, stop, deadline),
+        Err(error) => HostHttpProbeOutcome::failed(error),
+    }
+}
+
+pub(crate) fn run_until(
+    addr: &str,
+    config: &AxvisorHttpProbeConfig,
+    case_dir: &Path,
+    builtin_configs: Option<&Path>,
+    stop: Arc<AtomicBool>,
+    deadline: Option<std::time::Instant>,
+) -> HostHttpProbeOutcome {
     let script = case_dir.join(&config.probe_script);
     let captured = (|| -> anyhow::Result<(Vec<u8>, Option<ExitStatus>)> {
         ensure_probe_asset(&script)?;
-        let deadline = timeout
-            .map(|duration| {
-                std::time::Instant::now()
-                    .checked_add(duration)
-                    .context("host check timeout exceeds the host clock range")
-            })
-            .transpose()?;
         if stop.load(Ordering::Acquire) {
             bail!(
                 "probe asset {} was not started because the case had already stopped",

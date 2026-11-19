@@ -266,6 +266,13 @@ fn expand_check(
             path.display()
         );
     }
+    if let Some(timeout) = document.get("timeout") {
+        ensure!(
+            timeout.as_integer().is_some_and(|t| t > 0),
+            "check timeout must be a positive integer in {}",
+            path.display()
+        );
+    }
     if let Some(required) = document.get("requires") {
         let required: Vec<PathBuf> = required.clone().try_into()?;
         for file in required {

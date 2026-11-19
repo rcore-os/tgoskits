@@ -407,7 +407,7 @@ impl Axvisor {
     ) -> anyhow::Result<BoardRunConfig> {
         match board_config_path {
             Some(path) => {
-                let expanded = crate::execution::case::materialize_selected_runtime_checks(
+                let expanded = crate::axvisor::test::checks::materialize_selected_runtime_checks(
                     path,
                     &self.app.target_dir().join("axbuild/runtime-configs"),
                     selected,

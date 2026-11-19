@@ -145,10 +145,9 @@ impl Axvisor {
             let mut case_names = Vec::new();
             for case in &cases {
                 case_names.push(case.case.name.clone());
-                let members = case
-                    .selected_checks
-                    .clone()
-                    .unwrap_or(test_case::runtime_check_names(&case.case.qemu_config_path)?);
+                let members = case.selected_checks.clone().unwrap_or(
+                    crate::axvisor::test::checks::runtime_check_names(&case.case.qemu_config_path)?,
+                );
                 case_names.extend(
                     members
                         .into_iter()
@@ -365,7 +364,7 @@ impl Axvisor {
                 &mut contexts_by_build_config,
                 self.app.workspace_context(),
             )?;
-            let expanded = test_case::materialize_selected_runtime_checks(
+            let expanded = crate::axvisor::test::checks::materialize_selected_runtime_checks(
                 &case.case.qemu_config_path,
                 &self.app.target_dir().join("axbuild/runtime-configs"),
                 case.selected_checks.as_deref(),

@@ -34,3 +34,15 @@ shell_check_steps = [
 ]
 fail_regex = ["STARRY_OPENRC_FAILED", "(?i)panic", "(?m)^lockdep fatal violation\\s*$", "/dev/console has no serial TTY binding", "Failed to bind console tty", "(?m)^STARRY_TTY_INPUT_BURST_FAILED"]
 timeout = 480
+
+# Each original test retains one total deadline across all of its steps.
+
+[[shell_check_groups]]
+name = "tty"
+step_count = 1
+timeout = 300
+
+[[shell_check_groups]]
+name = "openrc"
+step_count = 3
+timeout = 180

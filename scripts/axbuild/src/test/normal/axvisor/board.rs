@@ -578,11 +578,12 @@ mod tests {
 fn labeled_board_members(groups: Vec<BoardTestGroup>) -> anyhow::Result<Vec<(String, String)>> {
     let mut listed = Vec::new();
     for group in groups {
-        let names = group
-            .selected_checks
-            .unwrap_or(crate::execution::case::runtime_check_names(
-                &group.board_test_config_path,
-            )?);
+        let names =
+            group
+                .selected_checks
+                .unwrap_or(crate::axvisor::test::checks::runtime_check_names(
+                    &group.board_test_config_path,
+                )?);
         listed.push((group.name.clone(), group.board_name.clone()));
         for name in names {
             listed.push((format!("{}/{name}", group.name), group.board_name.clone()));

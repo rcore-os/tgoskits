@@ -11,6 +11,7 @@ mod failures;
 #[cfg(unix)]
 mod unix {
     use std::{
+        collections::VecDeque,
         io::{self, Read, Write},
         os::unix::net::UnixStream,
         sync::{
@@ -32,8 +33,43 @@ mod unix {
     #[derive(Default)]
     struct State {
         pending: String,
+        received: VecDeque<(usize, Instant)>,
         failure: Option<String>,
         closed: bool,
+        connected_at: Option<Instant>,
+    }
+
+    impl State {
+        fn append(&mut self, text: &str, at: Instant) {
+            if !text.is_empty() {
+                self.pending.push_str(text);
+                self.received.push_back((self.pending.len(), at));
+            }
+        }
+
+        fn visible_before(&self, deadline: Instant) -> &str {
+            let end = self
+                .received
+                .iter()
+                .take_while(|(_, at)| *at <= deadline)
+                .last()
+                .map_or(0, |(end, _)| *end);
+            &self.pending[..end]
+        }
+
+        fn drain(&mut self, end: usize) {
+            self.pending.drain(..end);
+            while self
+                .received
+                .front()
+                .is_some_and(|(offset, _)| *offset <= end)
+            {
+                self.received.pop_front();
+            }
+            for (offset, _) in &mut self.received {
+                *offset -= end;
+            }
+        }
     }
 
     struct Shared {
@@ -69,6 +105,7 @@ mod unix {
         shared: Arc<Shared>,
         prefix: Option<String>,
         require_newline: bool,
+        active_failures: Vec<Regex>,
     }
 
     impl Monitor {
@@ -118,53 +155,55 @@ mod unix {
                     stream.set_read_timeout(Some(POLL))?;
                     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
                     *worker.writer.lock().unwrap() = Some(stream.try_clone()?);
+                    worker.state.lock().unwrap().connected_at = Some(Instant::now());
                     worker.changed.notify_all();
                     let mut buffer = [0u8; 8192];
                     let mut escape = 0u8;
                     let mut transcript = Vec::new();
                     let mut line_start = 0;
                     let mut utf8 = Vec::new();
-                    let mut consume = |bytes: &[u8], last: bool| -> Result<()> {
-                        output.write_all(bytes)?;
-                        for &byte in bytes {
-                            match (escape, byte) {
-                                (0, 0x1b) => escape = 1,
-                                (0, b'\r') => {}
-                                (0, _) => utf8.push(byte),
-                                (1, b'[') => escape = 2,
-                                (1, _) => {
-                                    escape = 0;
-                                    utf8.push(byte);
+                    let mut consume =
+                        |bytes: &[u8], last: bool, received_at: Instant| -> Result<()> {
+                            output.write_all(bytes)?;
+                            for &byte in bytes {
+                                match (escape, byte) {
+                                    (0, 0x1b) => escape = 1,
+                                    (0, b'\r') => {}
+                                    (0, _) => utf8.push(byte),
+                                    (1, b'[') => escape = 2,
+                                    (1, _) => {
+                                        escape = 0;
+                                        utf8.push(byte);
+                                    }
+                                    (2, 0x40..=0x7e) => escape = 0,
+                                    _ => {}
                                 }
-                                (2, 0x40..=0x7e) => escape = 0,
-                                _ => {}
                             }
-                        }
-                        let decoded = decode_utf8(&mut utf8, last);
-                        let mut state = worker.state.lock().unwrap();
-                        state.pending.push_str(&decoded);
-                        ensure!(
-                            state.pending.len() <= MAX_PENDING,
-                            "QEMU serial pending output exceeded {MAX_PENDING} bytes"
-                        );
-                        let previous_length = transcript.len();
-                        transcript.extend_from_slice(decoded.as_bytes());
-                        ensure!(
-                            transcript.len() <= MAX_PENDING,
-                            "QEMU serial transcript exceeded {MAX_PENDING} bytes"
-                        );
-                        if let Some(pattern) = matcher.matching(&transcript, line_start) {
-                            bail!("QEMU serial matched global fail_regex `{pattern}`");
-                        }
-                        if let Some(index) = transcript[previous_length..]
-                            .iter()
-                            .rposition(|&byte| byte == b'\n')
-                        {
-                            line_start = previous_length + index + 1;
-                        }
-                        worker.changed.notify_all();
-                        Ok(())
-                    };
+                            let decoded = decode_utf8(&mut utf8, last);
+                            let mut state = worker.state.lock().unwrap();
+                            state.append(&decoded, received_at);
+                            ensure!(
+                                state.pending.len() <= MAX_PENDING,
+                                "QEMU serial pending output exceeded {MAX_PENDING} bytes"
+                            );
+                            let previous_length = transcript.len();
+                            transcript.extend_from_slice(decoded.as_bytes());
+                            ensure!(
+                                transcript.len() <= MAX_PENDING,
+                                "QEMU serial transcript exceeded {MAX_PENDING} bytes"
+                            );
+                            if let Some(pattern) = matcher.matching(&transcript, line_start) {
+                                bail!("QEMU serial matched global fail_regex `{pattern}`");
+                            }
+                            if let Some(index) = transcript[previous_length..]
+                                .iter()
+                                .rposition(|&byte| byte == b'\n')
+                            {
+                                line_start = previous_length + index + 1;
+                            }
+                            worker.changed.notify_all();
+                            Ok(())
+                        };
                     let mut drain_deadline = None;
                     loop {
                         if worker_stop.load(Ordering::Acquire)
@@ -179,10 +218,10 @@ mod unix {
                         }
                         match stream.read(&mut buffer) {
                             Ok(0) => {
-                                consume(&[], true)?;
+                                consume(&[], true, Instant::now())?;
                                 break;
                             }
-                            Ok(count) => consume(&buffer[..count], false)?,
+                            Ok(count) => consume(&buffer[..count], false, Instant::now())?,
                             Err(error)
                                 if matches!(
                                     error.kind(),
@@ -194,7 +233,7 @@ mod unix {
                                 if worker_stop.load(Ordering::Acquire)
                                     || worker.cancelled.load(Ordering::Acquire)
                                 {
-                                    consume(&[], true)?;
+                                    consume(&[], true, Instant::now())?;
                                     break;
                                 }
                             }
@@ -219,6 +258,7 @@ mod unix {
                     shared,
                     prefix: None,
                     require_newline: false,
+                    active_failures: Vec::new(),
                 },
             ))
         }
@@ -245,19 +285,45 @@ mod unix {
     }
 
     impl Checks {
+        pub(crate) fn connected_at(&self) -> Result<Instant> {
+            let mut state = self.shared.state.lock().unwrap();
+            loop {
+                if let Some(error) = &state.failure {
+                    bail!("{error}");
+                }
+                ensure!(
+                    !self.shared.cancelled.load(Ordering::Acquire) && !state.closed,
+                    "serial connection cancelled"
+                );
+                if let Some(at) = state.connected_at {
+                    return Ok(at);
+                }
+                state = self.shared.changed.wait_timeout(state, POLL).unwrap().0;
+            }
+        }
         pub(crate) fn verdict(&self) -> Result<()> {
-            self.shared.verdict()
+            self.shared.verdict()?;
+            self.check_failures(&self.shared.state.lock().unwrap().pending)
         }
 
+        #[cfg(test)]
         pub(crate) fn run(&mut self, steps: &[ShellCheckStep], budget: Duration) -> Result<()> {
             let deadline = Instant::now()
                 .checked_add(budget)
                 .context("serial check deadline overflow")?;
+            self.run_until(steps, deadline)
+        }
+
+        pub(crate) fn run_until(
+            &mut self,
+            steps: &[ShellCheckStep],
+            deadline: Instant,
+        ) -> Result<()> {
             for (index, step) in steps.iter().enumerate() {
                 self.run_step(step, deadline)
                     .with_context(|| format!("serial shell_check_steps[{index}]"))?;
             }
-            Ok(())
+            self.verdict()
         }
 
         fn run_step(&mut self, step: &ShellCheckStep, deadline: Instant) -> Result<()> {
@@ -279,7 +345,18 @@ mod unix {
                 // Keep bytes following the prefix. A guest can stop and return
                 // to the host in the same read as its final progress marker;
                 // discarding that tail would lose the step's valid result.
-                thread::sleep(Duration::from_millis(100));
+                ensure!(
+                    Instant::now() < deadline,
+                    "serial member deadline expired before command"
+                );
+                thread::sleep(
+                    Duration::from_millis(100)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+                ensure!(
+                    Instant::now() < deadline,
+                    "serial member deadline expired before command"
+                );
                 let mut bytes = command.trim_end_matches(['\r', '\n']).as_bytes().to_vec();
                 bytes.push(b'\n');
                 let mut writer = self.shared.writer.lock().unwrap();
@@ -291,6 +368,15 @@ mod unix {
                         !self.shared.cancelled.load(Ordering::Acquire),
                         "serial check cancelled"
                     );
+                    ensure!(
+                        Instant::now() < deadline,
+                        "serial member deadline expired while sending command"
+                    );
+                    writer.set_write_timeout(Some(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .max(Duration::from_millis(1)),
+                    ))?;
                     writer.write_all(chunk)?;
                     thread::sleep(Duration::from_millis(2));
                 }
@@ -318,11 +404,10 @@ mod unix {
                 .iter()
                 .map(|p| Regex::new(p))
                 .collect::<std::result::Result<Vec<_>, _>>()?;
+            self.active_failures = failures;
+            self.check_failures(&self.shared.state.lock().unwrap().pending)?;
             if !successes.is_empty() {
                 self.wait(deadline, |text| {
-                    for failure in &failures {
-                        ensure!(!failure.is_match(text), "matched fail_regex `{failure}`");
-                    }
                     Ok(successes
                         .iter()
                         .filter_map(|pattern| pattern.find(text).map(|m| m.end()))
@@ -334,6 +419,26 @@ mod unix {
                 // next prompt must follow a newline from the submitted command,
                 // rather than an input editor repaint while it is being typed.
                 self.require_newline = true;
+                if !self.active_failures.is_empty() {
+                    let prefix = self.prefix.clone().context(
+                        "failure-only step requires a shell prompt to observe completion",
+                    )?;
+                    self.wait(deadline, |text| {
+                        Ok(text.match_indices(&prefix).find_map(|(start, _)| {
+                            text[..start]
+                                .ends_with('\n')
+                                .then_some(start + prefix.len())
+                        }))
+                    })?;
+                    self.require_newline = false;
+                }
+            }
+            Ok(())
+        }
+
+        fn check_failures(&self, text: &str) -> Result<()> {
+            for pattern in &self.active_failures {
+                ensure!(!pattern.is_match(text), "matched fail_regex `{pattern}`");
             }
             Ok(())
         }
@@ -352,9 +457,10 @@ mod unix {
                     !self.shared.cancelled.load(Ordering::Acquire),
                     "serial check cancelled"
                 );
-                let text = state.pending.as_str();
+                self.check_failures(&state.pending)?;
+                let text = state.visible_before(deadline);
                 if let Some(end) = predicate(text)? {
-                    state.pending.drain(..end);
+                    state.drain(end);
                     return Ok(());
                 }
                 ensure!(
@@ -407,249 +513,20 @@ mod unix {
     }
 
     #[cfg(test)]
-    mod tests {
-        use std::{io::BufRead, os::unix::net::UnixListener, sync::mpsc};
-
-        use super::*;
-
-        fn buffered_checks(text: &str) -> Checks {
-            Checks {
-                shared: Arc::new(Shared {
-                    state: Mutex::new(State { pending: text.into(), ..Default::default() }),
-                    changed: Condvar::new(),
-                    writer: Mutex::new(None),
-                    cancelled: Arc::new(AtomicBool::new(false)),
-                }),
-                prefix: None,
-                require_newline: false,
-            }
-        }
-
-        #[test]
-        fn expired_serial_check_cannot_accept_a_late_buffered_marker() {
-            let checks = buffered_checks("READY");
-            let deadline = Instant::now() - Duration::from_secs(1);
-            assert!(checks.wait(deadline, |text| Ok(text.find("READY").map(|i| i + 5))).is_err());
-        }
-
-        #[test]
-        fn failure_only_step_does_not_silently_ignore_its_failure_pattern() {
-            let mut checks = buffered_checks("ERROR\n");
-            let result = checks.run(&[ShellCheckStep {
-                fail_regex: Some(vec!["ERROR".into()]),
-                ..Default::default()
-            }], Duration::from_secs(1));
-            assert!(result.is_err(), "failure-only checks must observe errors");
-        }
-
-        #[test]
-        fn serial_checks_preserve_commands_and_monitor_failures_after_completion() {
-            let root = tempfile::tempdir().unwrap();
-            let socket = root.path().join("console.sock");
-            let listener = UnixListener::bind(&socket).unwrap();
-            let (release, wait) = mpsc::channel();
-            let server = thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut input = io::BufReader::new(stream.try_clone().unwrap());
-                stream.write_all(b"\n\x1b[32mguest> \x1b[0m").unwrap();
-                let mut command = String::new();
-                input.read_line(&mut command).unwrap();
-                assert_eq!(command, "history -c\n");
-                stream
-                    .write_all(b"\r\x1b[2Kguest> history -c\r\nguest> ")
-                    .unwrap();
-                command.clear();
-                input.read_line(&mut command).unwrap();
-                assert_eq!(command, "perform\n");
-                stream
-                    .write_all(b"perform\r\nnoise\xff\xfe\nRESULT=42\r\nguest> ")
-                    .unwrap();
-                wait.recv().unwrap();
-                stream
-                    .write_all(b"\x1b[31mPANIC: late failure\x1b[0m\r\n")
-                    .unwrap();
-            });
-            let (monitor, mut checks) = Monitor::start(
-                &socket,
-                &[r"(?i)\bPANIC\b".into()],
-                Arc::new(AtomicBool::new(false)),
-                Duration::from_secs(2),
-                io::sink(),
-            )
-            .unwrap();
-            checks
-                .run(
-                    &[
-                        ShellCheckStep {
-                            shell_prefix: Some("guest>".into()),
-                            shell_cmd: Some("history -c".into()),
-                            ..Default::default()
-                        },
-                        ShellCheckStep {
-                            shell_cmd: Some("perform".into()),
-                            success_regex: Some(vec!["(?m)^RESULT=42$".into()]),
-                            ..Default::default()
-                        },
-                    ],
-                    Duration::from_secs(2),
-                )
-                .unwrap();
-            release.send(()).unwrap();
-            let error = checks
-                .wait(Instant::now() + Duration::from_secs(2), |_| Ok(None))
-                .unwrap_err();
-            assert!(error.to_string().contains("global fail_regex"), "{error:#}");
-            assert!(monitor.finish().is_err());
-            server.join().unwrap();
-        }
-
-        #[test]
-        fn serial_result_after_a_prefix_is_not_discarded_before_sending() {
-            let root = tempfile::tempdir().unwrap();
-            let socket = root.path().join("console.sock");
-            let listener = UnixListener::bind(&socket).unwrap();
-            let server = thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream.write_all(b"guest>\nALREADY_STOPPED\n").unwrap();
-                let mut input = io::BufReader::new(stream);
-                let mut command = String::new();
-                input.read_line(&mut command).unwrap();
-                assert_eq!(command, "detach\n");
-            });
-            let (monitor, mut checks) = Monitor::start(
-                &socket,
-                &[],
-                Arc::new(AtomicBool::new(false)),
-                Duration::from_secs(2),
-                io::sink(),
-            )
-            .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(2);
-            let mut state = checks.shared.state.lock().unwrap();
-            while !state.pending.ends_with("ALREADY_STOPPED\n") {
-                assert!(Instant::now() < deadline);
-                state = checks.shared.changed.wait_timeout(state, POLL).unwrap().0;
-            }
-            drop(state);
-            checks
-                .run(
-                    &[ShellCheckStep {
-                        shell_prefix: Some("guest>".into()),
-                        shell_cmd: Some("detach".into()),
-                        success_regex: Some(vec!["(?m)^ALREADY_STOPPED$".into()]),
-                        ..Default::default()
-                    }],
-                    Duration::from_secs(1),
-                )
-                .unwrap();
-            monitor.finish().unwrap();
-            server.join().unwrap();
-        }
-
-        #[test]
-        fn finish_drains_queued_serial_errors_after_the_last_check() {
-            let root = tempfile::tempdir().unwrap();
-            let socket = root.path().join("console.sock");
-            let listener = UnixListener::bind(&socket).unwrap();
-            let (release, wait) = mpsc::channel();
-            let (written, queued) = mpsc::channel();
-            let server = thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut input = io::BufReader::new(stream.try_clone().unwrap());
-                stream.write_all(b"ready>").unwrap();
-                let mut command = String::new();
-                input.read_line(&mut command).unwrap();
-                assert_eq!(command, "ping\n");
-                stream.write_all(b"OK\n").unwrap();
-                wait.recv().unwrap();
-                let mut tail = vec![b'x'; 16384];
-                tail.extend_from_slice(b"\nPANIC: queued after completion\n");
-                stream.write_all(&tail).unwrap();
-                written.send(()).unwrap();
-            });
-            let (monitor, mut checks) = Monitor::start(
-                &socket,
-                &["PANIC:".into()],
-                Arc::new(AtomicBool::new(false)),
-                Duration::from_secs(2),
-                io::sink(),
-            )
-            .unwrap();
-            checks
-                .run(
-                    &[ShellCheckStep {
-                        shell_prefix: Some("ready>".into()),
-                        shell_cmd: Some("ping".into()),
-                        success_regex: Some(vec!["OK".into()]),
-                        ..Default::default()
-                    }],
-                    Duration::from_secs(2),
-                )
-                .unwrap();
-            let state = checks.shared.state.lock().unwrap();
-            release.send(()).unwrap();
-            queued.recv().unwrap();
-            monitor.stop.store(true, Ordering::Release);
-            drop(state);
-            assert!(
-                monitor.finish().is_err(),
-                "queued failure must not be lost during shutdown"
-            );
-            server.join().unwrap();
-        }
-
-        #[test]
-        fn serial_step_failure_wins_over_a_success_in_the_same_output() {
-            let root = tempfile::tempdir().unwrap();
-            let socket = root.path().join("console.sock");
-            let listener = UnixListener::bind(&socket).unwrap();
-            let server = thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream.write_all(b"guest> ").unwrap();
-                let mut input = io::BufReader::new(stream.try_clone().unwrap());
-                let mut command = String::new();
-                input.read_line(&mut command).unwrap();
-                assert_eq!(command, "perform\n");
-                stream.write_all(b"\r\nERROR\nRESULT=42\n").unwrap();
-            });
-            let (monitor, mut checks) = Monitor::start(
-                &socket,
-                &[],
-                Arc::new(AtomicBool::new(false)),
-                Duration::from_secs(2),
-                io::sink(),
-            )
-            .unwrap();
-            let error = checks
-                .run(
-                    &[ShellCheckStep {
-                        shell_prefix: Some("guest>".into()),
-                        shell_cmd: Some("perform".into()),
-                        success_regex: Some(vec!["(?m)^RESULT=42$".into()]),
-                        fail_regex: Some(vec!["(?m)^ERROR$".into()]),
-                        ..Default::default()
-                    }],
-                    Duration::from_secs(2),
-                )
-                .unwrap_err();
-            assert!(format!("{error:#}").contains("matched fail_regex"));
-            monitor.finish().unwrap();
-            server.join().unwrap();
-        }
-    }
+    mod tests;
 }
 
 #[cfg(unix)]
-pub(super) use unix::Monitor as SerialMonitor;
+pub(crate) use unix::{Checks as SerialChecks, Monitor as SerialMonitor};
 
 #[cfg(not(unix))]
-pub(super) struct SerialMonitor;
+pub(crate) struct SerialMonitor;
 #[cfg(not(unix))]
-pub(super) struct SerialChecks;
+pub(crate) struct SerialChecks;
 
 #[cfg(not(unix))]
 impl SerialMonitor {
-    pub(super) fn start(
+    pub(crate) fn start(
         _: &Path,
         _: &[String],
         _: Arc<std::sync::atomic::AtomicBool>,
@@ -658,17 +535,23 @@ impl SerialMonitor {
     ) -> Result<(Self, SerialChecks)> {
         anyhow::bail!("mixed serial/HTTP checks require a Unix serial socket")
     }
-    pub(super) fn finish(self) -> Result<()> {
+    pub(crate) fn finish(self) -> Result<()> {
         Ok(())
     }
 }
 
 #[cfg(not(unix))]
 impl SerialChecks {
-    pub(super) fn verdict(&self) -> Result<()> {
+    pub(crate) fn connected_at(&self) -> Result<std::time::Instant> {
+        anyhow::bail!("ordered serial checks require a Unix serial socket")
+    }
+    pub(crate) fn verdict(&self) -> Result<()> {
         Ok(())
     }
-    pub(super) fn run(&mut self, _: &[ShellCheckStep], _: Duration) -> Result<()> {
+    pub(crate) fn run_until(&mut self, _: &[ShellCheckStep], _: std::time::Instant) -> Result<()> {
+        anyhow::bail!("bounded serial checks require a Unix serial socket")
+    }
+    pub(crate) fn run(&mut self, _: &[ShellCheckStep], _: Duration) -> Result<()> {
         anyhow::bail!("mixed serial/HTTP checks require a Unix serial socket")
     }
 }

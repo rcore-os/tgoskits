@@ -16,20 +16,11 @@ pub(crate) struct QemuSuccessOutput {
 }
 
 impl QemuSuccessOutput {
-    pub(crate) fn matched_before(&self, deadline: std::time::Instant) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .matched_at
-            .is_some_and(|at| at <= deadline)
-    }
-
     pub(crate) fn new(success_regex: &[String]) -> Self {
         Self {
             state: Arc::new(Mutex::new(QemuSuccessOutputState {
                 matcher: StreamingMatcher::new(success_regex),
                 tail: Vec::with_capacity(TRANSCRIPT_TAIL_BYTES),
-                matched_at: None,
             })),
         }
     }
@@ -58,16 +49,12 @@ impl QemuSuccessOutput {
 struct QemuSuccessOutputState {
     matcher: std::result::Result<StreamingMatcher, String>,
     tail: Vec<u8>,
-    matched_at: Option<std::time::Instant>,
 }
 
 impl QemuSuccessOutputState {
     fn append(&mut self, chunk: &[u8]) {
         if let Ok(matcher) = &mut self.matcher {
             matcher.append(chunk);
-            if self.matched_at.is_none() && matcher.is_match() {
-                self.matched_at = Some(std::time::Instant::now());
-            }
         }
         append_bounded_tail(&mut self.tail, chunk);
     }

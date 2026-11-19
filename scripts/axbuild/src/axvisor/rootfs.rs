@@ -130,7 +130,7 @@ pub(crate) async fn load_patched_qemu_config(
     // External checks are axbuild data: never silently pass references to
     // ostool. Host probes require the test entry that owns their lifecycle.
     let expanded = if config_path.is_file() {
-        let plan = crate::execution::case::load_runtime_checks(&config_path)?;
+        let plan = crate::axvisor::test::checks::load_runtime_checks(&config_path)?;
         anyhow::ensure!(
             !plan
                 .checks
@@ -139,7 +139,7 @@ pub(crate) async fn load_patched_qemu_config(
             "this configuration declares host checks; use `cargo xtask axvisor test qemu` to run \
              them"
         );
-        crate::execution::case::materialize_runtime_checks(
+        crate::axvisor::test::checks::materialize_runtime_checks(
             &config_path,
             &axvisor.app.target_dir().join("axbuild/runtime-configs"),
         )?

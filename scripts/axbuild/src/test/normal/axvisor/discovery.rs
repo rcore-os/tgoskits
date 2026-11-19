@@ -85,7 +85,8 @@ pub(crate) fn discover_qemu_cases(
                 case.name = relative_app_name(root, &case.case_dir)?;
                 case.display_name = case.name.clone();
             }
-            let plan = crate::execution::case::runtime_check_references(&case.qemu_config_path)?;
+            let plan =
+                crate::axvisor::test::checks::runtime_check_references(&case.qemu_config_path)?;
             if !source.is_app() {
                 if let Some(id) = &plan.id {
                     case.name = id.clone();
@@ -122,7 +123,7 @@ pub(crate) fn discover_qemu_cases(
             })
             .collect::<Vec<_>>();
         let selection =
-            crate::execution::case::select_runtime_members(&groups, &[selected.to_string()])?;
+            crate::axvisor::test::checks::select_runtime_members(&groups, &[selected.to_string()])?;
         let mut selected_cases = Vec::new();
         for (index, members) in selection {
             let mut case = cases[index].clone();
@@ -148,7 +149,8 @@ pub(crate) fn list_all_qemu_cases_with_archs(
     for arch in crate::context::supported_arches() {
         let (_, target) = resolve_axvisor_arch_and_target(Some(arch.to_string()), None)?;
         for case in discover_qemu_cases(source, workspace_root, group, arch, &target, None)? {
-            let names = crate::execution::case::runtime_check_names(&case.case.qemu_config_path)?;
+            let names =
+                crate::axvisor::test::checks::runtime_check_names(&case.case.qemu_config_path)?;
             let matches = selected_case.is_none_or(|selected| {
                 app_matches(&case.case.name, selected)
                     || names.iter().any(|name| {
@@ -264,7 +266,8 @@ pub(crate) fn discover_board_test_groups(
         .iter()
         .map(|case| (case.name.as_str(), case.board_test_config_path.as_path()))
         .collect::<Vec<_>>();
-    let selection = crate::execution::case::select_runtime_members(&descriptors, selected_cases)?;
+    let selection =
+        crate::axvisor::test::checks::select_runtime_members(&descriptors, selected_cases)?;
     Ok(selection
         .into_iter()
         .map(|(index, members)| {
@@ -318,7 +321,8 @@ fn collect_board_test_groups(
         ensure_board_run_config(&info.board_test_config_path)?;
         let build_config = resolve_workspace_path(workspace_root, info.build_config_path);
         ensure_file_exists(&build_config, "Axvisor board build group config")?;
-        let refs = crate::execution::case::runtime_check_references(&info.board_test_config_path)?;
+        let refs =
+            crate::axvisor::test::checks::runtime_check_references(&info.board_test_config_path)?;
         let name = if let Some(id) = refs.id {
             id
         } else if refs.checks.is_some() {
