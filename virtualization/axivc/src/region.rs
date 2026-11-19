@@ -32,24 +32,78 @@ pub struct IvcRegion {
     subscriber_to_publisher: IvcRing,
 }
 
-// SAFETY: The two rings are independent SPSC rings. Axvisor admits only one
-// subscriber per channel, mutable ring state is reachable only through
-// message sender/receiver endpoints with `&mut` methods, and the `unsafe`
-// endpoint constructors require callers to keep one endpoint per ring role.
-// The header fields are initialized once before sharing or are atomic, so
-// concurrent &IvcRegion access across threads is sound.
+// SAFETY: The leading host-owned header fields are initialized before the
+// backing is mapped and are never rewritten by guests. Protocol metadata uses
+// atomics, so subscribers may poll readiness while a fresh region initializes.
+// Ring slot bytes are accessed only by the sole producer and consumer under the
+// Release/Acquire protocol. The unsafe initialization and attachment contracts
+// require one initializer at a time, no endpoint or in-flight slot operation
+// while ring and protocol metadata are reset, no attachment until both rings and
+// that metadata are initialized and the final magic is published, and no reset
+// while any endpoint remains live. The final magic Release linearizes
+// initialization, and no shared metadata writes follow it. Under those
+// conditions, concurrent shared access to the region is sound.
 unsafe impl Sync for IvcRegion {}
 
 impl IvcRegion {
-    /// Initializes the guest-owned protocol region.
+    /// Initializes guest-owned protocol metadata and resets both rings.
     ///
-    /// The leading channel header is initialized by Axvisor before the channel
-    /// is made subscribable. It is read-only to guests, so protocol setup must
-    /// not rewrite it while a subscriber may already be reading it.
-    pub fn initialize(&mut self) {
-        // A newly mapped GPA can contain bytes from an earlier session. Clear
-        // publication first so a racing subscriber cannot accept stale layout
-        // metadata while the rings are being reinitialized.
+    /// Each initialization has exactly one caller. On fresh Axvisor backing,
+    /// the protocol magic starts at zero, the leading host header is already
+    /// installed, and a subscriber may poll [`Self::protocol_header_matches`]
+    /// concurrently. The subscriber must not attach until both rings and the
+    /// protocol metadata are initialized and the final magic is published with
+    /// Release and observed with Acquire. The publication is the completion
+    /// point; attachment does not depend on the initializer's local function
+    /// having returned. The host's channel-published state only means the
+    /// mapping is available; it does not mean guest protocol initialization has
+    /// completed.
+    ///
+    /// Reusing an already initialized generation requires the complete
+    /// quiescence guarantees in the [Safety](#safety) section below. Slot
+    /// payloads are not cleared: the sole producer overwrites a slot before
+    /// publishing it with a Release `tail`, and its consumer reads that slot
+    /// only after acquiring `tail`.
+    ///
+    /// ```compile_fail,E0133
+    /// use axivc::IvcRegion;
+    ///
+    /// fn reset_shared_region(region: &mut IvcRegion) {
+    ///     region.initialize();
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee all of the following:
+    ///
+    /// - The region mapping is valid, writable, and properly aligned for this
+    ///   entire call and for the protocol operations that follow it.
+    /// - The caller is the sole initializer for this initialization. No other
+    ///   execution context may call `initialize` concurrently. A later
+    ///   reinitialization is permitted only after the quiescence conditions
+    ///   below are satisfied.
+    /// - For first initialization, the backing is fresh and its protocol magic
+    ///   is still zero before this call. Atomic readiness polling is permitted,
+    ///   but no publisher or subscriber endpoint may exist or perform a slot
+    ///   operation until both rings and protocol metadata are initialized and
+    ///   the final magic Release is published.
+    /// - For reinitialization, every publisher and subscriber endpoint and
+    ///   every in-flight send or receive operation in every address space
+    ///   sharing the region has already stopped. New attachment and any stale
+    ///   readiness result must not race with initialization.
+    /// - Every attachment must happen after this generation's initialization.
+    ///   The same-thread call completion or ordinary thread synchronization can
+    ///   establish that ordering locally. Another address space that learns of
+    ///   completion through the shared header must use
+    ///   [`Self::protocol_header_matches`] so its Acquire load observes the final
+    ///   magic Release. Attachment only requires the Release publication and
+    ///   preceding initialization to have completed; it does not require the
+    ///   initializer's local method call to have returned elsewhere.
+    /// - No endpoint remains live when a later reset begins. Dropping local
+    ///   endpoints or clearing the magic does not revoke access in another
+    ///   address space and is not sufficient proof of quiescence.
+    pub unsafe fn initialize(&self) {
         self.header.invalidate();
         self.publisher_to_subscriber
             .initialize(IvcRingDirection::PublisherToSubscriber);
@@ -88,7 +142,18 @@ impl IvcRegion {
     ///
     /// # Safety
     ///
-    /// The caller must guarantee that the publisher role is attached only
+    /// The caller must guarantee that initialization happens before attachment
+    /// for the current, stable generation. The same-thread call completion or
+    /// ordinary thread synchronization may establish that ordering. If another
+    /// address space learns completion through the shared header, it must use
+    /// [`Self::protocol_header_matches`] so its Acquire load observes the final
+    /// magic Release.
+    ///
+    /// The region mapping must remain valid. No initialization or reset may
+    /// begin while any endpoint for either role or any in-flight slot operation
+    /// remains live.
+    ///
+    /// The caller must also guarantee that the publisher role is attached only
     /// once across every address space sharing this region. Attaching it again
     /// would create duplicate producer and consumer endpoints, allowing data
     /// races on slot bytes.
@@ -103,7 +168,18 @@ impl IvcRegion {
     ///
     /// # Safety
     ///
-    /// The caller must guarantee that the subscriber role is attached only
+    /// The caller must guarantee that initialization happens before attachment
+    /// for the current, stable generation. The same-thread call completion or
+    /// ordinary thread synchronization may establish that ordering. If another
+    /// address space learns completion through the shared header, it must use
+    /// [`Self::protocol_header_matches`] so its Acquire load observes the final
+    /// magic Release.
+    ///
+    /// The region mapping must remain valid. No initialization or reset may
+    /// begin while any endpoint for either role or any in-flight slot operation
+    /// remains live.
+    ///
+    /// The caller must also guarantee that the subscriber role is attached only
     /// once across every address space sharing this region. Attaching it again
     /// would create duplicate producer and consumer endpoints, allowing data
     /// races on slot bytes.
@@ -214,9 +290,11 @@ mod tests {
         assert_eq!(offset_of!(IvcRegion, publisher_to_subscriber), 256);
         assert_eq!(offset_of!(IvcRegion, subscriber_to_publisher), 8704);
 
-        let mut region = new_region_for_test(1, 0x4956_4301);
+        let region = new_region_for_test(1, 0x4956_4301);
         assert!(!region.protocol_header_matches());
-        region.initialize();
+        // SAFETY: this test-private region is freshly constructed and has not
+        // been shared; no endpoint exists yet.
+        unsafe { region.initialize() };
         assert!(region.channel_header_matches(1, 0x4956_4301));
         assert!(region.protocol_header_matches());
 

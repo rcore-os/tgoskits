@@ -97,9 +97,10 @@ mod subscriber {
         }
 
         let region: &'static IvcRegion = region;
-        // SAFETY: this app is the only subscriber side of this channel and
-        // creates each endpoint exactly once; the producer moves into the
-        // sender task and the consumer into the receiver task.
+        // SAFETY: wait_for_protocol_header observed the matching header with
+        // Acquire. The publisher initializes this fresh channel once and never
+        // resets it during the demo; this app is the unique subscriber. The
+        // mapping stays valid and both endpoints remain until their tasks join.
         let (reply_producer, request_consumer) =
             unsafe { region.subscriber_endpoints() }.into_parts();
 
@@ -504,10 +505,12 @@ mod subscriber {
 
     fn shared_region(shm_base_gpa: usize, shm_size: usize) -> Option<&'static IvcRegion> {
         let vaddr = ax_mm::iomap(PhysAddr::from_usize(shm_base_gpa), shm_size).ok()?;
-        unsafe {
-            // Axvisor maps the returned GPA to the publisher's shared region.
-            // Phase 2 uses atomic ring ownership for subscriber writes.
-            Some(&*(vaddr.as_ptr() as *const IvcRegion))
-        }
+        // SAFETY: the HVC mapping is valid and page-aligned, and `run` checked
+        // that its size covers `IvcRegion`. Axvisor zeroed the entire fresh
+        // backing before writing the publisher_id/key host header, so every
+        // field has a valid initial bit pattern. The host header is not changed
+        // after publication, and the mapping remains valid for this run. A
+        // shared reference permits readiness polling before attachment.
+        unsafe { Some(&*(vaddr.as_ptr() as *const IvcRegion)) }
     }
 }

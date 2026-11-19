@@ -109,8 +109,9 @@ output themselves until `LAST` is observed.
 # Guest Flow
 
 1. Publish or subscribe with `axhvc` and map the returned GPA.
-2. The publisher calls `IvcRegion::initialize`.
-3. The subscriber validates `channel_header_matches` and
+2. The publisher calls `unsafe { region.initialize() }` exactly once for a
+   fresh channel generation, before either role attaches.
+3. The subscriber validates `channel_header_matches`, then waits for
    `protocol_header_matches`.
 4. Attach exactly once with `publisher_endpoints` or `subscriber_endpoints`.
 5. Split with `IvcEndpoints::into_parts` and move sender/receiver into their
@@ -118,8 +119,20 @@ output themselves until `LAST` is observed.
 6. Notify the peer after publishing slots or releasing ring capacity; wait or
    poll when an operation makes no progress.
 
-The unsafe attachment contract is what prevents duplicate producers or
-consumers from racing on `UnsafeCell` slot bytes.
+The publisher now uses a shared `&IvcRegion` mapping. Initialization therefore
+expresses its uniqueness requirement as an unsafe caller contract instead of
+requiring an exclusive `&mut IvcRegion`. Axvisor's fresh backing is fully zeroed
+and its host header is installed before publication; this does not mean guest
+protocol initialization is complete. A subscriber may poll the atomic protocol
+metadata while the publisher initializes, but it must observe the final Release
+magic before attaching.
+
+A region may be initialized again only after every endpoint and in-flight slot
+operation in every address space has stopped and no new attachment or stale
+readiness result can race with the reset. Dropping a local endpoint or clearing
+the magic does not prove that condition. The unsafe initialization and
+attachment contracts together prevent a reset from racing with producers and
+consumers on `UnsafeCell` slot bytes.
 
 # Compatibility and Limits
 

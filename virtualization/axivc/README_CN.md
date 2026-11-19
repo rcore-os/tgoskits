@@ -102,13 +102,24 @@ fn receive_step(
 # 客户机流程
 
 1. 通过 `axhvc` publish/subscribe，并映射返回的 GPA。
-2. publisher 调用 `IvcRegion::initialize`。
-3. subscriber 校验 `channel_header_matches` 和 `protocol_header_matches`。
+2. publisher 在任一角色 attach 前，对每个全新的 channel generation 只调用
+   一次 `unsafe { region.initialize() }`。
+3. subscriber 先校验 `channel_header_matches`，再等待
+   `protocol_header_matches` 成功。
 4. 每个角色只调用一次 `publisher_endpoints` 或 `subscriber_endpoints`。
 5. 用 `IvcEndpoints::into_parts` 拆分，并把 sender/receiver 移交给各自任务。
 6. 发布 slots 或释放 ring capacity 后通知对端；无进度时等待或轮询。
 
-unsafe attach 契约负责阻止重复 producer/consumer 在 `UnsafeCell` slot bytes 上发生竞争。
+publisher 现在使用共享的 `&IvcRegion` 映射，因此初始化把唯一性要求表达为
+unsafe 调用方契约，不再要求独占 `&mut IvcRegion`。Axvisor 的新 backing 在发布前
+已经整体清零并写入 host header，但这不代表 guest 协议初始化已经完成。
+subscriber 可以在 publisher 初始化期间轮询原子协议元数据，但必须观察到最终
+Release magic 后才能 attach。
+
+只有所有地址空间中的 endpoint 与在途 slot 操作都已停止，并且新的 attach 或
+过期 readiness 结果不可能与 reset 竞争时，才允许再次初始化。只丢弃本地
+endpoint 或清除 magic 不能证明该条件。unsafe 初始化与 attach 契约共同阻止 reset
+与 producer/consumer 对同一 `UnsafeCell` slot bytes 发生竞争。
 
 # 兼容性与限制
 

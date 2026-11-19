@@ -211,7 +211,9 @@ fn spsc_message_endpoints_deliver_all_messages_across_threads() {
     const MESSAGES: u64 = 100_000;
 
     let region = Box::leak(Box::new(new_region(PUBLISHER_VM_ID, CHANNEL_KEY)));
-    region.initialize();
+    // SAFETY: this test-private region has not been shared and has no endpoints
+    // attached while it is initialized.
+    unsafe { region.initialize() };
     let region: &'static IvcRegion = region;
     let (mut sender, _publisher_receiver) = unsafe { region.publisher_endpoints() }.into_parts();
     let (_subscriber_sender, mut receiver) = unsafe { region.subscriber_endpoints() }.into_parts();
@@ -285,8 +287,10 @@ fn transfer_one_message(payload: &[u8]) -> std::vec::Vec<u8> {
 }
 
 fn initialized_region() -> IvcRegion {
-    let mut region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
-    region.initialize();
+    let region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
+    // SAFETY: this helper returns a fresh private region before any endpoint is
+    // attached or the region is shared.
+    unsafe { region.initialize() };
     region
 }
 

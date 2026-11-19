@@ -36,14 +36,20 @@ pub(crate) struct IvcRing {
     slots: [IvcSlot; IVC_RING_CAPACITY],
 }
 
-// SAFETY: Endpoint attachment guarantees exactly one producer and one consumer
-// for this ring. The producer exclusively writes an unpublished slot before
-// releasing `tail`. The consumer acquires `tail`, exclusively reads that slot,
-// and releases `head` only after copying it. The producer acquires `head`
-// before reusing a slot, so accesses through each slot's UnsafeCell cannot race.
+// SAFETY: The unsafe region lifecycle requires one initializer at a time and
+// forbids endpoints and slot operations while ring metadata is reset. That
+// initialization stage ends when the region publishes its final protocol magic
+// with Release, after which no shared metadata writes remain. Endpoint
+// attachment then guarantees exactly one producer and one consumer for this
+// ring. The producer exclusively writes an unpublished slot before releasing
+// `tail`. The consumer acquires `tail`, exclusively reads that slot, and releases
+// `head` only after copying it. The producer acquires `head` before reusing a
+// slot, so accesses through each slot's UnsafeCell cannot race.
 unsafe impl Sync for IvcRing {}
 
 impl IvcRing {
+    // Callers rely on IvcRegion::initialize's safety contract: no endpoint or
+    // slot operation may run while these ownership cursors are reset.
     pub(crate) fn initialize(&self, direction: IvcRingDirection) {
         self.direction.store(direction as u32, Ordering::Relaxed);
         self.capacity
@@ -51,9 +57,6 @@ impl IvcRing {
         self.slot_size
             .store(IVC_SLOT_SIZE as u32, Ordering::Relaxed);
         self.head.store(0, Ordering::Relaxed);
-        for slot in &self.slots {
-            slot.clear();
-        }
         self.tail.store(0, Ordering::Release);
     }
 
@@ -119,12 +122,6 @@ struct IvcSlot {
 }
 
 impl IvcSlot {
-    fn clear(&self) {
-        // SAFETY: Initialization occurs before the region is published to a
-        // peer, so no endpoint can access these valid, aligned slot bytes.
-        unsafe { self.bytes.get().write([0; IVC_SLOT_SIZE]) };
-    }
-
     fn write(&self, slot: &[u8; IVC_SLOT_SIZE]) {
         // SAFETY: The sole producer owns this in-bounds slot until `tail`
         // publishes it; acquiring `head` ensures the previous read is done.

@@ -74,15 +74,19 @@ mod publisher {
         }
 
         println!("ivc publish ok base={shm_base_gpa:#x} size={shm_size}");
-        let Some(region) = shared_page_mut(shm_base_gpa, shm_size) else {
+        let Some(region) = shared_region(shm_base_gpa, shm_size) else {
             println!("ivc publish failed: map shared page base={shm_base_gpa:#x}");
             return;
         };
-        region.initialize();
-        let region: &'static IvcRegion = region;
-        // SAFETY: this app is the only publisher side of this channel and
-        // creates each endpoint exactly once; the producer moves into the
-        // sender task and the consumer into the receiver task.
+        // SAFETY: publish_channel created fresh backing whose full range was
+        // zeroed and whose host header was installed before publication. This
+        // demo publisher is the unique initializer and has created no endpoint.
+        // A subscriber may poll the atomic protocol header, but attaches only
+        // after the final magic is published by this call.
+        unsafe { region.initialize() };
+        // SAFETY: initialization completed above. This app creates the unique
+        // publisher role once, keeps the mapping valid until both tasks finish,
+        // and never resets the region during this run.
         let (publish_producer, publish_consumer) =
             unsafe { region.publisher_endpoints() }.into_parts();
         let irq_enabled = register_notify_irq();
@@ -436,12 +440,14 @@ mod publisher {
         }
     }
 
-    fn shared_page_mut(shm_base_gpa: usize, shm_size: usize) -> Option<&'static mut IvcRegion> {
+    fn shared_region(shm_base_gpa: usize, shm_size: usize) -> Option<&'static IvcRegion> {
         let vaddr = ax_mm::iomap(PhysAddr::from_usize(shm_base_gpa), shm_size).ok()?;
-        unsafe {
-            // Axvisor maps the returned GPA to one exclusive publisher view of
-            // the shared region before subscribers can use the Message V1 rings.
-            Some(&mut *(vaddr.as_mut_ptr() as *mut IvcRegion))
-        }
+        // SAFETY: the HVC mapping is valid and page-aligned, and `run` checked
+        // that its size covers `IvcRegion`. Axvisor zeroed the entire fresh
+        // backing before writing the publisher_id/key host header, so every
+        // field has a valid initial bit pattern. The host header is not changed
+        // after publication, and the mapping remains valid for this run. Shared
+        // access is required so peers may poll atomic protocol metadata.
+        unsafe { Some(&*(vaddr.as_ptr() as *const IvcRegion)) }
     }
 }
