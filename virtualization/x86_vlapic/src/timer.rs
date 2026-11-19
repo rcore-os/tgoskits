@@ -268,12 +268,16 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
         // Cancel before retiring the guest-visible state: a host cancellation
         // failure must leave both the retained handle and the deadline/interval
         // intact so the caller can retry instead of dropping a live timer. The
-        // cancel barrier also covers a callback that already completed but whose
-        // host handle has not been reclaimed yet, so "stopped" really means the
-        // producer is quiet.
+        // barrier waits for a mid-fire callback to retire without entering the
+        // scheduler, and it also covers a callback that already completed but
+        // whose host handle has not been reclaimed yet, so "stopped" really
+        // means the producer is quiet; the payload itself may be reclaimed
+        // later by the host timer service. Guest APIC reprogram accesses
+        // (TMICT, SVR) reach this from a vCPU entry window with local
+        // interrupts disabled, so the barrier must not enter the scheduler.
         self.shared
             .registration
-            .invalidate_and_cancel(&self.runtime)?;
+            .invalidate_and_cancel_nowait(&self.runtime)?;
         self.shared.interval_ns.store(0, Ordering::Release);
         self.shared.deadline_ns.store(0, Ordering::Release);
         self.shared.pending.store(0, Ordering::Release);
@@ -290,8 +294,10 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
     /// error so the caller retries rather than silently dropping the handle.
     ///
     /// The full cancel barrier runs even when the callback already completed,
-    /// so the pause ACK only happens once no callback or payload reclamation is
-    /// still in flight. A completed one-shot owes no resume.
+    /// so the pause ACK only happens once the callback has exited and the
+    /// registration has left the host queue; the timer service may still be
+    /// destroying the dequeued payload, which holds only reference-counted
+    /// state. A completed one-shot owes no resume.
     pub fn suspend_timer(&mut self) -> X86VlapicResult {
         if self.suspended {
             return Ok(());
@@ -608,6 +614,10 @@ mod tests {
         fn cancel_timer(&self, _handle: Self::TimerHandle) -> X86VlapicResult {
             Ok(())
         }
+
+        fn cancel_timer_nowait(&self, handle: Self::TimerHandle) -> X86VlapicResult {
+            self.cancel_timer(handle)
+        }
     }
 
     impl X86VlapicHostOps for TimerHost {
@@ -710,6 +720,10 @@ mod tests {
             state.cancelled.push(token);
             state.callbacks[token - 1].take();
             Ok(())
+        }
+
+        fn cancel_timer_nowait(&self, token: Self::TimerHandle) -> X86VlapicResult {
+            self.cancel_timer(token)
         }
     }
 

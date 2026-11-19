@@ -51,6 +51,17 @@ enum TimerArmPhase {
     Retired,
 }
 
+/// Waits for a mid-fire callback to retire without entering the scheduler.
+///
+/// Used by the reprogram cancel barrier, which may run inside a vCPU entry
+/// window with local interrupts disabled. Hard timer callbacks execute at IRQ
+/// level and cannot be paused by task scheduling, so a callback observed
+/// mid-fire is running on another CPU and retires on its own; retrying under
+/// the arm state lock observes its retirement.
+fn wait_without_scheduler() {
+    core::hint::spin_loop();
+}
+
 struct TimerArmState<T> {
     phase: TimerArmPhase,
     cancel_requested: bool,
@@ -141,9 +152,11 @@ impl<T: Copy> TimerArm<T> {
     /// Requests cancellation and returns the stable handle once the callback
     /// that claimed the arm has retired, together with whether a resume is owed.
     ///
-    /// Waiting uses the runtime's task-yield capability, never a spin: the
-    /// callback may have been preempted on this same CPU. All waiting happens
-    /// outside the raw arm state guard.
+    /// Waiting never happens under the raw arm state guard. The wait strategy
+    /// is chosen by the caller's `wait_progress`: the task-side full barrier
+    /// yields, because a soft callback may have been preempted on this same
+    /// CPU; the reprogram barrier only waits without entering the scheduler
+    /// (see [`TimerRegistration::invalidate_and_cancel_nowait`]).
     fn request_cancel_and_take_handle(&self, mut wait_progress: impl FnMut()) -> Option<(T, bool)> {
         loop {
             {
@@ -164,7 +177,6 @@ impl<T: Copy> TimerArm<T> {
             }
             // Mirrors hrtimer_cancel(): once a callback has claimed the arm,
             // cancellation does not return until that callback has retired.
-            // Yield so a preempted callback on this CPU can make progress.
             wait_progress();
         }
     }
@@ -200,6 +212,11 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
         }
     }
 
+    /// Registers a callback through the task-context host timer capability.
+    ///
+    /// Task context only: the callback executes in the host timer service's
+    /// task context and may be preempted on this CPU, so the retirement
+    /// barrier for a previous registration may yield.
     pub(crate) fn register(
         self: &Arc<Self>,
         runtime: &R,
@@ -211,13 +228,16 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
             deadline_ns,
             callback,
             |runtime, deadline_ns, callback| runtime.register_timer(deadline_ns, callback),
+            Self::invalidate_and_cancel,
         )
     }
 
     /// Registers a callback through the host hard-timer capability.
     ///
-    /// This is called from task context; only the callback itself runs in hard
-    /// IRQ context, so the registration barrier above may yield.
+    /// May be called from task context or from a vCPU entry window with local
+    /// interrupts disabled; the retirement barrier for a previous registration
+    /// therefore never enters the scheduler: hard callbacks execute at IRQ
+    /// level, so one that is still running on another CPU retires on its own.
     ///
     /// # Safety
     ///
@@ -236,6 +256,7 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
             |runtime, deadline_ns, callback| unsafe {
                 runtime.register_hard_timer(deadline_ns, callback)
             },
+            Self::invalidate_and_cancel_nowait,
         )
     }
 
@@ -245,13 +266,15 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
         deadline_ns: u64,
         mut callback: X86TimerCallback,
         register: impl FnOnce(&R, u64, X86TimerCallback) -> X86VlapicResult<R::TimerHandle>,
+        retire_previous: impl FnOnce(&Self, &R) -> X86VlapicResult<bool>,
     ) -> X86VlapicResult {
         // A previous arm may have run its callback to completion without being
         // cancelled yet; its stable handle is retained for exactly this
-        // barrier. Retire it through the full host cancel barrier before
-        // arming a newer timer so a retired callback can never race a new guest
-        // reprogram, and so a stale handle is never silently dropped.
-        self.invalidate_and_cancel(runtime)?;
+        // barrier. Retire it before arming a newer timer so a retired callback
+        // can never race a new guest reprogram, and so a stale handle is never
+        // silently dropped. The entry points choose the barrier that matches
+        // where their callback executes.
+        retire_previous(self, runtime)?;
 
         let arm = self.begin_arm()?;
         let callback_arm = Arc::clone(&arm);
@@ -306,22 +329,47 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
     /// barrier and retires it.
     ///
     /// The barrier waits, outside every raw guard, for a callback that already
-    /// claimed the arm and for the host to reclaim its payload. Returns whether
-    /// a resume is owed: `true` when the arm could still deliver an edge when
-    /// this cancellation began. On a host cancellation failure the retained
-    /// handle and arm are restored so the caller can retry.
+    /// claimed the arm and for the registration to leave the host queue; the
+    /// host's timer service may still be destroying the dequeued payload
+    /// afterwards. Returns whether a resume is owed: `true` when the arm
+    /// could still deliver an edge when this cancellation began. On a host
+    /// cancellation failure the retained handle and arm are restored so the
+    /// caller can retry.
     pub(crate) fn invalidate_and_cancel(&self, runtime: &R) -> X86VlapicResult<bool> {
+        self.invalidate_and_cancel_with(runtime, R::cancel_timer, || runtime.wait_timer_progress())
+    }
+
+    /// Retires the current host registration without waiting for the host to
+    /// reclaim the payload of an already-completed callback.
+    ///
+    /// The barrier still waits, outside every raw guard, for a callback that
+    /// already claimed the arm: a mid-fire callback must retire before the
+    /// guest-visible timer state is cleared. That wait never enters the
+    /// scheduler: it runs inside vCPU entry windows where local interrupts
+    /// are disabled, and the registration's hard callbacks execute at IRQ
+    /// level, so a callback observed mid-fire is running on another CPU and
+    /// cannot be paused by task scheduling: it retires on its own. The host
+    /// then reclaims a completed registration's payload in its own timer
+    /// service, so this variant never yields for reclamation either.
+    pub(crate) fn invalidate_and_cancel_nowait(&self, runtime: &R) -> X86VlapicResult<bool> {
+        self.invalidate_and_cancel_with(runtime, R::cancel_timer_nowait, wait_without_scheduler)
+    }
+
+    fn invalidate_and_cancel_with(
+        &self,
+        runtime: &R,
+        cancel: impl FnOnce(&R, R::TimerHandle) -> X86VlapicResult,
+        wait_progress: impl FnMut(),
+    ) -> X86VlapicResult<bool> {
         let Some(arm) = self.current.lock_irqsave().as_ref().cloned() else {
             return Ok(false);
         };
-        let Some((handle, resume_owed)) =
-            arm.request_cancel_and_take_handle(|| runtime.wait_timer_progress())
-        else {
+        let Some((handle, resume_owed)) = arm.request_cancel_and_take_handle(wait_progress) else {
             // A prior cancel already took the handle; nothing is left to retire.
             self.retire(&arm);
             return Ok(false);
         };
-        if let Err(error) = runtime.cancel_timer(handle) {
+        if let Err(error) = cancel(runtime, handle) {
             arm.restore_cancel_handle(handle);
             self.restore(&arm);
             return Err(error);

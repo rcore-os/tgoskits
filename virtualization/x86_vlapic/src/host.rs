@@ -66,6 +66,9 @@ pub trait X86VlapicRuntimeOps: Send + Sync + 'static {
     /// Task-side cancellation uses this instead of spinning so a callback that
     /// was preempted on the same CPU can run and retire its arm. It must not
     /// busy-wait, and it must not require any lock the callback acquires.
+    /// Only the full cancel barrier calls this; the reprogram barrier waits
+    /// without entering the scheduler because it may run with local
+    /// interrupts disabled.
     fn wait_timer_progress(&self);
 
     /// Consumes host-timer ingress edges observed by the owning vCPU task.
@@ -78,11 +81,35 @@ pub trait X86VlapicRuntimeOps: Send + Sync + 'static {
 
     /// Cancels a timer returned by this port and waits for its completion.
     ///
-    /// Returns only once the callback has left the host timer queue and its
-    /// payload is reclaimed (an already-completed registration reports
-    /// success). A merely accepted but still-in-flight cancellation is not
-    /// quiescence and must not be reported as success.
+    /// Returns once the callback has exited and the registration has left
+    /// the host timer queue (an already-completed registration reports
+    /// success). This is a retirement barrier, not a destruction barrier:
+    /// the host's timer service may still be destroying the dequeued
+    /// payload, which holds only reference-counted run state, so callers
+    /// must not rely on that destruction having finished. A merely accepted
+    /// but still-in-flight cancellation is not quiescence and must not be
+    /// reported as success. Pause acknowledgement of the registration this
+    /// call retires uses this; it does not drain payloads that earlier
+    /// non-waiting cancellations already handed to the host timer service.
     fn cancel_timer(&self, handle: Self::TimerHandle) -> X86VlapicResult;
+
+    /// Cancels a timer without waiting for task-context payload reclamation.
+    ///
+    /// Guarantees only that the retired arm can no longer change
+    /// guest-visible timer state: its callback has retired (the caller's
+    /// progress wait covers the arm phase), and the registration cannot fire
+    /// or restart again. The host callback wrapper may still be finishing a
+    /// wake notification on the run it was bound to, and the registration
+    /// payload, which holds only reference-counted run-scoped state (the arm,
+    /// the shared timer state, and this port) and never the owning backend
+    /// object, is reclaimed later by the host's timer service. This must not
+    /// yield or spin for the reclamation. Reprogramming paths that may run
+    /// with local interrupts disabled (a vCPU entry window) use this instead
+    /// of [`Self::cancel_timer`]; backend teardown may too, because the late
+    /// notification and reclamation touch nothing the backend owns.
+    /// Callers that must observe the registration itself quiesced for a
+    /// pause acknowledgement use [`Self::cancel_timer`] instead.
+    fn cancel_timer_nowait(&self, handle: Self::TimerHandle) -> X86VlapicResult;
 }
 
 /// Host operations required by x86 vLAPIC and PIT emulation.
