@@ -39,7 +39,7 @@ sidebar_label: "矩阵执行"
 完整命令以 `.github/ci/checks/*.toml` 的 `command` 为准。ArceOS、Starry 和 AxVisor 的集成测试不能用一次宿主 `cargo test` 替代，Workspace 的 std 测试也不证明内核启动或硬件行为。
 
 AArch64 的普通 Starry QEMU wrapper 复用包含 `rga` 和 `ax-runtime/tls` 的 kernel build
-identity。该行随后使用同一份 `test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml`
+identity。该行随后使用同一份 `test-suit/starryos/qemu/standard/build-aarch64-unknown-none-softfloat.toml`
 运行独立的 `starry-kernel` `axtest_kernel`，因此保留约 228 个内核 axtest 注册项的失败
 信号，同时不会重新引入默认无 RGA 的 kernel 构建。普通 QEMU 的 native C/LTP 结果与
 内核 axtest 各自承担不同运行时断言。

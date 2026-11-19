@@ -1,5 +1,7 @@
 # Axvisor 自带资源与根切换验收记录
 
+本文带旧提交、日志路径、归档哈希及旧 case 名的内容是历史验收证据，不代表当前目录入口。当前复验使用 `cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/svm/smoke,qemu/x86_64/svm/functional`；HTTP 切根生命周期复验使用 `cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/http-control-plane/control-plane`。当前 SVM 六项功能共享两次启动，不能把历史六份归档哈希当作当前布局。
+
 ## 1. 实现边界
 
 初次本地验收基于 `dev` `72a5528bf6a2f0a4e2998f420ef34f8339a8f652`，日期为 2026-10-08；后续变基到 `8c2160843220803f101c131a6a33ebb10d94e2e3`，增量验证见第 6 节。共享根切换与归档回收对照本地 Linux v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`；主要依据是 `init/initramfs.c`、`init/main.c` 和 `fs/namespace.c`。启动契约、资源生产者与板卡迁移要求保存在 [宿主 initramfs 启动契约](host-initramfs.md)。
@@ -84,7 +86,7 @@ Axvisor HTTP 日志分别记录切根后 `releasing decoded ramfs filesystem (53
 
 ### 3.2 SVM 单次构建
 
-六个用例共享 `test-suit/axvisor/normal/qemu-svm/build-x86_64-unknown-none.toml`；每个用例独立准备宿主归档。日志 `/tmp/axvisor-dev2-svm.log` 中只有一次 Axvisor 构建开始和一次 `Compiling axvisor`，六次启动的内核 SHA-256 全部为 `c30ab4772de7db35a10cd09811ef22ede88391331a08f635c0e7cf3688e46fb8`。
+以下是合批前六项独立启动的历史验收；原direct-acpi构建路径已撤销，当前布局为`test-suit/axvisor/qemu/x86_64/svm/{smoke,functional}`。历史六项共用一个构建配置，每项独立准备宿主归档，以下旧选择命令仅记录当时执行，当前入口见[test-suit说明](../../test-suit/axvisor/qemu/README.md)。日志 `/tmp/axvisor-dev2-svm.log` 中只有一次 Axvisor 构建开始和一次 `Compiling axvisor`，六次启动的内核 SHA-256 全部为 `c30ab4772de7db35a10cd09811ef22ede88391331a08f635c0e7cf3688e46fb8`。
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 \

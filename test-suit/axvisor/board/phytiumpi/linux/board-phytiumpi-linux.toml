@@ -1,0 +1,14 @@
+board_type = "PhytiumPi"
+cmdline = "root=/dev/mmcblk0p1 rootfstype=ext4 rootwait rw axvisor.vm_start=1"
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+]
+timeout = 300
+
+[axbuild]
+checks = [
+    "tests/smoke.toml",
+]

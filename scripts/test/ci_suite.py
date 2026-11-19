@@ -4,7 +4,7 @@ import os
 import re
 import tomllib
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,64 @@ STARRY_APP_SUITE_ROOT = Path("benchmarks/starry")
 STARRY_APP_SUITE_KINDS = frozenset({"starry-app-qemu", "starry-app-board"})
 
 
+def _starry_case_id(path: str) -> str:
+    """Keep CLI selectors stable when source wrappers move."""
+    for directory, selector in (
+        ("qemu/standard", "qemu"),
+        ("qemu/x86_64/ahci-single", "ahci-single"),
+        ("qemu/x86_64/timer-preemption", "timer-preemption-x86"),
+        ("qemu/x86_64/e1000", "qemu-e1000"),
+    ):
+        if path == directory:
+            return selector
+        if path.startswith(directory + "/"):
+            return selector + path[len(directory):]
+    return path
+
+
+def _starry_board_case_id(path: str) -> str:
+    return "board-" + path.removeprefix("board/") if path.startswith("board/") else path
+
+
+def _relocated_starry_path(root: Path, path: Path) -> Path:
+    """Route removed source paths in a migration diff to their current owner."""
+    if path.exists() or not _is_prefix(path, root):
+        return path
+    relative = path.relative_to(root)
+    parts = relative.parts
+    # Removed ARM boot configurations are now owned by the OpenRC composite.
+    for prefix in (("qemu", "gicv2-boot"), ("qemu", "standard", "gicv2-boot")):
+        if parts[:len(prefix)] == prefix:
+            return root.joinpath("qemu/standard/openrc", *parts[len(prefix):])
+    if parts[:2] in {("qemu", "standard"), ("qemu", "x86_64")}:
+        return path
+    system = root / "qemu/standard/system"
+    if len(parts) >= 3 and parts[:2] == ("qemu", "system") and system.is_dir():
+        project = parts[2]
+        for category in system.iterdir():
+            candidate = category / project
+            if (candidate / "CMakeLists.txt").is_file():
+                return candidate.joinpath(*parts[3:])
+        if project == "common":
+            return root / "common"
+    if parts[:2] == ("board-common", "network-test"):
+        return root.joinpath("common/network", *parts[2:])
+    if len(parts) >= 2 and parts[:2] == ("qemu", "tty-console-input-burst"):
+        return root.joinpath("qemu/standard/openrc", *parts[2:])
+    if parts and parts[0] == "qemu" and (root / "qemu/standard").is_dir():
+        return root.joinpath("qemu/standard", *parts[1:])
+    for directory, destination in (
+        ("ahci-single", "qemu/x86_64/ahci-single"),
+        ("timer-preemption-x86", "qemu/x86_64/timer-preemption"),
+        ("qemu-e1000", "qemu/x86_64/e1000"),
+    ):
+        if parts and parts[0] == directory:
+            return root.joinpath(destination, *parts[1:])
+    if parts and parts[0].startswith("board-"):
+        return root.joinpath("board", parts[0].removeprefix("board-"), *parts[1:])
+    return path
+
+
 class SuiteRouteError(ValueError):
     """Raised when a changed test suite cannot map to one registered CI row."""
 
@@ -86,6 +144,7 @@ class _RuntimeCase:
     wrapper_dir: Path
     runtime_config: Path
     build_config: Path
+    check: Path | None = None
 
 
 def resolve_suite_selections(
@@ -209,9 +268,13 @@ def validate_suite_catalog(
         ]
         registered_cases = registration.get("cases")
         if registered_cases:
-            missing = set(registered_cases) - {
-                runtime_case.case for runtime_case in candidates
-            }
+            present = {runtime_case.case for runtime_case in candidates}
+            present.update(
+                runtime_case.case.rsplit("/", 1)[0]
+                for runtime_case in candidates
+                if runtime_case.check is not None
+            )
+            missing = set(registered_cases) - present
             if missing:
                 raise SuiteRouteError(
                     f"check '{check['id']}' registers missing suite cases: {sorted(missing)}"
@@ -434,14 +497,14 @@ def _selections_for_path(
             root = workspace_root / SUITE_ROOTS["arceos"] / group
             cases = _generic_arceos_runtime_cases(workspace_root, group)
             return _runtime_selections(registrations, path,
-                _matching_runtime_cases(cases, workspace_root / path), suite_group=group)
+                _matching_runtime_cases(cases, workspace_root / path, workspace_root), suite_group=group)
         if relative.parts and relative.parts[0].startswith("board-"):
             board_root = workspace_root / SUITE_ROOTS["arceos"] / relative.parts[0]
             if (board_root / "suite.toml").is_file():
                 cases = [case for case in _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"], "arceos")
                     if _is_prefix(case.runtime_config, board_root)]
                 return _runtime_selections(registrations, path,
-                    _matching_runtime_cases(cases, workspace_root / path) or cases)
+                    _matching_runtime_cases(cases, workspace_root / path, workspace_root) or cases)
             return _discovered_selections(workspace_root, registrations, path, "arceos")
         selections = _arceos_selections(registrations, path)
         if relative.parts and relative.parts[0] == "rust":
@@ -572,17 +635,36 @@ def _discovered_selections(
     absolute_root = workspace_root / _owning_suite_root(path, os_name)
     cases = _discover_os_runtime_cases(workspace_root, os_name)
 
+    if os_name == "axvisor" and not absolute_path.exists():
+        relative = absolute_path.relative_to(absolute_root)
+        if relative.parts and relative.parts[0] == "normal":
+            absolute_path = absolute_root.joinpath(*relative.parts[1:])
+
+    if os_name == "starry":
+        absolute_path = _relocated_starry_path(absolute_root, absolute_path)
+        if _is_prefix(absolute_path, absolute_root / "common"):
+            shared_cases = cases
+            if _is_prefix(absolute_path, absolute_root / "common/network"):
+                shared_cases = [case for case in cases if case.kind == "starry-board"]
+            return _runtime_selections(registrations, path, shared_cases)
+
     grouped = _starry_grouped_subcase(absolute_root, absolute_path, cases)
     if grouped is not None:
         matching_cases, selector = grouped
-        return _runtime_selections(
+        selections = _runtime_selections(
             registrations,
             path,
             matching_cases,
             selector_override=selector,
         )
+        if os_name == "starry":
+            selections.extend(_runtime_selections(
+                registrations, path,
+                _starry_project_board_consumers(absolute_path, cases),
+            ))
+        return selections
 
-    matching_cases = _matching_runtime_cases(cases, absolute_path)
+    matching_cases = _matching_runtime_cases(cases, absolute_path, workspace_root)
     return _runtime_selections(registrations, path, matching_cases)
 
 
@@ -666,7 +748,7 @@ def _runtime_selections(
             )
             command = (
                 f"cargo xtask axvisor {entry} qemu --arch {runtime_case.arch} "
-                f"{'--group' if app_case else '--test-group'} normal {selector_option} {selector}"
+                f"{'--group normal ' if app_case else ''}{selector_option} {selector}"
             )
         else:
             platform = _platform_label(template)
@@ -675,14 +757,16 @@ def _runtime_selections(
                 f"cargo xtask {os_cli} test board --test-case {selector} "
                 f"--board {runtime_case.board}"
             )
-            if runtime_case.kind == "axvisor-board":
-                command = command.replace(
-                    " test board",
-                    " test board --test-group normal",
-                    1,
-                )
 
-        selections.append(_selection(template, platform, selector, command, path))
+        if runtime_case.kind == "axvisor-qemu" and runtime_case.check is not None:
+            selections.append(_selection(
+                template, platform, selector, command, path,
+                batch_key=(template["id"], runtime_case.arch, runtime_case.runtime_config),
+                batch_cases=(selector,),
+                batch_command=command.removesuffix(selector) + "{cases}",
+            ))
+        else:
+            selections.append(_selection(template, platform, selector, command, path))
 
     for batch in board_batches.values():
         selectors = [selector for selector, _, _ in batch]
@@ -694,7 +778,7 @@ def _runtime_selections(
         app_case = _axvisor_app_case(runtime_case)
         entry = "app" if app_case else "test"
         selector_option = "--app" if app_case else "--test-case"
-        group_option = (" --group normal" if app_case else " --test-group normal") if runtime_case.kind == "axvisor-board" else ""
+        group_option = " --group normal" if app_case and runtime_case.kind == "axvisor-board" else ""
         command = (
             f"cargo xtask {os_cli} {entry} board{group_option} "
             f"{selector_option} {selector_list} --board {runtime_case.board}"
@@ -806,7 +890,7 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             continue
         wrapper_dir = build_config.parent
         if os_name == "starry":
-            case = runtime_config.parent.relative_to(root).as_posix()
+            case = _starry_case_id(runtime_config.parent.relative_to(root).as_posix())
         else:
             base_case = (
                 wrapper_dir.name
@@ -817,18 +901,32 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
         if os_name == "axvisor" and root.parent.name == "apps":
             group_root = root / runtime_config.relative_to(root).parts[0]
             case = runtime_config.parent.relative_to(group_root).as_posix()
-        cases.append(
-            _RuntimeCase(
-                kind=qemu_kind,
-                arch=arch,
-                board=None,
-                case=case,
-                case_dir=runtime_config.parent,
-                wrapper_dir=wrapper_dir,
-                runtime_config=runtime_config,
-                build_config=build_config,
-            )
+        references = _toml_document(runtime_config).get("axbuild", {})
+        if os_name == "axvisor" and "checks" in references and root.parent.name != "apps":
+            case = runtime_config.parent.relative_to(root).as_posix()
+        case = references.get("id", case)
+        runtime_case = _RuntimeCase(
+            kind=qemu_kind,
+            arch=arch,
+            board=None,
+            case=case,
+            case_dir=runtime_config.parent,
+            wrapper_dir=wrapper_dir,
+            runtime_config=runtime_config,
+            build_config=build_config,
         )
+        if os_name == "axvisor" and "checks" in references:
+            if not references["checks"]:
+                raise SuiteRouteError(f"empty runtime check list: {runtime_config}")
+            names = set()
+            for relative in references["checks"]:
+                check = runtime_config.parent / relative
+                if check.stem in names or not check.is_file():
+                    raise SuiteRouteError(f"invalid or duplicate runtime check: {check}")
+                names.add(check.stem)
+                cases.append(replace(runtime_case, case=f"{case}/{check.stem}", check=check))
+        else:
+            cases.append(runtime_case)
 
     for runtime_config in sorted(root.rglob("board-*.toml")):
         if any(_is_prefix(runtime_config, declared_root) for declared_root in declared_roots):
@@ -842,7 +940,7 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
         # runtime and build configurations share a directory, as in axbuild.
         # Benchmarks already use the suite root as their normal group root.
         case_root = root
-        if os_name == "axvisor" and root.parent.name != "benchmarks":
+        if os_name == "axvisor" and root.parent.name == "apps":
             case_root = root / runtime_config.relative_to(root).parts[0]
         case = (
             relative_case.as_posix()
@@ -853,6 +951,12 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             case = runtime_config.parent.relative_to(case_root).as_posix()
         if os_name == "arceos":
             case = runtime_config.parent.name
+        if os_name == "starry":
+            case = _starry_board_case_id(case)
+        references = _toml_document(runtime_config).get("axbuild", {})
+        if os_name == "axvisor" and "checks" in references:
+            case = runtime_config.parent.relative_to(case_root).as_posix()
+        case = references.get("id", case)
         cases.append(
             _RuntimeCase(
                 kind=board_kind,
@@ -868,9 +972,59 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
     return cases
 
 
+def _references_runtime_input(case: _RuntimeCase, changed: Path, workspace_root: Path) -> bool:
+    """Route shared declared files to every consumer, independent of folder names."""
+    pending = [case.runtime_config, case.build_config]
+    sidecar = case.case_dir / "host-initramfs.toml"
+    if sidecar.is_file():
+        pending.append(sidecar)
+    seen: set[Path] = set()
+    while pending:
+        source = pending.pop().resolve()
+        if source in seen:
+            continue
+        seen.add(source)
+        if source.is_dir():
+            if _is_prefix(changed.resolve(), source):
+                return True
+            continue
+        if not source.is_file():
+            continue
+        if changed.resolve() == source:
+            return True
+        if source.suffix != ".toml":
+            # A probe may import helpers alongside itself. Conservatively keep
+            # that explicitly referenced helper directory in its consumer set.
+            if _is_prefix(changed.resolve(), source.parent):
+                return True
+            continue
+        document = _toml_document(source)
+        if source == case.runtime_config.resolve() and case.check is not None:
+            pending.append(case.check)
+        else:
+            for entry in document.get("axbuild", {}).get("checks", []):
+                pending.append(source.parent / entry)
+        for entry in document.get("requires", []):
+            pending.append(source.parent / entry)
+        for entry in document.get("vm_configs", []):
+            pending.append(workspace_root / str(entry).replace("${workspace}/", ""))
+        probe = document.get("host_http_probe", {}).get("probe_script")
+        if probe:
+            pending.append(source.parent / probe)
+        assets = document.get("host_http_probe", {}).get("asset_dir")
+        if assets:
+            pending.append(source.parent / assets)
+    return False
+
+
 def _matching_runtime_cases(
-    cases: Sequence[_RuntimeCase], path: Path
+    cases: Sequence[_RuntimeCase], path: Path, workspace_root: Path | None = None,
 ) -> list[_RuntimeCase]:
+    if workspace_root is not None:
+        dependencies = [case for case in cases if _references_runtime_input(case, path, workspace_root)]
+        if dependencies:
+            return dependencies
+
     exact = [
         runtime_case
         for runtime_case in cases
@@ -914,21 +1068,53 @@ def _starry_grouped_subcase(
     path: Path,
     cases: Sequence[_RuntimeCase],
 ) -> tuple[list[_RuntimeCase], str] | None:
-    system_root = root / "qemu/system"
+    system_root = root / "qemu/standard/system"
+    if not system_root.is_dir():
+        system_root = root / "qemu/system"
     if not _is_prefix(path, system_root):
         return None
     relative = path.relative_to(system_root)
     if len(relative.parts) < 2:
         return None
     subcase = relative.parts[0]
-    if not (system_root / subcase).is_dir():
-        return None
+    for directory in (path.parent, *path.parents):
+        if directory == system_root:
+            break
+        if _is_prefix(directory, system_root) and (directory / "CMakeLists.txt").is_file():
+            subcase = directory.name
+            # Nested dependency projects belong to the outer suite project.
     matching = [
         runtime_case
         for runtime_case in cases
         if runtime_case.kind == "starry-qemu" and runtime_case.case == "qemu/system"
     ]
     return matching, f"qemu/{subcase}"
+
+
+def _starry_project_board_consumers(
+    path: Path, cases: Sequence[_RuntimeCase]
+) -> list[_RuntimeCase]:
+    """Follow explicit CMake source reuse instead of copying project names."""
+    project = next((directory for directory in (path.parent, *path.parents)
+        if (directory / "CMakeLists.txt").is_file()), None)
+    if project is None:
+        return []
+    consumers = []
+    for case in cases:
+        if case.kind != "starry-board":
+            continue
+        for cmake in case.case_dir.rglob("CMakeLists.txt"):
+            content = cmake.read_text(encoding="utf-8")
+            references = re.findall(
+                r'(?:\$\{CMAKE_CURRENT_(?:LIST|SOURCE)_DIR\}/|\.\./)[^\s"\x27;)<>]+',
+                content,
+            )
+            if any(_is_prefix((cmake.parent / re.sub(
+                r'^\$\{CMAKE_CURRENT_(?:LIST|SOURCE)_DIR\}/', '', reference
+            )).resolve(), project) for reference in references):
+                consumers.append(case)
+                break
+    return consumers
 
 
 def _nearest_qemu_build_config(
@@ -985,7 +1171,11 @@ def _registered_template(
             continue
         registered_cases = registration.get("cases")
         if registered_cases and case not in registered_cases:
-            continue
+            if not (
+                kind == "axvisor-qemu" and case is not None
+                and any(case.startswith(parent + "/") for parent in registered_cases)
+            ):
+                continue
         matches.append(check)
     if len(matches) > 1:
         ids = ", ".join(sorted(check["id"] for check in matches))
@@ -1221,6 +1411,9 @@ def _kind_os(kind: str) -> str:
 
 
 def _case_variant(case: str) -> str | None:
+    for component in Path(case).parts:
+        if component in {"vmx", "svm"}:
+            return component
     suffix = case.rsplit("-", maxsplit=1)[-1]
     return suffix if suffix in {"vmx", "svm"} else None
 

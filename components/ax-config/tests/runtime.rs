@@ -216,6 +216,9 @@ fn common_validation_is_pure_and_rejects_reserved_environment_inputs() {
 fn environment_capture_and_build_helper_obey_the_process_protocol() {
     const CASE: &str = "AX_CONFIG_TEST_ENV_CASE";
     if let Ok(case) = std::env::var(CASE) {
+        // Single-threaded libtest can leave its test-name prefix unterminated.
+        // Keep the build-script protocol records on their own stdout lines.
+        println!();
         match case.as_str() {
             "valid" | "absent" => {
                 let snapshot = RuntimeEnv::capture().unwrap();

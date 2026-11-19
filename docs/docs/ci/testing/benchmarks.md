@@ -45,7 +45,7 @@ TGOSKits 的三条日常验证入口分别承担应用 smoke、AxVisor 功能 ni
 
 Starry 板卡矩阵不设置额外的 `max_parallel` 限制，每个矩阵项使用独立的 concurrency group。`resource_group` 继续记录板卡资源类型，但不把同组矩阵项合并到同一个 GitHub 锁中；拥有多个相同标签的空闲板卡时，runner 池可以同时分发同组任务。板卡会话服务负责每个会话的资源分配和隔离。QEMU 矩阵保持并行；AxVisor 性能矩阵保持原有 `fail_fast: false`，一个板卡场景失败不会取消其他性能用例。
 
-AxVisor 板卡性能用例位于 `benchmarks/axvisor`；`board_test_group_roots()` 将该目录纳入默认 `normal` 组，因此 `--board` 和 `--test-case` 仍通过原入口选择用例。`vm_configs` 是宿主 initramfs 的打包输入，客户机启动资源由 `prepare_guest_payload()` 放到 `/guest/builtin`，不再嵌入宿主内核。无宿主块设备的 VCPU 用例直接保留内存根。
+AxVisor 板卡性能用例位于 `benchmarks/axvisor`；`board_test_group_roots()` 将该目录纳入默认 `.` 组，因此 `--board` 和 `--test-case` 仍通过原入口选择用例。`vm_configs` 是宿主 initramfs 的打包输入，客户机启动资源由 `prepare_guest_payload()` 放到 `/guest/builtin`，不再嵌入宿主内核。无宿主块设备的 VCPU 用例直接保留内存根。
 
 OrangePi IVC 用例的 Starry 内核由同一检出的 `cargo xtask starry build` 生成并打入归档；Zephyr 启动镜像由 `ensure_guest_image_bundles()` 取得，板卡 Linux rootfs 仍需提供匹配的 Starry 用户态 IVC 工作负载。自带镜像和用户态工作负载有各自的来源，不能使用旧 `/guest/starry` 内核替代当前构建产物。
 

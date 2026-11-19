@@ -87,7 +87,7 @@ x86 OVMF 或基本输入输出系统启动时，核验设备图固定的端口�
 
 Axvisor x86 嵌套 OVMF 用例按下列顺序调试：
 
-1. 列出 `normal` 分组，确认发现 `ovmf-acpi-vmx` 和 `ovmf-acpi-svm`。VMX 只在 Intel/VMX 内核虚拟机宿主运行，SVM 只在 AMD/SVM 宿主运行；两个构建配置都不能选择后端 Cargo 功能。
+1. 从测试默认根列出 `qemu/x86_64/vmx/functional/ovmf-acpi` 和 `qemu/x86_64/svm/functional/ovmf-acpi`。VMX 只在 Intel/VMX 内核虚拟机宿主运行，SVM 只在 AMD/SVM 宿主运行；两个构建配置都不能选择后端 Cargo 功能。
 2. 解释固件输出前先读文件准备证据。它记录 Ostool CODE 与 VARS 路径、字节数、SHA-256、分离或单体布局和最终 4 MiB 客户机映像。单体 CODE 映像必须说明记录的 VARS 未使用。
 3. 确认最终客户机映像路径就是共享客户机 TOML 中 `uefi_firmware_path` 选择的路径，不能与启动 Axvisor 宿主的外层 QEMU 闪存混淆。
 4. 核验 fw_cfg 发布三个高级配置与电源接口文件，再检查表加载器分配、指针、校验和与直接内存访问错误测试。选择器读取或固件横幅只是中间检查点。
@@ -105,7 +105,7 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 在 Intel/VMX Linux 构建机上确认 `/dev/kvm` 可访问，Node ≥ 24、npm ≥ 11 与仓库 Rust 工具链位于 `PATH`，然后在无旧 Axvisor 配置的检出执行 `cargo axvisor defconfig qemu-x86_64`、`cargo axvisor qemu`。默认 build 开启 `web-ui`、NVMe 和 `ax-driver/intel-net`，自动构建并打包网页；QEMU 使用 2 CPU、2 GiB、e1000，并把宿主 `127.0.0.1:8080` 转发到 Axvisor 8080。浏览器入口为 `http://localhost:8080/`，初始 VM 列表为空。
 
-网页从 `GET /api/vms/defaults` 加载初始值，使用原始下载镜像已有的 `/guest/linux/linux-qemu` 和 `/guest/rootfs-x86_64-alpine-0.img`，无需上传。默认 1 vCPU、256 MiB、CPU1 affinity、virtualized direct boot 与只读 `virtio-blk` PCI 磁盘；空 ID 在管理器生命周期锁内分配。实际验收必须从浏览器创建、启动、执行有确定结果的算术命令及系统信息，并覆盖刷新重连、停止、删除、重新创建；只读 API 或 WebSocket 握手不能替代客户机输入证据。维护的定向入口是 `cargo xtask axvisor test qemu --arch x86_64 --test-case web-ui-vmx`，HTTP 探针通过 `nic_model = "e1000"` 选择网卡。此流程只在 x86_64 VMX 验证，SVM 与其他架构需独立证据。
+网页从 `GET /api/vms/defaults` 加载初始值，使用原始下载镜像已有的 `/guest/linux/linux-qemu` 和 `/guest/rootfs-x86_64-alpine-0.img`，无需上传。默认 1 vCPU、256 MiB、CPU1 affinity、virtualized direct boot 与只读 `virtio-blk` PCI 磁盘；空 ID 在管理器生命周期锁内分配。实际验收必须从浏览器创建、启动、执行有确定结果的算术命令及系统信息，并覆盖刷新重连、停止、删除、重新创建；只读 API 或 WebSocket 握手不能替代客户机输入证据。维护的定向入口是 `cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/vmx/web-ui`，HTTP 探针通过 `nic_model = "e1000"` 选择网卡。此流程只在 x86_64 VMX 验证，SVM 与其他架构需独立证据。
 
 客户机在 90 秒内没有 shell 时保留完整输出并定位。Linux `virtqueue_add_split` 在根盘读请求上警告时，先核对 `VirtioBlockPciAdapter` 的 `seg_max`：未公告间接描述符的 128 槽队列只能接收至多 126 个数据段，另外两个槽用于请求头和状态。超额公告会让 ELF 缺页读盘无法入队，延长等待或修改前端内存参数都不能修复这个契约错误。运行步骤与错误处理见[Axvisor 运行文档](../../../../docs/docs/build/axvisor/runtime.md#16-x86_64-默认客户机)。
 
@@ -407,7 +407,7 @@ find "$PWD" "$PWD/.." "$HOME" /home -maxdepth 4 -type f -name Makefile \
 ```bash
 docker run --rm -v "$PWD:/workspace" -w /workspace \
   ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest \
-  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-group normal --test-case smoke'
+  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-case qemu/loongarch64/smoke'
 ```
 
 注意：
@@ -833,7 +833,7 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
   bash -lc 'cargo xtask axvisor test qemu --list --arch loongarch64'
 docker run --rm -v "$PWD:/workspace" -w /workspace \
   ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest \
-  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-group normal --test-case smoke'
+  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-case qemu/loongarch64/smoke'
 ```
 
 修改相关 Rust 逻辑时，在格式化后执行定向静态检查：
@@ -882,7 +882,7 @@ LoongArch 和 RISC-V 的早期异常入口也归 CPU，someboot 仅实现 `BootT
 
 AArch64 客户机向量中的致命宿主异常通过 `ax_cpu::trap::fatal::FatalTrap` 静态交给 `ax-runtime::panic_output`。运行期屏蔽中断并读取已安装 CPU-local 区域，不能通过 `this_cpu_id()` 取得任务抢占守卫，不能依赖 `SP_EL0` 或 `TPIDR_EL0` 仍属于宿主任务。输出只使用 emergency console；递归和并发终止复用 `axpanic`，不进入应用的 Rust panic hook，不回溯未知栈，不仅停驻持锁 CPU。该路径要求有效宿主栈和 CPU-local 区域；它不实现 Linux nVHE 的独立 overflow stack 或异常表恢复/宿主现场切换。
 
-`cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal` 覆盖真实四核 EL2 同步异常与应用 panic hook 绕过；同一命令选择 `--test-case el2-fatal-foreign-context` 验证清空 TLS/任务锚点后的终止诊断。验证需同时看到 `ARCEOS_PANIC_EMERGENCY` 与固定 BRK syndrome；命中 `EL2_FATAL_ENTERED_STD_PANIC` 必须使任务失败。常规 panic 与 browser-console 仍需分别验证，终止诊断不能证明长会话网络挂起已消除。
+旧 `el2-fatal` 与 `el2-fatal-foreign-context` 专项曾用于四核 EL2 同步异常、应用 panic hook 绕过及清空 TLS/任务锚点后的诊断；这两个测试专用入口已随 #2450 移除，当前发现器不接受它们，不能把历史结果写成当前套件覆盖。若恢复相应验证，应在实际异常路径确认 `ARCEOS_PANIC_EMERGENCY` 和固定 BRK syndrome，并拒绝进入应用标准库 panic hook；常规 panic 与 browser-console 是不同的验证边界。
 
 ## 用户可执行页与指令缓存
 
@@ -1001,7 +1001,7 @@ FIT 或 FDT initramfs 在 `VM Load` 后、`Memory Map` 前停住时，核对
 `someboot/tests/aarch64_pre_mmu_entropy.rs` 同时检查熵与宿主归档的早期发布。
 QEMU 定向回归使用 `cargo xtask starry test qemu --arch aarch64 --test-case
 qemu/host-initramfs`、`qemu/host-initramfs-disk-fallback`，以及 `cargo xtask
-axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs`。
+axvisor test qemu --arch aarch64 --test-case qemu/aarch64/memory-web/memory-root`。
 axbuild 读取 case 下的 `host-initramfs.toml` 生成归档，内存根用例不接磁盘，
 磁盘回退用例保留主 rootfs drive。ArceOS 的内建和外部镜像测试命令见设计文档。
 Axvisor 宿主 archive 可以与明确命名的 guest drive 并存；判断是否准备宿主根盘时
@@ -1044,3 +1044,8 @@ x86_64 httpboot 用例）可以只含 selector；axbuild 不向板卡环境
 CPU测试实现集中在test-suit/arceos/cpu/src，normal/suite.toml声明实际架构、特权级、CPU型号和启动批次。先用cargo xtask arceos test qemu --arch <arch> --test-group cpu --plan核对所选std/freestanding入口、SMP、features和配置，再运行；板端使用board-orangepi-5-plus/suite.toml统一登记两批：kernel复用Rust标准库入口及runner顺序执行PMU/IPI/cpufreq，pmu-user复用CPU normal/main.rs的freestanding构建；不保留功能专属包装包或boot重复启动。增改删规则见cpu/README.md，避免凭目录名推断架构或把逻辑项数当启动数。
 
 共享库启用AXCPU fp-simd/context时，入口的HAL/runtime浮点能力必须同步。CPU测试库的guest-entry、virtualization-lifecycle与fp-context能力同步启用ax-std/fp-simd，防止EL1在测试开始前因上下文保存访问FP寄存器而异常；入口不预先编入无关测试能力。不要通过关闭断言或改变QEMU语义处理这类装配错误。ARM EL0批次继续使用freestanding/uspace且无kernel TLS；RISC-V和Loong的无TLSnofault入口保留，不等同于真实进入用户态。预期boot异常独立启动，按专用诊断验收；普通批次只在全部成员返回后输出整批完成。
+
+SMP 的 `task-stack-guard-page` 保留跨核创建与迁移，但按 QEMU profile 的串口
+所有权在主核 0 触发故障。先用 `ax_console_flush()` 排空说明输出，再屏蔽该核
+本地 IRQ，使普通 worker/IRQ 不能与紧急接管竞争；同步 page fault 仍可发生。
+紧急输出允许有界接管失败，不能靠增加重试预算、睡眠或放宽正则稳定该用例。

@@ -408,7 +408,7 @@ fn prepare_axvisor_request_explicit_config_drops_snapshot_runtime_and_vmconfigs(
     let root = tempdir().unwrap();
     let explicit = root
         .path()
-        .join("test-suit/axvisor/normal/qemu/build-x86_64-unknown-none.toml");
+        .join("test-suit/axvisor/qemu/build-x86_64-unknown-none.toml");
     fs::create_dir_all(explicit.parent().unwrap()).unwrap();
     fs::write(
         &explicit,

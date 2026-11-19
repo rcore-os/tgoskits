@@ -71,7 +71,7 @@ AX-1～AX-6 的完成情况如下。
 
 AX-1 的主要成果是两种双客户机机器人配置进入可运行的实板测试：Linux 或 StarryOS 使用摄像头、NPU 和根存储，Zephyr 独占 UART6 来访问底盘与机械臂，Axvisor 保留管理串口、RTL8125 及相关 PCIe、USB0 和 PHY 资源。[PR #2314](https://github.com/rcore-os/tgoskits/pull/2314) 将两种场景接入同一块实体板的顺序测试，StarryOS 客户机从当前 checkout 构建，避免使用预部署内核代替本次源码。
 
-对应配置保存在 `test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr/` 和 `dual-starry-zephyr/`。其中 `devices.disabled` 同时排除宿主管理设备及其依赖，避免客户机重置 PCIe 或 USB PHY 后使网页管理面失联。
+对应配置保存在 `test-suit/axvisor/board-orangepi-5-plus/dual-linux-zephyr/` 和 `dual-starry-zephyr/`。其中 `devices.disabled` 同时排除宿主管理设备及其依赖，避免客户机重置 PCIe 或 USB PHY 后使网页管理面失联。
 
 本月还通过 [PR #2400](https://github.com/rcore-os/tgoskits/pull/2400) 修正 VM 中断解析顺序，[PR #2438](https://github.com/rcore-os/tgoskits/pull/2438) 保留客户机执行期间的宿主中断所有权。Linux、Zephyr、ArceOS 三客户机同时运行，以及创建前拒绝跨 VM 资源冲突的验收结果尚未完成。
 
@@ -104,7 +104,7 @@ AX-4 的实现基础在 9 月明显推进。[PR #1775](https://github.com/rcore-
 
 月度总结会议评价多核调度重构的性能已接近 Linux RT 水平，剩余差距主要来自锁机制、死循环等上层使用方式。
 
-[PR #2428](https://github.com/rcore-os/tgoskits/pull/2428) 将任务切换测量放入 `test-suit/axvisor/normal/board-orangepi-5-plus/task-switch-overhead/`。客户机通过 AArch64 PMU cycle counter 测量同核两个 FIFO 线程的 ping-pong，默认执行 10 组，每个方向每组 100 万次，并输出 `AXVISOR_TASK_SWITCH_GROUP_SUMMARY` 的最小、平均和最大周期数。板卡入口已跑通，夜间历史也开始保存分组数据。
+[PR #2428](https://github.com/rcore-os/tgoskits/pull/2428) 将任务切换测量放入 `test-suit/axvisor/board-orangepi-5-plus/task-switch-overhead/`。客户机通过 AArch64 PMU cycle counter 测量同核两个 FIFO 线程的 ping-pong，默认执行 10 组，每个方向每组 100 万次，并输出 `AXVISOR_TASK_SWITCH_GROUP_SUMMARY` 的最小、平均和最大周期数。板卡入口已跑通，夜间历史也开始保存分组数据。
 
 9 月 30 日、版本 `5fd1c6c84eb6e36b84a8de6f1424a2ade191f198` 的[历史数据](https://github.com/rcore-os/tgoskits/blob/7e480c161c4cf82bc83cc64aa213f6b06b1c78f0/history.json)中，10 组平均值为 1703～1707 cycles，高于计划的 800 cycles 门槛。当前 board 只匹配最后一组输出，夜间图表只保存平均值，尚无每组最大值小于 800 cycles 的结果。
 

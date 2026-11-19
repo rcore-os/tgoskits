@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
@@ -10,6 +13,7 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AxvisorQemuCase {
+    pub(crate) selected_checks: Option<Vec<String>>,
     pub(crate) case: TestQemuCase,
     pub(crate) build_group: String,
     pub(crate) build_config_path: PathBuf,
@@ -35,6 +39,7 @@ impl test_qemu::BuildConfigRef for PreparedAxvisorQemuCase {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BoardTestGroup {
+    pub(crate) selected_checks: Option<Vec<String>>,
     pub(crate) name: String,
     pub(crate) board_name: String,
     pub(crate) build_config: PathBuf,
@@ -66,6 +71,7 @@ impl board_test::BoardTestGroupInfo for BoardTestGroup {
 /// passes on, so it lives in the AxVisor test layer rather than the generic
 /// test layer.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct AxvisorHttpProbeConfig {
     /// QEMU network device used for the management connection. Keep the
     /// existing virtio default; hardware-driver cases can select e.g. e1000.
@@ -94,6 +100,12 @@ pub(crate) struct AxvisorHttpProbeConfig {
     /// exit code as the verdict (0 = pass). Defaults to `http_probe.py`.
     #[serde(default = "default_probe_script")]
     pub(crate) probe_script: PathBuf,
+    /// Optional fixture directory relative to the check definition directory.
+    #[serde(default)]
+    pub(crate) asset_dir: Option<PathBuf>,
+    /// Case-owned profile inputs. Runner-owned endpoint variables take priority.
+    #[serde(default)]
+    pub(crate) env: BTreeMap<String, String>,
 }
 
 /// Default probe-asset file name inside the case directory.

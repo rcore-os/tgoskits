@@ -1,7 +1,0 @@
-features = ["ax-driver/nvme"]
-log = "Info"
-target = "aarch64-unknown-none-softfloat"
-vm_configs = [
-    "test-suit/axvisor/normal/qemu-ivc-arceos/configs/publisher.toml",
-    "test-suit/axvisor/normal/qemu-ivc-arceos/configs/subscriber.toml",
-]

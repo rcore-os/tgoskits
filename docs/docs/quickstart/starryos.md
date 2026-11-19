@@ -322,7 +322,7 @@ cargo starry test board \
   --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
 ```
 
-常规远端启动使用 `os/StarryOS/configs/board` 下的配置；板测使用 `test-suit/starryos/board-licheerv-nano-sg2002` 下的配置。若启动停在根设备探测阶段，请确认 SD 卡第二分区存在可挂载的 ext4 根文件系统。
+常规远端启动使用 `os/StarryOS/configs/board` 下的配置；板测使用 `test-suit/starryos/board/licheerv-nano-sg2002` 下的配置。若启动停在根设备探测阶段，请确认 SD 卡第二分区存在可挂载的 ext4 根文件系统。
 
 ### 3.3 尚未公开的板级块设备路径
 

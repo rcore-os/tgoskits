@@ -1,0 +1,2 @@
+# Verified virtual FT232 loopback workflow; the real robot selector stays isolated.
+shared_boot_selectors = ["orangepi-5-plus-robot"]

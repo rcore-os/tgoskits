@@ -27,6 +27,7 @@ pub(crate) struct StarryBoardTestGroup {
     pub(crate) build_input: crate::build::ConfigInput<crate::starry::config::StarryConfig>,
     pub(crate) board_test_config_path: PathBuf,
     pub(crate) required_env: Vec<String>,
+    pub(crate) shared_boot: bool,
 }
 
 impl board_test::BoardTestGroupInfo for StarryBoardTestGroup {

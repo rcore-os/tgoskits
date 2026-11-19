@@ -13,8 +13,8 @@ use super::{
 };
 use crate::{
     context::{
-        RequestEnvironment, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
-        arch_for_target_checked, board_run_request,
+        RequestEnvironment, SnapshotPersistence, StarryCliArgs, arch_for_target_checked,
+        board_run_request,
     },
     execution::{board as board_test, qemu as qemu_test},
     starry::{Starry, build},
@@ -22,7 +22,6 @@ use crate::{
 
 struct PreparedBoardBuild {
     cargo: ostool::build::config::Cargo,
-    request: ResolvedStarryRequest,
     elf_path: PathBuf,
 }
 
@@ -62,7 +61,13 @@ pub(crate) fn collect_board_test_groups(
             .clone();
         let arch = arch_for_target_checked(&target)?.to_string();
         groups.push(StarryBoardTestGroup {
-            name: info.name,
+            shared_boot: board_test::board_test_shared_boot(
+                info.board_test_config_path
+                    .parent()
+                    .context("board config has no parent")?,
+                &info.board_name,
+            )?,
+            name: super::layout::board_case_id(&info.name),
             board_name: info.board_name,
             arch,
             target,
@@ -197,7 +202,6 @@ impl Starry {
                 )?;
                 Ok::<_, anyhow::Error>(PreparedBoardBuild {
                     cargo: cargo.clone(),
-                    request,
                     elf_path,
                 })
             }
@@ -210,6 +214,7 @@ impl Starry {
             config_to_build.insert(build_config, index);
         }
 
+        let mut batches = Vec::new();
         for (position, (_, group_label, group)) in runnable.into_iter().enumerate() {
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
@@ -246,68 +251,106 @@ impl Starry {
             };
 
             let result = async {
-                let mut request = prepared.request.clone();
-                request.replace_config_input(group.build_input.clone())?;
-                let (mut board_config, board_config_path) = self
+                let (config, config_path) = self
                     .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                     .await?;
-                let _boot_entropy =
-                    crate::starry::boot_entropy::prepare_for_secure_wifi(&mut board_config)?;
-                let options = RunBoardOptions {
-                    board_type: args.board_type.clone(),
-                    server: args.server.clone(),
-                    port: args.port,
-                };
-                let case_dir = board_config_path.parent().with_context(|| {
-                    format!(
-                        "board configuration path `{}` has no parent directory",
-                        board_config_path.display()
-                    )
-                })?;
-                let session_assets = prepare_board_session_assets(BoardSessionAssetRequest {
+                let case_dir = config_path.parent().context("board config has no parent")?;
+                let assets = prepare_board_session_assets(BoardSessionAssetRequest {
                     workspace_root: self.app.workspace_root(),
                     target_dir: self.app.target_dir(),
                     arch: &group.arch,
                     target: &group.target,
                     case_name: &group.name,
                     case_dir,
-                    board_config_path: &board_config_path,
-                    declared_session_files: &board_config.session_files,
+                    board_config_path: &config_path,
+                    declared_session_files: &config.session_files,
                 })
                 .await?;
-                let board_request = match session_assets {
-                    Some(assets) => {
-                        println!(
-                            "[axbuild] board session upload root: {}",
-                            assets.root.display()
-                        );
-                        BoardRunRequest::new(board_config, options)
-                            .with_session_files(&assets.root, &assets.relative_paths)?
+                Ok::<_, anyhow::Error>(super::board_batch::PreparedBoardCase {
+                    label: group_label.clone(),
+                    group,
+                    config,
+                    config_path,
+                    assets,
+                })
+            }
+            .await;
+            match result {
+                Ok(case) => super::board_batch::append_case(&mut batches, *build_index, case),
+                Err(error) => run_state.fail_group(
+                    group_label,
+                    error.context(format!(
+                        "failed to prepare board case {board_test_config_summary}"
+                    )),
+                ),
+            }
+        }
+
+        let batch_count = batches.len();
+        for (index, batch) in batches.into_iter().enumerate() {
+            let labels = batch
+                .members
+                .iter()
+                .map(|member| member.label.clone())
+                .collect::<Vec<_>>();
+            println!(
+                "[axbuild] board boot {}/{batch_count}: {} member(s): {}",
+                index + 1,
+                batch.members.len(),
+                labels.join(", ")
+            );
+            let prepared = prepared_builds[batch.build_index]
+                .result
+                .as_ref()
+                .map_err(|message| anyhow::anyhow!("{message}"))?;
+            let result = async {
+                let first = batch.members.first().context("empty board batch")?;
+                let mut config = super::board_batch::combined_config(&batch)?;
+                let _boot_entropy =
+                    crate::starry::boot_entropy::prepare_for_secure_wifi(&mut config)?;
+                let options = RunBoardOptions {
+                    board_type: args.board_type.clone(),
+                    server: args.server.clone(),
+                    port: args.port,
+                };
+                let board_request = if batch.members.len() == 1 {
+                    match &first.assets {
+                        Some(assets) => BoardRunRequest::new(config, options)
+                            .with_session_files(&assets.root, &assets.relative_paths)?,
+                        None => board_run_request(&first.config_path, config, options)?,
                     }
-                    None => board_run_request(&board_config_path, board_config, options)?,
+                } else {
+                    let upload_root = artifact_directory.path().join(format!("upload-{index}"));
+                    std::fs::create_dir(&upload_root)?;
+                    let paths = super::board_batch::prepare_uploads(&batch, &upload_root)?;
+                    BoardRunRequest::new(config, options)
+                        .with_session_files(&upload_root, &paths)?
                 };
                 self.app
                     .board_prepared_elf_with_request(
                         prepared.elf_path.clone(),
-                        request.config_path().map(Path::to_path_buf),
+                        Some(first.group.build_config_path.clone()),
                         board_request,
                     )
                     .await
-                    .with_context(|| {
-                        format!(
-                            "starry board test failed for group `{}` (build_config={}, \
-                             board_test_config={})",
-                            group_label,
-                            group.build_config_path.display(),
-                            board_test_config_summary
-                        )
-                    })
             }
             .await;
-
             match result {
-                Ok(()) => run_state.pass_group(&group_label),
-                Err(err) => run_state.fail_group(group_label, err),
+                Ok(()) => {
+                    for label in labels {
+                        run_state.pass_group(&label);
+                    }
+                }
+                Err(error) => {
+                    // A failed boot proves no complete batch result. Never report
+                    // unobserved later members as passed.
+                    for label in labels {
+                        run_state.fail_group(
+                            label,
+                            anyhow::anyhow!("shared board boot failed: {error:#}"),
+                        );
+                    }
+                }
             }
         }
         run_state.finish()

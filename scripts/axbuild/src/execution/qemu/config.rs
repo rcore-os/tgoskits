@@ -130,39 +130,56 @@ pub(super) fn discover_qemu_subcases(
     arch: Option<&str>,
 ) -> anyhow::Result<Vec<TestQemuSubcase>> {
     let mut subcases = Vec::new();
-    for entry in
-        fs::read_dir(case_dir).with_context(|| format!("failed to read {}", case_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        if let Some(arch) = arch
-            && let Some(configs) = qemu_configs_in_dir(&path)?
-            && !configs.contains_key(arch)
+    // Only a root CMake project owns recursively classified child projects.
+    // Legacy per-case asset layouts must not adopt nested vendor sources.
+    let recursive = case_dir.join("CMakeLists.txt").is_file();
+    let mut directories = vec![case_dir.to_path_buf()];
+    let mut names = std::collections::BTreeSet::new();
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("failed to read {}", directory.display()))?
         {
-            continue;
-        }
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
 
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        let kind = if path.join("c").is_dir() || path.join("CMakeLists.txt").is_file() {
-            Some(TestQemuSubcaseKind::C)
-        } else if path.join("rust").is_dir() {
-            Some(TestQemuSubcaseKind::Rust)
-        } else {
-            None
-        };
+            if let Some(arch) = arch
+                && let Some(configs) = qemu_configs_in_dir(&path)?
+                && !configs.contains_key(arch)
+            {
+                continue;
+            }
 
-        if let Some(kind) = kind {
-            subcases.push(TestQemuSubcase {
-                name,
-                case_dir: path,
-                kind,
-            });
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let kind = if path.join("c").is_dir() || path.join("CMakeLists.txt").is_file() {
+                Some(TestQemuSubcaseKind::C)
+            } else if path.join("rust").is_dir() {
+                Some(TestQemuSubcaseKind::Rust)
+            } else {
+                None
+            };
+
+            if let Some(kind) = kind {
+                if !names.insert(name.clone()) {
+                    bail!(
+                        "duplicate grouped project ID `{name}` under {}",
+                        case_dir.display()
+                    );
+                }
+                subcases.push(TestQemuSubcase {
+                    name,
+                    case_dir: path,
+                    kind,
+                });
+            } else if recursive
+                && !matches!(name.as_str(), "common" | "sh" | "python" | "c" | "rust")
+            {
+                directories.push(path);
+            }
         }
     }
     subcases.sort_by(|left, right| left.name.cmp(&right.name));

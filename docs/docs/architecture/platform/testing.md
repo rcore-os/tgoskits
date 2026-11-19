@@ -42,7 +42,7 @@ cargo xtask clippy --package ax-hal
 ```bash
 cargo xtask arceos test qemu --arch aarch64
 cargo xtask starry test qemu --arch riscv64
-cargo xtask axvisor test qemu --arch x86_64 --test-group normal
+cargo xtask axvisor test qemu --arch x86_64
 ```
 
 外部平台只有在补齐启动入口、链接脚本、console、timer、内存和 IRQ 后，才应宣称可启动 QEMU。

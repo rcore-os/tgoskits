@@ -238,4 +238,4 @@ cargo test -p virtualization-tests --test configured_device_graph
 cargo xtask axvisor test qemu --list --arch aarch64
 ```
 
-涉及实际启动时，还应按受影响架构运行 `test-suit/axvisor/normal/qemu/smoke/` 下的 `qemu-aarch64.toml`、`qemu-riscv64.toml`、`qemu-x86_64-vmx.toml`、`qemu-x86_64-svm.toml` 或 `qemu-loongarch64.toml`；timer 变更再覆盖 `apps/axvisor/normal/qemu-timer-stress`，IVC 变更再覆盖 `qemu-ivc`。这些是建议的 smoke 范围，不代表本文档修改已执行物理板或 QEMU 启动测试。
+涉及实际启动时，还应按受影响架构运行 `test-suit/axvisor/qemu/` 下相应启动组：AArch64 的 `general/shell-and-block`、RISC-V/LoongArch 的 `smoke/shell-and-block`、x86 的 `vmx/smoke` 或 `svm/smoke`；timer 变更再覆盖 `apps/axvisor/normal/qemu-timer-stress`，IVC 变更再覆盖 `qemu/aarch64/general/ivc`；`qemu/aarch64/ivc` 的混合 Linux/ArceOS 场景仍须按其独立环境要求验收。这些是建议的 smoke 范围，不代表本文档修改已执行物理板或 QEMU 启动测试。

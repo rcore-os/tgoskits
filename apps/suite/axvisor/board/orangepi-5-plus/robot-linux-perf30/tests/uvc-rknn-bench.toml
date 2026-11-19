@@ -1,0 +1,11 @@
+requires = ["performance.toml"]
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = "sh -c '\nset -eu\nroot=/rknn_yolov8_image\nmarker=\"[AXVISOR_PERF_PROFILE] RKNN_BENCH_ASSETS=\"\nif ! command -v sha256sum >/dev/null 2>&1; then\n  printf \"%sFAIL reason=sha256sum\\\\n\" \"$marker\"\n  exit 1\nfi\nfor path in \\\n  \"$root/rknn_yolov8_bench\" \\\n  \"$root/lib/librknnrt.so\" \\\n  \"$root/lib/librga.so\" \\\n  \"$root/model/yolov8.rknn\" \\\n  \"$root/model/coco_80_labels_list.txt\"; do\n  if [ ! -r \"$path\" ] || { [ \"$path\" = \"$root/rknn_yolov8_bench\" ] && [ ! -x \"$path\" ]; }; then\n    printf \"%sFAIL path=%s\\\\n\" \"$marker\" \"$path\"\n    exit 1\n  fi\ndone\nsha256sum \\\n  \"$root/rknn_yolov8_bench\" \\\n  \"$root/lib/librknnrt.so\" \\\n  \"$root/lib/librga.so\" \\\n  \"$root/model/yolov8.rknn\" \\\n  \"$root/model/coco_80_labels_list.txt\"\nprintf \"[AXVISOR_PERF_PROFILE] RKNN_BENCH_ASSETS=PASS root=%s\\\\n\" \"$root\"\n'\n"
+success_regex = ["(?m)^\\[AXVISOR_PERF_PROFILE\\] RKNN_BENCH_ASSETS=PASS root=/rknn_yolov8_image\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = "cd /rknn_yolov8_image && printf \"%s\\n\" orangepi | sudo -S env LD_LIBRARY_PATH=/rknn_yolov8_image/lib:/usr/local/lib:/usr/lib/aarch64-linux-gnu FTDI_TRANSPORT=tty \\\n  ./rknn_yolov8_bench --fps 30 --infer-every 1 --duration-sec 60 \\\n  --report-interval-sec 5 --min-confidence 25 --core-mask all --profile"
+success_regex = ["(?m)^UVC_RKNN_BENCH_RESULT .*capture_fps=(?:29\\.(?:[5-9][0-9]*)|3[0-9]*(?:\\.[0-9]+)?) .*inferences=[1-9][0-9]* .*decode_errors=0 .*inference_errors=0 .*$"]

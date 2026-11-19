@@ -7,3 +7,5 @@ pub(crate) mod host_udp;
 pub(crate) mod qemu;
 pub(crate) mod suite;
 pub(crate) mod timing;
+
+pub(crate) mod serial_checks;

@@ -1,0 +1,16 @@
+board_type = "Rock-4D"
+cmdline = "root=/dev/mmcblk0p3 rootfstype=ext4 rootwait rw console=ttyS0,1500000n8 earlycon=uart8250,mmio32,0x2ad40000 axvisor.vm_start=1"
+dtb_file = "os/axvisor/configs/board/rock-4d.dtb"
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)\\bSError\\b",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+]
+timeout = 300
+
+[axbuild]
+checks = [
+    "tests/smoke.toml",
+]

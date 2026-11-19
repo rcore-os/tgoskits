@@ -1,0 +1,48 @@
+args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "la464",
+    "-nographic",
+    "-m",
+    "2G",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-gpu-pci",
+    "-device",
+    "virtio-keyboard-pci",
+    "-device",
+    "virtio-tablet-pci",
+]
+# This dynamic LoongArch test uses the same UEFI handoff as the Starry kernel test image.
+uefi = true
+to_bin = true
+shell_check_steps = [
+  { shell_prefix = "root@starry:", shell_cmd = "/usr/bin/tty-input-burst.sh", success_regex = ["(?m)^STARRY_TTY_INPUT_BURST_PASSED\\s*$"], timeout = 300 },
+  { shell_prefix = "root@starry:~#", shell_cmd = "/usr/bin/openrc-test.sh", timeout = 180, success_regex = ["(?m)^STARRY_OPENRC_PASSED\\s*$"] },
+  { shell_prefix = "root@starry:", shell_cmd = "exit", timeout = 180, success_regex = ["Welcome to Starry OS!"] },
+  { shell_prefix = "root@starry:", shell_cmd = "poweroff", timeout = 180, success_regex = ["(?m)^STARRY_OPENRC_SERVICE_STOPPED\\s*$"] },
+]
+fail_regex = ["STARRY_OPENRC_FAILED", "(?i)panic", "(?m)^lockdep fatal violation\\s*$", "/dev/console has no serial TTY binding", "Failed to bind console tty", "(?m)^STARRY_TTY_INPUT_BURST_FAILED"]
+timeout = 480
+
+# Each original test retains one total deadline across all of its steps.
+
+[[shell_check_groups]]
+name = "tty"
+step_count = 1
+timeout = 300
+
+[[shell_check_groups]]
+name = "openrc"
+step_count = 3
+timeout = 180

@@ -1,0 +1,16 @@
+timeout = 900
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = "d=/home/orangepi/robot-ci/aka-rk3588-virtual"
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = "cd \"$d\" && printf \"%s\\n\" orangepi | sudo -S env FTDI_TRANSPORT=tty ./run_vision_usb_ci_once.sh 28.0"
+success_regex = [
+    "(?m)^\\[VISION_USB_CI\\] RESULT=PASS attempts=1(?:[ \\t\\r]*$|\\[\\s*\\d+\\.\\d+\\].*$)",
+]

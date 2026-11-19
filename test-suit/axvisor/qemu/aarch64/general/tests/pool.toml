@@ -1,0 +1,111 @@
+timeout = 420
+requires = ["reset-guests.toml"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm pool"
+success_regex = ["(?m)^VM pool directory: /pool\\s*$", "(?m)^No config in the pool can be started\\.\\s*$", "(?m)^✗ /pool: directory is unavailable: .+$"]
+
+[[shell_check_steps]]
+shell_cmd = "vm list"
+success_regex = ["(?m)^No virtual machines found\\.\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "vm start 7"
+success_regex = ["(?m)^✗ VM\\[7\\](?: failed to start: .*VM\\[7\\])? is neither registered nor in the builtin catalog or dynamic pool\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "mkdir -p /pool"
+
+[[shell_check_steps]]
+shell_cmd = "cp /guest/arceos/arceos-ivc-publisher.bin /k"
+
+[[shell_check_steps]]
+shell_cmd = "ls -l /k"
+success_regex = ["(?m)^-r\\S+\\s+\\d+\\s+/k\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "echo 'kernel = {entry_point = 0x80200000, kernel_path = \"/k\", kernel_load_addr = 0x80200000, dtb_load_addr = 0x80000000, memory_regions = [[0x80000000, 0x40000000, 0x7, 1]]}' > /pool/boot.toml"
+
+[[shell_check_steps]]
+shell_cmd = "vm pool"
+success_regex = ["(?m)^0\\s+not-created\\s+/pool/boot\\.toml\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "echo 'base = {id = 9, name = \"pool-a\", cpu_num = 1}' > /pool/a.toml"
+
+[[shell_check_steps]]
+shell_cmd = "echo 'base = {id = 9, name = \"pool-b\", cpu_num = 1}' > /pool/b.toml"
+
+[[shell_check_steps]]
+shell_cmd = "vm pool"
+success_regex = ["(?m)^✗ /pool/[ab]\\.toml: asks for VM id 9, which `/pool/[ab]\\.toml` already claims in this pool\\s*$", "(?m)^9\\s+pool-[ab]\\s+not-created\\s+/pool/[ab]\\.toml\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "cp /etc/inittab /pool/broken.toml"
+
+[[shell_check_steps]]
+shell_cmd = "touch /pool/empty.toml"
+
+[[shell_check_steps]]
+shell_cmd = "vm pool"
+success_regex = ["(?m)^✗ /pool/broken\\.toml: is not a guest config: .+$", "(?m)^✗ /pool/empty\\.toml: is empty\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "echo 'base = {id = 11, name = \"pool-txt\", cpu_num = 1}' > /pool/notes.txt"
+
+[[shell_check_steps]]
+shell_cmd = "vm start 11"
+success_regex = ["(?m)^✗ VM\\[11\\](?: failed to start: .*VM\\[11\\])? is neither registered nor in the builtin catalog or dynamic pool\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "vm start 0"
+success_regex = ["(?m)^✗ VM\\[0\\] failed to start: (?:look up VM\\[0\\] in builtin catalog and VM pool: )?create VM\\[0\\] from VM pool entry `/pool/boot\\.toml`: .+$"]
+
+[[shell_check_steps]]
+shell_cmd = "ls -l /usr/bin/vm-pool-entry.toml"
+success_regex = ["(?m)^-r\\S+\\s+\\d+\\s+/usr/bin/vm-pool-entry\\.toml\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "cp /usr/bin/vm-pool-entry.toml /pool/pool-guest.toml"
+
+[[shell_check_steps]]
+shell_cmd = "vm pool"
+success_regex = ["(?m)^5\\s+pool-guest\\s+not-created\\s+/pool/pool-guest\\.toml\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "vm start 5"
+success_regex = ["(?m)^✓ VM\\[5\\] started successfully\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "vm pool"
+success_regex = ["(?m)^5\\s+pool-guest\\s+running\\s+/pool/pool-guest\\.toml\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "vm delete --force 5"
+success_regex = ["(?m)^✓ VM\\[5\\] deleted completely\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "vm pool"
+success_regex = ["(?m)^5\\s+pool-guest\\s+not-created\\s+/pool/pool-guest\\.toml\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "vm start 5"
+success_regex = ["(?m)^✓ VM\\[5\\] started successfully\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "vm pool"
+success_regex = ["(?m)^5\\s+pool-guest\\s+running\\s+/pool/pool-guest\\.toml\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete --force 5"
+success_regex = ["(?m)^✓ VM\\[5\\] deleted completely\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_VM_POOL_PASSED"
+success_regex = ["(?m)^AXVISOR_VM_POOL_PASSED\\s*$"]

@@ -123,13 +123,13 @@ cargo xtask starry test qemu --arch aarch64 -c qemu/system
 These C-language regression tests were migrated from the former
 `test-nix-prereqs` case and now live alongside other kernel regression tests
 under the unified system grouped suite.
-See `test-suit/starryos/qemu/system/`.
+See `test-suit/starryos/qemu/standard/system/`.
 
 ## Nix Sandbox System Regression Subcases (003)
 
 The Nix sandbox debug regressions were migrated from the former
 `qemu/nix-sandbox-debug` grouped suite into the unified `qemu/system` suite.
-They are CI-tracked system subcases under `test-suit/starryos/qemu/system/`.
+They are CI-tracked system subcases under `test-suit/starryos/qemu/standard/system/`.
 These tests run under `sandbox=off` (they do **not** exercise the nix sandbox
 builder directly); they verify kernel semantics that the nix sandbox path
 depends on.

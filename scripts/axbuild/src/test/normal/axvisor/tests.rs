@@ -12,7 +12,7 @@ const TEST_SUIT_ROOT: &str = "test-suit/axvisor";
 const MIGRATED_SUITE_ROOT: &str = "apps/axvisor";
 
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
-    write_qemu_config_in_group(root, "normal", "default", case, arch, body)
+    write_qemu_config_in_group(root, ".", "default", case, arch, body)
 }
 
 fn write_qemu_config_in_group(
@@ -72,14 +72,14 @@ fn write_board_build_config(root: &Path, build_group: &str) -> PathBuf {
     write_qemu_build_config_in_suite_root(
         root,
         TEST_SUIT_ROOT,
-        "normal",
+        ".",
         build_group,
         "aarch64-unknown-none-softfloat",
     )
 }
 
 fn write_board_config(root: &Path, case: &str, name: &str, body: &str) -> PathBuf {
-    write_board_config_in_group(root, "normal", "default", case, name, body)
+    write_board_config_in_group(root, ".", "default", case, name, body)
 }
 
 fn write_board_config_in_group(
@@ -130,11 +130,11 @@ fn discovers_only_cases_with_matching_qemu_config() {
     let root = tempdir().unwrap();
     let build_config = write_qemu_build_config(
         root.path(),
-        "normal",
+        ".",
         "default",
         "aarch64-unknown-none-softfloat",
     );
-    write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
+    write_qemu_build_config(root.path(), ".", "default", "x86_64-unknown-none");
     write_qemu_config(
         root.path(),
         "smoke",
@@ -152,7 +152,7 @@ fn discovers_only_cases_with_matching_qemu_config() {
 
     let cases = discover_qemu_cases(
         root.path(),
-        "normal",
+        ".",
         "aarch64",
         "aarch64-unknown-none-softfloat",
         None,
@@ -179,7 +179,7 @@ fn rejects_test_commands_during_axvisor_case_discovery() {
         let root = tempdir().unwrap();
         write_qemu_build_config(
             root.path(),
-            "normal",
+            ".",
             "default",
             "aarch64-unknown-none-softfloat",
         );
@@ -191,7 +191,7 @@ fn rejects_test_commands_during_axvisor_case_discovery() {
         );
         let error = discover_qemu_cases(
             root.path(),
-            "normal",
+            ".",
             "aarch64",
             "aarch64-unknown-none-softfloat",
             None,
@@ -209,11 +209,11 @@ fn selected_case_requires_matching_qemu_config() {
     let root = tempdir().unwrap();
     write_qemu_build_config(
         root.path(),
-        "normal",
+        ".",
         "default",
         "aarch64-unknown-none-softfloat",
     );
-    write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
+    write_qemu_build_config(root.path(), ".", "default", "x86_64-unknown-none");
     write_qemu_config(
         root.path(),
         "smoke",
@@ -224,7 +224,7 @@ fn selected_case_requires_matching_qemu_config() {
 
     let err = discover_qemu_cases(
         root.path(),
-        "normal",
+        ".",
         "aarch64",
         "aarch64-unknown-none-softfloat",
         Some("smoke"),
@@ -239,19 +239,14 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
     let root = tempdir().unwrap();
     write_qemu_build_config(
         root.path(),
-        "normal",
+        ".",
         "board-orangepi-5-plus",
         "aarch64-unknown-none-softfloat",
     );
-    write_qemu_build_config(
-        root.path(),
-        "normal",
-        "qemu",
-        "aarch64-unknown-none-softfloat",
-    );
+    write_qemu_build_config(root.path(), ".", "qemu", "aarch64-unknown-none-softfloat");
     write_board_config_in_group(
         root.path(),
-        "normal",
+        ".",
         "board-orangepi-5-plus",
         "smoke",
         "orangepi-5-plus-linux",
@@ -259,7 +254,7 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
     );
     write_qemu_config_in_group(
         root.path(),
-        "normal",
+        ".",
         "qemu",
         "smoke",
         "aarch64",
@@ -269,7 +264,7 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
 
     let cases = discover_qemu_cases(
         root.path(),
-        "normal",
+        ".",
         "aarch64",
         "aarch64-unknown-none-softfloat",
         Some("smoke"),
@@ -286,7 +281,7 @@ fn discovers_qemu_cases_from_selected_group() {
     let root = tempdir().unwrap();
     write_qemu_build_config(
         root.path(),
-        "normal",
+        ".",
         "default",
         "aarch64-unknown-none-softfloat",
     );
@@ -332,36 +327,53 @@ fn discovers_qemu_cases_from_selected_group() {
 }
 
 #[test]
-fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
+fn external_named_groups_keep_default_and_custom_cases_isolated() {
     let root = tempdir().unwrap();
-    write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
-    write_qemu_config_in_group(
+    let suite = root.path().join("external-configurations");
+    for (group, build, case) in [
+        ("normal", "default", "baseline"),
+        ("custom", "firmware", "smoke"),
+    ] {
+        write_qemu_build_config_in_suite_root(
+            root.path(),
+            "external-configurations",
+            group,
+            build,
+            "x86_64-unknown-none",
+        );
+        write_qemu_config_in_suite_root(
+            root.path(),
+            "external-configurations",
+            group,
+            build,
+            case,
+            "x86_64",
+            r#"shell_check_steps = [{ shell_prefix = ">>", shell_cmd = "hello_world" }]
+fail_regex = []
+"#,
+        );
+    }
+    let source = CaseSource::External(&suite);
+    let normal_cases = discovery::discover_qemu_cases(
+        source,
         root.path(),
-        "normal",
-        "default",
-        "baseline",
+        source.default_group(),
         "x86_64",
-        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
-         = []\n",
-    );
-    write_qemu_build_config(root.path(), "custom", "firmware", "x86_64-unknown-none");
-    write_qemu_config_in_group(
-        root.path(),
-        "custom",
-        "firmware",
-        "smoke",
-        "x86_64",
-        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
-         = []\n",
-    );
-
-    let normal_cases =
-        discover_qemu_cases(root.path(), "normal", "x86_64", "x86_64-unknown-none", None).unwrap();
+        "x86_64-unknown-none",
+        None,
+    )
+    .unwrap();
     assert_eq!(normal_cases.len(), 1);
     assert_eq!(normal_cases[0].case.name, "baseline");
-
-    let custom_cases =
-        discover_qemu_cases(root.path(), "custom", "x86_64", "x86_64-unknown-none", None).unwrap();
+    let custom_cases = discovery::discover_qemu_cases(
+        source,
+        root.path(),
+        "custom",
+        "x86_64",
+        "x86_64-unknown-none",
+        None,
+    )
+    .unwrap();
     assert_eq!(custom_cases.len(), 1);
     assert_eq!(custom_cases[0].case.name, "smoke");
     assert_eq!(custom_cases[0].build_group, "firmware");
@@ -372,7 +384,7 @@ fn rejects_unknown_qemu_test_group() {
     let root = tempdir().unwrap();
     write_qemu_build_config(
         root.path(),
-        "normal",
+        ".",
         "default",
         "aarch64-unknown-none-softfloat",
     );
@@ -397,7 +409,7 @@ fn rejects_unknown_qemu_test_group() {
         err.to_string()
             .contains("unsupported Axvisor test group `unknown`")
     );
-    assert!(err.to_string().contains("normal"));
+    assert!(err.to_string().contains("."));
 }
 
 #[test]
@@ -417,7 +429,7 @@ fn returns_all_board_test_groups_when_no_filter_is_given() {
         "board_type = \"OrangePi-5-Plus\"\n",
     );
 
-    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
+    let groups = discover_board_test_groups(root.path(), ".", &[], &[]).unwrap();
 
     assert_eq!(
         groups
@@ -431,7 +443,7 @@ fn returns_all_board_test_groups_when_no_filter_is_given() {
 #[test]
 fn board_case_uses_unique_nearest_build_config_without_target_assumption() {
     let root = tempdir().unwrap();
-    let wrapper_dir = root.path().join("test-suit/axvisor/normal/board-custom");
+    let wrapper_dir = root.path().join("test-suit/axvisor/board-custom");
     let case_dir = wrapper_dir.join("smoke");
     fs::create_dir_all(&case_dir).unwrap();
     let build_config = wrapper_dir.join("build-riscv64gc-unknown-none-elf.toml");
@@ -439,7 +451,7 @@ fn board_case_uses_unique_nearest_build_config_without_target_assumption() {
     let board_test_config = case_dir.join("board-custom.toml");
     fs::write(&board_test_config, "board_type = \"Custom\"\n").unwrap();
 
-    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
+    let groups = discover_board_test_groups(root.path(), ".", &[], &[]).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
@@ -454,7 +466,7 @@ fn merges_benchmark_suite_root_into_board_discovery() {
     let regular_build_config = write_board_build_config(root.path(), "board-orangepi-5-plus");
     let regular_board_config = write_board_config_in_group(
         root.path(),
-        "normal",
+        ".",
         "board-orangepi-5-plus",
         "smoke",
         "orangepi-5-plus-linux",
@@ -480,7 +492,7 @@ fn merges_benchmark_suite_root_into_board_discovery() {
     )
     .unwrap();
 
-    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
+    let groups = discover_board_test_groups(root.path(), ".", &[], &[]).unwrap();
 
     assert_eq!(groups.len(), 2);
     let benchmark = groups
@@ -500,7 +512,7 @@ fn merges_benchmark_suite_root_into_board_discovery() {
 
     let selected = discover_board_test_groups(
         root.path(),
-        "normal",
+        ".",
         &[],
         &["orangepi-5-plus-vcpu-perf".to_string()],
     )
@@ -520,8 +532,7 @@ fn filters_board_test_group_by_case() {
         "board_type = \"PhytiumPi\"\n",
     );
 
-    let groups =
-        discover_board_test_groups(root.path(), "normal", &["smoke".to_string()], &[]).unwrap();
+    let groups = discover_board_test_groups(root.path(), ".", &["smoke".to_string()], &[]).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
@@ -554,7 +565,7 @@ fn filters_board_test_groups_by_board() {
     );
 
     let groups =
-        discover_board_test_groups(root.path(), "normal", &[], &["phytiumpi-linux".to_string()])
+        discover_board_test_groups(root.path(), ".", &[], &["phytiumpi-linux".to_string()])
             .unwrap();
 
     assert_eq!(
@@ -572,7 +583,7 @@ fn discovers_uboot_test_group_from_board_cases() {
     let build_config = write_board_build_config(root.path(), "board-rdk-s100");
     let board_test_config = write_board_config_in_group(
         root.path(),
-        "normal",
+        ".",
         "board-rdk-s100",
         "smoke",
         "rdk-s100-linux",
@@ -592,13 +603,8 @@ fn discovers_uboot_test_group_from_board_cases() {
 #[test]
 fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
     let root = tempdir().unwrap();
-    write_qemu_build_config(
-        root.path(),
-        "normal",
-        "qemu",
-        "aarch64-unknown-none-softfloat",
-    );
-    write_qemu_build_config(root.path(), "normal", "qemu", "x86_64-unknown-none");
+    write_qemu_build_config(root.path(), ".", "qemu", "aarch64-unknown-none-softfloat");
+    write_qemu_build_config(root.path(), ".", "qemu", "x86_64-unknown-none");
     write_qemu_config(
         root.path(),
         "smoke",
@@ -615,7 +621,7 @@ fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
         "board_type = \"OrangePi-5-Plus\"\n",
     );
 
-    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
+    let groups = discover_board_test_groups(root.path(), ".", &[], &[]).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
@@ -660,15 +666,11 @@ fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
 #[test]
 fn test_qemu_discovery_excludes_apps() {
     let root = tempdir().unwrap();
-    let regular_build = write_qemu_build_config(
-        root.path(),
-        "normal",
-        "qemu",
-        "aarch64-unknown-none-softfloat",
-    );
+    let regular_build =
+        write_qemu_build_config(root.path(), ".", "qemu", "aarch64-unknown-none-softfloat");
     let regular_config = write_qemu_config_in_group(
         root.path(),
-        "normal",
+        ".",
         "qemu",
         "smoke",
         "aarch64",
@@ -695,7 +697,7 @@ fn test_qemu_discovery_excludes_apps() {
 
     let cases = discover_qemu_cases(
         root.path(),
-        "normal",
+        ".",
         "aarch64",
         "aarch64-unknown-none-softfloat",
         None,
@@ -743,15 +745,10 @@ fn test_qemu_discovery_excludes_apps() {
 #[test]
 fn selects_app_by_its_full_directory() {
     let root = tempdir().unwrap();
-    write_qemu_build_config(
-        root.path(),
-        "normal",
-        "qemu",
-        "aarch64-unknown-none-softfloat",
-    );
+    write_qemu_build_config(root.path(), ".", "qemu", "aarch64-unknown-none-softfloat");
     write_qemu_config_in_group(
         root.path(),
-        "normal",
+        ".",
         "qemu",
         "smoke",
         "aarch64",
@@ -809,7 +806,7 @@ fn rejects_group_absent_from_every_suite_root() {
     let root = tempdir().unwrap();
     write_qemu_build_config(
         root.path(),
-        "normal",
+        ".",
         "default",
         "aarch64-unknown-none-softfloat",
     );
@@ -829,7 +826,7 @@ fn rejects_group_absent_from_every_suite_root() {
             .contains("unsupported Axvisor test group `unknown`")
     );
     assert!(!err.to_string().contains("nightly"));
-    assert!(err.to_string().contains("normal"));
+    assert!(err.to_string().contains("."));
 }
 
 #[test]
@@ -866,7 +863,7 @@ fn board_discovery_isolates_apps_and_selects_descendants() {
     )
     .unwrap();
 
-    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
+    let groups = discover_board_test_groups(root.path(), ".", &[], &[]).unwrap();
     assert_eq!(groups.len(), 1);
     let regular = groups
         .iter()
@@ -919,12 +916,12 @@ fn board_discovery_isolates_apps_and_selects_descendants() {
 #[test]
 fn group_names_are_isolated_by_source() {
     let root = tempdir().unwrap();
-    fs::create_dir_all(root.path().join(TEST_SUIT_ROOT).join("normal")).unwrap();
+    fs::create_dir_all(root.path().join(TEST_SUIT_ROOT)).unwrap();
     fs::create_dir_all(root.path().join(MIGRATED_SUITE_ROOT).join("nightly")).unwrap();
 
     let groups = discovery::discover_test_group_names(CaseSource::Tests, root.path()).unwrap();
 
-    assert_eq!(groups, vec!["normal".to_string()]);
+    assert_eq!(groups, vec![".".to_string()]);
     assert_eq!(
         discovery::discover_test_group_names(CaseSource::Apps, root.path()).unwrap(),
         vec!["nightly".to_string()]
@@ -933,7 +930,7 @@ fn group_names_are_isolated_by_source() {
         discovery::discover_board_test_groups(
             CaseSource::Apps,
             root.path(),
-            "../../test-suit/axvisor/normal",
+            "../../test-suit/axvisor",
             &[],
             &[]
         )
@@ -946,10 +943,10 @@ fn group_names_are_isolated_by_source() {
 }
 
 fn write_healthy_aarch64_qemu_case(root: &Path) {
-    write_qemu_build_config(root, "normal", "qemu", "aarch64-unknown-none-softfloat");
+    write_qemu_build_config(root, ".", "qemu", "aarch64-unknown-none-softfloat");
     write_qemu_config_in_group(
         root,
-        "normal",
+        ".",
         "qemu",
         "smoke",
         "aarch64",
@@ -969,7 +966,7 @@ fn unexpected_root_error_is_not_swallowed_by_a_healthy_root() {
     // The migrated root ships a legacy `build-<arch>.toml` instead of the
     // required `build-<target>.toml`, so scanning it is an unexpected config
     // error rather than an empty selection.
-    let faulty_wrapper = root.path().join(TEST_SUIT_ROOT).join("normal/legacy");
+    let faulty_wrapper = root.path().join(TEST_SUIT_ROOT).join("legacy");
     fs::create_dir_all(&faulty_wrapper).unwrap();
     fs::write(
         faulty_wrapper.join("build-aarch64.toml"),
@@ -982,7 +979,7 @@ fn unexpected_root_error_is_not_swallowed_by_a_healthy_root() {
     for selected_case in [None, Some("smoke")] {
         let err = discover_qemu_cases(
             root.path(),
-            "normal",
+            ".",
             "aarch64",
             "aarch64-unknown-none-softfloat",
             selected_case,
@@ -999,7 +996,7 @@ fn unexpected_root_error_is_not_swallowed_by_a_healthy_root() {
     fs::remove_dir_all(&faulty_wrapper).unwrap();
     let cases = discover_qemu_cases(
         root.path(),
-        "normal",
+        ".",
         "aarch64",
         "aarch64-unknown-none-softfloat",
         None,
@@ -1040,7 +1037,7 @@ fn selected_case_missing_from_every_suite_root_is_reported() {
 
     let err = discover_qemu_cases(
         root.path(),
-        "normal",
+        ".",
         "aarch64",
         "aarch64-unknown-none-softfloat",
         Some("ghost"),
@@ -1074,8 +1071,7 @@ fn lists_qemu_cases_in_the_selected_namespace() {
          }]\nsuccess_regex = [\"AXVISOR_GICV3_TIMER_STRESS_PASSED\"]\nfail_regex = []\n",
     );
 
-    let listed =
-        discovery::list_all_qemu_cases(CaseSource::Tests, root.path(), "normal", None).unwrap();
+    let listed = discovery::list_all_qemu_cases(CaseSource::Tests, root.path(), ".", None).unwrap();
     assert_eq!(listed, vec!["smoke".to_string()]);
 
     // A parent application directory selects its child runtime configuration.
@@ -1100,15 +1096,149 @@ fn lists_qemu_cases_in_the_selected_namespace() {
 /// unexpected error must surface so listing never hides part of the tree.
 #[test]
 fn list_qemu_case_error_classification_never_ignores_unexpected() {
-    use crate::execution::qemu::ListQemuCasesErrorKind;
+    let root = tempdir().unwrap();
+    write_qemu_build_config(
+        root.path(),
+        ".",
+        "synthetic",
+        "aarch64-unknown-none-softfloat",
+    );
+    let config = write_qemu_config_in_group(
+        root.path(),
+        ".",
+        "synthetic",
+        "valid",
+        "aarch64",
+        "args=[]\nuefi=false\nfail_regex=[]\n",
+    );
+    let cases =
+        discovery::list_all_qemu_cases_with_archs(CaseSource::Tests, root.path(), ".", None)
+            .unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].archs, ["aarch64"]);
+    assert!(
+        discovery::list_all_qemu_cases_with_archs(
+            CaseSource::Tests,
+            root.path(),
+            ".",
+            Some("absent")
+        )
+        .is_err()
+    );
+    fs::write(config, "invalid = [").unwrap();
+    assert!(
+        discovery::list_all_qemu_cases_with_archs(CaseSource::Tests, root.path(), ".", None)
+            .is_err()
+    );
+}
 
-    assert!(discovery::qemu_list_error_is_ignorable(
-        ListQemuCasesErrorKind::EmptyGroup
-    ));
-    assert!(discovery::qemu_list_error_is_ignorable(
-        ListQemuCasesErrorKind::UnknownSelectedCase
-    ));
-    assert!(!discovery::qemu_list_error_is_ignorable(
-        ListQemuCasesErrorKind::Unexpected
-    ));
+#[test]
+fn explicit_suite_root_uses_declared_identity_and_checks_without_repository_layout() {
+    let root = tempdir().unwrap();
+    let suite = root.path().join("caller-data");
+    let group = suite.join("custom").join("physical-environment");
+    fs::create_dir_all(group.join("behavior")).unwrap();
+    fs::write(
+        group.join("build-aarch64-unknown-none-softfloat.toml"),
+        "target='aarch64-unknown-none-softfloat'\nfeatures=[]\n",
+    )
+    .unwrap();
+    fs::write(
+        group.join("qemu-aarch64.toml"),
+        "args=[]\nuefi=false\nfail_regex=[]\n[axbuild]\nid='public-behavior'\nchecks=['behavior/\
+         test.toml']\n",
+    )
+    .unwrap();
+    fs::write(
+        group.join("behavior/test.toml"),
+        "[[shell_check_steps]]\nshell_cmd='echo VERIFIED'\nsuccess_regex=['VERIFIED']\n",
+    )
+    .unwrap();
+    let cases = discovery::discover_qemu_cases(
+        CaseSource::External(&suite),
+        root.path(),
+        "custom",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        Some("public-behavior"),
+    )
+    .unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].case.name, "public-behavior");
+    assert_eq!(cases[0].case.case_dir, group);
+    let directory_checks = "[axbuild]\nchecks=['behavior/test.toml']\n";
+    fs::write(
+        group.join("qemu-aarch64.toml"),
+        format!("args=[]\nuefi=false\nfail_regex=[]\n{directory_checks}"),
+    )
+    .unwrap();
+    fs::write(
+        group.join("board-fixture.toml"),
+        format!("board_type='Fixture'\n{directory_checks}"),
+    )
+    .unwrap();
+    for (source, selector) in [
+        (CaseSource::External(&suite), "physical-environment"),
+        (CaseSource::ExternalApps(&suite), "physical-environment"),
+    ] {
+        let cases = discovery::discover_qemu_cases(
+            source,
+            root.path(),
+            "custom",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            Some(selector),
+        )
+        .unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].case.name, "physical-environment");
+        let boards = discovery::discover_board_test_groups(
+            source,
+            root.path(),
+            "custom",
+            &[selector.to_string()],
+            &["fixture".to_string()],
+        )
+        .unwrap();
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].name, "physical-environment");
+    }
+    for source in [
+        CaseSource::External(&suite),
+        CaseSource::ExternalApps(&suite),
+    ] {
+        let cases = discovery::discover_qemu_cases(
+            source,
+            root.path(),
+            "custom",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            Some("test"),
+        )
+        .unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].selected_checks, Some(vec!["test".to_string()]));
+        let boards = discovery::discover_board_test_groups(
+            source,
+            root.path(),
+            "custom",
+            &["test".to_string()],
+            &["fixture".to_string()],
+        )
+        .unwrap();
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].selected_checks, Some(vec!["test".to_string()]));
+    }
+    fs::remove_file(group.join("behavior/test.toml")).unwrap();
+    assert!(
+        discovery::discover_qemu_cases(
+            CaseSource::External(&suite),
+            root.path(),
+            "custom",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            Some("public-behavior")
+        )
+        .is_err()
+    );
 }

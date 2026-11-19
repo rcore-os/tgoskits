@@ -2,6 +2,8 @@
 
 本文定义宿主资源与客户机固件节点的对应规则。实现位于 `virtualization/axvm/src/boot/fdt/core/`，资源归属仍由既有设备图和 VM 配置决定；phandle 转换不新增资源分配权限。本次修改需要在合入前接受虚拟化领域设计审查。
 
+以下带日期、提交号和 `--test-case smoke` 的命令是当时的验证记录，保留原样。当前仓库已迁移选择器：AArch64 的对应双客户机 shell/block 检查为 `qemu/aarch64/general/shell-and-block`，RISC-V 为 `qemu/riscv64/smoke/shell-and-block`；复验应使用这两个完整路径，旧命令不再是当前执行入口。
+
 ## 1. 节点对应
 
 DTSpec v0.3 的 [phandle 定义](https://devicetree-specification.readthedocs.io/en/stable/devicetree-basics.html#phandle)规定编号在单棵设备树内唯一。宿主和客户机可以重复使用相同数字，但不能据此认定两个节点是同一设备。
@@ -36,7 +38,7 @@ ITS 允许多实例。`its::install_registers()` 先按 profile 路径绑定；�
 
 修改只影响启动期的固件构造，不增加运行期查询或全局状态。导入使用一次目标树副本和节点对应表，空间与树大小成正比；未进行启动性能基准。没有配置格式或持久状态迁移，回滚代码即可恢复旧行为，但旧版会恢复编号冲突风险。实体板卡与独立客户机组合仍需要实际运行证据；QEMU 结果不能替代板卡验证。
 
-2026-10-02 本地验证通过：`cargo xtask test --since 72a6a69f3` 选中 `axvm` 和 `virtualization-tests`，两个 AxVM 功能组合分别通过 453、470 项测试，关联集成测试通过 10 项；`cargo xtask clippy --package axvm` 的 25 个组合全部通过。`cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` 与对应 `--arch riscv64` 命令均以退出码 0 完成，各通过 1/1 用例，覆盖双 Linux 客户机启动和磁盘隔离。实体板卡未运行。
+2026-10-02 本地验证通过：`cargo xtask test --since 72a6a69f3` 选中 `axvm` 和 `virtualization-tests`，两个 AxVM 功能组合分别通过 453、470 项测试，关联集成测试通过 10 项；`cargo xtask clippy --package axvm` 的 25 个组合全部通过。`cargo xtask axvisor test qemu --arch aarch64 --test-case smoke` 与对应 `--arch riscv64` 命令均以退出码 0 完成，各通过 1/1 用例，覆盖双 Linux 客户机启动和磁盘隔离。实体板卡未运行。
 
 ## 3. 固件声明与资源授权
 
@@ -73,7 +75,7 @@ ITS 允许多实例。`its::install_registers()` 先按 profile 路径绑定；�
 
 2026-10-02，`cargo xtask test --since cb984a697` 选中 `axvm` 和 `virtualization-tests`，两个 AxVM 功能组合分别通过 453、470 项测试，关联集成测试通过 10 项。三个授权回归用例先在旧实现上确定失败，真实 OrangePi 二次解析用例也先复现了 CPU cooling-map 悬空引用，再验证修复。既有保留区差集辅助函数及三个对应测试随隐式映射逻辑删除，覆盖由实际授权校验测试承担。
 
-最终 `cargo xtask clippy --package axvm` 的 25 个组合全部通过。`cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` 及对应 `--arch riscv64` 命令均以退出码 0 完成，各通过 1/1，验证双 Linux 客户机启动及磁盘隔离。`cargo fmt --package axvm` 与差异检查通过；实体板卡未运行，旧板卡保留区设备的实际可用性不在 QEMU 证据覆盖范围内。
+最终 `cargo xtask clippy --package axvm` 的 25 个组合全部通过。`cargo xtask axvisor test qemu --arch aarch64 --test-case smoke` 及对应 `--arch riscv64` 命令均以退出码 0 完成，各通过 1/1，验证双 Linux 客户机启动及磁盘隔离。`cargo fmt --package axvm` 与差异检查通过；实体板卡未运行，旧板卡保留区设备的实际可用性不在 QEMU 证据覆盖范围内。
 
 
 兼容性调整后，覆盖不足由拒绝启动改为告警，保留原 DTB 且不追加映射；格式错误与地址溢出的拒绝继续保留。更新后的同一回归测试先在严格版本上失败，再在兼容版本上通过。`cargo xtask test --since 96082412b` 的两个 AxVM 功能组合及关联集成测试分别通过 453、470、10 项；`cargo xtask clippy --package axvm` 通过 25 项，AArch64 QEMU smoke 通过 1/1。OrangePi 实机未运行。
@@ -85,4 +87,4 @@ AArch64 QEMU smoke 通过 1/1。RISC-V smoke 首次在第二个客户机启动�
 
 2026-10-02 CPU cooling 与定时器禁用修复：增强现有 CPU 投影及定时器安装测试，先在未修复实现上分别确认 cooling-map 残留和普通定时器禁用被拒绝，两种 AxVM 功能组合均出现这两个确定性失败。修复后以隔离工作树提交快照运行 `cargo xtask test --since bbb89d8ee`，两个组合分别通过 455、472 项，关联集成测试通过 10 项；主工作区源码与该快照一致。测试同时验证混合 cooling-map 的非 CPU 条目和参数得到保留、最终树可再次解析依赖，以及架构定时器仍禁止显式禁用。
 
-本轮 `cargo fmt --package axvm`、差异检查及 `cargo xtask clippy --package axvm` 的 25 项检查通过。AArch64 和 RISC-V 的 `cargo xtask axvisor test qemu --arch <arch> --test-group normal --test-case smoke` 均通过 1/1，完成双客户机启动与磁盘隔离检查；实体板卡未运行。此前 RISC-V 超时的根因仍未定位，本轮通过不改变该限制。
+本轮 `cargo fmt --package axvm`、差异检查及 `cargo xtask clippy --package axvm` 的 25 项检查通过。AArch64 和 RISC-V 的 `cargo xtask axvisor test qemu --arch <arch> --test-case smoke` 均通过 1/1，完成双客户机启动与磁盘隔离检查；实体板卡未运行。此前 RISC-V 超时的根因仍未定位，本轮通过不改变该限制。

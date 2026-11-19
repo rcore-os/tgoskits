@@ -9,7 +9,7 @@ fi
 candidates=$1
 output=$2
 shift 2
-contracts_file="$(dirname -- "${BASH_SOURCE[0]}")/../../../test-suit/starryos/qemu/system/ltp-syscalls/minimum-passes.txt"
+contracts_file="$(dirname -- "${BASH_SOURCE[0]}")/../../../test-suit/starryos/qemu/standard/system/ltp/ltp-syscalls/minimum-passes.txt"
 
 work_dir=$(mktemp -d /tmp/starry-ltp-syscalls-common.XXXXXX)
 cleanup()

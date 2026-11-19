@@ -1,0 +1,13 @@
+timeout = 240
+requires = ["prepare-guest.toml"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete --force 3"
+success_regex = ["(?m)^✓ VM\\[3\\] deleted completely\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "vm start 3"
+success_regex = ["(?m)^✓ VM\\[3\\] started successfully\\s*$"]
+timeout = 120

@@ -79,7 +79,7 @@ real 场景的根盘由当前 native board 配置和两份 AxVisor guest 配置�
 客户机只挂载自己的 VirtIO ext4 镜像，不能将宿主的 `root=` 复制到客户机配置。
 StarryOS 的 `/dev/sda` 是当前 `RootSpec` 支持的第一块盘选择方式。
 原生 StarryOS 根参数见
-[robot-flow 板卡配置](../../../test-suit/starryos/board-orangepi-5-plus/robot-flow/board-orangepi-5-plus-robot-real.toml)；
+[robot-flow 板卡配置](../../../test-suit/starryos/board/orangepi-5-plus/robot-flow/board-orangepi-5-plus-robot-real.toml)；
 两种客户机的配置、构建及镜像部署步骤分别见
 [Linux 机器人说明](../../axvisor/normal/board-ballpick-robot/robot-real-linux/README.md) 和
 [StarryOS 机器人说明](../../axvisor/normal/board-ballpick-robot/robot-real-starry/README.md)。

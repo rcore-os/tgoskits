@@ -111,7 +111,7 @@ QMP `screendump` 对 `egl-headless` 返回 `no surface`，因此画面由 VNC �
 | `cargo clippy --no-deps -p ax-driver --no-default-features --features virtio-gpu -- -D warnings` | VirtIO GPU 功能组合通过 |
 | `cargo clippy --no-deps -p ax-runtime --no-default-features --features display -- -D warnings` | display 功能组合通过 |
 | `cargo clippy --no-deps -p starry-kernel --no-default-features -- -D warnings` | Starry 内核基础功能组合通过 |
-| `cc -std=gnu11 -Wall -Wextra -Werror -fsyntax-only test-suit/starryos/qemu/system/drm-test-drm-modeset/src/main.c` | DRM 系统用例语法检查通过 |
+| `cc -std=gnu11 -Wall -Wextra -Werror -fsyntax-only test-suit/starryos/qemu/standard/system/devices/drm-test-drm-modeset/src/main.c` | DRM 系统用例语法检查通过 |
 
 `ax-driver`、`ax-runtime` 与 `starry-kernel` 的项目任务工具没有单一功能组合入口；上面三条原生 Cargo 命令按任务工具展开的参数定向检查，避免执行整个功能矩阵。本次没有获取新的实体板卡、QEMU 或 virgl 画面证据；系统用例的新增断言仍需在 CI 运行。
 
