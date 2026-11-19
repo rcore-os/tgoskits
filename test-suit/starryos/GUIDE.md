@@ -703,3 +703,7 @@ cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-smoke --arch riscv64
 - heavy app 不应放回 `test-suit/starryos`；迁出到 `apps/starry` 后加入 `apps/.ignore`，需要时用显式 `-t` 运行。
 
 `qemu/host-initramfs-switch-root` 的早期 `/init` 直接挂载 NVMe Ext4、移动 `/dev`、执行 `pivot_root(".", ".")` 和 `umount2(MNT_DETACH)`，读取磁盘根版本文件后再 exec 磁盘 `/sbin/init`；各步骤失败打印 errno 并令测试失败。
+
+### OpenRC合批的成员时限
+
+OpenRC运行配置中的`[[shell_check_groups]]`按`step_count`界定原GICv2、TTY和OpenRC步骤边界。TTY总预算300秒，OpenRC的服务检查、终端重拉起和停止三步共用180秒；ARM首部GICv2预算120秒。成员截止同时受整组480秒（ARM600秒）约束，不给每个OpenRC步骤重新发放180秒。原步骤、成功标记和一次宿主启动保持。

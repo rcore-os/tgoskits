@@ -342,9 +342,59 @@ pub(crate) fn materialize_runtime_checks(
     materialize_selected_runtime_checks(path, directory, None)
 }
 
+/// Backends with only one outer timer must never silently weaken a member timer.
+pub(crate) fn require_outer_deadline_contract(plan: &RuntimeChecks) -> anyhow::Result<()> {
+    let outer = plan
+        .runtime
+        .get("timeout")
+        .and_then(toml::Value::as_integer)
+        .filter(|t| *t > 0);
+    for check in &plan.checks {
+        if let Some(timeout) = check
+            .document
+            .get("timeout")
+            .and_then(toml::Value::as_integer)
+        {
+            ensure!(
+                outer.is_some_and(|outer| outer <= timeout),
+                "this runner cannot enforce the {}s member deadline in {}; use the ordered QEMU \
+                 test/app entry or a separately bounded board scene",
+                timeout,
+                check.path.display()
+            );
+        }
+        ensure!(
+            !check.document.contains_key("host_http_probe"),
+            "HTTP checks require the ordered QEMU test/app entry: {}",
+            check.path.display()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_outer_only_runner_rejects_a_member_budget_it_cannot_preserve() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("runtime.toml");
+        fs::write(
+            root.path().join("member.toml"),
+            "timeout=10\n[[shell_check_steps]]\nshell_cmd='check'\nsuccess_regex=['PASS']\n",
+        )
+        .unwrap();
+        for (outer, accepted) in [(5, true), (10, true), (20, false)] {
+            fs::write(
+                &path,
+                format!("timeout={outer}\n[axbuild]\nchecks=['member.toml']\n"),
+            )
+            .unwrap();
+            let plan = load_runtime_checks(&path).unwrap();
+            assert_eq!(require_outer_deadline_contract(&plan).is_ok(), accepted);
+        }
+    }
 
     #[test]
     fn member_selection_preserves_shared_prerequisites_and_rejects_invalid_selection() {

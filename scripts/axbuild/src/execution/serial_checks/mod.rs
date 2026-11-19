@@ -1,4 +1,4 @@
-//! Ordered checks over a QEMU serial socket while HTTP checks share its lifetime.
+//! Caller-owned serial checks with reception timestamps and absolute deadlines.
 
 use std::{path::Path, sync::Arc, time::Duration};
 

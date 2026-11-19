@@ -46,9 +46,11 @@ checks = ["tests/robot-virtual.toml", "tests/network.toml"]
 
 场景名称取运行配置目录相对分组根的路径，例如`board/orangepi-5-plus/robot/robot-virtual-linux`；无需重复登记`id`。不再提供`aliases`兼容旧名称；测试名称取检查文件名（不含`.toml`）。工具仍支持外部调用方显式提供`id`；无外部检查的旧配置保持原发现规则。引用按书写顺序执行，相对当前运行配置解析；构建中的`vm_configs`等原项目路径语义不变。检查定义继续使用原`[[shell_check_steps]]`，或原`[host_http_probe]`。探针的`probe_script`和可选`asset_dir`相对功能定义解析：前者定位脚本，后者定位原夹具目录。
 
-axbuild先展开引用。纯串口组沿用ostool，混合组由上层串口适配器顺序执行原步骤，ostool继续负责QEMU进程与整组超时；不修改ostool。不得同时维护内联检查和外部引用，空清单、缺失/重复引用及无可执行检查明确失败。全部检查完成才能通过；任一失败、超时或未完成均向外返回失败。HTTP探针每项保留预算，整批结束或失败后才关闭QEMU。
+AxVisor适配层的`checks.rs`负责解析、选择与展开本系统的检查定义；共享`execution`层只提供串口、QEMU生命周期和截止时间执行能力，不识别`host_http_probe`等专用字段。外部QEMU检查组的纯串口、纯HTTP及混合执行统一保留成员边界，ostool继续负责QEMU进程与整组超时，不修改ostool。全部成员和前置完成、QEMU退出及串口排空均成功才通过。
 
-串口、HTTP混合组在Unix宿主上共用一个QEMU生命周期，严格按checks及requires展开顺序执行。串口socket以wait=on从开机捕获，全部步骤与探针成功且QEMU正常退出后才通过；退出时仍检查剩余串口失败。纯HTTP及原有前置启动日志检查保留原流程。自动检查使用`axvisor test`；手动Web启动使用`apps/suite/axvisor/qemu/aarch64`内的hostfwd配置，不把只启动QEMU当作测试通过。
+每个成员从进入执行起只建立一次总截止时间，等待HTTP就绪、串口提示符、发送命令和探针结果都消耗同一预算，并受整组截止时间限制；步骤自己的上限只能进一步收紧。串口按接收时间判断成功标记，不接受迟到标记，也不误拒及时收到但晚处理的缓存。只有失败规则的命令步骤仍观察到返回提示符并检查错误。
+
+同一次启动的HTTP成员必须使用相同的`guest_port`和`nic_model`，不兼容配置在启动前明确报错；脚本、夹具目录、环境及请求预算仍由各成员保留。串口socket以wait=on从开机捕获，HTTP期间及退出排空继续监控失败。有序成员执行当前需要Unix串口socket，其他宿主明确报不支持；无外部成员的传统纯串口配置仍沿用原执行器。自动检查使用`axvisor test`，手动Web交互使用`apps/suite/axvisor/qemu/aarch64`内的hostfwd配置，不把只启动QEMU当作测试通过。
 
 ## 如何看已登记测试
 
@@ -152,3 +154,5 @@ OrangePi模拟机器人场景使用`robot/robot-virtual-linux`与`robot/robot-vi
 原两项控制台检查interleave/atomic-output已迁入[apps/suite](../../apps/suite/axvisor/qemu/aarch64/console/README.md)，不再由test-suit发现；普通CI保留原25项功能，并接入新主线的PCI memory专项；general整组仍是原五项CI检查。
 
 测试数据直接从本目录根发现，不再有normal物理分组，也无需传`--test-group normal`。仓库内场景仍以`qemu/...`和`board/...`选择；外部项目原有命名分组保持，平铺自定义根可显式使用`--test-group .`。应用的命名分组和SDK内部`test/normal`执行方式目录不受影响。
+
+板卡后端或直接`axvisor qemu`入口只提供整组计时，不能静默忽略更短的成员预算：整组上限已足以约束全部成员时可执行，否则启动前拒绝该配置，要求使用有序QEMU测试/应用入口或保留独立限时板测场景。当前板卡配置仍保留原预算；未声明成员预算的旧应用继续使用其整组预算。
