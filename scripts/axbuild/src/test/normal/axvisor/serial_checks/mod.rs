@@ -412,6 +412,36 @@ mod unix {
 
         use super::*;
 
+        fn buffered_checks(text: &str) -> Checks {
+            Checks {
+                shared: Arc::new(Shared {
+                    state: Mutex::new(State { pending: text.into(), ..Default::default() }),
+                    changed: Condvar::new(),
+                    writer: Mutex::new(None),
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                }),
+                prefix: None,
+                require_newline: false,
+            }
+        }
+
+        #[test]
+        fn expired_serial_check_cannot_accept_a_late_buffered_marker() {
+            let checks = buffered_checks("READY");
+            let deadline = Instant::now() - Duration::from_secs(1);
+            assert!(checks.wait(deadline, |text| Ok(text.find("READY").map(|i| i + 5))).is_err());
+        }
+
+        #[test]
+        fn failure_only_step_does_not_silently_ignore_its_failure_pattern() {
+            let mut checks = buffered_checks("ERROR\n");
+            let result = checks.run(&[ShellCheckStep {
+                fail_regex: Some(vec!["ERROR".into()]),
+                ..Default::default()
+            }], Duration::from_secs(1));
+            assert!(result.is_err(), "failure-only checks must observe errors");
+        }
+
         #[test]
         fn serial_checks_preserve_commands_and_monitor_failures_after_completion() {
             let root = tempfile::tempdir().unwrap();
