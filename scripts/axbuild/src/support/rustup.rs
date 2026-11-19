@@ -75,7 +75,7 @@ mod tests {
             assert_eq!(
                 result.is_ok(),
                 available,
-                "output={output:?}, status={status}"
+                "output={output:?}, status={status}, result={result:?}"
             );
             let calls = fs::read_to_string(executable.with_extension("calls")).unwrap();
             assert_eq!(calls, "target list --installed\n");
