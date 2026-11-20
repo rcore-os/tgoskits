@@ -1159,6 +1159,10 @@ mod vlapic_tests {
         fn cancel_timer(&self, _handle: Self::TimerHandle) -> X86VlapicResult {
             Ok(())
         }
+
+        fn cancel_timer_nowait(&self, handle: Self::TimerHandle) -> X86VlapicResult {
+            self.cancel_timer(handle)
+        }
     }
 
     fn new_vlapic(vcpu_id: X86VcpuId) -> VirtualApicRegs<TestHost> {
