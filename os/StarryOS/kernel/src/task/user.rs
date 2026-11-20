@@ -232,7 +232,7 @@ pub fn new_user_task(
                 } else {
                     None
                 };
-                // The first user handler decides whether to restart a wait.
+                // The first user handler decides whether to restart the syscall.
                 // Kernel-only processing preserves that internal restart
                 // class; other syscall classes retain their existing policy.
                 let mut pending_restart = restart.as_ref();
@@ -281,8 +281,7 @@ pub fn new_user_task(
                             SignalCheckOutcome::HandledInKernel => {
                                 // Keep the temporary mask until a handler owns
                                 // restoration or no deliverable signals remain.
-                                // Only the wait-family internal restart class
-                                // changes its kernel-only signal policy here.
+                                // ERESTARTSYS remains pending across kernel-only signals.
                                 if pending_restart.is_some_and(|info| !info.without_handler) {
                                     pending_restart = None;
                                 }

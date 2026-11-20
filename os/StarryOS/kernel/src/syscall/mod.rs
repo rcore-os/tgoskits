@@ -30,7 +30,7 @@ use crate::{
 pub(crate) enum SyscallRestart {
     /// Apply the syscall-number policy when the result is EINTR.
     Allowed,
-    /// A wait-family ERESTARTSYS result, including when no handler remains.
+    /// An ERESTARTSYS result, including when no handler remains.
     RestartableInterruption,
     /// Preserve EINTR even when the delivered handler requests SA_RESTART.
     Suppressed,
@@ -169,6 +169,7 @@ pub fn handle_syscall(
     // We must not overwrite retval when that happens, because on
     // non-x86_64 arches retval and arg0 (signo) share a register.
     let prev_ip = uctx.ip();
+    let ioctl_cmd = uctx.arg1() as u32;
 
     let result = match sysno {
         // fs ctl
@@ -1552,12 +1553,7 @@ pub fn handle_syscall(
     debug!("Syscall {sysno} return {result:?}");
     let restart = if matches!(&result, Err(StarryError::InterruptedNoRestart)) {
         SyscallRestart::Suppressed
-    } else if matches!(&result, Err(StarryError::Interrupted))
-        && matches!(sysno, Sysno::wait4 | Sysno::waitid)
-    {
-        // Linux do_wait() returns ERESTARTSYS. Other interrupted operations
-        // may need restart-block state (for example a saved sleep deadline),
-        // so do not infer the no-handler policy from EINTR alone.
+    } else if matches!(&result, Err(StarryError::Interrupted)) && returns_erestartsys(sysno, ioctl_cmd) {
         SyscallRestart::RestartableInterruption
     } else {
         SyscallRestart::Allowed
@@ -1568,6 +1564,16 @@ pub fn handle_syscall(
         uctx.set_retval(new_retval);
     }
     restart
+}
+
+fn returns_erestartsys(sysno: Sysno, ioctl_cmd: u32) -> bool {
+    use linux_raw_sys::ioctl::{TCSETS, TCSETS2, TCSETSF, TCSETSF2, TCSETSW, TCSETSW2};
+
+    // Linux do_wait() and terminal-change ioctls restart after a default
+    // job-control stop and SIGCONT, even without a user handler.
+    matches!(sysno, Sysno::wait4 | Sysno::waitid)
+        || (sysno == Sysno::ioctl
+            && matches!(ioctl_cmd, TCSETS | TCSETSF | TCSETSW | TCSETS2 | TCSETSF2 | TCSETSW2))
 }
 
 #[cfg(feature = "axtest")]

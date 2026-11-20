@@ -20,7 +20,9 @@
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 #define PTS_DIR "/tmp/tty-fg-read-pts"
@@ -34,6 +36,38 @@ static pid_t foreground_pgid;
 
 static atomic_int movers_left;
 static atomic_ulong reads, unexpected_reads, move_errors;
+static volatile sig_atomic_t background_change_signal;
+
+static void observe_sigttou(int signo)
+{
+    background_change_signal = signo;
+}
+
+static void check_background_termios(int tty)
+{
+    struct termios original;
+    CHECK_RET(tcgetattr(tty, &original), 0, "read the current terminal settings");
+    struct termios proposed = original;
+    proposed.c_lflag ^= ECHO;
+
+    struct sigaction action = {.sa_handler = observe_sigttou};
+    sigemptyset(&action.sa_mask);
+    background_change_signal = 0;
+    CHECK_RET(sigaction(SIGTTOU, &action, NULL), 0, "catch SIGTTOU without restart");
+    errno = 0;
+    long result = syscall(SYS_ioctl, tty, TCSETS, &proposed);
+    CHECK(result == -1 && errno == EINTR, "TCSETS interrupts the background caller");
+    CHECK(background_change_signal == SIGTTOU, "TCSETS sends SIGTTOU to the background group");
+    struct termios observed;
+    CHECK_RET(tcgetattr(tty, &observed), 0, "read settings after the refused update");
+    CHECK(observed.c_lflag == original.c_lflag, "background TCSETS leaves settings unchanged");
+
+    CHECK(signal(SIGTTOU, SIG_IGN) != SIG_ERR, "ignore SIGTTOU");
+    CHECK_RET(syscall(SYS_ioctl, tty, TCSETS, &proposed), 0, "background TCSETS can ignore SIGTTOU");
+    CHECK_RET(tcgetattr(tty, &observed), 0, "read settings after the permitted update");
+    CHECK(observed.c_lflag == proposed.c_lflag, "background TCSETS applies the requested settings");
+    CHECK_RET(syscall(SYS_ioctl, tty, TCSETS, &original), 0, "restore the original settings");
+}
 
 /*
  * The shared /dev/pts table holds sixteen indices for the whole suite, so this
@@ -126,6 +160,8 @@ static void member_reads_terminal(void)
     read_line(tty, "a\n", "the foreground group reads the line");
 
     CHECK_RET(setpgid(0, 0), 0, "the member moves to a group of its own");
+    check_background_termios(tty);
+    check_background_termios(master);
     type_line("b\n");
     char buf[16];
     errno = 0;
@@ -183,6 +219,39 @@ static void session_with_terminal(void)
     int status = 0;
     CHECK_RET(waitpid(member, &status, 0), member, "the member runs to the end");
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the member's checks all passed");
+
+    pid_t job = fork();
+    CHECK(job >= 0, "fork a job that uses the default SIGTTOU action");
+    if (job < 0) {
+        return;
+    }
+    if (job == 0) {
+        struct termios settings;
+        sigset_t signals;
+        sigemptyset(&signals);
+        sigaddset(&signals, SIGTTOU);
+        if (setpgid(0, 0) == 0 && signal(SIGTTOU, SIG_DFL) != SIG_ERR &&
+            sigprocmask(SIG_UNBLOCK, &signals, NULL) == 0 && tcgetattr(tty, &settings) == 0 &&
+            syscall(SYS_ioctl, tty, TCSETS, &settings) == 0) {
+            _exit(0);
+        }
+        _exit(1);
+    }
+    status = 0;
+    CHECK_RET(waitpid(job, &status, WUNTRACED), job, "observe the background ioctl stop");
+    CHECK(WIFSTOPPED(status) && WSTOPSIG(status) == SIGTTOU, "TCSETS stops a background job");
+    if (WIFSTOPPED(status)) {
+        int assigned = tcsetpgrp(tty, job);
+        CHECK_RET(assigned, 0, "give the stopped job the terminal");
+        if (assigned != 0) {
+            kill(job, SIGKILL);
+            waitpid(job, NULL, 0);
+            return;
+        }
+        CHECK_RET(kill(job, SIGCONT), 0, "resume the job in the foreground");
+        CHECK_RET(waitpid(job, &status, 0), job, "wait for the resumed job");
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "TCSETS restarts after SIGCONT");
+    }
 }
 
 int main(void)

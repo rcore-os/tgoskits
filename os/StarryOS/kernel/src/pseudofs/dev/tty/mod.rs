@@ -167,6 +167,39 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
             Some(location),
         )
     }
+
+    fn check_termios_change(&self, current: &crate::task::UserTaskRef) -> StarryResult<()> {
+        let thread = current.as_thread();
+        let Some(binding) = thread.proc_data.controlling_terminal() else {
+            return Ok(());
+        };
+        let Some(bound) = binding.downcast_ref::<BoundTty<R, W>>() else {
+            return Ok(());
+        };
+        // The two ends of a pty share the slave's terminal settings.
+        if !Arc::ptr_eq(&bound.tty.terminal, &self.terminal) {
+            return Ok(());
+        }
+        let Some(foreground) = self.terminal.job_control.foreground() else {
+            return Ok(());
+        };
+        let group = thread.proc_data.proc.group();
+        if Arc::ptr_eq(&group, &foreground) {
+            return Ok(());
+        }
+
+        let signal = Signo::SIGTTOU;
+        if thread.signal().blocked().has(signal)
+            || thread.proc_data.signal.actions().lock()[signal].is_ignore(signal)
+        {
+            return Ok(());
+        }
+        if group.is_orphaned() {
+            return Err(StarryError::Io);
+        }
+        send_signal_to_process_group_ref(&group, Some(SignalInfo::new_kernel(signal)))?;
+        Err(StarryError::Interrupted)
+    }
 }
 
 pub(crate) fn bind_pty_at_location(location: Location) -> Option<StarryResult<usize>> {
@@ -267,6 +300,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     (arg as *mut Termios2).vm_write(current, termios)?;
                 }
                 TCSETS | TCSETSF | TCSETSW => {
+                    self.check_termios_change(current)?;
                     // Note: vm_read() must complete before acquiring the terminal lock.
                     // Faultable user memory access inside an atomic context (preemption
                     // disabled) will call might_sleep() in handle_page_fault and panic.
@@ -284,6 +318,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     }
                 }
                 TCSETS2 | TCSETSF2 | TCSETSW2 => {
+                    self.check_termios_change(current)?;
                     let termios = Arc::new((arg as *const Termios2).vm_read(current)?);
                     let _update = self.termios_update.lock();
                     apply_termios_update(

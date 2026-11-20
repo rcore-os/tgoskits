@@ -93,6 +93,24 @@ impl ProcessGroup {
             return processes;
         }
     }
+
+    pub(crate) fn is_orphaned(&self) -> bool {
+        // A live member with a parent in another group of the same session
+        // keeps the group eligible for terminal-generated stop signals.
+        !self.processes().iter().any(|member| {
+            if member.identity().live_data().is_none() {
+                return false;
+            }
+            member.parent().is_some_and(|parent| {
+                if parent.pid_number().pid_number().get() == 1 {
+                    return false;
+                }
+                let parent_group = parent.group();
+                !core::ptr::eq(self, parent_group.as_ref())
+                    && Arc::ptr_eq(&self.session, &parent_group.session)
+            })
+        })
+    }
 }
 
 impl fmt::Debug for ProcessGroup {
