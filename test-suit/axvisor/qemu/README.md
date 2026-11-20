@@ -10,6 +10,8 @@
 | AArch64 | `http-control-plane` | `browser-console` → `control-plane` | 全组，最小web构建 |
 | AArch64 | `memory-web` | `memory-root` → `dashboard` | 全组，无盘Memory根 |
 | AArch64 | `pci-memory-test` | ECAM发现、BAR2边界、memory decode与写入读回 | 上游新增专项 |
+| AArch64 | `ivc-local` | 源码 publisher → Linux subscriber | 全组，一项 |
+| AArch64 | `ivc-arceos` | 源码 publisher → 源码 subscriber | 全组，一项 |
 | AArch64 | `ivc` | Linux/ArceOS 混合 IVC | 未登记；原客户机协议不匹配问题保留 |
 | RISC-V64 | `smoke` | `shell-and-block` → `smp-ipi` | 只选择 `shell-and-block` |
 | LoongArch64 | `smoke` | `shell-and-block` | 全组 |
@@ -19,7 +21,7 @@
 | AMD SVM | `smoke` | `shell-and-block` | 全组 |
 | AMD SVM | `functional` | `direct-acpi` → `ovmf-acpi` → `pci-enumeration` → `pci-block-rw` → `pci-block-ro` | 全组 |
 
-普通测试共12个启动组，28项功能检查。主 CI 在原25项功能、10次宿主启动基础上，保留新主线加入的 PCI memory 专项，共26项功能、11次宿主启动。夜间 GICv2/GICv3 在 `apps/axvisor`，仍分别启动，不计入此表。SVM 执行需要 AMD KVM；VMX 通过不能替代 SVM 实跑。
+普通测试共14个启动组，30项功能检查。主 CI 在原25项功能、10次宿主启动基础上，保留新主线加入的 PCI memory 专项和两组源码构建 IVC 用例，共28项功能、13次宿主启动。夜间 GICv2/GICv3 在 `apps/axvisor`，仍分别启动，不计入此表。SVM 执行需要 AMD KVM；VMX 通过不能替代 SVM 实跑。
 
 ## 执行与单项选择
 
@@ -31,6 +33,12 @@ cargo xtask axvisor test qemu --arch aarch64 \
 # 五项CI功能共享一次QEMU启动。
 cargo xtask axvisor test qemu --arch aarch64 \
   --test-case qemu/aarch64/general
+
+# 两组源码构建 IVC 各自使用一次完整宿主启动。
+cargo xtask axvisor test qemu --arch aarch64 \
+  --test-case qemu/aarch64/ivc-local
+cargo xtask axvisor test qemu --arch aarch64 \
+  --test-case qemu/aarch64/ivc-arceos
 
 # VMX 六项共享一次 QEMU 启动。
 cargo xtask axvisor test qemu --arch x86_64 \

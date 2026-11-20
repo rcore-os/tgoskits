@@ -5,6 +5,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,12 @@ sys.path.insert(0, str(MODULE_PATH.parent))
 
 from ci_impact import analyze_changed_paths
 from ci_suite import SUITE_ROOTS
+IMPACT_SPEC = importlib.util.spec_from_file_location(
+    "ci_impact", MODULE_PATH.with_name("ci_impact.py")
+)
+assert IMPACT_SPEC is not None and IMPACT_SPEC.loader is not None
+ci_impact = importlib.util.module_from_spec(IMPACT_SPEC)
+IMPACT_SPEC.loader.exec_module(ci_impact)
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
@@ -47,6 +54,17 @@ def board_type_by_board_name() -> dict[str, str]:
             name = config.stem.removeprefix("board-")
             board_types.setdefault(name, tomllib.loads(config.read_text()).get("board_type", ""))
     return board_types
+
+
+def selected_test_cases(command: str) -> set[str]:
+    tokens = shlex.split(command, comments=True)
+    cases = set()
+    for index, token in enumerate(tokens):
+        if token == "--test-case" and index + 1 < len(tokens):
+            cases.update(tokens[index + 1].split(","))
+        elif token.startswith("--test-case="):
+            cases.update(token.partition("=")[2].split(","))
+    return cases
 
 
 class CiPlanTests(unittest.TestCase):
@@ -377,6 +395,7 @@ command = "cargo xtask clippy --all"
                 )
                 self.assertRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/general(?:[,\s]|$)")
                 self.assertNotRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/ivc(?:[,\s]|$)")
+                self.assertIn("qemu/aarch64/ivc-local", selected_test_cases(commands))
                 # The ordinary CI check keeps the native StarryOS board suite but no
                 # longer registers the single-guest AxVisor smokes.
                 self.assertIn(
@@ -1900,6 +1919,35 @@ node_version = "latest"
                     ],
                     selection.command,
                 )
+
+    def test_ivc_input_changes_select_their_qemu_cases(self) -> None:
+        scenarios = (
+            ("apps/arceos/ivc_publisher/src/main.rs", {"qemu/aarch64/ivc-local"}),
+            ("apps/arceos/ivc_subscriber/src/main.rs", {"qemu/aarch64/ivc-arceos"}),
+            (
+                "virtualization/axivc/src/message/receiver.rs",
+                {"qemu/aarch64/ivc-local", "qemu/aarch64/ivc-arceos"},
+            ),
+        )
+        for path, expected_cases in scenarios:
+            with self.subTest(path=path):
+                impact = ci_impact.analyze_changed_paths(
+                    ci_plan.WORKSPACE_ROOT, [Path(path)], {}
+                )
+                self.assertFalse(impact.full)
+                self.assertEqual(impact.input_selections, ("axvisor:qemu:aarch64",))
+                self.assertNotIn(path, impact.ignored_apps)
+                rows = ci_plan.build_main_plan(
+                    ci_plan.replace(self.upstream, impact=impact)
+                )["axvisor_matrix"]["include"]
+                check = next(
+                    row
+                    for row in rows
+                    if row["id"]
+                    == "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
+                )
+                selected_cases = selected_test_cases(check["command"])
+                self.assertTrue(expected_cases.issubset(selected_cases))
 
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]

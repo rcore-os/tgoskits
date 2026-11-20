@@ -10,3 +10,4 @@ categories = ["virtualization", "no-std"]
 description = "Shared-memory protocol helpers for AxVisor inter-VM communication"
 
 [dependencies]
+thiserror.workspace = true
