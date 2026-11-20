@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/loongarch-intc-driver-v0.1.1...loongarch-intc-driver-v0.2.0) - 2026-11-20
+
+### Added
+
+- *(axvisor)* boot Linux with Web management on Loongson 3A6000 ([#2799](https://github.com/rcore-os/tgoskits/pull/2799))
+
 ## [0.1.1](https://github.com/rcore-os/tgoskits/compare/loongarch-intc-driver-v0.1.0...loongarch-intc-driver-v0.1.1) - 2026-09-09
 
 ### Other

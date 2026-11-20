@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/rcore-os/tgoskits/compare/trait-ffi-v0.3.1...trait-ffi-v0.3.2) - 2026-11-20
+
+### Other
+
+- *(toolchain)* bump Rust nightly to nightly-2026-11-13 ([#2807](https://github.com/rcore-os/tgoskits/pull/2807))
+
 ## [0.3.1](https://github.com/rcore-os/tgoskits/compare/trait-ffi-v0.3.0...trait-ffi-v0.3.1) - 2026-09-11
 
 ### Other

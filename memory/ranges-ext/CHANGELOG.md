@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ranges-ext-v0.6.4...ranges-ext-v0.6.5) - 2026-11-20
+
+### Other
+
+- *(toolchain)* bump Rust nightly to nightly-2026-11-13 ([#2807](https://github.com/rcore-os/tgoskits/pull/2807))
+
 ## [0.6.2](https://github.com/drivercraft/sparreal-os/compare/ranges-ext-v0.6.1...ranges-ext-v0.6.2) - 2026-04-02
 
 ### Added
