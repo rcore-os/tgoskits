@@ -208,6 +208,8 @@ fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> StarryResult<S
     let output = runtime.task_output();
     let input_source = input.poll_source();
     let output_source = output.poll_source();
+    let inherited_baudrate =
+        (!runtime.supports_baudrate_changes()).then_some(info.initial_baudrate);
     let backend = Arc::new(SerialBackend {
         name,
         tty_name: tty_name.clone(),
@@ -220,7 +222,7 @@ fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> StarryResult<S
         started: AtomicBool::new(is_console),
     });
 
-    let terminal = Arc::new(Terminal::default());
+    let terminal = Arc::new(Terminal::new(inherited_baudrate));
     let entry_backend = backend.clone();
     let tty = Tty::new(
         terminal,
@@ -255,10 +257,11 @@ impl SerialBackend {
         if self.started.load(Ordering::Acquire) {
             return Ok(());
         }
-        let result = self
-            .runtime
-            .start(Config::new().baudrate(startup_baudrate(self.runtime.info().initial_baudrate)));
-        if let Err(err) = result {
+        let mut config = Config::new();
+        if self.runtime.supports_baudrate_changes() {
+            config = config.baudrate(startup_baudrate(self.runtime.info().initial_baudrate));
+        }
+        if let Err(err) = self.runtime.start(config) {
             warn!(
                 "{} failed to start serial port {}: {:?}",
                 self.tty_name, self.name, err
@@ -277,6 +280,39 @@ impl SerialBackend {
     fn drain_rx(&self, out: &mut [RxItem]) -> usize {
         self.input.drain(out)
     }
+
+    fn termios_change(&self, old: &Termios2, new: &Termios2) -> (Option<Config>, Option<bool>) {
+        let can_set_baudrate = self.runtime.supports_baudrate_changes();
+        let line_changed = (can_set_baudrate && old.baudrate() != new.baudrate())
+            || old.data_bits() != new.data_bits()
+            || old.stop_bits() != new.stop_bits()
+            || old.parity() != new.parity();
+        let dtr_rts = (!can_set_baudrate && old.requests_hangup() != new.requests_hangup())
+            .then(|| !new.requests_hangup());
+        let config = line_changed.then(|| serial_config_from_termios(new, can_set_baudrate));
+        (config, dtr_rts)
+    }
+
+    fn apply_termios_change(
+        &self,
+        config: Option<Config>,
+        dtr_rts: Option<bool>,
+        drain: bool,
+        publish: impl FnOnce(),
+    ) -> StarryResult<()> {
+        self.ensure_started()?;
+        if let Some(asserted) = dtr_rts {
+            self.output.reconfigure_with_dtr_rts(
+                config.unwrap_or_default(),
+                asserted,
+                drain,
+                publish,
+            )?;
+        } else {
+            self.output.reconfigure(config, drain, publish)?;
+        }
+        Ok(())
+    }
 }
 
 fn startup_baudrate(current: u32) -> u32 {
@@ -287,7 +323,7 @@ fn startup_baudrate(current: u32) -> u32 {
     }
 }
 
-fn serial_config_from_termios(termios: &Termios2) -> Config {
+fn serial_config_from_termios(termios: &Termios2, supports_baudrate_changes: bool) -> Config {
     let mut config = Config::new()
         .data_bits(match termios.data_bits() {
             5 => DataBits::Five,
@@ -307,17 +343,10 @@ fn serial_config_from_termios(termios: &Termios2) -> Config {
             TermiosParity::Mark => Parity::Mark,
             TermiosParity::Space => Parity::Space,
         });
-    if let Some(baudrate) = termios.baudrate() {
+    if supports_baudrate_changes && let Some(baudrate) = termios.baudrate() {
         config = config.baudrate(baudrate);
     }
     config
-}
-
-fn termios_requires_reconfigure(old: &Termios2, new: &Termios2) -> bool {
-    old.baudrate() != new.baudrate()
-        || old.data_bits() != new.data_bits()
-        || old.stop_bits() != new.stop_bits()
-        || old.parity() != new.parity()
 }
 
 impl TtyRead for SerialReader {
@@ -397,14 +426,12 @@ impl TtyWrite for SerialWriter {
     }
 
     fn termios_changed(&self, old: &Termios2, new: &Termios2) -> StarryResult<()> {
-        if !termios_requires_reconfigure(old, new) {
+        let (config, dtr_rts) = self.backend.termios_change(old, new);
+        if config.is_none() && dtr_rts.is_none() {
             return Ok(());
         }
-        self.backend.ensure_started()?;
-        Ok(self
-            .backend
-            .output
-            .reconfigure(Some(serial_config_from_termios(new)), false, || {})?)
+        self.backend
+            .apply_termios_change(config, dtr_rts, false, || {})
     }
 
     fn update_termios(
@@ -414,10 +441,9 @@ impl TtyWrite for SerialWriter {
         drain: bool,
         publish: &mut dyn FnMut(),
     ) -> StarryResult<()> {
-        self.backend.ensure_started()?;
-        let config =
-            termios_requires_reconfigure(old, new).then(|| serial_config_from_termios(new));
-        Ok(self.backend.output.reconfigure(config, drain, publish)?)
+        let (config, dtr_rts) = self.backend.termios_change(old, new);
+        self.backend
+            .apply_termios_change(config, dtr_rts, drain, publish)
     }
 }
 

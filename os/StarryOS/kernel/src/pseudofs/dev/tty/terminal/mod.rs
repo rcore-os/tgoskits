@@ -5,7 +5,7 @@ use core::sync::atomic::AtomicU32;
 
 use bytemuck::AnyBitPattern;
 
-use crate::sync::RawSpinLock;
+use crate::{StarryError, StarryResult, sync::RawSpinLock};
 
 pub mod job;
 #[cfg(all(test, axtest))]
@@ -27,9 +27,15 @@ pub struct Terminal {
     pub window_size: RawSpinLock<WindowSize>,
     pub termios: RawSpinLock<Arc<termios::Termios2>>,
     pub pty_number: AtomicU32,
+    inherited_baudrate: Option<u32>,
 }
 impl Default for Terminal {
     fn default() -> Self {
+        Self::new(None)
+    }
+}
+impl Terminal {
+    pub(super) fn new(inherited_baudrate: Option<u32>) -> Self {
         Self {
             job_control: job::JobControl::new(),
             window_size: RawSpinLock::new(WindowSize {
@@ -40,13 +46,30 @@ impl Default for Terminal {
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             }),
-            termios: RawSpinLock::new(Arc::new(termios::Termios2::default())),
+            termios: RawSpinLock::new(Arc::new(
+                inherited_baudrate
+                    .map(termios::Termios2::with_inherited_baudrate)
+                    .unwrap_or_default(),
+            )),
             pty_number: AtomicU32::new(0),
+            inherited_baudrate,
         }
     }
-}
-impl Terminal {
+
     pub fn load_termios(&self) -> Arc<termios::Termios2> {
         self.termios.lock_irqsave().clone()
+    }
+
+    pub(super) fn prepare_termios(
+        &self,
+        mut termios: termios::Termios2,
+        legacy: bool,
+    ) -> StarryResult<Arc<termios::Termios2>> {
+        if let Some(baudrate) = self.inherited_baudrate
+            && !termios.retain_inherited_baudrate(baudrate, legacy)
+        {
+            return Err(StarryError::InvalidInput);
+        }
+        Ok(Arc::new(termios))
     }
 }

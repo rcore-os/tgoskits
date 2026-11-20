@@ -250,6 +250,23 @@ cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-tty-termios-
 以及串口 output flush 的断言，后者保持 raw mode 下 `poll()` 超时的原有成功/失败条件。
 `tty-console-input-burst` 继续作为独立 shell-injection case，不迁入 grouped runner。
 
+`tty-inherited-baudrate` 使用专用设备树，将 RISC-V UART 的输入时钟标为未知，并通过 `current-speed` 声明 115200。用例对 `/dev/ttyS0` 直接调用 `SYS_ioctl`，检查旧版 `TCSETS` 选择输入或输出 `BOTHER` 时能修改帧格式并保留速率。`TCSETS2` 请求不同速率时必须返回 `EINVAL`，随后读回的设置保持原值。用例还会检查 `TCSETS` 进入 `B0` 挂断后的速率读回，并用 `TCSETS2` 恢复固件提供的波特率。RISC-V QEMU 套件会自动发现该用例。
+
+```bash
+cargo xtask starry test qemu --arch riscv64 -c qemu/standard/tty-inherited-baudrate
+```
+
+`virt-uart.dtb` 来自 QEMU 11.0.2 的 `virt` 设备树。修改模拟器配置或重建该文件时，使用与用例相同的 CPU、内存及 hart 数量，并移除生成时的随机种子。
+
+```bash
+dtb=test-suit/starryos/qemu/standard/tty-inherited-baudrate/virt-uart.dtb
+qemu-system-riscv64 -machine "virt,dumpdtb=$dtb" -cpu rv64 -m 512M -smp 4 -nographic
+fdtput -t u "$dtb" /soc/serial@10000000 clock-frequency 0
+fdtput -t u "$dtb" /soc/serial@10000000 current-speed 115200
+fdtput -d "$dtb" /chosen rng-seed
+dtc -q -I dtb -O dtb -o "$dtb" "$dtb"
+```
+
 如果某个 C 子测例只支持部分架构，优先使用 `system/common/starry_arch_filter.cmake`
 生成 skip 二进制。skip 输出要清楚说明目标和原因，并返回 0。
 

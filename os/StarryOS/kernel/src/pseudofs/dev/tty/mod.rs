@@ -304,9 +304,11 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     // Note: vm_read() must complete before acquiring the terminal lock.
                     // Faultable user memory access inside an atomic context (preemption
                     // disabled) will call might_sleep() in handle_page_fault and panic.
-                    let termios =
-                        Arc::new(Termios2::new((arg as *const Termios).vm_read(current)?));
+                    let termios = (arg as *const Termios).vm_read(current)?;
                     let _update = self.termios_update.lock();
+                    let termios = self
+                        .terminal
+                        .prepare_termios(Termios2::new(termios), true)?;
                     apply_termios_update(
                         &self.writer,
                         &self.terminal,
@@ -319,8 +321,9 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 }
                 TCSETS2 | TCSETSF2 | TCSETSW2 => {
                     self.check_termios_change(current)?;
-                    let termios = Arc::new((arg as *const Termios2).vm_read(current)?);
+                    let termios = (arg as *const Termios2).vm_read(current)?;
                     let _update = self.termios_update.lock();
+                    let termios = self.terminal.prepare_termios(termios, false)?;
                     apply_termios_update(
                         &self.writer,
                         &self.terminal,

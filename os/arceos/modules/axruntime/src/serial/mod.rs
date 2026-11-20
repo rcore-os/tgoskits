@@ -227,6 +227,7 @@ fn try_enter_irq_registers<'a, E: ?Sized>(
 struct RuntimeShared {
     index: usize,
     info: SerialDeviceInfo,
+    supports_baudrate_changes: bool,
     owner_cpu: usize,
     #[cfg(feature = "fault-injection")]
     deferred_test_consumed: AtomicU8,
@@ -401,6 +402,11 @@ pub struct SerialRuntimeHandle {
 impl SerialRuntimeHandle {
     pub fn info(&self) -> &SerialDeviceInfo {
         &self.shared.info
+    }
+
+    /// Whether the UART can reprogram its baud rate.
+    pub fn supports_baudrate_changes(&self) -> bool {
+        self.shared.supports_baudrate_changes
     }
 
     /// Injects a diagnostic only after the real worker is blocked with an
@@ -690,10 +696,16 @@ impl SerialOutputBarrier {
 
     /// Applies configuration before allowing worker log extraction to resume.
     pub fn set_config(&self, config: Config) -> RuntimeResult {
+        self.apply_config(config, None)
+    }
+
+    fn apply_config(&self, config: Config, dtr_rts: Option<bool>) -> RuntimeResult {
         self.shared.ensure_started()?;
         self.shared
             .control
-            .submit(ControlOp::SetConfig(config), || self.shared.bridge.notify())
+            .submit(ControlOp::SetConfig { config, dtr_rts }, || {
+                self.shared.bridge.notify()
+            })
     }
 }
 
@@ -857,14 +869,44 @@ impl SerialTaskOutput {
         drain: bool,
         publish: impl FnOnce(),
     ) -> RuntimeResult {
+        self.reconfigure_port(
+            drain,
+            |barrier| match config {
+                Some(config) => barrier.set_config(config),
+                None => Ok(()),
+            },
+            publish,
+        )
+    }
+
+    /// Changes DTR and RTS together with the optional line configuration
+    /// updates before publishing the new terminal state.
+    pub fn reconfigure_with_dtr_rts(
+        &self,
+        config: Config,
+        asserted: bool,
+        drain: bool,
+        publish: impl FnOnce(),
+    ) -> RuntimeResult {
+        self.reconfigure_port(
+            drain,
+            |barrier| barrier.apply_config(config, Some(asserted)),
+            publish,
+        )
+    }
+
+    fn reconfigure_port(
+        &self,
+        drain: bool,
+        apply: impl FnOnce(&SerialOutputBarrier) -> RuntimeResult,
+        publish: impl FnOnce(),
+    ) -> RuntimeResult {
         let _output = self.shared.tty_output_lock.lock();
         let barrier = SerialOutputBarrier::new(self.shared.clone());
         if drain {
             barrier.wait_idle()?;
         }
-        if let Some(config) = config {
-            barrier.set_config(config)?;
-        }
+        apply(&barrier)?;
         publish();
         Ok(())
     }
@@ -1044,6 +1086,7 @@ fn build_runtime(
     let shared = Arc::new(RuntimeShared {
         index,
         info,
+        supports_baudrate_changes: port.supports_baudrate_changes(),
         owner_cpu: primary_cpu,
         #[cfg(feature = "fault-injection")]
         deferred_test_consumed: AtomicU8::new(0),

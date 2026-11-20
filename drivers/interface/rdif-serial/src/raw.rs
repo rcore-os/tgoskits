@@ -176,6 +176,15 @@ pub trait SplitUart: Sized {
 /// device IRQ delivery excluded. This is a device-serialization contract, not
 /// a memory-safety precondition.
 pub trait UartPort: Send + 'static {
+    /// Reports whether the runtime can program this port's baud rate.
+    ///
+    /// Implementations returning `false` can use a firmware-configured rate
+    /// and must preserve that rate when `Config::baudrate` is unset.
+    /// This immutable capability can be read before the port enters service.
+    fn supports_baudrate_changes(&self) -> bool {
+        true
+    }
+
     /// Initializes the UART while leaving every device interrupt source masked.
     ///
     /// On error, implementations must restore the configuration registers they
@@ -187,6 +196,19 @@ pub trait UartPort: Send + 'static {
     fn shutdown(&mut self);
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError>;
+
+    /// Applies a configuration and asserts or deasserts DTR and RTS.
+    ///
+    /// Returns `None` without applying the configuration if the port cannot
+    /// control these outputs. A rejected configuration leaves DTR and RTS
+    /// unchanged.
+    fn set_config_with_dtr_rts(
+        &mut self,
+        _config: &Config,
+        _asserted: bool,
+    ) -> Option<Result<(), ConfigError>> {
+        None
+    }
 
     /// Reads one normalized hardware sample without consulting IRQ state.
     fn read_rx(&mut self) -> Option<RxSample>;

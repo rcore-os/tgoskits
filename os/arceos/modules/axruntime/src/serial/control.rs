@@ -13,7 +13,10 @@ pub(super) enum ControlOp {
     Start(Config),
     AdoptFirmwareConsole,
     Shutdown,
-    SetConfig(Config),
+    SetConfig {
+        config: Config,
+        dtr_rts: Option<bool>,
+    },
     DiscardRx,
     DiscardTx,
 }

@@ -119,6 +119,7 @@ fn fixture() -> (SerialRuntimeHandle, SerialWorker, Arc<Wire>) {
             initial_baudrate: 115200,
             irq: None,
         },
+        supports_baudrate_changes: true,
         owner_cpu: 0,
         #[cfg(feature = "fault-injection")]
         deferred_test_consumed: AtomicU8::new(0),

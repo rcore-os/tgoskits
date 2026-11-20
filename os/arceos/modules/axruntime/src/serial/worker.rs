@@ -249,8 +249,8 @@ impl SerialWorker {
                 self.shutdown_port();
                 Ok(())
             }
-            ControlOp::SetConfig(config) => {
-                let result = self.set_config(config);
+            ControlOp::SetConfig { config, dtr_rts } => {
+                let result = self.set_config(config, *dtr_rts);
                 force_service |= result.is_ok();
                 result
             }
@@ -301,7 +301,7 @@ impl SerialWorker {
         self.pending_rx = None;
     }
 
-    fn set_config(&mut self, config: &Config) -> RuntimeResult {
+    fn set_config(&mut self, config: &Config, dtr_rts: Option<bool>) -> RuntimeResult {
         if !self.shared.started() {
             return Err(RuntimeError::SerialNotStarted);
         }
@@ -309,7 +309,13 @@ impl SerialWorker {
             .shared
             .with_port(|port| {
                 port.mask_all();
-                port.set_config(config).map_err(RuntimeError::from)
+                let result = match dtr_rts {
+                    Some(asserted) => port
+                        .set_config_with_dtr_rts(config, asserted)
+                        .ok_or(RuntimeError::OperationNotSupported)?,
+                    None => port.set_config(config),
+                };
+                result.map_err(RuntimeError::from)
             })
             .unwrap_or(Err(RuntimeError::SerialNotStarted));
         self.pending_rearm |= SerialEventSet::RX;
@@ -738,7 +744,7 @@ enum PendingTxSource {
 }
 
 fn config_must_wait_for_pending_log(op: &ControlOp, pending_log: bool) -> bool {
-    pending_log && matches!(op, ControlOp::SetConfig(_))
+    pending_log && matches!(op, ControlOp::SetConfig { .. })
 }
 
 const fn log_extraction_allowed(active_barriers: usize, pending_control: bool) -> bool {
@@ -1172,14 +1178,14 @@ mod tests {
 
     #[test]
     fn configuration_waits_for_the_current_log_record() {
-        assert!(config_must_wait_for_pending_log(
-            &ControlOp::SetConfig(Config::new()),
-            true
-        ));
-        assert!(!config_must_wait_for_pending_log(
-            &ControlOp::SetConfig(Config::new()),
-            false
-        ));
+        for dtr_rts in [None, Some(false)] {
+            let op = ControlOp::SetConfig {
+                config: Config::new(),
+                dtr_rts,
+            };
+            assert!(config_must_wait_for_pending_log(&op, true));
+            assert!(!config_must_wait_for_pending_log(&op, false));
+        }
         assert!(!config_must_wait_for_pending_log(
             &ControlOp::DiscardRx,
             true

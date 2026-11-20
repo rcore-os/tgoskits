@@ -121,7 +121,13 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         if matches!(compatible, "ns16550a" | "ns16550") {
             let clock_freq = prop_u32(node, "clock-frequency").unwrap_or(24_000_000);
             let raw = serial_ns16550::Ns16550::new_mmio(mmio_base, clock_freq, ns16550_width);
-            serial = Some(erase_uart(raw));
+            let mut uart = erase_uart(raw);
+            if clock_freq == 0 {
+                // The firmware-reported baud does not supply the input clock
+                // needed to program a different divisor.
+                uart.hardware.initial_baudrate = prop_u32(node, "current-speed").unwrap_or(0);
+            }
+            serial = Some(uart);
             break;
         }
     }

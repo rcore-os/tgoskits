@@ -1,0 +1,19 @@
+args = [
+    "-machine", "virt",
+    "-nographic",
+    "-cpu", "rv64",
+    "-m", "512M",
+    "-smp", "4",
+    "-dtb", "${workspace}/test-suit/starryos/qemu/standard/tty-inherited-baudrate/virt-uart.dtb",
+    "-device", "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img",
+]
+uefi = false
+to_bin = true
+fail_regex = ['(?m)^STARRY_TTY_INHERITED_BAUDRATE_FAILED:', '(?i)\bpanic(?:ked)?\b', 'Failed to bind console tty']
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/tty-inherited-baudrate"
+success_regex = ['(?m)^STARRY_TTY_INHERITED_BAUDRATE_PASSED\s*$']

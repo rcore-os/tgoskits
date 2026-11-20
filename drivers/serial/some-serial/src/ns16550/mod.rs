@@ -265,6 +265,10 @@ impl<T: Kind> UartIrq for Ns16550Irq<T> {
 }
 
 impl<T: Kind> UartPort for Ns16550<T> {
+    fn supports_baudrate_changes(&self) -> bool {
+        self.clock_freq != 0
+    }
+
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
         let original_ier: InterruptEnableFlags = self.read_flags(UART_IER);
         self.write_flags(UART_IER, InterruptEnableFlags::empty());
@@ -313,6 +317,21 @@ impl<T: Kind> UartPort for Ns16550<T> {
             self.set_parity_internal(parity)?;
         }
         Ok(())
+    }
+
+    fn set_config_with_dtr_rts(
+        &mut self,
+        config: &Config,
+        asserted: bool,
+    ) -> Option<Result<(), ConfigError>> {
+        Some(self.set_config(config).map(|()| {
+            let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
+            mcr.set(
+                ModemControlFlags::DATA_TERMINAL_READY | ModemControlFlags::REQUEST_TO_SEND,
+                asserted,
+            );
+            self.write_flags(UART_MCR, mcr);
+        }))
     }
 
     fn read_rx(&mut self) -> Option<RxSample> {
@@ -408,7 +427,11 @@ impl<T: Kind> SplitUart for Ns16550<T> {
         UartInfo {
             name: "NS16550 UART",
             register_base: self.base.get_base(),
-            initial_baudrate: self.base.baudrate(self.clock_freq),
+            initial_baudrate: if self.clock_freq == 0 {
+                0
+            } else {
+                self.base.baudrate(self.clock_freq)
+            },
         }
     }
 
@@ -1024,6 +1047,50 @@ mod tests {
         let mut parts = uart.split();
         parts.control.startup(&Config::new()).unwrap();
         parts
+    }
+
+    #[test]
+    fn fixed_rate_modem_control_preserves_divisor_and_other_outputs() {
+        let (_guard, mut uart) = serial();
+        uart.clock_freq = 0;
+        let mut parts = started_parts(uart);
+        let outputs = ModemControlFlags::DATA_TERMINAL_READY | ModemControlFlags::REQUEST_TO_SEND;
+        let preserved = ModemControlFlags::OUT_1 | ModemControlFlags::OUT_2;
+        parts.control.write_flags(UART_MCR, preserved | outputs);
+        DLL_REG.store(0x23, Ordering::SeqCst);
+        DLH_REG.store(0x01, Ordering::SeqCst);
+        let config = Config::new();
+
+        assert_eq!(
+            parts
+                .control
+                .set_config_with_dtr_rts(&config.clone().baudrate(9600), false),
+            Some(Err(ConfigError::InvalidBaudrate))
+        );
+        assert_eq!(
+            parts.control.read_flags::<ModemControlFlags>(UART_MCR),
+            preserved | outputs
+        );
+
+        assert_eq!(
+            parts.control.set_config_with_dtr_rts(&config, false),
+            Some(Ok(()))
+        );
+        parts.control.rearm(SerialEventSet::RX);
+        assert_eq!(
+            parts.control.read_flags::<ModemControlFlags>(UART_MCR),
+            preserved
+        );
+        assert_eq!(
+            parts.control.set_config_with_dtr_rts(&config, true),
+            Some(Ok(()))
+        );
+        assert_eq!(
+            parts.control.read_flags::<ModemControlFlags>(UART_MCR),
+            preserved | outputs
+        );
+        assert_eq!(DLL_REG.load(Ordering::SeqCst), 0x23);
+        assert_eq!(DLH_REG.load(Ordering::SeqCst), 0x01);
     }
 
     #[test]
