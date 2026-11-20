@@ -38,3 +38,47 @@ pub(super) fn partition(checks: &[ClippyCheck], count: usize) -> anyhow::Result<
     }
     Ok(shards)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::checks::clippy::check::ClippyCheckKind;
+
+    #[test]
+    fn partition_preserves_complete_ordered_work_without_empty_shards() {
+        let checks = (0..100)
+            .map(|id| ClippyCheck {
+                package: if id < 90 { "large" } else { "small" }.into(),
+                kind: ClippyCheckKind::Feature(format!("capability-{id}")),
+                target: Some("fixture-target".into()),
+                env: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        for count in [1, 2, 4, 256] {
+            let shards = partition(&checks, count).unwrap();
+            assert!(!shards.is_empty() && shards.len() <= count);
+            assert!(shards.iter().all(|shard| !shard.is_empty()));
+            assert!(
+                shards
+                    .iter()
+                    .all(|shard| shard.windows(2).all(|p| p[0] < p[1]))
+            );
+            let mut ids = shards.iter().flatten().copied().collect::<Vec<_>>();
+            ids.sort_unstable();
+            assert_eq!(ids, (0..checks.len()).collect::<Vec<_>>());
+            assert_eq!(shards, partition(&checks, count).unwrap());
+        }
+        assert!(
+            partition(&checks, 4)
+                .unwrap()
+                .iter()
+                .filter(|shard| shard.iter().any(|&id| id < 90))
+                .count()
+                > 1
+        );
+        assert!(partition(&[], 4).is_err());
+        for count in [0, 257] {
+            assert!(partition(&checks, count).is_err());
+        }
+    }
+}
