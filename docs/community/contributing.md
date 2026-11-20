@@ -224,7 +224,7 @@ git checkout -b feature/your-feature-name
 
 | 受影响范围 | 定向命令示例 |
 |------|------|
-| Rust 软件包 | `cargo xtask clippy --package <软件包>` 或 `cargo xtask clippy --since <引用>` |
+| Rust 软件包 | `cargo xtask clippy --package <软件包>`（本地）或 `cargo xtask clippy --all`（全量） |
 | QEMU 用例 | `cargo xtask starry test qemu --arch <架构> -c <用例>` |
 | 实体板卡用例 | `cargo xtask starry test board --board <板卡> --test-case <用例>` |
 

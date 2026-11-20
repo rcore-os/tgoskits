@@ -21,7 +21,7 @@
 项目任务工具负责展开软件包选择、功能组合和目标矩阵，并统一汇总失败结果；本地验证应使用这些稳定入口。
 
 - 按实际改动选择能覆盖受影响行为、功能组合和目标的验证，完成本节及适用技能要求的检查。检查通过后，仅在新增改动、失败或未解决风险需要时扩大或重复验证；纯文档或技能说明修改只检查差异、引用及适用的文档或技能校验，不运行 Rust 构建和测试。
-- 修改 Rust 代码后使用项目适配的 `cargo xtask clippy` 检查受影响的软件包及功能组合。未提交的改动使用 `cargo xtask clippy --package <软件包>`；`cargo xtask clippy --since <引用>` 只选择相对引用已提交的差异，使用前须确认本次改动已提交且选中受影响软件包。只有改动范围确实涉及全工作区时才使用 `cargo xtask clippy` 或 `cargo xtask clippy --all`，不得用原生 `cargo clippy` 命令代替。
+- 修改 Rust 代码后使用项目适配的 `cargo xtask clippy` 检查受影响的软件包及功能组合。本地定向检查使用 `cargo xtask clippy --package <软件包>`；正式 CI 使用全部支持包的完整矩阵，Clippy 不再提供 `--since` 增量选包。只有改动范围确实涉及全工作区时才使用 `cargo xtask clippy` 或 `cargo xtask clippy --all`，不得用原生 `cargo clippy` 命令代替。
 - 改动需要标准库测试证明行为时，使用 `cargo xtask test --since <引用>` 验证受影响的软件包，并确认本次改动已提交且相应软件包被选中。直接修改 `scripts/test/std_crates.csv` 白名单时，白名单路径本身不会被 `--since` 选中；按 `update-std-tests` 验证变更条目。该入口不支持按软件包选择，不得用原生 `cargo test` 命令代替。
 - 不得通过增加 `allow` 属性来回避静态检查警告；除非用户明确要求，否则应修复根因。
 - 编辑 Rust 代码后运行 `cargo fmt`。
