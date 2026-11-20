@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/axivc-v0.1.1...axivc-v0.2.0) - 2026-11-20
+
+### Added
+
+- *(ivc)* add fragmented Message V1 full-duplex transport ([#2068](https://github.com/rcore-os/tgoskits/pull/2068))
+
+### Other
+
+- *(virtualization)* remove obsolete axci integration ([#2542](https://github.com/rcore-os/tgoskits/pull/2542))
+
 ### Added
 
 - Added allocation-free Message V1 framing with nonblocking fragmented send,

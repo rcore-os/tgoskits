@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.7.0...rockchip-npu-v0.7.1) - 2026-11-20
+
+### Other
+
+- *(test)* organize Starry and AxVisor suites and reduce test boots ([#2813](https://github.com/rcore-os/tgoskits/pull/2813))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.6.0...rockchip-npu-v0.7.0) - 2026-09-18
 
 ### Fixed
