@@ -7,7 +7,7 @@ pub(super) struct ClippyCargoInvocation {
     pub(super) env: Vec<(String, String)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) enum ClippyCheckKind {
     Base,
     Feature(String),
@@ -18,7 +18,7 @@ pub(super) enum ClippyCheckKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) struct ClippyCheck {
     pub(super) package: String,
     pub(super) kind: ClippyCheckKind,

@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
-WORKSPACE_MANIFEST = WORKSPACE_ROOT / "Cargo.toml"
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
 BENCHMARKS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/benchmarks.yml"
 DOCS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/docs.yml"
@@ -98,28 +97,8 @@ def main() -> int:
         require_contains(errors, concurrency, fragment, message)
 
     pull_request_paths = list_items_in_order(pull_request, "paths", 4)
-    if not pull_request_paths or pull_request_paths[-1] != "!**/*.md":
-        errors.append("the Markdown exclusion must be the final pull_request path rule")
-    missing_roots = sorted(
-        f"{root}/**"
-        for root in workspace_source_roots()
-        if f"{root}/**" not in pull_request_paths
-    )
-    if missing_roots:
-        errors.append(
-            "pull_request paths omit workspace roots: " + ", ".join(missing_roots)
-        )
-    for workflow_path in (
-        ".github/workflows/starry-apps.yml",
-        ".github/workflows/axvisor-nightly.yml",
-        ".github/workflows/benchmarks.yml",
-        ".github/workflows/docs.yml",
-    ):
-        if workflow_path not in pull_request_paths:
-            errors.append(
-                f"pull_request paths must include {workflow_path} so workflow-only "
-                "changes run CI routing validation"
-            )
+    if pull_request_paths != ["**", "!docs/docs/**", "!docs/blog/**"]:
+        errors.append("pull_request paths must include unknown and future workspace inputs, excluding only static docs")
     if "PR_HEAD_REPOSITORY_OWNER" in ci_workflow:
         errors.append("runner planning must not use the pull request source owner")
 
@@ -843,14 +822,6 @@ def main() -> int:
     )
 
     return report(errors)
-
-
-def workspace_source_roots() -> set[str]:
-    manifest = WORKSPACE_MANIFEST.read_text(encoding="utf-8")
-    members = manifest.split("members = [", maxsplit=1)[1].split("]", maxsplit=1)[0]
-    package_paths = re.findall(r'^\s+"([^"]+)",?$', members, flags=re.MULTILINE)
-    package_paths.extend(re.findall(r'\bpath\s*=\s*"([^"]+)"', manifest))
-    return {Path(package_path).parts[0] for package_path in package_paths}
 
 
 def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
