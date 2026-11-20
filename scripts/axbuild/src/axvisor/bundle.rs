@@ -27,6 +27,8 @@ pub(crate) struct ResourceInputs {
     pub(crate) vm_configs: Option<Vec<PathBuf>>,
     pub(crate) busybox_initramfs: Option<String>,
     pub(crate) ovmf_firmware: Option<String>,
+    #[serde(default)]
+    pub(crate) ivshmem_smoke: bool,
 }
 /// ostool-server rejects session-file uploads above 64 MiB, and board FIT
 /// images also carry the host kernel. Once the payload approaches that

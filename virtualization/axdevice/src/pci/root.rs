@@ -19,8 +19,8 @@ use axdevice_base::DeviceId;
 #[cfg(target_arch = "x86_64")]
 use super::config_layout::CONFIG_SPACE_SIZE;
 use super::{
-    EndpointRouteToken, FOUR_GIB, PciBarIndex, PciBdf, PciCommandState, PciConfigReadEffect,
-    PciConfigWriteEffect, PciError, PciResult, ResolvedPciTopology,
+    EndpointRouteToken, FOUR_GIB, PciBarDecodePolicy, PciBarIndex, PciBdf, PciCommandState,
+    PciConfigReadEffect, PciConfigWriteEffect, PciError, PciResult, ResolvedPciTopology,
     config::{BarWriteAction, FunctionState},
     config_layout::{
         CONFIG_COMMAND_OFFSET, CONFIG_COMMAND_SIZE, CONFIG_STATUS_OFFSET, STATUS_INTERRUPT_PENDING,
@@ -53,6 +53,13 @@ pub(crate) enum PciConfigWriteOutcome {
     CommandChanged {
         token: Option<EndpointRouteToken>,
         command: PciCommandState,
+    },
+    /// A guest BAR relocation was accepted; the bound endpoint re-derives
+    /// any direct mappings outside the root state lock.
+    BarRelocated {
+        token: Option<EndpointRouteToken>,
+        bar: PciBarIndex,
+        gpa: u64,
     },
 }
 
@@ -189,9 +196,13 @@ impl PciRootState {
         value: u64,
     ) -> PciResult {
         match self.prepare_write_config(bdf, offset, width, value)? {
-            PciConfigWriteOutcome::Complete | PciConfigWriteOutcome::CommandChanged { .. } => {
-                Ok(())
-            }
+            PciConfigWriteOutcome::Complete
+            | PciConfigWriteOutcome::CommandChanged { .. }
+            // The guest-facing frontends always write config through the
+            // routed `*_with_context` binding APIs, which deliver the
+            // relocation notification; this direct root API has no router
+            // access, so the accepted relocation stands without one.
+            | PciConfigWriteOutcome::BarRelocated { .. } => Ok(()),
             PciConfigWriteOutcome::Effect { .. } => Err(PciError::ConfigEffectUnavailable {
                 detail: "an endpoint binding is required for this config write",
             }),
@@ -352,14 +363,36 @@ impl PciRootState {
                             state.functions[function_index].apply_probe(bar)
                         }
                         BarWriteAction::Relocate { bar, candidate } => {
-                            let accepted = state.bar_address_available(
-                                self.topology.memory_aperture(),
-                                function_index,
-                                bar,
-                                candidate,
-                            );
+                            let target = &state.functions[function_index].bars()[bar];
+                            let accepted = match target.decode_policy() {
+                                PciBarDecodePolicy::Fixed => candidate == target.planned_address(),
+                                PciBarDecodePolicy::RelocatableWithinHostAperture => state
+                                    .bar_address_available(
+                                        self.topology.memory_aperture(),
+                                        function_index,
+                                        bar,
+                                        candidate,
+                                    ),
+                            };
                             state.functions[function_index]
                                 .finish_relocation(bar, accepted.then_some(candidate));
+                            if accepted {
+                                let token = state
+                                    .bindings
+                                    .get(&bdf)
+                                    .and_then(EndpointRouteToken::snapshot_if_admitted);
+                                let bar = PciBarIndex::new(bar as u8).map_err(|_| {
+                                    PciError::InvalidAddress {
+                                        component: "BAR index",
+                                        value: bar as u64,
+                                    }
+                                })?;
+                                return Ok(PciConfigWriteOutcome::BarRelocated {
+                                    token,
+                                    bar,
+                                    gpa: candidate,
+                                });
+                            }
                         }
                     }
                     return Ok(PciConfigWriteOutcome::Complete);

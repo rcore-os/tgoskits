@@ -108,6 +108,7 @@ pub struct AxVMConfig {
     serial_backend_factory: Arc<dyn SerialBackendFactory>,
     virtual_device_requests: Vec<VirtualDeviceRequest>,
     virtual_device_catalog: Arc<crate::ConfiguredDeviceCatalog>,
+    ivshmem_link_registry: Option<Arc<crate::IvshmemLinkRegistry>>,
 }
 
 /// Parameters used to build an [`AxVMConfig`].
@@ -134,6 +135,8 @@ pub struct AxVMConfigParams {
     pub virtual_device_requests: Vec<VirtualDeviceRequest>,
     /// Code-registered factories available to this VM.
     pub virtual_device_catalog: Arc<crate::ConfiguredDeviceCatalog>,
+    /// Process-level ivshmem link registry shared by every VM of this AxVisor.
+    pub ivshmem_link_registry: Option<Arc<crate::IvshmemLinkRegistry>>,
 }
 
 impl AxVMConfig {
@@ -166,6 +169,7 @@ impl AxVMConfig {
                 .unwrap_or_else(|| Arc::new(NullSerialBackendFactory)),
             virtual_device_requests: params.virtual_device_requests,
             virtual_device_catalog: params.virtual_device_catalog,
+            ivshmem_link_registry: params.ivshmem_link_registry,
         }
     }
 
@@ -192,6 +196,11 @@ impl AxVMConfig {
     /// Returns configurations related to VM image load addresses.
     pub fn image_config(&self) -> &VMImageConfig {
         &self.image_config
+    }
+
+    /// Returns the injected ivshmem link registry, if any.
+    pub fn ivshmem_link_registry(&self) -> Option<Arc<crate::IvshmemLinkRegistry>> {
+        self.ivshmem_link_registry.clone()
     }
 
     /// Clears the configured DTB load address when no guest DTB is available.

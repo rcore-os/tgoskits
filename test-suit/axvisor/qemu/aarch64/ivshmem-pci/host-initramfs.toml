@@ -1,0 +1,7 @@
+vm_configs = [
+    "test-suit/axvisor/qemu/aarch64/ivshmem-pci/guests/linux-primary/guest.toml",
+    "test-suit/axvisor/qemu/aarch64/ivshmem-pci/configs/guests/arceos-ivshmem-pci/guest.toml",
+    "test-suit/axvisor/qemu/aarch64/ivshmem-pci/guests/linux-portable-peer/guest.toml",
+]
+busybox_initramfs = "tmp/axbuild/axvisor/qemu/aarch64/ivshmem-pci/initramfs-aarch64.cpio.gz"
+ivshmem_smoke = true

@@ -28,6 +28,7 @@ pub(crate) struct GuestPciHost {
     ecam_size: u64,
     memory_base: u64,
     memory_size: u64,
+    msi_parent: Option<u32>,
 }
 
 impl GuestPciHost {
@@ -60,7 +61,14 @@ impl GuestPciHost {
             ecam_size: ecam.1,
             memory_base: memory.0,
             memory_size: memory.1,
+            msi_parent: None,
         })
+    }
+
+    /// Associates the bus-zero requester IDs with the resolved guest ITS.
+    pub(crate) const fn with_msi_parent(mut self, phandle: u32) -> Self {
+        self.msi_parent = Some(phandle);
+        self
     }
 
     pub(crate) const fn ecam_base(self) -> u64 {
@@ -117,6 +125,24 @@ fn validate_tree(tree: &FdtTree, host: GuestPciHost) -> AxVmResult {
         .ok_or_else(|| AxVmError::invalid_config("guest FDT has no root node"))?;
     validate_cell_count(root_node.address_cells().unwrap_or(2), "#address-cells")?;
     validate_cell_count(root_node.size_cells().unwrap_or(1), "#size-cells")?;
+    if let Some(phandle) = host.msi_parent
+        && (phandle == 0
+            || !tree.inner().iter_node_ids().any(|node_id| {
+                tree.inner().node(node_id).is_some_and(|node| {
+                    node.compatibles().any(|name| name == "arm,gic-v3-its")
+                        && node.get_property("msi-controller").is_some()
+                        && node
+                            .get_property("phandle")
+                            .or_else(|| node.get_property("linux,phandle"))
+                            .and_then(Property::get_u32)
+                            == Some(phandle)
+                })
+            }))
+    {
+        return Err(AxVmError::invalid_config(
+            "PCI MSI parent must identify one guest GIC ITS",
+        ));
+    }
     let node_path = format!("/pci@{:x}", host.ecam_base());
     if tree.inner().get_by_path_id(&node_path).is_some() {
         return Err(AxVmError::invalid_config(format!(
@@ -193,6 +219,10 @@ fn add_host_node(tree: &mut FdtTree, host: GuestPciHost) -> AxVmResult {
     ranges.extend(encode_cells(host.memory_size(), 2)?);
     tree.set_property(node_id, cell_property("ranges", &ranges))?;
     tree.set_property(node_id, Property::new("dma-coherent", Vec::new()))?;
+    if let Some(phandle) = host.msi_parent {
+        // Bus zero contains 256 requester IDs (32 slots x 8 functions).
+        tree.set_property(node_id, cell_property("msi-map", &[0, phandle, 0, 256]))?;
+    }
     Ok(())
 }
 
@@ -259,6 +289,33 @@ mod tests {
         let mut tree = super::super::tree::FdtTree::from_bytes(bytes)?;
         install_pci_host(&mut tree, host)?;
         Ok(tree.finish())
+    }
+
+    #[test]
+    fn pci_requesters_map_to_the_selected_guest_its() {
+        let mut fdt = Fdt::from_bytes(&base_fdt()).unwrap();
+        let its = fdt.add_node(fdt.root_id(), Node::new("its@8080000"));
+        let node = fdt.node_mut(its).unwrap();
+        let mut compatible = Property::new("compatible", Vec::new());
+        compatible.set_string("arm,gic-v3-its");
+        node.set_property(compatible);
+        node.set_property(Property::new("msi-controller", Vec::new()));
+        let mut phandle = Property::new("phandle", Vec::new());
+        phandle.set_u32_ls(&[7]);
+        node.set_property(phandle);
+
+        let bytes = install_bytes(fdt.encode().as_ref(), Some(&host().with_msi_parent(7))).unwrap();
+        let guest = Fdt::from_bytes(&bytes).unwrap();
+        let pci = guest.get_by_path("/pci@b000000").unwrap();
+        assert_eq!(
+            pci.as_node()
+                .get_property("msi-map")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<Vec<_>>(),
+            [0, 7, 0, 256]
+        );
+        assert!(install_bytes(&base_fdt(), Some(&host().with_msi_parent(7))).is_err());
     }
 
     #[test]

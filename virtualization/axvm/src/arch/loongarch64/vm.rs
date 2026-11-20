@@ -85,7 +85,17 @@ impl LoongArch64Arch {
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm_id, config, &[])?;
+            resources.prepare_guest_address_space(
+                vm_id,
+                config,
+                &[],
+                &devices
+                    .devices()
+                    .direct_mappings()
+                    .iter()
+                    .map(|(_, mapping)| *mapping)
+                    .collect::<std::vec::Vec<_>>(),
+            )?;
             vcpus.setup(resources, config, build_vcpu_setup_config)?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
@@ -132,6 +142,7 @@ fn plan_devices(
         &controller_id,
         axdevice_base::InterruptControllerId::new(0),
         Some(super::pci_config::host_key()),
+        None,
     )?;
     let pch_pic_range = PCH_PIC_BASE as u64..(PCH_PIC_BASE + PCH_PIC_SIZE) as u64;
     let devices = VmDevicePlan::with_pci_host_for_vm(

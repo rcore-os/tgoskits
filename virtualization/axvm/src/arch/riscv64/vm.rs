@@ -45,7 +45,17 @@ impl Riscv64Arch {
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm_id, config, &[])?;
+            resources.prepare_guest_address_space(
+                vm_id,
+                config,
+                &[],
+                &devices
+                    .devices()
+                    .direct_mappings()
+                    .iter()
+                    .map(|(_, mapping)| *mapping)
+                    .collect::<std::vec::Vec<_>>(),
+            )?;
             vcpus.setup(resources, config, build_vcpu_setup_config)?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
@@ -83,6 +93,7 @@ fn plan_devices(config: &AxVMConfig) -> AxVmResult<RiscvVmPlan> {
         &mut nodes,
         &controller_id,
         axdevice_base::InterruptControllerId::new(0),
+        None,
         None,
     )?;
     Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(

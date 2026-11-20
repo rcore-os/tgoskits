@@ -315,6 +315,7 @@ impl Axvisor {
                 prepare_configured_busybox_initramfs(
                     &case_request,
                     &inputs,
+                    &build_group.cargo,
                     self.app.workspace_root(),
                     self.app.target_dir(),
                 )
