@@ -587,8 +587,18 @@ fn attach_resource(
 /// Destroy a closing file's context before dropping the GEM references that
 /// keep its attached resources/backing alive. VirtIO RDIF removes each
 /// accepted detach from its table before returning Busy, so retry is safe.
+///
+/// The retry loop is bounded by [`super::CLEANUP_BUDGET_NS`]: a host that
+/// wedges the submission queue (Busy forever) or stalls the teardown drain
+/// gets bounded patience instead of a permanent waiter on the closer's
+/// thread. Past the budget this warns once and escalates via
+/// `ax_gpu::mark_lost_for_cleanup()`: the device reset stops all DMA, so
+/// dropping the attached GEM refs and their backing afterwards cannot hand
+/// the wedged host memory it may still DMA — the same proof-or-reset
+/// boundary the driver applies to unconfirmable drains.
 fn destroy_context_before_drop(context: ContextHandle) {
     let mut logged = None;
+    let deadline = super::cleanup_deadline();
     loop {
         let result = ax_gpu::with_gpu_for_cleanup(|device| {
             let virgl = device.virgl().ok_or(GpuError::Unsupported)?;
@@ -600,11 +610,7 @@ fn destroy_context_before_drop(context: ContextHandle) {
         fence::on_gpu_completion();
         match result {
             Ok(Ok(())) => return,
-            Ok(Err(GpuError::Busy)) => {
-                if drm_kapi::task_runtime::sleep_ns(1_000_000).is_err() {
-                    drm_kapi::task_runtime::yield_now();
-                }
-            }
+            Ok(Err(GpuError::Busy)) => {}
             // RDIF guarantees DeviceLost means the device has stopped all DMA.
             Ok(Err(GpuError::DeviceLost)) | Err(GpuError::DeviceLost) => return,
             // The context was created by this adapter and cannot normally
@@ -616,19 +622,25 @@ fn destroy_context_before_drop(context: ContextHandle) {
                     log::error!("VirtGPU context cleanup stalled: {error}");
                     logged = Some(error);
                 }
-                if drm_kapi::task_runtime::sleep_ns(1_000_000).is_err() {
-                    drm_kapi::task_runtime::yield_now();
-                }
             }
             Err(error) => {
                 if error != GpuError::NotAvailable && logged != Some(GpuError::NotAvailable) {
                     log::error!("VirtGPU context cleanup unavailable: errno {error}");
                     logged = Some(GpuError::NotAvailable);
                 }
-                if drm_kapi::task_runtime::sleep_ns(1_000_000).is_err() {
-                    drm_kapi::task_runtime::yield_now();
-                }
             }
+        }
+        if drm_kapi::clock::now_ns() >= deadline {
+            ax_gpu::mark_lost_for_cleanup();
+            log::warn!(
+                "ax-drm: VirtGPU context cleanup for context {} exceeded the cleanup budget; \
+                 resetting the device to stop its DMA before the attached GEM refs are dropped",
+                context.id().get()
+            );
+            return;
+        }
+        if drm_kapi::task_runtime::sleep_ns(1_000_000).is_err() {
+            drm_kapi::task_runtime::yield_now();
         }
     }
 }

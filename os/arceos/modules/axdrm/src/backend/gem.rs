@@ -1210,8 +1210,20 @@ impl Drop for BoxedPrivate {
     }
 }
 
+/// Releases a GEM object's GPU resource from a closing context, waiting for
+/// the unref's completion proof on the caller's thread.
+///
+/// The whole release — submission retries and completion observation alike —
+/// is bounded by [`super::CLEANUP_BUDGET_NS`]: a host that wedges the
+/// submission queue or never pops the unref's completion token must not
+/// turn the closer's thread into a permanent waiter. Past the budget this
+/// warns once and escalates via `ax_gpu::mark_lost_for_cleanup()`: the
+/// device reset stops all DMA, which is what makes the caller's imminent
+/// backing release safe without any host proof — the same proof-or-reset
+/// boundary the driver applies to unconfirmable drains.
 pub(crate) fn release_resource(resource: BufferHandle) {
     let mut last_retry_error = None;
+    let deadline = super::cleanup_deadline();
     loop {
         let result = ax_gpu::with_gpu_for_cleanup(|gpu| gpu.release_buffer(resource));
         // Cleanup may drain completions without leaving another device IRQ.
@@ -1223,16 +1235,25 @@ pub(crate) fn release_resource(resource: BufferHandle) {
                 super::fence::on_gpu_completion();
                 match result {
                     Ok(()) | Err(GpuError::DeviceLost) => return,
-                    Err(GpuError::TimedOut) => continue,
+                    Err(GpuError::TimedOut) => {}
                     Err(error) => {
                         if last_retry_error != Some(error) {
                             log::debug!("retrying GPU GEM release wait after {error}");
                             last_retry_error = Some(error);
                         }
-                        if drm_kapi::task_runtime::sleep_ns(1_000_000).is_err() {
-                            drm_kapi::task_runtime::yield_now();
-                        }
                     }
+                }
+                if drm_kapi::clock::now_ns() >= deadline {
+                    ax_gpu::mark_lost_for_cleanup();
+                    log::warn!(
+                        "ax-drm: GEM release for resource {} exceeded the cleanup budget; \
+                         resetting the device to stop its DMA before the backing is released",
+                        resource.id().get()
+                    );
+                    return;
+                }
+                if drm_kapi::task_runtime::sleep_ns(1_000_000).is_err() {
+                    drm_kapi::task_runtime::yield_now();
                 }
             },
             Ok(Err(GpuError::Busy)) => {
@@ -1249,6 +1270,15 @@ pub(crate) fn release_resource(resource: BufferHandle) {
                     last_retry_error = Some(error);
                 }
             }
+        }
+        if drm_kapi::clock::now_ns() >= deadline {
+            ax_gpu::mark_lost_for_cleanup();
+            log::warn!(
+                "ax-drm: GEM release for resource {} exceeded the cleanup budget; resetting the \
+                 device to stop its DMA before the backing is released",
+                resource.id().get()
+            );
+            return;
         }
         if drm_kapi::task_runtime::sleep_ns(1_000_000).is_err() {
             drm_kapi::task_runtime::yield_now();

@@ -285,6 +285,17 @@ pub trait GpuDevice: DriverGeneric {
     /// `DeviceLost` ends every outstanding completion for this device.
     fn completion_status(&mut self, completion: Completion) -> Result<CompletionStatus, GpuError>;
 
+    /// Terminally resets the device. The reset stops all device DMA, ends
+    /// every outstanding completion, and makes each later operation fail
+    /// fast with [`GpuError::DeviceLost`].
+    ///
+    /// Owners that must free device-backed memory without a completion
+    /// proof — a close-path cleanup whose bounded wait budget expired on a
+    /// wedged host — call this first: the reset is the proof that the
+    /// device stopped touching the backing, so freeing it (and recycling
+    /// resources such as host BAR slots) cannot alias live device access.
+    fn mark_lost(&mut self);
+
     /// Take the single independently movable IRQ endpoint, if present.
     fn take_irq_endpoint(&mut self) -> Option<Box<dyn GpuIrqEndpoint>> {
         None
