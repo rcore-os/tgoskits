@@ -106,9 +106,12 @@ fn verify_three_runtime_load_biases(archive: &Path) {
     run_checked(
         Command::new("objcopy")
             .arg("--remove-relocations=.head.text.000.header")
+            // The raw trampoline must jump to the fixture stub even when the
+            // production kernel_entry happens to share its archive member.
+            .arg("--weaken-symbol=kernel_entry")
             .arg(&full_object)
             .arg(&fixture_object),
-        "remove non-executed image-header relocations from the loader fixture",
+        "isolate the raw entry from the real kernel entry and inactive image header",
     );
 
     let stub_source = temp.join("fixture.S");
@@ -124,11 +127,6 @@ kernel_entry:
         cmp %rdx, %rax
         sete %al
         movzbq %al, %rax
-        ret
-
-        .globl __x86_64_efi_pe_entry
-        .type __x86_64_efi_pe_entry,@function
-__x86_64_efi_pe_entry:
         ret
 
         .section .data.fixture,"aw",@progbits
@@ -274,10 +272,13 @@ fn extract_archive_member_with_symbol(archive: &Path, symbol: &str, output: &Pat
         assert!(extracted.status.success(), "failed to extract {member}");
         fs::write(output, extracted.stdout).expect("archive member must be written");
         let symbols = run_output(
-            Command::new("nm").arg(output),
+            Command::new("nm").arg("--defined-only").arg(output),
             "inspect someboot archive member",
         );
-        if symbols.contains(symbol) {
+        if symbols
+            .lines()
+            .any(|line| line.split_whitespace().last() == Some(symbol))
+        {
             return;
         }
     }

@@ -24,8 +24,6 @@ use aarch64_cpu::registers::*;
 use elx::*;
 pub(crate) use entry::_secondary_entry;
 pub use paging::Entry;
-#[cfg(efi)]
-pub(crate) use relocate::apply as relocate;
 
 use crate::{
     ArchTrait, SystimerArch,

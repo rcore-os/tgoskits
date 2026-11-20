@@ -23,6 +23,11 @@ name = "riscv64-bare"
 target = "riscv64gc-unknown-none-elf"
 
 [[package.metadata.clippy.configurations]]
+name = "riscv64-efi"
+target = "riscv64gc-unknown-none-elf"
+features = ["efi"]
+
+[[package.metadata.clippy.configurations]]
 name = "loongarch64-efi"
 target = "loongarch64-unknown-none-softfloat"
 features = ["efi"]
@@ -33,7 +38,7 @@ target = "loongarch64-unknown-none-softfloat"
 features = ["efi-handoff"]
 
 [features]
-efi = []
+efi = ["dep:uefi", "dep:uefi-raw"]
 boot-resources = []
 efi-handoff = ["efi", "boot-resources"]
 hv = []
@@ -89,6 +94,8 @@ x86 = "0.52"
 
 [target.'cfg(all(target_arch = "riscv64", not(target_os = "uefi")))'.dependencies]
 sbi-rt = { workspace = true, features = ["legacy"] }
+uefi = { workspace = true, optional = true }
+uefi-raw = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "uefi")'.dependencies]
 uefi.workspace = true

@@ -49,6 +49,12 @@ fn layout_info(cpu_count: usize) -> Result<LayoutInfo, PerCpuLayoutError> {
     )
 }
 
+#[cfg(all(efi, target_arch = "riscv64"))]
+pub(crate) fn early_cpu_area_layout(hart_id: usize) -> Result<Layout, PerCpuLayoutError> {
+    let count = super::cpu_iter::CpuIdIter::for_boot_hart(hart_id).count();
+    Ok(layout_info(count)?.allocation_layout)
+}
+
 fn calculate_layout(
     cpu_count: usize,
     requirements: LayoutRequirements,

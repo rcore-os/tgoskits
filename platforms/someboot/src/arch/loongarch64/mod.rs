@@ -20,6 +20,8 @@ pub(crate) use entry::_secondary_entry;
 use loongArch64::register::*;
 pub use paging::Entry as Pte;
 pub use relocate::relocate;
+#[cfg(efi)]
+pub(crate) use relocate::try_relocate;
 
 use crate::{ArchTrait, DCacheOp, SystimerArch, efi_stub, irq::IrqId, power::CpuOnError};
 

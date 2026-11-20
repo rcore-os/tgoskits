@@ -1,11 +1,10 @@
-use core::arch::asm;
+use core::{arch::asm, ops::Range};
 
-use num_align::NumAlign;
 use page_table_generic::MapConfig;
 
 use crate::{
     console::print_mapping,
-    mem::{__kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt},
+    mem::{__kimage_va, MemAttributes, NoMapError, PageTableInfo, PteConfig},
     smp::PerCpuMeta,
 };
 
@@ -77,90 +76,34 @@ pub fn enable_mmu_secondary(cpu_boot_info_paddr: usize) -> ! {
 fn setup_page_table() -> anyhow::Result<()> {
     println!("Mapping early memory regions...");
 
-    let k_start = crate::mem::kimage_range().start;
-    let mut table = crate::mem::mmu::new_boot_table();
-
-    let ram_pte = PteConfig {
-        read: true,
-        writable: true,
-        executable: true,
-        mem_attr: MemAttributes::Normal,
-        ..Default::default()
-    };
-
-    for memory in crate::fdt::memories() {
-        let start = memory.start;
-        let size = memory.len();
-        if size == 0 {
-            continue;
-        }
-
-        print_mapping("Ram", start, start, size);
-
-        table.map(&MapConfig {
-            vaddr: start.into(),
-            paddr: start.into(),
-            size,
-            pte: ram_pte,
-            allow_huge: true,
-            flush: false,
-        })?;
-
-        let high = __va(start) as usize;
-        if high != start {
-            print_mapping("Ram", high, start, size);
-            table.map(&MapConfig {
-                vaddr: high.into(),
-                paddr: start.into(),
-                size,
-                pte: ram_pte,
-                allow_huge: true,
-                flush: false,
-            })?;
-        }
-    }
-
-    let v_start = __kimage_va(k_start) as usize;
-    let size = crate::mem::kimage_range().len().align_up(2 * MB);
-
-    if !is_ram_alias(v_start, k_start) {
-        print_mapping("KImage", v_start, k_start, size);
-
-        table.map(&MapConfig {
-            vaddr: v_start.into(),
-            paddr: k_start.into(),
-            size,
-            pte: ram_pte,
-            allow_huge: true,
-            flush: false,
-        })?;
-    }
-
+    let excluded = crate::mem::NoMapRegions::current()?;
     let cpu_area_region = crate::smp::cpu_area_region();
-    let cpu_area_virtual_start = cpu_area_phys_to_virt(cpu_area_region.start) as usize;
-
-    if !is_ram_alias(cpu_area_virtual_start, cpu_area_region.start) {
+    let kernel = crate::mem::required_boot_mappings(
+        &excluded,
+        crate::mem::kimage_range(),
+        cpu_area_region.clone(),
+    )?;
+    let mut table = crate::mem::mmu::new_boot_table();
+    let mut map = |kind, mapping: MapConfig<PteConfig>| {
         print_mapping(
-            "PerCpu",
-            cpu_area_virtual_start,
-            cpu_area_region.start,
-            cpu_area_region.len(),
+            kind,
+            mapping.vaddr.as_usize(),
+            mapping.paddr.as_usize(),
+            mapping.size,
         );
-
-        table.map(&MapConfig {
-            vaddr: cpu_area_virtual_start.into(),
-            paddr: cpu_area_region.start.into(),
-            size: cpu_area_region.len(),
-            pte: PteConfig {
-                read: true,
-                writable: true,
-                executable: true,
-                mem_attr: MemAttributes::PerCpu,
-                ..Default::default()
-            },
-            allow_huge: true,
-            flush: false,
-        })?;
+        table.map(&mapping)
+    };
+    crate::fdt::for_each_memory(|range| {
+        for mapping in ram_mappings(range)? {
+            map("Ram", mapping)?;
+        }
+        Ok(())
+    })?;
+    if let Some(mapping) = kernel_mapping(kernel) {
+        map("KImage", mapping)?;
+    }
+    if let Some(mapping) = cpu_area_mapping(cpu_area_region)? {
+        map("PerCpu", mapping)?;
     }
 
     let tb_addr = table.root_paddr();
@@ -179,6 +122,103 @@ fn setup_page_table() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn boot_mapping(
+    virtual_start: usize,
+    physical: Range<usize>,
+    attr: MemAttributes,
+) -> MapConfig<PteConfig> {
+    MapConfig {
+        vaddr: virtual_start.into(),
+        paddr: physical.start.into(),
+        size: physical.len(),
+        pte: PteConfig {
+            read: true,
+            writable: true,
+            executable: true,
+            mem_attr: attr,
+            ..Default::default()
+        },
+        allow_huge: true,
+        flush: false,
+    }
+}
+
+fn ram_mappings(
+    range: Range<usize>,
+) -> Result<impl Iterator<Item = MapConfig<PteConfig>>, NoMapError> {
+    let start = range.start;
+    let high = start
+        .checked_add(super::addrspace::PAGE_OFFSET)
+        .ok_or(NoMapError::InvalidRange)?;
+    let identity = boot_mapping(start, range.clone(), MemAttributes::Normal);
+    let direct = (high != start).then(|| boot_mapping(high, range, MemAttributes::Normal));
+    Ok(core::iter::once(identity).chain(direct))
+}
+
+fn kernel_mapping(range: Range<usize>) -> Option<MapConfig<PteConfig>> {
+    let vaddr = __kimage_va(range.start) as usize;
+    (!is_ram_alias(vaddr, range.start)).then(|| boot_mapping(vaddr, range, MemAttributes::Normal))
+}
+
+fn cpu_area_mapping(range: Range<usize>) -> Result<Option<MapConfig<PteConfig>>, NoMapError> {
+    let vaddr = range
+        .start
+        .checked_add(super::addrspace::PERCPU_BASE)
+        .ok_or(NoMapError::InvalidRange)?;
+    Ok((!is_ram_alias(vaddr, range.start))
+        .then(|| boot_mapping(vaddr, range, MemAttributes::PerCpu)))
+}
+
 fn is_ram_alias(vaddr: usize, paddr: usize) -> bool {
-    vaddr == paddr || vaddr == __va(paddr) as usize
+    vaddr == paddr || paddr.checked_add(super::addrspace::PAGE_OFFSET) == Some(vaddr)
+}
+
+#[cfg(efi)]
+pub(crate) fn select_efi_boot_ram(
+    map: &[crate::mem::MemoryDescriptor],
+    excluded: &crate::mem::NoMapRegions,
+    kernel: Range<usize>,
+    fdt: core::alloc::Layout,
+    percpu: core::alloc::Layout,
+) -> Result<Range<usize>, NoMapError> {
+    use page_table_generic::TableMeta;
+
+    use crate::mem::{mmu::mapping_table_frames, ram};
+
+    type PageTable = super::Generic;
+    let page = PageTable::PAGE_SIZE;
+    let mut frames = 1usize;
+    let mut account = |mapping| {
+        frames = frames
+            .checked_add(
+                mapping_table_frames::<PageTable>(&mapping).ok_or(NoMapError::InvalidRange)?,
+            )
+            .ok_or(NoMapError::InvalidRange)?;
+        Ok(())
+    };
+    crate::fdt::for_each_efi_ram_region(map, excluded, |range| {
+        ram_mappings(range)?.try_for_each(&mut account)
+    })?;
+    if let Some(mapping) = kernel_mapping(kernel) {
+        account(mapping)?;
+    }
+
+    // The executable mapping walk can share an intermediate table with an
+    // earlier range. Summing per-range counts bounds allocation without
+    // materializing or touching page tables before firmware releases the RAM.
+    ram::select_range(map, |range| {
+        let fits = || {
+            let fdt = ram::planned_allocation(ram::initial_cursor(range.start), fdt, page)?;
+            let percpu = ram::planned_allocation(fdt.end, percpu, page)?;
+            let table_start = percpu.end;
+            let percpu_frames = match cpu_area_mapping(percpu).ok()? {
+                Some(mapping) => mapping_table_frames::<PageTable>(&mapping)?,
+                None => 0,
+            };
+            let table_bytes = frames.checked_add(percpu_frames)?.checked_mul(page)?;
+            Some(table_start.checked_add(table_bytes)? <= range.end)
+        };
+        fits() == Some(true)
+    })
+    .ok_or(NoMapError::Capacity)
 }

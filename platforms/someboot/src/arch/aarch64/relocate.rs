@@ -10,18 +10,22 @@ fn get_load_offset() -> i128 {
     sym_addr!(_head) as i128 - VM_LOAD_ADDRESS as i128
 }
 
-static mut OFFSET: i128 = 0;
-
 /// 应用 .rela.dyn 重定位
 pub fn apply() {
+    assert!(try_apply(), "invalid kernel relocation table");
+}
+
+pub(crate) fn try_apply() -> bool {
+    // SAFETY: the PC-relative linker bounds describe this live, uniquely
+    // owned image. Data and RELRO are writable during early relocation.
     unsafe {
-        OFFSET = get_load_offset();
         crate::elf::apply_reloc(
-            OFFSET,
+            get_load_offset(),
             ext_sym_addr!(__rela_dyn_begin) as _,
             ext_sym_addr!(__rela_dyn_end) as _,
             R_AARCH64_RELATIVE,
-        );
+            ext_sym_addr!(_srodata)..ext_sym_addr!(__cpu0_stack),
+        )
     }
 }
 

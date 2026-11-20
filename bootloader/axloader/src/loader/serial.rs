@@ -30,6 +30,7 @@ pub struct SerialBeacon {
     startup_error: Option<String>,
     pub state: Rc<RefCell<LoaderSerialStatus>>,
 }
+
 impl SerialBeacon {
     pub fn new(serial_id: alloc::string::String) -> Self {
         let selection = select_console();
@@ -79,7 +80,9 @@ impl SerialBeacon {
                 error.as_deref().unwrap_or("UART identity unavailable")
             );
         }
-        let frame = format!("\r\nAXLOADER-SERIAL/1 {serial_id}\r\n").into_bytes();
+        // LF is the protocol delimiter. Some firmware serial drivers expand
+        // LF to CRLF, so supplying CR here would produce an invalid CRCRLF.
+        let frame = format!("\nAXLOADER-SERIAL/1 {serial_id}\n").into_bytes();
         Self {
             handle,
             timer,
@@ -97,6 +100,7 @@ impl SerialBeacon {
             })),
         }
     }
+
     pub fn progress(&mut self) {
         if self.state.borrow().binding.is_some() || self.state.borrow().parameters.is_none() {
             self.offset = 0;
@@ -108,7 +112,7 @@ impl SerialBeacon {
         let due = self
             .timer
             .as_ref()
-            .is_some_and(|event| boot::check_event(event).is_ok());
+            .is_some_and(|event| boot::check_event(event).unwrap_or(false));
         // A failed write is retried on the next beacon tick. Successful partial
         // writes continue immediately so the frame remains bounded and timely.
         if (self.offset == 0 || self.write_failed) && !due {
@@ -148,6 +152,7 @@ impl SerialBeacon {
         }
     }
 }
+
 impl Drop for SerialBeacon {
     fn drop(&mut self) {
         if let Some(event) = self.timer.take() {
@@ -155,6 +160,7 @@ impl Drop for SerialBeacon {
         }
     }
 }
+
 fn timer() -> uefi::Result<Event> {
     // SAFETY: a timer without a callback retains no Rust context or pointer.
     let event = unsafe { boot::create_event(EventType::TIMER, Tpl::CALLBACK, None, None) }?;
@@ -164,6 +170,7 @@ fn timer() -> uefi::Result<Event> {
     }
     Ok(event)
 }
+
 fn open<P: ProtocolPointer + ?Sized>(handle: Handle) -> uefi::Result<ScopedProtocol<P>> {
     // SAFETY: callers use a temporary guard at CALLBACK, outside ConOut or network
     // callbacks. No protocol pointer/reference escapes the call. GetProtocol keeps
@@ -179,6 +186,7 @@ fn open<P: ProtocolPointer + ?Sized>(handle: Handle) -> uefi::Result<ScopedProto
         )
     }
 }
+
 fn parameters(handle: Handle) -> uefi::Result<(SerialParameters, Option<String>)> {
     // SAFETY: efi_main executes at APPLICATION. CALLBACK prevents competing serial
     // callbacks and is permitted for SerialIo. The guard restores TPL on every exit.
@@ -223,6 +231,7 @@ fn parameters(handle: Handle) -> uefi::Result<(SerialParameters, Option<String>)
         .map_err(|_| uefi::Error::from(Status::UNSUPPORTED))?;
     Ok((parameters, warning))
 }
+
 fn write_chunk(
     handle: Handle,
     bytes: &[u8],
