@@ -40,6 +40,12 @@ cargo xtask clippy --verify-results target/ci/clippy-plan.json \
 
 `CheckPlan::validate`和CI matrix生成都确认每个ID恰好分配一次。每项记录成功、失败或未执行，先失败则本分片后项停止。汇总拒绝错误身份、重复、缺组、缺项、失败或未执行；取消和超时不能被后续成功覆盖。
 
+### 2.3 自动回归保护
+
+`plan.rs`、`partition.rs`、`selection.rs`中的源码内单元测试由`cargo xtask test`标准入口执行，保护计划完整性、分组唯一性、结果身份及全部检查成功的规则。结果负例先建立完整有效的分组结果，再只修改一个条件；修改计划分配时重新计算摘要，确保漏项或重复确实由覆盖校验拒绝。临时Cargo workspace验证新增成员会被发现，不能在检查展开后整包消失。
+
+这些持续回归与一次性完整矩阵验收分别保留：正常全量通过证明当前检查实际执行，负例测试防止以后误删拒绝逻辑后仍被正常CI放行。
+
 ## 3. 工具分发
 
 `.github/workflows/clippy-checks.yml`负责规划、四组执行及汇总。每次构建一个当前SHA的tg-xtask分发副本，各job下载复用，不在随机runner寻找上次残留工具。

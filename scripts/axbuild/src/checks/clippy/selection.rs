@@ -139,3 +139,68 @@ pub(super) fn skip_unsupported_packages(packages: Vec<Package>) -> Vec<Package> 
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+    use crate::checks::clippy::expand::expand_clippy_checks;
+
+    #[test]
+    fn discovered_members_cannot_disappear_from_the_expanded_catalog() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = root.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[workspace]\nmembers=[\"members/*\"]\nresolver=\"3\"\n",
+        )
+        .unwrap();
+        let add_member = |name: &str| {
+            let path = root.path().join("members").join(name);
+            fs::create_dir_all(path.join("src")).unwrap();
+            fs::write(
+                path.join("Cargo.toml"),
+                format!(
+                    r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2024"
+[features]
+capability = []
+"#
+                ),
+            )
+            .unwrap();
+            fs::write(path.join("src/lib.rs"), "pub fn operation() {}\n").unwrap();
+        };
+        let metadata = || {
+            cargo_metadata::MetadataCommand::new()
+                .manifest_path(&manifest)
+                .no_deps()
+                .exec()
+                .unwrap()
+        };
+        add_member("existing-member");
+        let before = metadata();
+        let checks = expand_clippy_checks(&workspace_packages(&before), &before).unwrap();
+        validate_package_coverage(&workspace_packages(&before), &checks).unwrap();
+
+        // The unchanged wildcard must discover a new member without another list.
+        add_member("new-member");
+        let after = metadata();
+        let packages = workspace_packages(&after);
+        let error = validate_package_coverage(&packages, &checks)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing [new-member]"), "{error}");
+        let mut checks = expand_clippy_checks(&packages, &after).unwrap();
+        validate_package_coverage(&packages, &checks).unwrap();
+        assert!(checks.iter().any(|check| check.package == "new-member"));
+        checks[0].package = "not-a-member".into();
+        let error = validate_package_coverage(&packages, &checks)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unexpected [not-a-member]"), "{error}");
+    }
+}

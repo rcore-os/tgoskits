@@ -403,3 +403,235 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
     serde_json::from_slice(&fs::read(path).with_context(|| format!("read {}", path.display()))?)
         .with_context(|| format!("parse {}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::checks::clippy::check::ClippyCheckKind;
+
+    fn sign(plan: &mut CheckPlan) {
+        plan.digest =
+            hash(&serde_json::to_vec(&(SCHEMA, &plan.input, &plan.checks, &plan.shards)).unwrap());
+    }
+
+    fn valid_plan() -> CheckPlan {
+        let mut plan = CheckPlan {
+            schema_version: SCHEMA,
+            input: PlanInput {
+                revision: Some("fixture-revision".into()),
+                tracked_diff: "clean".into(),
+                rustc: "fixture-toolchain".into(),
+                configuration: "fixture-configuration".into(),
+            },
+            checks: (0..3)
+                .map(|id| ClippyCheck {
+                    package: format!("fixture-{id}"),
+                    kind: ClippyCheckKind::Base,
+                    target: None,
+                    env: Vec::new(),
+                })
+                .collect(),
+            shards: vec![vec![0, 2], vec![1]],
+            digest: String::new(),
+        };
+        sign(&mut plan);
+        plan
+    }
+
+    fn successful_result(plan: &CheckPlan, shard: usize) -> ShardResult {
+        ShardResult {
+            schema_version: SCHEMA,
+            plan_digest: plan.digest.clone(),
+            shard,
+            checks: plan.shards[shard - 1]
+                .iter()
+                .map(|&check_id| CheckResult {
+                    check_id,
+                    status: CheckStatus::Passed,
+                    elapsed_seconds: 0.0,
+                    error: None,
+                })
+                .collect(),
+            elapsed_seconds: 0.0,
+        }
+    }
+
+    fn publish_successful_results(plan: &CheckPlan, directory: &Path) {
+        for shard in 1..=plan.shards.len() {
+            write_json(
+                &directory.join(format!("{shard}.json")),
+                &successful_result(plan, shard),
+            )
+            .unwrap();
+        }
+        verify_results(plan, directory).unwrap();
+    }
+
+    #[test]
+    fn saved_plans_require_intact_identity_and_complete_unique_assignments() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("plan.json");
+        write_json(&path, &valid_plan()).unwrap();
+        let mut plan: CheckPlan = read_json(&path).unwrap();
+        plan.validate().unwrap();
+        plan.digest.push('0');
+        assert!(
+            plan.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("digest mismatch")
+        );
+        plan = valid_plan();
+        plan.schema_version += 1;
+        assert!(plan.validate().unwrap_err().to_string().contains("schema"));
+
+        for (shards, expected) in [
+            (vec![], "empty Clippy plan"),
+            (vec![vec![], vec![0, 1, 2]], "empty Clippy shard"),
+            (vec![vec![0], vec![1]], "omits checks"),
+            (vec![vec![0, 2], vec![1, 2]], "duplicate or unknown"),
+            (vec![vec![0, 3], vec![1, 2]], "duplicate or unknown"),
+        ] {
+            let mut candidate = valid_plan();
+            candidate.shards = shards;
+            // Keep the signature valid so only the assignment rule can reject it.
+            sign(&mut candidate);
+            let error = candidate.validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}; expected {expected}");
+        }
+        let mut empty = valid_plan();
+        empty.checks.clear();
+        sign(&mut empty);
+        assert!(
+            empty
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("empty Clippy plan")
+        );
+    }
+
+    #[test]
+    fn aggregation_requires_every_shard_and_check_to_match_and_pass() {
+        type Fault = (&'static str, fn(&mut ShardResult), &'static str);
+        let faults: &[Fault] = &[
+            ("schema", |r| r.schema_version += 1, "foreign Clippy result"),
+            (
+                "digest",
+                |r| r.plan_digest.push('0'),
+                "foreign Clippy result",
+            ),
+            ("zero shard", |r| r.shard = 0, "invalid result shard"),
+            ("unknown shard", |r| r.shard = 99, "unknown result shard"),
+            (
+                "missing check",
+                |r| {
+                    r.checks.pop();
+                },
+                "omitted or reordered",
+            ),
+            (
+                "duplicate check",
+                |r| r.checks[1].check_id = r.checks[0].check_id,
+                "omitted or reordered",
+            ),
+            (
+                "foreign check",
+                |r| r.checks[0].check_id = 99,
+                "omitted or reordered",
+            ),
+            (
+                "check order",
+                |r| r.checks.swap(0, 1),
+                "omitted or reordered",
+            ),
+            (
+                "failed check",
+                |r| r.checks[0].status = CheckStatus::Failed,
+                "failed or did not run",
+            ),
+            (
+                "unfinished check",
+                |r| r.checks[0].status = CheckStatus::NotRun,
+                "failed or did not run",
+            ),
+        ];
+        let plan = valid_plan();
+        for &(name, inject, expected) in faults {
+            let directory = tempfile::tempdir().unwrap();
+            publish_successful_results(&plan, directory.path());
+            let mut result = successful_result(&plan, 1);
+            inject(&mut result);
+            write_json(&directory.path().join("1.json"), &result).unwrap();
+            let error = format!("{:#}", verify_results(&plan, directory.path()).unwrap_err());
+            assert!(
+                error.contains(expected),
+                "{name}: {error}; expected {expected}"
+            );
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        publish_successful_results(&plan, directory.path());
+        fs::remove_file(directory.path().join("1.json")).unwrap();
+        assert!(
+            verify_results(&plan, directory.path())
+                .unwrap_err()
+                .to_string()
+                .contains("missing Clippy shard")
+        );
+        publish_successful_results(&plan, directory.path());
+        fs::copy(
+            directory.path().join("1.json"),
+            directory.path().join("duplicate.json"),
+        )
+        .unwrap();
+        assert!(
+            verify_results(&plan, directory.path())
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate Clippy shard")
+        );
+        fs::remove_file(directory.path().join("duplicate.json")).unwrap();
+        fs::write(directory.path().join("1.json"), "{").unwrap();
+        assert!(
+            verify_results(&plan, directory.path())
+                .unwrap_err()
+                .to_string()
+                .contains("parse")
+        );
+        publish_successful_results(&plan, directory.path());
+    }
+
+    #[test]
+    fn portable_checks_preserve_arguments_and_environment_when_restored() {
+        let root = "/tmp/workspace with spaces and \"quotes\"";
+        let check = ClippyCheck {
+            package: "portable-fixture".into(),
+            kind: ClippyCheckKind::Configuration {
+                name: "configured".into(),
+                features: vec!["capability".into()],
+                rustflags: vec![format!("-L{root}/native")],
+            },
+            target: Some("fixture-target".into()),
+            env: vec![("ASSET".into(), format!("{root}/输入.toml"))],
+        };
+        let portable = relocate(std::slice::from_ref(&check), root, WORKSPACE).unwrap();
+        assert!(portable[0].env[0].1.starts_with(WORKSPACE));
+        let restored = relocate(&portable, WORKSPACE, root).unwrap();
+        assert_eq!(restored, vec![check.clone()]);
+        let other_root = "/another runner/workspace";
+        let expected = ClippyCheck {
+            kind: ClippyCheckKind::Configuration {
+                name: "configured".into(),
+                features: vec!["capability".into()],
+                rustflags: vec![format!("-L{other_root}/native")],
+            },
+            env: vec![("ASSET".into(), format!("{other_root}/输入.toml"))],
+            ..check
+        };
+        assert_eq!(
+            relocate(&portable, WORKSPACE, other_root).unwrap(),
+            vec![expected]
+        );
+    }
+}
