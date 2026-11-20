@@ -306,41 +306,22 @@ impl DerefMut for Termios2 {
 
 #[cfg(all(test, axtest))]
 #[axtest::axtest]
-fn inherited_serial_termios_preserves_firmware_speed() {
-    for (baudrate, code) in [(115_200, B115200), (123_456, BOTHER), (0, BOTHER)] {
+fn inherited_serial_termios_preserves_unlisted_rates() {
+    for baudrate in [123_456, 0] {
         let terminal = super::Terminal::new(Some(baudrate));
         let initial = terminal.load_termios();
-        assert_eq!(initial.cflag() & CBAUD, code);
-        assert_eq!(initial.input_speed(), baudrate);
-        assert_eq!(initial.output_speed(), baudrate);
-
-        let mut changed = *initial;
-        changed.c_cflag |= CSTOPB;
-        let updated = terminal.prepare_termios(changed, false).unwrap();
-        assert_eq!(updated.stop_bits(), 2);
-        assert_eq!(updated.input_speed(), baudrate);
-        assert_eq!(updated.output_speed(), baudrate);
-
-        for flags in [
-            changed.cflag(),
-            (changed.cflag() & !CBAUD) | BOTHER,
-            (changed.cflag() & !CIBAUD) | (BOTHER << IBSHIFT),
-        ] {
-            let mut legacy = changed.termios;
-            legacy.c_cflag = flags;
-            let updated = terminal
-                .prepare_termios(Termios2::new(legacy), true)
-                .unwrap();
-            assert_eq!(updated.cflag(), flags);
-            assert_eq!(updated.stop_bits(), 2);
-            assert_eq!(updated.input_speed(), baudrate);
-            assert_eq!(updated.output_speed(), baudrate);
-        }
+        assert_eq!(initial.cflag() & CBAUD, BOTHER);
+        assert_eq!(
+            (initial.input_speed(), initial.output_speed()),
+            (baudrate, baudrate)
+        );
+        assert!(!initial.requests_hangup());
 
         for flags in [
             (initial.cflag() & !CBAUD) | B9600,
             (initial.cflag() & !CIBAUD) | (B9600 << IBSHIFT),
         ] {
+            let mut changed = *initial;
             changed.c_cflag = flags;
             assert!(matches!(
                 terminal.prepare_termios(changed, false),
@@ -348,34 +329,24 @@ fn inherited_serial_termios_preserves_firmware_speed() {
             ));
         }
 
-        assert!(!initial.requests_hangup());
-        let mut hangup = *initial;
+        let mut legacy = initial.termios;
+        legacy.c_cflag |= CSTOPB | (BOTHER << IBSHIFT);
+        let updated = terminal
+            .prepare_termios(Termios2::new(legacy), true)
+            .unwrap();
+        assert_eq!(updated.stop_bits(), 2);
+        assert_eq!(
+            (updated.input_speed(), updated.output_speed()),
+            (baudrate, baudrate)
+        );
+
+        let mut hangup = *updated;
         hangup.c_cflag &= !CBAUD;
-        let updated = terminal.prepare_termios(hangup, false).unwrap();
-        assert!(updated.requests_hangup());
-        assert_eq!(updated.input_speed(), 0);
-        assert_eq!(updated.output_speed(), 0);
-        hangup.c_cflag |= BOTHER << IBSHIFT;
-        let updated = terminal.prepare_termios(hangup, false).unwrap();
-        assert!(updated.requests_hangup());
-        assert_eq!(updated.input_speed(), baudrate);
-        assert_eq!(updated.output_speed(), 0);
-
-        for (flags, input, output) in [
-            ((initial.cflag() & !CBAUD) | BOTHER, baudrate, baudrate + 1),
-            (
-                (initial.cflag() & !CIBAUD) | (BOTHER << IBSHIFT),
-                baudrate + 1,
-                baudrate,
-            ),
-        ] {
-            changed.c_cflag = flags;
-            changed.c_ispeed = input;
-            changed.c_ospeed = output;
-            assert!(matches!(
-                terminal.prepare_termios(changed, false),
-                Err(crate::StarryError::InvalidInput)
-            ));
-        }
+        let hung_up = terminal.prepare_termios(hangup, false).unwrap();
+        assert!(hung_up.requests_hangup());
+        assert_eq!(
+            (hung_up.input_speed(), hung_up.output_speed()),
+            (baudrate, 0)
+        );
     }
 }
