@@ -14,12 +14,12 @@ Clippy 先从 workspace metadata 选择 package，再将 package 的 target 与 
 ```mermaid
 flowchart TB
     subgraph CLI["CLI 入口"]
-        ARGS["ClippyArgs<br/>--all / --package / --since / --jobs"]
+        ARGS["ClippyArgs<br/>--all / --package / --jobs"]
     end
 
     subgraph Selection["selection.rs"]
         VALID["validate_clippy_args"]
-        RESOLVE["resolve_requested_packages<br/>(全量 / 显式 / 增量)"]
+        RESOLVE["resolve_requested_packages<br/>(全量 / 显式)"]
         SKIP["skip_unsupported_packages"]
     end
 
@@ -55,7 +55,7 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 |----------|------|
 | `scripts/axbuild/src/cli/mod.rs` | `ClippyArgs` 参数定义与命令分派 |
 | `scripts/axbuild/src/checks/clippy/mod.rs` | 检查入口、模块级常量（如 `AXSTD_STD_*`、`AX_HAL_PACKAGE`） |
-| `scripts/axbuild/src/checks/clippy/selection.rs` | 参数校验、包选择（全量 / `--package` / `--since` 增量）、不支持的包过滤 |
+| `scripts/axbuild/src/checks/clippy/selection.rs` | 参数校验、包选择（全量 / `--package`）、包覆盖校验、不支持的包过滤 |
 | `scripts/axbuild/src/checks/clippy/check.rs` | `ClippyCheck` / `ClippyCheckKind` 数据模型与 `cargo_args` 构造 |
 | `scripts/axbuild/src/checks/clippy/configurations.rs` | 解析并校验 package metadata 中声明的命名 target 配置 |
 | `scripts/axbuild/src/checks/clippy/expand.rs` | 把每个包按 feature × target 展开为 `ClippyCheck` 列表 |
@@ -63,22 +63,21 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 | `scripts/axbuild/src/checks/clippy/targets.rs` | 从 docs.rs metadata 提取包支持的 target，以及 feature↔target 兼容性判断 |
 | `scripts/axbuild/src/checks/clippy/runner.rs` | `CargoRunner` trait 与 `ProcessCargoRunner`，fail-fast 执行 |
 | `scripts/axbuild/src/checks/clippy/report.rs` | `ClippyRunReport` 聚合与人类可读报告 |
+| `scripts/axbuild/src/checks/clippy/partition.rs` | 按数量分组，不筛选检查 |
+| `scripts/axbuild/src/checks/clippy/plan.rs` | 同源计划、身份及逐项结果完整性校验 |
 | `scripts/axbuild/src/checks/clippy/timing.rs` | 起止时间记录与耗时打印 |
 | `scripts/axbuild/src/checks/clippy/tests.rs`, `tests/` | 展开与选择逻辑的回归测试 |
 
 ## 3. 包选择
 
-`ClippyArgs` 提供三种互斥的包选择模式，由 `validate_clippy_args` 强制约束：
+`ClippyArgs` 提供全量与显式包两种选择模式，由 `validate_clippy_args` 强制约束；正式CI使用完整矩阵，不按变更包缩圈：
 
 | 模式 | 触发条件 | 行为 |
 |------|----------|------|
 | 全量 | `--all` 或不带任何参数 | 对全部 workspace 成员执行完整检查矩阵 |
 | 显式 | `--package <name>`（可多次） | 仅指定包，未知包名直接报错 |
-| 增量 | `--since <git-ref>` | 选择直接变更包，以及受影响的 `ax-std` / `starryos` OS 根 |
 
-`--since` 模式先通过 `support::git::select_incremental_packages` 计算直接变更包和完整反向依赖闭包，再选择 `changed ∪ (affected ∩ {ax-std, starryos})`。中间路径和其他顶层包不会进入 Clippy 计划；直接变更的 OS 根会去重。所有选中包都使用 `--no-deps` 并展开完整 feature、target 和命名配置矩阵。当 git diff 失败或路径越出 workspace 时回退到全量扫描，并在终端打印回退原因。
-
-CI 为 Incremental Clippy 单独获取最近 100 层 Git 历史。增量基线或 merge-base 超出该范围，或者 force-push 使历史断开时，Clippy 会保守回退到全 workspace 扫描；其他 CI 检查保持各自的 checkout 深度。
+`workspace_packages` 每次从 Cargo metadata 的 `workspace_members` 自动发现包；`validate_package_coverage` 确认每个选中包都产生检查，或属于有明确理由的排除项。新增包加入 Cargo workspace 后会自动进入分组，无需另写 Clippy 包名单；独立 workspace 不属于该发现范围。Clippy 的旧 `--since` 参数和专属增量选择已删除，其他测试的 Git 差异分析保持。
 
 `--no-deps` 只禁止 Clippy 检查依赖 crate；Cargo 仍会编译选中包完成类型检查所需的依赖。
 
@@ -162,7 +161,7 @@ targets = ["aarch64-unknown-linux-gnu", "riscv64gc-unknown-none-elf"]
 
 ## 6. 报告处理
 
-`run_clippy_checks` 默认采用串行 **fail-fast**：任何一个 check 非零退出就 `bail!`，剩余 check 不再执行，并在错误信息中带出剩余数量。`run_parallel_clippy_checks` 在 `--jobs N` 大于 1 时启动最多 N 个 worker；一个检查失败后停止分发新检查，等待已领取的检查结束，再报告全部已完成的失败项。默认模式和 CI 的资源消耗保持不变。
+`run_clippy_checks` 默认采用串行 **fail-fast**：任何一个 check 非零退出就 `bail!`，剩余 check 不再执行，并在错误信息中带出剩余数量。`run_parallel_clippy_checks` 在 `--jobs N` 大于 1 时启动最多 N 个 worker；一个检查失败后停止分发新检查，等待已领取的检查结束，再报告全部已完成的失败项。正式CI使用独立分组，作业内保持串行；普通本地并行入口不改变CI设置。
 
 ### 6.1 执行顺序
 
@@ -200,7 +199,7 @@ struct ClippyPackageReport {
 
 ## 7. 命令示例
 
-这些命令分别覆盖全量、指定 package 和增量选择三种入口，它们会经过相同的展开与报告流程。
+这些命令覆盖全量和指定 package 两种入口，它们会经过相同的展开与报告流程。
 
 ```bash
 # 全量 workspace clippy（手动或定时检查）
@@ -210,9 +209,8 @@ cargo xtask clippy --all
 # 只检查指定包
 cargo xtask clippy --package ax-cpu --package page-table-generic
 cargo xtask clippy --package starry-kernel --jobs 4
-
-# 增量：只检查相对基线已提交的差异；未提交改动使用 --package
-cargo xtask clippy --since origin/dev
 ```
 
 > `aic8800` 的 crate build script 会根据固定 manifest 从本地 cache 读取并校验 Wi-Fi 固件 blob；cache 缺失时才从固定 upstream 下载。首次构建因此需要网络或预置且校验通过的 cache，后续 `starry`、`clippy` 等命令复用同一供应路径。
+
+CI数量分组、工具分发和完整性校验见[完整矩阵与独立作业](../ci/testing/clippy-shards)。

@@ -3,46 +3,13 @@ name: CI
 on:
   push:
     paths-ignore:
-      - "**/*.md"
-      - "**/*.rst"
-      - "**/*.adoc"
-      - "docs/**"
-      - "**/docs/**"
-      - "**/doc/**"
+      - "docs/docs/**"
+      - "docs/blog/**"
   pull_request:
     paths:
-      - ".cargo/**"
-      - "container/**"
-      - ".github/actions/publish-container/action.yml"
-      - ".github/actions/ci-plan/**"
-      - ".github/actions/ci-result/**"
-      - ".github/ci/**"
-      - ".github/workflows/container-publish.yml"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/reusable-check-matrix.yml"
-      - ".github/workflows/starry-apps.yml"
-      - ".github/workflows/axvisor-nightly.yml"
-      - ".github/workflows/benchmarks.yml"
-      - ".github/workflows/docs.yml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "apps/**"
-      - "benchmarks/**"
-      - "bootloader/**"
-      - "components/**"
-      - "drivers/**"
-      - "fs/**"
-      - "memory/**"
-      - "net/**"
-      - "os/**"
-      - "platforms/**"
-      - "scripts/**"
-      - "test-suit/**"
-      - "tools/**"
-      - "virtualization/**"
-      - "xtask/**"
-      - "!**/*.md"
+      - "**"
+      - "!docs/docs/**"
+      - "!docs/blog/**"
   workflow_dispatch:
     inputs:
       since_sha:
@@ -87,6 +54,7 @@ jobs:
       static_required: ${{ steps.matrix.outputs.static_required }}
       workspace_matrix: ${{ steps.matrix.outputs.workspace_matrix }}
       workspace_required: ${{ steps.matrix.outputs.workspace_required }}
+      clippy_required: ${{ steps.clippy.outputs.required }}
       arceos_matrix: ${{ steps.matrix.outputs.arceos_matrix }}
       arceos_required: ${{ steps.matrix.outputs.arceos_required }}
       starry_matrix: ${{ steps.matrix.outputs.starry_matrix }}
@@ -359,6 +327,13 @@ jobs:
 
           echo "since_ref=${since_ref}" >> "$GITHUB_OUTPUT"
 
+      - name: Decide whether Clippy is required
+        id: clippy
+        if: steps.route.outputs.should_run == 'true'
+        env:
+          CLIPPY_SINCE: ${{ steps.since.outputs.since_ref }}
+        run: python3 scripts/test/ci_clippy.py classify --since "$CLIPPY_SINCE" >> "$GITHUB_OUTPUT"
+
       - name: Record runner trust
         if: steps.route.outputs.should_run == 'true'
         env:
@@ -511,3 +486,16 @@ jobs:
       since_ref: ${{ needs.plan_ci.outputs.since_ref }}
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+
+  clippy_checks:
+    name: Clippy
+    needs: [plan_ci, static_checks]
+    if: >-
+      always() && needs.plan_ci.result == 'success' &&
+      needs.plan_ci.outputs.should_run == 'true' &&
+      needs.plan_ci.outputs.clippy_required == 'true' &&
+      (needs.static_checks.result == 'success' || needs.static_checks.result == 'skipped')
+    uses: ./.github/workflows/clippy-checks.yml
+    with:
+      shards: 4
+      checkout_ref: ${{ github.sha }}
