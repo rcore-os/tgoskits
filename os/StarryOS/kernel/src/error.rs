@@ -410,6 +410,7 @@ fn runtime_errno(error: &RuntimeError) -> Errno {
             | ConfigError::UnsupportedDataBits
             | ConfigError::UnsupportedStopBits
             | ConfigError::UnsupportedParity => Errno::EINVAL,
+            ConfigError::BaudrateUnavailable => Errno::EOPNOTSUPP,
             ConfigError::Timeout => Errno::ETIMEDOUT,
             ConfigError::RegisterError => Errno::EIO,
         },
@@ -821,6 +822,10 @@ fn leaf_errno_mappings_hold() -> bool {
         (
             StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::InvalidBaudrate)),
             Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::BaudrateUnavailable)),
+            Errno::EOPNOTSUPP,
         ),
         (
             StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedDataBits)),

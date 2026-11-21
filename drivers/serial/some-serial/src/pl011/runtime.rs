@@ -41,6 +41,31 @@ impl Pl011ConfigSnapshot {
 }
 
 impl UartPort for Pl011 {
+    fn framing(&self) -> Option<Framing> {
+        let lcr = self.registers().uartlcr_h.extract();
+        let data_bits = match lcr.read_as_enum(UARTLCR_H::WLEN) {
+            Some(UARTLCR_H::WLEN::Value::FiveBit) => DataBits::Five,
+            Some(UARTLCR_H::WLEN::Value::SixBit) => DataBits::Six,
+            Some(UARTLCR_H::WLEN::Value::SevenBit) => DataBits::Seven,
+            _ => DataBits::Eight,
+        };
+        let stop_bits = if lcr.is_set(UARTLCR_H::STP2) {
+            StopBits::Two
+        } else {
+            StopBits::One
+        };
+        let parity = crate::line_parity(
+            lcr.is_set(UARTLCR_H::PEN),
+            lcr.is_set(UARTLCR_H::EPS),
+            lcr.is_set(UARTLCR_H::SPS),
+        );
+        Some(Framing {
+            data_bits,
+            stop_bits,
+            parity,
+        })
+    }
+
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
         let snapshot = Pl011ConfigSnapshot::capture(self.registers());
         // `open` performs its fallible drain before touching any register, so a

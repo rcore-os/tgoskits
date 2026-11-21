@@ -167,20 +167,24 @@ impl UsbSerialBackendState {
         Ok(new_session)
     }
 
-    fn set_baudrate(self: &Arc<Self>, baudrate: u32) -> StarryResult<()> {
-        if baudrate == 0 {
+    fn set_baudrate(&self, baudrate: u32) -> StarryResult<()> {
+        if baudrate == 0 || self.baudrate.load(Ordering::Acquire) == baudrate {
             return Ok(());
         }
-        let old = self.baudrate.swap(baudrate, Ordering::AcqRel);
-        if old == baudrate {
-            return Ok(());
+
+        // Keep the session stable until the programmed rate is committed for reopen.
+        let current = self.session.lock();
+        if self.session_closing.load(Ordering::Acquire) {
+            return Err(StarryError::ResourceBusy);
         }
-        let session = self.ensure_session()?;
+        let session = current.as_ref().ok_or(StarryError::NoSuchDevice)?;
         if let Err(err) = session.port.set_baud(&session.handle, baudrate) {
-            self.request_session_teardown(Some(&session));
-            self.baudrate.store(old, Ordering::Release);
+            let failed = session.clone();
+            drop(current);
+            self.request_session_teardown(Some(&failed));
             return Err(err);
         }
+        self.baudrate.store(baudrate, Ordering::Release);
         Ok(())
     }
 
@@ -520,36 +524,104 @@ impl TtyWrite for UsbSerialWriter {
         Ok(())
     }
 
-    fn termios_changed(&self, old: &Termios2, new: &Termios2) -> StarryResult<()> {
-        let Some(new_baud) = new.baudrate() else {
-            return Ok(());
-        };
-        if old.baudrate() == Some(new_baud) {
-            return Ok(());
-        }
-        self.backend.set_baudrate(new_baud)
-    }
-
     fn update_termios(
         &self,
         old: &Termios2,
         new: &Termios2,
         drain: bool,
-        publish: &mut dyn FnMut(),
+        publish: &mut dyn FnMut(&Termios2),
     ) -> StarryResult<()> {
         self.backend.ensure_started()?;
         let _guard = self.backend.output_lock.lock();
         if drain {
             self.backend.drain_tx_queue_locked()?;
         }
-        self.termios_changed(old, new)?;
-        publish();
+        let applied = apply_usb_termios(old, new, |baud| self.backend.set_baudrate(baud))?;
+        publish(&applied);
         Ok(())
     }
+}
+
+fn apply_usb_termios(
+    old: &Termios2,
+    requested: &Termios2,
+    set_baudrate: impl FnOnce(u32) -> StarryResult<()>,
+) -> StarryResult<Termios2> {
+    if requested.is_baudrate_unknown() && !old.is_baudrate_unknown() {
+        return Err(StarryError::InvalidInput);
+    }
+    // A hangup transition requires control-line operations beyond set_baudrate.
+    if requested.is_hangup() != old.is_hangup() {
+        return Err(StarryError::OperationNotSupported);
+    }
+    if let Some(baudrate) = requested.baudrate()
+        && old.baudrate() != Some(baudrate)
+    {
+        set_baudrate(baudrate)?;
+    }
+    let mut applied = *requested;
+    applied.use_output_baudrate_for_input();
+    Ok(applied)
 }
 
 impl Drop for UsbSerialSession {
     fn drop(&mut self) {
         let _ = self.handle.release_interface(self.port.interface());
     }
+}
+
+#[cfg(all(test, axtest))]
+#[axtest::axtest]
+fn usb_serial_publishes_single_configured_baudrate() -> axtest::AxTestResult {
+    use axtest::ax_assert_eq;
+    use linux_raw_sys::general::{B9600, B57600, CBAUD, IBSHIFT};
+
+    let old = Termios2::default_b115200();
+    // The Linux termios2 layout places c_cflag in the third word.
+    let mut request: [u32; size_of::<Termios2>() / size_of::<u32>()] =
+        bytemuck::cast(Termios2::with_baudrate(57_600));
+    request[2] |= B9600 << IBSHIFT;
+    let mut requested: Termios2 = bytemuck::cast(request);
+    requested.normalize_baudrates();
+
+    let mut programmed = None;
+    let applied = apply_usb_termios(&old, &requested, |baudrate| {
+        programmed = Some(baudrate);
+        Ok(())
+    })
+    .unwrap();
+
+    ax_assert_eq!(programmed, Some(57_600));
+    ax_assert_eq!((applied.cflag() >> IBSHIFT) & CBAUD, B57600);
+    let bytes = bytemuck::bytes_of(&applied);
+    let speeds = &bytes[bytes.len() - 2 * size_of::<u32>()..];
+    ax_assert_eq!(speeds, bytemuck::bytes_of(&[57_600_u32, 57_600]));
+    let mut hangup = applied;
+    hangup.set_baudrate(0);
+    let result = apply_usb_termios(&applied, &hangup, |_| {
+        panic!("a hangup is not a baud rate change")
+    });
+    axtest::ax_assert!(matches!(result, Err(StarryError::OperationNotSupported)));
+    axtest::AxTestResult::Ok
+}
+
+#[cfg(all(test, axtest))]
+#[axtest::axtest]
+fn usb_serial_keeps_baudrate_when_session_closes() -> axtest::AxTestResult {
+    use axtest::{ax_assert, ax_assert_eq};
+
+    let tty = new_usb_serial_tty(0);
+    let backend = &tty.writer.backend;
+    // The RX worker can begin teardown after update_termios has opened the port.
+    backend.session_closing.store(true, Ordering::Release);
+
+    ax_assert!(matches!(
+        backend.set_baudrate(57_600),
+        Err(StarryError::ResourceBusy)
+    ));
+    ax_assert_eq!(
+        backend.baudrate.load(Ordering::Acquire),
+        USB_SERIAL_DEFAULT_BAUDRATE
+    );
+    axtest::AxTestResult::Ok
 }

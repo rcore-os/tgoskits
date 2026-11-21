@@ -68,8 +68,9 @@ pub mod console {
     pub use ax_plat::console::{
         ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleHandoffError,
         ConsoleHandoffResult, ConsoleIrqEvent, begin_runtime_handoff, commit_runtime_handoff,
-        device_id, fail_runtime_handoff_closed, handle_irq, irq_num, read_bytes,
-        rollback_runtime_handoff, set_input_irq_enabled, write_bytes, write_text_bytes,
+        device_id, early_console_reserves_io_port, early_console_reserves_mmio,
+        fail_runtime_handoff_closed, handle_irq, irq_num, read_bytes, rollback_runtime_handoff,
+        set_input_irq_enabled, write_bytes, write_text_bytes,
     };
 }
 

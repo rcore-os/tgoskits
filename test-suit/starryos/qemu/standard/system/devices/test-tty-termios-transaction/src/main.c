@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -13,6 +14,8 @@
 #define KERNEL_NCCS 19
 #define KERNEL_CBAUD 0010017U
 #define KERNEL_BOTHER 0010000U
+#define KERNEL_IBSHIFT 16U
+#define KERNEL_CIBAUD (KERNEL_CBAUD << KERNEL_IBSHIFT)
 
 struct kernel_termios2 {
     unsigned int c_iflag;
@@ -118,6 +121,158 @@ static void close_pty(struct pty_pair *pty)
         close(pty->slave);
 }
 
+static void check_format_only_updates(int fd, struct kernel_termios2 initial)
+{
+    static const unsigned long requests[] = {
+        TCSETS, TCSETSW, TCSETSF,
+        STARRY_TCSETS2, STARRY_TCSETSW2, STARRY_TCSETSF2,
+    };
+    struct kernel_termios2 format = initial;
+
+    for (size_t i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
+        struct kernel_termios2 observed;
+        format.c_cflag ^= CSTOPB;
+        if (syscall(SYS_ioctl, fd, requests[i], &format) != 0
+            || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0) {
+            fprintf(stderr, "format-only ioctl request: %#lx\n", requests[i]);
+            fail("apply and read back format-only termios update");
+            return;
+        }
+        if (observed.c_cflag != format.c_cflag
+            || observed.c_ispeed != initial.c_ispeed
+            || observed.c_ospeed != initial.c_ospeed) {
+            fprintf(stderr, "format-only ioctl request: %#lx\n", requests[i]);
+            fail("update line format while preserving baudrate");
+            return;
+        }
+    }
+}
+
+static void check_unsupported_serial_hangup_preserves_termios(
+    int fd, const struct kernel_termios2 *initial)
+{
+    static const unsigned long requests[] = {
+        TCSETS, TCSETSW, TCSETSF,
+        STARRY_TCSETS2, STARRY_TCSETSW2, STARRY_TCSETSF2,
+    };
+    struct kernel_termios2 hangup = *initial;
+    hangup.c_cflag &= ~(KERNEL_CBAUD | KERNEL_CIBAUD);
+    hangup.c_ispeed = 0;
+    hangup.c_ospeed = 0;
+
+    for (size_t i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
+        struct kernel_termios2 observed;
+        if (syscall(SYS_ioctl, fd, requests[i], &hangup) != -1
+            || errno != EOPNOTSUPP) {
+            fprintf(stderr, "hangup ioctl request: %#lx\n", requests[i]);
+            fail("physical serial B0 requires modem-control support");
+            return;
+        }
+        if (syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0
+            || observed.c_cflag != initial->c_cflag
+            || observed.c_ispeed != initial->c_ispeed
+            || observed.c_ospeed != initial->c_ospeed) {
+            fail("rejected physical serial B0 preserves termios");
+            return;
+        }
+    }
+}
+
+static void check_baudrate_normalization(void)
+{
+    struct pty_pair pty = {.master = -1, .slave = -1};
+    struct kernel_termios2 raw;
+    struct kernel_termios2 observed;
+
+    if (open_raw_pty(&pty, &raw) != 0) {
+        fail("open raw PTY for custom baudrate");
+        goto out;
+    }
+    raw.c_cflag = (raw.c_cflag & ~(KERNEL_CBAUD | KERNEL_CIBAUD))
+        | KERNEL_BOTHER | (KERNEL_BOTHER << KERNEL_IBSHIFT);
+    raw.c_ispeed = 654321U;
+    raw.c_ospeed = 123456U;
+    if (syscall(SYS_ioctl, pty.slave, STARRY_TCSETS2, &raw) != 0) {
+        fail("set a custom baudrate before legacy format update");
+        goto out;
+    }
+    check_format_only_updates(pty.slave, raw);
+
+    raw.c_cflag = (raw.c_cflag & ~(KERNEL_CBAUD | KERNEL_CIBAUD))
+        | B9600 | (B4800 << KERNEL_IBSHIFT);
+    if (syscall(SYS_ioctl, pty.slave, TCSETS, &raw) != 0
+        || syscall(SYS_ioctl, pty.slave, STARRY_TCGETS2, &observed) != 0
+        || observed.c_ispeed != 4800U || observed.c_ospeed != 9600U)
+        fail("TCSETS decodes independent encoded rates over previous BOTHER values");
+
+    raw.c_cflag = (raw.c_cflag & ~(KERNEL_CBAUD | KERNEL_CIBAUD)) | B19200;
+    if (syscall(SYS_ioctl, pty.slave, STARRY_TCSETS2, &raw) != 0
+        || syscall(SYS_ioctl, pty.slave, STARRY_TCGETS2, &observed) != 0
+        || observed.c_ispeed != 19200U || observed.c_ospeed != 19200U)
+        fail("TCSETS2 ignores numeric rates for fixed encodings and inherits output speed");
+
+    raw.c_cflag = (raw.c_cflag & ~KERNEL_CBAUD) | KERNEL_BOTHER;
+    raw.c_ospeed = 0;
+    if (syscall(SYS_ioctl, pty.slave, STARRY_TCSETS2, &raw) != 0
+        || syscall(SYS_ioctl, pty.slave, STARRY_TCGETS2, &observed) != 0
+        || observed.c_ispeed != 0 || observed.c_ospeed != 0)
+        fail("TCSETS2 keeps zero BOTHER output and inherits it for input");
+
+out:
+    close_pty(&pty);
+}
+
+static void check_serial_reports_common_baudrate(int fd,
+                                                 const struct kernel_termios2 *valid)
+{
+    struct kernel_termios2 request = *valid;
+    struct kernel_termios2 observed = {0};
+
+    unsigned int expected_baudrate = valid->c_ospeed;
+#ifdef __riscv
+    /* QEMU virt supplies a 3.6864 MHz input clock for its NS16550. */
+    expected_baudrate = valid->c_ospeed == 9600U ? 19200U : 9600U;
+    request.c_cflag = (request.c_cflag & ~KERNEL_CBAUD) | KERNEL_BOTHER;
+    request.c_ospeed = expected_baudrate;
+#endif
+    /* A directly booted PL011 can have an unset divisor. Keep its unknown
+     * output rate when normalizing an input-only baudrate request. */
+    unsigned int output_encoding = request.c_cflag & KERNEL_CBAUD;
+    request.c_cflag = (request.c_cflag & ~KERNEL_CIBAUD)
+        | (KERNEL_BOTHER << KERNEL_IBSHIFT);
+    request.c_ispeed = expected_baudrate == 4800U ? 9600U : 4800U;
+    if (syscall(SYS_ioctl, fd, STARRY_TCSETSW2, &request) != 0
+        || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0
+        || (expected_baudrate == 0 && output_encoding != KERNEL_BOTHER)
+        || observed.c_ospeed != expected_baudrate
+        || observed.c_ispeed != expected_baudrate
+        || (observed.c_cflag & KERNEL_CBAUD) != output_encoding
+        || (observed.c_cflag & KERNEL_CIBAUD) != (output_encoding << KERNEL_IBSHIFT)) {
+        fprintf(stderr, "UART baudrate mismatch: expected %u (encoding 0x%x), "
+                "observed input %u output %u (c_cflag=0x%x)\n",
+                expected_baudrate, output_encoding, observed.c_ispeed,
+                observed.c_ospeed, observed.c_cflag);
+        fail("physical UART applies and reports a common input and output baudrate");
+    }
+    if (expected_baudrate != 0) {
+        struct kernel_termios2 before = observed;
+        request = observed;
+        request.c_cflag = (request.c_cflag & ~KERNEL_CBAUD) | KERNEL_BOTHER;
+        request.c_ospeed = 0;
+        errno = 0;
+        if (syscall(SYS_ioctl, fd, STARRY_TCSETS2, &request) != -1
+            || errno != EINVAL
+            || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0
+            || memcmp(&observed, &before, sizeof(observed)) != 0)
+            fail("zero BOTHER must not overwrite a known physical baudrate");
+    }
+
+    if (syscall(SYS_ioctl, fd, STARRY_TCSETSW2, valid) != 0
+        || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0
+        || memcmp(&observed, valid, sizeof(observed)) != 0)
+        fail("restore serial termios after baudrate test");
+}
+
 static void check_failed_serial_config_is_not_published(int fd,
                                                         struct kernel_termios2 *valid)
 {
@@ -128,9 +283,12 @@ static void check_failed_serial_config_is_not_published(int fd,
     invalid.c_ispeed = 250000000U;
     invalid.c_ospeed = 250000000U;
 
+    /* A UART with an unknown input clock cannot program a new divisor.
+     * Either refusal must leave the published termios unchanged. */
     errno = 0;
-    if (ioctl(fd, STARRY_TCSETS2, &invalid) != -1 || errno != EINVAL)
-        fail("TCSETS2 propagates invalid UART configuration as EINVAL");
+    if (ioctl(fd, STARRY_TCSETS2, &invalid) != -1
+        || (errno != EINVAL && errno != EOPNOTSUPP))
+        fail("TCSETS2 rejects an invalid or unavailable baudrate");
     if (ioctl(fd, STARRY_TCGETS2, &observed) != 0) {
         fail("TCGETS2 after rejected configuration");
     } else if (memcmp(&observed, valid, sizeof(observed)) != 0) {
@@ -232,11 +390,15 @@ int main(void)
     if (serial < 0 || ioctl(serial, STARRY_TCGETS2, &valid) != 0) {
         fail("open serial TTY and read termios2");
     } else {
+        check_format_only_updates(serial, valid);
+        check_serial_reports_common_baudrate(serial, &valid);
         check_failed_serial_config_is_not_published(serial, &valid);
         check_serial_writes_with_waiting_updates(serial, &valid);
+        check_unsupported_serial_hangup_preserves_termios(serial, &valid);
     }
     if (serial >= 0)
         close(serial);
+    check_baudrate_normalization();
     check_tcsetsf_clears_input_after_update();
 
     if (failures != 0) {

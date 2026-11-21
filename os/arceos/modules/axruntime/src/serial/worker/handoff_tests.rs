@@ -115,10 +115,11 @@ fn fixture() -> (SerialRuntimeHandle, SerialWorker, Arc<Wire>) {
             device_id: rdrive::DeviceId::new(),
             firmware_path: "probe".into(),
             alias_index: None,
-            paddr: 0,
+            address: SerialRegisterAddress::Mmio(0),
             initial_baudrate: 115200,
             irq: None,
         },
+        initial_framing: OnceLock::new(),
         owner_cpu: 0,
         #[cfg(feature = "fault-injection")]
         deferred_test_consumed: AtomicU8::new(0),

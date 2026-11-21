@@ -42,6 +42,8 @@ pub(crate) enum ConsoleActivation {
     /// No compatible runtime UART was discovered; the HAL console remains the
     /// sole owner.
     RawHal(ConsoleUnavailable),
+    /// An explicit virtual console selection disabled raw access for TTY use.
+    Disabled,
     /// No runtime may use the former early console after this point.
     FailedClosed(ConsoleUnavailable),
 }
@@ -69,7 +71,7 @@ pub(crate) fn activate_before_smp() -> ConsoleActivation {
     let selection = select_runtime(runtimes, tty_numbers, ax_hal::console::device_id());
     let (runtime_index, tty_number) = match selection {
         Ok(selection) => selection,
-        Err(unavailable) => return use_raw_hal(unavailable),
+        Err(unavailable) => return activate_fallback(unavailable),
     };
 
     let runtime = &runtimes[runtime_index];
@@ -96,14 +98,33 @@ pub(crate) fn activate_before_smp() -> ConsoleActivation {
     activation
 }
 
-fn use_raw_hal(reason: ConsoleUnavailable) -> ConsoleActivation {
-    let activation = raw_hal_activation(reason);
+fn activate_fallback(reason: ConsoleUnavailable) -> ConsoleActivation {
+    let activation = unavailable_activation(reason, || {
+        // A virtual-only selection with discovered UARTs may still have a raw
+        // firmware console on one of those ports, for example through SBI.
+        // Quiesce raw access before an ordinary TTY can start the port.
+        let handoff = ax_hal::console::begin_runtime_handoff()
+            .and_then(|()| ax_hal::console::commit_runtime_handoff());
+        if handoff.is_err() {
+            ax_hal::console::fail_runtime_handoff_closed();
+        }
+        handoff
+    });
     ACTIVATION.call_once(|| activation);
     activation
 }
 
-const fn raw_hal_activation(reason: ConsoleUnavailable) -> ConsoleActivation {
-    ConsoleActivation::RawHal(reason)
+fn unavailable_activation(
+    reason: ConsoleUnavailable,
+    release_early_console: impl FnOnce() -> ax_hal::console::ConsoleHandoffResult,
+) -> ConsoleActivation {
+    if reason != ConsoleUnavailable::NoHardwareSelected {
+        return ConsoleActivation::RawHal(reason);
+    }
+    match release_early_console() {
+        Ok(()) => ConsoleActivation::Disabled,
+        Err(_) => ConsoleActivation::FailedClosed(ConsoleUnavailable::HandoffFailed),
+    }
 }
 
 fn fail_closed(
@@ -192,6 +213,7 @@ fn inactive_console_error(activation: Option<ConsoleActivation>) -> RuntimeError
         Some(ConsoleActivation::FailedClosed(_)) | Some(ConsoleActivation::Active { .. }) => {
             RuntimeError::ConsoleFailedClosed
         }
+        Some(ConsoleActivation::Disabled) => RuntimeError::OperationNotSupported,
         Some(ConsoleActivation::RawHal(_)) | None => RuntimeError::SerialNotStarted,
     }
 }
@@ -256,9 +278,9 @@ pub(crate) fn try_publish_without_runtime(
             // sleepable mutex is therefore never a valid record arbiter.
             Some(publish_raw_record(meta, context, args, &mut RawHalWriter))
         }
-        ConsoleActivation::Active { .. } | ConsoleActivation::FailedClosed(_) => {
-            Some(ax_log::PublishStatus::Dropped)
-        }
+        ConsoleActivation::Active { .. }
+        | ConsoleActivation::Disabled
+        | ConsoleActivation::FailedClosed(_) => Some(ax_log::PublishStatus::Dropped),
     }
 }
 
@@ -649,7 +671,7 @@ mod tests {
 
     use super::{
         ACTIVATION, ConsoleActivation, ConsoleUnavailable, assign_tty_numbers,
-        inactive_console_error, output, raw_hal_activation, select_candidate, take_input,
+        inactive_console_error, output, select_candidate, take_input, unavailable_activation,
     };
     use crate::RuntimeError;
 
@@ -703,25 +725,46 @@ mod tests {
             ),
             Err(ConsoleUnavailable::NoTtyS0Fallback)
         );
-        assert_eq!(
-            select_candidate(&[], Err(ConsoleDeviceIdError::NotSpecified)),
-            Err(ConsoleUnavailable::NoSerialDevice)
-        );
+        for selected in [
+            ConsoleDeviceIdError::NotSpecified,
+            ConsoleDeviceIdError::NoHardwareDevice,
+        ] {
+            assert_eq!(
+                select_candidate(&[], Err(selected)),
+                Err(ConsoleUnavailable::NoSerialDevice)
+            );
+        }
     }
 
     #[test]
     fn unavailable_runtime_selection_keeps_the_raw_hal_owner() {
         for reason in [
             ConsoleUnavailable::NoSerialDevice,
-            ConsoleUnavailable::NoHardwareSelected,
             ConsoleUnavailable::SelectedDeviceNotFound,
             ConsoleUnavailable::NoTtyS0Fallback,
         ] {
             assert_eq!(
-                raw_hal_activation(reason),
+                unavailable_activation(reason, || panic!("fallback must retain raw access")),
                 ConsoleActivation::RawHal(reason)
             );
         }
+    }
+
+    #[test]
+    fn virtual_console_releases_raw_access_when_a_runtime_uart_exists() {
+        let released = core::cell::Cell::new(false);
+        let activation = unavailable_activation(ConsoleUnavailable::NoHardwareSelected, || {
+            released.set(true);
+            Ok(())
+        });
+        assert!(released.get());
+        assert_eq!(activation, ConsoleActivation::Disabled);
+        assert_eq!(
+            unavailable_activation(ConsoleUnavailable::NoHardwareSelected, || {
+                Err(ax_hal::console::ConsoleHandoffError::InvalidState)
+            }),
+            ConsoleActivation::FailedClosed(ConsoleUnavailable::HandoffFailed)
+        );
     }
 
     #[test]

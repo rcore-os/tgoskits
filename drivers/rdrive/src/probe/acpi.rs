@@ -25,16 +25,11 @@ use acpi::{
         AcpiPlatform,
         interrupt::{InterruptModel, Polarity, TriggerMode},
     },
-    sdt::{
-        SdtHeader, Signature,
-        facs::Facs,
-        fadt::Fadt,
-        mcfg::Mcfg,
-        spcr::{Spcr, SpcrInterfaceType},
-    },
+    sdt::{SdtHeader, Signature, facs::Facs, fadt::Fadt, mcfg::Mcfg, spcr::SpcrInterfaceType},
 };
 use ax_lazyinit::OnceLock;
 use ax_sync::RawSpinLock;
+use kernutil::acpi::spcr_mappings;
 pub use pcie::ConfigSpaceLayout;
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 
@@ -403,6 +398,19 @@ pub struct AcpiSerialConsole {
     pub namespace_path: Option<String>,
 }
 
+/// Register layout and input clock for a 16550 MMIO UART selected by SPCR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Spcr16550Mmio {
+    /// The part of the device's MMIO resource starting at the SPCR base.
+    pub registers: AcpiResourceRange,
+    /// Byte distance between adjacent registers.
+    pub register_stride: usize,
+    /// Width in bytes of each MMIO transaction.
+    pub access_width: usize,
+    pub clock_hz: Option<u32>,
+    pub baud_rate: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcpiResourceDevice {
     pub path: String,
@@ -494,6 +502,11 @@ impl AcpiInfo<'_> {
             .unwrap_or_default()
     }
 
+    /// Returns the SPCR settings for this device's 16550 MMIO console, if any.
+    pub fn spcr_16550_mmio(&self) -> Result<Option<Spcr16550Mmio>, DriverError> {
+        self.root.spcr_16550_mmio(self)
+    }
+
     pub fn io_ranges(&self) -> &[AcpiResourceRange] {
         self.device
             .as_ref()
@@ -570,6 +583,13 @@ impl<'a> ProbeAcpi<'a> {
         driver: T,
     ) {
         debug_assert!(self.info.device.is_none());
+        self.register_device_at(address, driver);
+    }
+
+    /// Registers the device and records its effective register base for ACPI lookup.
+    ///
+    /// A namespace driver may select a register block within a declared resource.
+    pub fn register_device_at<T: DriverGeneric>(self, address: AcpiResourceAddress, driver: T) {
         let device_id = self.platform.descriptor().device_id();
         self.platform.register(driver);
         self.info.root.note_populated_resource(device_id, address);
@@ -620,8 +640,44 @@ pub fn with_acpi<T>(f: impl FnOnce(&System) -> T) -> Option<T> {
     try_system().map(f)
 }
 
-pub fn spcr_console_device_id() -> Option<DeviceId> {
-    try_system().and_then(System::spcr_console_device_id)
+struct SpcrConsoleSelection {
+    namespace: Option<String>,
+    address: AcpiResourceAddress,
+}
+
+impl SpcrConsoleSelection {
+    fn matches_device(&self, device: &AcpiDeviceInfo) -> bool {
+        if self
+            .namespace
+            .as_ref()
+            .is_some_and(|path| *path != device.path)
+        {
+            return false;
+        }
+        let ranges = match self.address.space {
+            AcpiResourceAddressSpace::Memory => &device.memory_ranges,
+            AcpiResourceAddressSpace::Io => &device.io_ranges,
+        };
+        ranges.iter().any(|range| {
+            self.address
+                .base
+                .checked_sub(range.base)
+                .is_some_and(|offset| offset < range.size)
+        })
+    }
+}
+
+/// The firmware selected a serial console that could not be resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpcrConsoleNotFound;
+
+/// Resolves the SPCR-selected console. Returns `Ok(None)` if SPCR provides
+/// no supported, enabled serial console.
+pub fn spcr_console_device_id() -> Result<Option<DeviceId>, SpcrConsoleNotFound> {
+    match try_system() {
+        Some(system) => system.spcr_console_device_id(),
+        None => Ok(None),
+    }
 }
 
 fn acpi_error(err: AcpiError) -> DriverError {
@@ -1020,17 +1076,125 @@ impl System {
         self.populated_resources.lock().get(&address).copied()
     }
 
-    pub fn spcr_console_device_id(&self) -> Option<DeviceId> {
-        let tables = unsafe { AcpiTables::from_rsdp(self.handler.clone(), self.handler.root.rsdp) }
-            .map_err(acpi_error)
-            .ok()?;
-        tables
-            .find_tables::<Spcr>()
-            .filter(|spcr| is_supported_spcr_interface(spcr.interface_type()))
-            .find_map(|spcr| {
-                spcr_namespace_device_id(self, &spcr)
-                    .or_else(|| spcr_resource_device_id(self, &spcr))
+    /// Resolves the SPCR-selected console in this system's registered devices.
+    pub fn spcr_console_device_id(&self) -> Result<Option<DeviceId>, SpcrConsoleNotFound> {
+        self.spcr_console_selection()?
+            .map(|selection| {
+                let id = self
+                    .resource_address_to_device_id(selection.address)
+                    .ok_or(SpcrConsoleNotFound)?;
+                if let Some(path) = selection.namespace
+                    && self.path_to_device_id(&path) != Some(id)
+                {
+                    return Err(SpcrConsoleNotFound);
+                }
+                Ok(id)
             })
+            .transpose()
+    }
+
+    fn spcr_console_selection(&self) -> Result<Option<SpcrConsoleSelection>, SpcrConsoleNotFound> {
+        // SAFETY: the ACPI root and mapping handler remain valid for this System.
+        let tables = unsafe { AcpiTables::from_rsdp(self.handler.clone(), self.handler.root.rsdp) }
+            .map_err(|_| SpcrConsoleNotFound)?;
+        // SAFETY: the same handler retains the firmware tables that back this
+        // RSDT/XSDT, and each mapping lives through its use in this closure.
+        unsafe { spcr_mappings(&tables, self.handler.clone()) }
+            .find_map(|mapping| {
+                let spcr = mapping.parse()?;
+                if !is_supported_spcr_interface(spcr.interface_type()) {
+                    return None;
+                }
+                let gas = spcr.base_address()?;
+                let selection = || {
+                    let address = AcpiResourceAddress::from_generic_address(gas.ok()?)?;
+                    let namespace = match spcr.namespace_path().ok()? {
+                        Some(path) => Some(normalize_spcr_path(path)?),
+                        None => None,
+                    };
+                    Some(SpcrConsoleSelection { namespace, address })
+                };
+                Some(selection().ok_or(SpcrConsoleNotFound))
+            })
+            .transpose()
+    }
+
+    /// Returns the SPCR 16550 MMIO settings that match an ACPI device.
+    ///
+    /// An SPCR namespace path identifies the device when present. Its resource
+    /// must cover the GAS base. Without a path, match by resource coverage alone.
+    fn spcr_16550_mmio(&self, device: &AcpiInfo<'_>) -> Result<Option<Spcr16550Mmio>, DriverError> {
+        // SAFETY: the ACPI root and physical mapping handler remain valid for
+        // this System, as in the other SPCR queries.
+        let tables = unsafe { AcpiTables::from_rsdp(self.handler.clone(), self.handler.root.rsdp) }
+            .map_err(acpi_error)?;
+        // SAFETY: the firmware table ranges are stable under this same handler.
+        unsafe { spcr_mappings(&tables, self.handler.clone()) }
+            .find_map(|mapping| {
+                let spcr = mapping.parse()?;
+                if !matches!(
+                    spcr.interface_type(),
+                    SpcrInterfaceType::Full16550 | SpcrInterfaceType::Generic16550
+                ) {
+                    return None;
+                }
+                let gas = spcr.base_address()?.ok()?;
+                if gas.address_space != AddressSpace::SystemMemory {
+                    return None;
+                }
+                let namespace = match spcr.namespace_path() {
+                    Ok(None) => None,
+                    Ok(Some(path)) if normalize_spcr_path(path).is_some() => Some(path),
+                    _ => {
+                        return spcr_uart_mmio_range(
+                            device.path,
+                            None,
+                            device.memory_ranges(),
+                            gas.address,
+                        )
+                        .map(|_| {
+                            Err(DriverError::Unknown(
+                                "invalid SPCR UART namespace path".into(),
+                            ))
+                        });
+                    }
+                };
+                spcr_uart_mmio_range(device.path, namespace, device.memory_ranges(), gas.address)
+                    .map(|range| {
+                        range.and_then(|registers| {
+                            let (register_stride, access_width) =
+                                spcr.ns16550_mmio_layout().ok_or(DriverError::Unsupported(
+                                    "SPCR NS16550 MMIO register layout",
+                                ))?;
+                            Ok(Spcr16550Mmio {
+                                registers,
+                                register_stride,
+                                access_width,
+                                clock_hz: spcr.uart_clock_frequency(),
+                                baud_rate: spcr.baud_rate(),
+                            })
+                        })
+                    })
+            })
+            .transpose()
+    }
+
+    /// Checks whether a matching AML device describes an overlapping I/O port range.
+    pub fn namespace_claims_io_range(
+        &self,
+        ids: &[AcpiId],
+        ports: core::ops::Range<u64>,
+    ) -> Result<bool, ProbeError> {
+        if ports.is_empty() {
+            return Ok(false);
+        }
+        Ok(self.device_infos_for_ids(ids)?.iter().any(|device| {
+            device.io_ranges.iter().any(|range| {
+                range.size != 0
+                    && ports.start < range.base.saturating_add(range.size)
+                    && range.base < ports.end
+            })
+        }))
     }
 
     pub fn resource_devices(&self) -> Result<Vec<AcpiResourceDevice>, ProbeError> {
@@ -1046,9 +1210,13 @@ impl System {
     pub fn serial_console(&self) -> Result<Option<AcpiSerialConsole>, DriverError> {
         let tables = unsafe { AcpiTables::from_rsdp(self.handler.clone(), self.handler.root.rsdp) }
             .map_err(acpi_error)?;
-        let Some(spcr) = tables.find_tables::<Spcr>().next() else {
+        // SAFETY: the firmware table ranges are stable under this same handler.
+        let Some(mapping) = (unsafe { spcr_mappings(&tables, self.handler.clone()) }).next() else {
             return Ok(None);
         };
+        let spcr = mapping
+            .parse()
+            .ok_or_else(|| DriverError::Unknown("invalid host SPCR table length".into()))?;
         let interface = match spcr.interface_type() {
             SpcrInterfaceType::Full16550
             | SpcrInterfaceType::Full16450
@@ -1056,22 +1224,23 @@ impl System {
             SpcrInterfaceType::ArmPL011 => AcpiSerialInterface::Pl011,
             _ => return Err(DriverError::Unsupported("host SPCR serial interface")),
         };
-        let address = spcr
-            .base_address()
-            .ok_or_else(|| DriverError::Unknown("host SPCR has no serial register address".into()))?
-            .map_err(acpi_error)?;
+        let Some(address) = spcr.base_address() else {
+            return Ok(None);
+        };
+        let address = address.map_err(acpi_error)?;
         let address_space = match address.address_space {
             AddressSpace::SystemMemory => AcpiSerialAddressSpace::Memory,
             AddressSpace::SystemIo => AcpiSerialAddressSpace::Io,
             _ => return Err(DriverError::Unsupported("host SPCR serial address space")),
         };
         let namespace_path = spcr
-            .namespace_string()
-            .map_err(|error| {
-                DriverError::Unknown(format!("invalid host SPCR namespace: {error:?}"))
-            })?
-            .trim_end_matches('\0')
-            .to_string();
+            .namespace_path()
+            .map_err(|_| DriverError::Unknown("invalid host SPCR namespace".into()))?
+            .map(|path| {
+                normalize_spcr_path(path)
+                    .ok_or_else(|| DriverError::Unknown(format!("invalid host SPCR path: {path}")))
+            })
+            .transpose()?;
         Ok(Some(AcpiSerialConsole {
             interface,
             address_space,
@@ -1080,13 +1249,10 @@ impl System {
                 size: spcr_uart_register_size(address.access_size),
             },
             access_size: address.access_size,
-            irq: spcr
-                .global_system_interrupt()
-                .or_else(|| spcr.irq().map(u32::from)),
-            baud_rate: spcr.baud_rate().map(|value| value.get()),
-            clock_hz: spcr.uart_clock_frequency().map(|value| value.get()),
-            namespace_path: (!namespace_path.is_empty() && namespace_path != ".")
-                .then_some(namespace_path),
+            irq: spcr.irq(),
+            baud_rate: spcr.baud_rate(),
+            clock_hz: spcr.uart_clock_frequency(),
+            namespace_path,
         }))
     }
 
@@ -1288,9 +1454,20 @@ impl System {
             }
 
             if !ids.is_empty() && !is_root_acpi_id_list(ids) {
-                for device in self.device_infos_for_ids(ids)? {
+                let mut devices = self.device_infos_for_ids(ids)?;
+                // This registration binds only one namespace device. Give
+                // the firmware console priority over other matching UARTs.
+                if devices.len() > 1
+                    && let Ok(Some(selection)) = self.spcr_console_selection()
+                    && let Some(index) = devices
+                        .iter()
+                        .position(|device| selection.matches_device(device))
+                {
+                    devices[..=index].rotate_right(1);
+                }
+                for device in devices {
                     if self.probed_names.lock().contains(register.name) {
-                        continue;
+                        break;
                     }
                     let desc = crate::Descriptor {
                         name: register.name,
@@ -1355,6 +1532,34 @@ impl System {
     }
 }
 
+fn spcr_uart_mmio_range(
+    device: &str,
+    spcr_device: Option<&str>,
+    ranges: &[AcpiResourceRange],
+    base: u64,
+) -> Option<Result<AcpiResourceRange, DriverError>> {
+    let registers = ranges.iter().find_map(|range| {
+        let offset = base.checked_sub(range.base)?;
+        let size = range.size.checked_sub(offset)?;
+        (size > 0).then_some(AcpiResourceRange { base, size })
+    });
+    if let Some(path) = spcr_device {
+        if normalize_spcr_path(path)?.as_str() != device {
+            return registers.map(|_| {
+                Err(DriverError::Unknown(format!(
+                    "SPCR UART {path} GAS base {base:#x} overlaps the resources of {device}"
+                )))
+            });
+        }
+        return Some(registers.ok_or_else(|| {
+            DriverError::Unknown(format!(
+                "SPCR UART {path} has no MMIO resource covering GAS base {base:#x}"
+            ))
+        }));
+    }
+    registers.map(Ok)
+}
+
 fn is_supported_spcr_interface(interface: SpcrInterfaceType) -> bool {
     matches!(
         interface,
@@ -1367,18 +1572,21 @@ fn is_supported_spcr_interface(interface: SpcrInterfaceType) -> bool {
     )
 }
 
-fn spcr_namespace_device_id(system: &System, spcr: &Spcr) -> Option<DeviceId> {
-    let namespace = spcr.namespace_string().ok()?.trim_end_matches('\0');
-    if namespace.is_empty() || namespace == "." {
-        return None;
+fn normalize_spcr_path(path: &str) -> Option<String> {
+    let relative = path.strip_prefix('\\')?;
+    // Validate each NameSeg before parsing. In particular the AML parser
+    // assumes four available bytes in its invalid NameSeg error path.
+    for segment in relative.split('.') {
+        let mut bytes = segment.bytes();
+        let first = bytes.next()?;
+        if segment.len() > 4
+            || !(first == b'_' || first.is_ascii_uppercase())
+            || !bytes.all(|byte| byte == b'_' || byte.is_ascii_uppercase() || byte.is_ascii_digit())
+        {
+            return None;
+        }
     }
-    system.path_to_device_id(namespace)
-}
-
-fn spcr_resource_device_id(system: &System, spcr: &Spcr) -> Option<DeviceId> {
-    let address = spcr.base_address()?.ok()?;
-    let address = AcpiResourceAddress::from_generic_address(address)?;
-    system.resource_address_to_device_id(address)
+    Some(AmlName::from_str(path).ok()?.as_string())
 }
 
 fn read_pci_ecam_regions(
@@ -2904,6 +3112,289 @@ fn write_io_u32(_port: u16, _value: u32) {}
 mod tests {
     mod pci_config;
 
+    fn bytes(words: &mut [u64]) -> &mut [u8] {
+        // SAFETY: The exclusive borrow covers initialized u64 storage. Every byte
+        // pattern remains a valid u64, and the slice stays within that allocation.
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                words.as_mut_ptr().cast(),
+                core::mem::size_of_val(words),
+            )
+        }
+    }
+
+    fn checksum(bytes: &mut [u8], at: usize) {
+        bytes[at] = 0;
+        bytes[at] = bytes
+            .iter()
+            .fold(0u8, |sum, byte| sum.wrapping_add(*byte))
+            .wrapping_neg();
+    }
+
+    fn sdt(signature: &[u8; 4], oem: &[u8; 6], table: &[u8; 8], body: &[u8]) -> Vec<u64> {
+        let length = 36 + body.len();
+        let mut words = alloc::vec![0; length.div_ceil(8)];
+        let contents = &mut bytes(&mut words)[..length];
+        contents[..4].copy_from_slice(signature);
+        contents[4..8].copy_from_slice(&(length as u32).to_le_bytes());
+        contents[8] = 1;
+        contents[10..16].copy_from_slice(oem);
+        contents[16..24].copy_from_slice(table);
+        contents[24..28].copy_from_slice(&1u32.to_le_bytes());
+        contents[28..32].copy_from_slice(b"TEST");
+        contents[36..].copy_from_slice(body);
+        checksum(contents, 9);
+        words
+    }
+
+    fn rsdp_for(xsdt: &[u64]) -> Vec<u64> {
+        let mut rsdp = alloc::vec![0u64; 5];
+        let rsdp_bytes = &mut bytes(&mut rsdp)[..36];
+        rsdp_bytes[..8].copy_from_slice(b"RSD PTR ");
+        rsdp_bytes[9..15].copy_from_slice(b"TESTOS");
+        rsdp_bytes[15] = 2;
+        rsdp_bytes[20..24].copy_from_slice(&36u32.to_le_bytes());
+        rsdp_bytes[24..32].copy_from_slice(&(xsdt.as_ptr() as u64).to_le_bytes());
+        checksum(&mut rsdp_bytes[..20], 8);
+        checksum(rsdp_bytes, 32);
+
+        rsdp
+    }
+
+    #[test]
+    fn spcr_lookup_keeps_an_explicit_namespace_selection() {
+        use super::{AcpiResourceAddress, SpcrConsoleNotFound};
+        use crate::DeviceId;
+
+        let registered = DeviceId::from(1);
+        let other = DeviceId::from(2);
+        for (namespace, named_device, expected) in [
+            (
+                b"\\_SB.COM1\0".as_slice(),
+                registered,
+                Err(SpcrConsoleNotFound),
+            ),
+            (
+                b"invalid\0".as_slice(),
+                registered,
+                Err(SpcrConsoleNotFound),
+            ),
+            (b"\\_SB.COM0\0".as_slice(), other, Err(SpcrConsoleNotFound)),
+            (b"\\_SB.COM0\0".as_slice(), registered, Ok(Some(registered))),
+            (b".\0".as_slice(), registered, Ok(Some(registered))),
+        ] {
+            let mut body = alloc::vec![0; 52 + namespace.len()];
+            body[0] = 0x12; // Generic 16550.
+            body[5] = 8; // GAS register width.
+            body[7] = 1; // Byte access.
+            body[8..16].copy_from_slice(&0x2000_u64.to_le_bytes());
+            body[48..50].copy_from_slice(&(namespace.len() as u16).to_le_bytes());
+            body[50..52].copy_from_slice(&88_u16.to_le_bytes());
+            body[52..].copy_from_slice(namespace);
+            let mut spcr = sdt(b"SPCR", b"TESTOS", b"UARTTEST", &body);
+            let spcr_bytes = &mut bytes(&mut spcr)[..36 + body.len()];
+            spcr_bytes[8] = 4;
+            checksum(spcr_bytes, 9);
+
+            let xsdt = sdt(
+                b"XSDT",
+                b"TESTOS",
+                b"UARTTEST",
+                &(spcr.as_ptr() as u64).to_le_bytes(),
+            );
+            let rsdp = rsdp_for(&xsdt);
+            let mut system = test_system();
+            system.handler =
+                AcpiHandler::new(AcpiRoot::identity(rsdp.as_ptr() as usize), Vec::new());
+            // An address match exists, but the firmware explicitly selected an ACPI object.
+            system.note_populated_resource(registered, AcpiResourceAddress::memory(0x2000));
+            system
+                .populated_paths
+                .lock()
+                .insert(String::from(r"\_SB_.COM0"), named_device);
+
+            assert_eq!(
+                system.spcr_console_device_id(),
+                expected,
+                "namespace {namespace:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_spcr_namespace_blocks_default_layout_for_its_uart() {
+        let namespace = b"\\_SB.COM0"; // Missing its terminating NUL.
+        let mut body = alloc::vec![0; 52 + namespace.len()];
+        body[0] = 0x12;
+        body[5] = 32;
+        body[7] = 3;
+        body[8..16].copy_from_slice(&0x2000_u64.to_le_bytes());
+        body[48..50].copy_from_slice(&(namespace.len() as u16).to_le_bytes());
+        body[50..52].copy_from_slice(&88_u16.to_le_bytes());
+        body[52..].copy_from_slice(namespace);
+        let mut spcr = sdt(b"SPCR", b"TESTOS", b"UARTTEST", &body);
+        let table = &mut bytes(&mut spcr)[..36 + body.len()];
+        table[8] = 4;
+        checksum(table, 9);
+        let xsdt = sdt(
+            b"XSDT",
+            b"TESTOS",
+            b"UARTTEST",
+            &(spcr.as_ptr() as u64).to_le_bytes(),
+        );
+        let rsdp = rsdp_for(&xsdt);
+        let mut system = test_system();
+        system.handler = AcpiHandler::new(AcpiRoot::identity(rsdp.as_ptr() as usize), Vec::new());
+
+        let mut device = super::AcpiDeviceInfo {
+            path: String::from(r"\_SB_.COM0"),
+            hid: None,
+            cids: Vec::new(),
+            memory_ranges: alloc::vec![super::AcpiResourceRange {
+                base: 0x3000,
+                size: 0x100
+            }],
+            io_ranges: Vec::new(),
+            irq_routes: Vec::new(),
+            dma_coherent: None,
+        };
+        let settings = |device: &super::AcpiDeviceInfo| {
+            super::AcpiInfo {
+                root: &system,
+                path: &device.path,
+                irq_route: None,
+                device: Some(device),
+            }
+            .spcr_16550_mmio()
+        };
+        assert!(matches!(settings(&device), Ok(None)));
+        device.memory_ranges[0].base = 0x2000;
+        assert!(settings(&device).is_err());
+    }
+
+    #[test]
+    fn legacy_spcr_ignores_v4_extension_outside_the_table() {
+        use kernutil::acpi::Spcr;
+
+        let mut bytes = [0; 100];
+        bytes[..4].copy_from_slice(b"SPCR");
+        bytes[4..8].copy_from_slice(&80_u32.to_le_bytes());
+        bytes[8] = 3;
+        bytes[36] = 0x12; // Generic 16550.
+        bytes[41] = 32;
+        bytes[43] = 1;
+        bytes[44..52].copy_from_slice(&0x2000_u64.to_le_bytes());
+        bytes[58] = 7;
+        bytes[76..80].copy_from_slice(&24_000_000_u32.to_le_bytes());
+        // These bytes can belong to the next ACPI record.
+        bytes[80..84].copy_from_slice(&1_500_000_u32.to_le_bytes());
+        let legacy = Spcr::from_bytes(&bytes).unwrap();
+        assert_eq!(legacy.baud_rate(), Some(115_200));
+        assert_eq!(legacy.uart_clock_frequency(), Some(24_000_000));
+        assert_eq!(legacy.namespace_path(), Ok(None));
+        assert_eq!(legacy.ns16550_mmio_layout(), Some((4, 1)));
+
+        bytes[43] = 0;
+        assert_eq!(
+            Spcr::from_bytes(&bytes).unwrap().ns16550_mmio_layout(),
+            Some((4, 4))
+        );
+        bytes[41] = 8;
+        bytes[43] = 3;
+        assert_eq!(
+            Spcr::from_bytes(&bytes).unwrap().ns16550_mmio_layout(),
+            None
+        );
+
+        bytes[8] = 2;
+        assert_eq!(
+            Spcr::from_bytes(&bytes).unwrap().uart_clock_frequency(),
+            None
+        );
+
+        // Disabled redirection can leave the GAS access attributes populated.
+        bytes[44..52].fill(0);
+        assert!(Spcr::from_bytes(&bytes).unwrap().base_address().is_none());
+    }
+
+    #[test]
+    fn revision_four_requires_the_extension_and_bounds_its_namespace() {
+        use kernutil::acpi::{InvalidSpcrNamespace, Spcr};
+
+        let mut bytes = [0; 100];
+        bytes[..4].copy_from_slice(b"SPCR");
+        bytes[4..8].copy_from_slice(&80_u32.to_le_bytes());
+        bytes[8] = 4;
+        assert!(Spcr::from_bytes(&bytes).is_none());
+
+        bytes[4..8].copy_from_slice(&90_u32.to_le_bytes());
+        bytes[80..84].copy_from_slice(&1_500_000_u32.to_le_bytes());
+        bytes[84..86].copy_from_slice(&2_u16.to_le_bytes());
+        bytes[86..88].copy_from_slice(&88_u16.to_le_bytes());
+        bytes[88] = b'.';
+        let spcr = Spcr::from_bytes(&bytes).unwrap();
+        assert_eq!(spcr.baud_rate(), Some(1_500_000));
+        assert_eq!(spcr.namespace_path(), Ok(None));
+
+        bytes[84..86].copy_from_slice(&3_u16.to_le_bytes());
+        assert_eq!(
+            Spcr::from_bytes(&bytes).unwrap().namespace_path(),
+            Err(InvalidSpcrNamespace)
+        );
+
+        bytes[4..8].copy_from_slice(&99_u32.to_le_bytes());
+        bytes[84..86].copy_from_slice(&11_u16.to_le_bytes());
+        bytes[88..97].copy_from_slice(br"\_SB.COM1");
+        assert_eq!(
+            Spcr::from_bytes(&bytes).unwrap().namespace_path(),
+            Ok(Some(r"\_SB.COM1"))
+        );
+    }
+
+    #[test]
+    fn spcr_mmio_range_starts_at_the_gas_inside_the_uart_resource() {
+        use super::{AcpiResourceRange, spcr_uart_mmio_range};
+        let ranges = [
+            AcpiResourceRange {
+                base: 0x1000,
+                size: 0x100,
+            },
+            AcpiResourceRange {
+                base: 0x2000,
+                size: 0x100,
+            },
+        ];
+        let path = r"\_SB_.COM1";
+        let firmware_path = r"\_SB.COM1";
+        let expected = AcpiResourceRange {
+            base: 0x2020,
+            size: 0xe0,
+        };
+        assert!(matches!(
+            spcr_uart_mmio_range(r"\_SB_.COM0", Some(path), &ranges, 0x2020),
+            Some(Err(_))
+        ));
+        assert!(spcr_uart_mmio_range(r"\_SB_.COM0", Some(path), &ranges, 0x3000).is_none());
+        assert_eq!(
+            spcr_uart_mmio_range(path, Some(firmware_path), &ranges, 0x2020)
+                .unwrap()
+                .ok(),
+            Some(expected)
+        );
+        assert_eq!(
+            spcr_uart_mmio_range(path, None, &ranges, 0x2020)
+                .unwrap()
+                .ok(),
+            Some(expected)
+        );
+        assert!(
+            spcr_uart_mmio_range(path, Some(path), &ranges, 0x2100)
+                .unwrap()
+                .is_err()
+        );
+        assert!(spcr_uart_mmio_range(path, None, &ranges, 0x2100).is_none());
+    }
+
     use alloc::{
         string::{String, ToString},
         sync::Arc,
@@ -3159,11 +3650,168 @@ mod tests {
     fn acpi_probe_matches_namespace_device_and_exposes_io_and_irq_resources() {
         let system = test_system();
 
+        let rtc = &[AcpiId {
+            hid: "PNP0B00",
+            cids: &[],
+        }];
+        assert!(system.namespace_claims_io_range(rtc, 0x77..0x80).unwrap());
+        assert!(!system.namespace_claims_io_range(rtc, 0x78..0x80).unwrap());
+
         let results = system.probe_register(&RTC_REGISTER).unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(results.into_iter().all(|result| result.is_ok()));
         assert_eq!(LAST_PATH.lock().as_deref(), Some("\\_SB_.RTC0"));
+    }
+
+    #[test]
+    fn acpi_root_fallback_runs_after_unrelated_namespace_probe_fails() {
+        use crate::probe::OnProbeError;
+
+        fn probe_uart(probe: super::ProbeAcpi<'_>) -> Result<(), OnProbeError> {
+            probe
+                .info()
+                .spcr_16550_mmio()
+                .map_err(|error| OnProbeError::other(error.to_string()))?;
+            Ok(())
+        }
+
+        let register = DriverRegister {
+            name: "test ACPI UART fallback",
+            level: ProbeLevel::PostKernel,
+            priority: ProbePriority::DEFAULT,
+            probe_kinds: &[
+                ProbeKind::Acpi {
+                    ids: &[AcpiId {
+                        hid: "PNP0501",
+                        cids: &[],
+                    }],
+                    on_probe: probe_uart,
+                },
+                ProbeKind::Acpi {
+                    ids: &[],
+                    on_probe: |_| Ok(()),
+                },
+            ],
+        };
+
+        let absent = test_system().probe_register(&register).unwrap();
+        assert!(matches!(absent.as_slice(), [Ok(())]));
+
+        let mut system = test_system();
+        let path = AmlName::from_str(r"\_SB.COM0").unwrap();
+        let interpreter = system.interpreter.as_ref().unwrap();
+        {
+            let mut namespace = interpreter.namespace.lock();
+            namespace
+                .add_level(path.clone(), NamespaceLevelKind::Device)
+                .unwrap();
+            namespace
+                .insert(
+                    AmlName::from_str("_HID").unwrap().resolve(&path).unwrap(),
+                    Object::String(String::from("PNP0501")).wrap(),
+                )
+                .unwrap();
+        }
+        let namespace = b"\\_SB.COM0\0";
+        let mut body = alloc::vec![0; 52 + namespace.len()];
+        body[0] = 0x12; // Generic 16550.
+        body[5] = 8; // GAS register width.
+        body[7] = 1; // Byte access.
+        body[8..16].copy_from_slice(&0x2000_u64.to_le_bytes());
+        body[48..50].copy_from_slice(&(namespace.len() as u16).to_le_bytes());
+        body[50..52].copy_from_slice(&88_u16.to_le_bytes());
+        body[52..].copy_from_slice(namespace);
+        let mut spcr = sdt(b"SPCR", b"TESTOS", b"UARTTEST", &body);
+        let table = &mut bytes(&mut spcr)[..36 + body.len()];
+        table[8] = 4;
+        checksum(table, 9);
+        let xsdt = sdt(
+            b"XSDT",
+            b"TESTOS",
+            b"UARTTEST",
+            &(spcr.as_ptr() as u64).to_le_bytes(),
+        );
+        let rsdp = rsdp_for(&xsdt);
+        system.handler = AcpiHandler::new(AcpiRoot::identity(rsdp.as_ptr() as usize), Vec::new());
+
+        let results = system.probe_register(&register).unwrap();
+        assert!(
+            matches!(results.as_slice(), [Err(error), Ok(())] if error.to_string().contains("covering GAS base")),
+            "{results:?}"
+        );
+    }
+
+    #[test]
+    fn acpi_probes_spcr_uart_before_an_unrelated_uart() {
+        let mut system = test_system();
+        let interpreter = system.interpreter.as_ref().unwrap();
+        {
+            let mut namespace = interpreter.namespace.lock();
+            for (name, base) in [(r"\_SB.COM0", 0x1000_u32), (r"\_SB.COM1", 0x2000)] {
+                let path = AmlName::from_str(name).unwrap();
+                namespace
+                    .add_level(path.clone(), NamespaceLevelKind::Device)
+                    .unwrap();
+                namespace
+                    .insert(
+                        AmlName::from_str("_HID").unwrap().resolve(&path).unwrap(),
+                        Object::String(String::from("PNP0501")).wrap(),
+                    )
+                    .unwrap();
+                let mut crs = alloc::vec![0x86, 0x09, 0x00, 0x01];
+                crs.extend_from_slice(&base.to_le_bytes());
+                crs.extend_from_slice(&0x100_u32.to_le_bytes());
+                crs.extend_from_slice(&[0x79, 0]);
+                namespace
+                    .insert(
+                        AmlName::from_str("_CRS").unwrap().resolve(&path).unwrap(),
+                        Object::Buffer(crs).wrap(),
+                    )
+                    .unwrap();
+            }
+        }
+
+        let namespace = b"\\_SB.COM1\0";
+        let mut body = alloc::vec![0; 52 + namespace.len()];
+        body[0] = 0x12;
+        body[5] = 32;
+        body[7] = 3;
+        body[8..16].copy_from_slice(&0x2000_u64.to_le_bytes());
+        body[48..50].copy_from_slice(&(namespace.len() as u16).to_le_bytes());
+        body[50..52].copy_from_slice(&88_u16.to_le_bytes());
+        body[52..].copy_from_slice(namespace);
+        let mut spcr = sdt(b"SPCR", b"TESTOS", b"UARTTEST", &body);
+        let table = &mut bytes(&mut spcr)[..36 + body.len()];
+        table[8] = 4;
+        checksum(table, 9);
+        let xsdt = sdt(
+            b"XSDT",
+            b"TESTOS",
+            b"UARTTEST",
+            &(spcr.as_ptr() as u64).to_le_bytes(),
+        );
+        let rsdp = rsdp_for(&xsdt);
+        system.handler = AcpiHandler::new(AcpiRoot::identity(rsdp.as_ptr() as usize), Vec::new());
+
+        let register = DriverRegister {
+            name: "test ACPI SPCR UART",
+            level: ProbeLevel::PostKernel,
+            priority: ProbePriority::DEFAULT,
+            probe_kinds: &[ProbeKind::Acpi {
+                ids: &[AcpiId {
+                    hid: "PNP0501",
+                    cids: &[],
+                }],
+                on_probe: |_| Ok(()),
+            }],
+        };
+        let results = system.probe_register(&register).unwrap();
+        assert!(matches!(results.as_slice(), [Ok(())]));
+        let selected = system
+            .path_to_device_id(r"\_SB_.COM1")
+            .expect("SPCR UART probed");
+        assert_eq!(system.spcr_console_device_id(), Ok(Some(selected)));
     }
 
     #[test]

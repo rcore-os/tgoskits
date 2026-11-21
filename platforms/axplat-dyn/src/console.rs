@@ -64,6 +64,14 @@ impl ConsoleIf for ConsoleIfImpl {
         somehal::console::begin_runtime_handoff().map_err(|_| ConsoleHandoffError::InvalidState)
     }
 
+    fn early_console_reserves_mmio(paddr: usize) -> bool {
+        somehal::console::early_console_reserves_mmio(paddr)
+    }
+
+    fn early_console_reserves_io_port(port: u16) -> bool {
+        somehal::console::early_console_reserves_io_port(port)
+    }
+
     fn commit_runtime_handoff() -> ConsoleHandoffResult {
         somehal::console::commit_runtime_handoff().map_err(|_| ConsoleHandoffError::InvalidState)
     }

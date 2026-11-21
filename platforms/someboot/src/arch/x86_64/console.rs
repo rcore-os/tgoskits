@@ -75,6 +75,10 @@ impl crate::console::ArchConsoleOps for Console {
         }
     }
 
+    fn reserves_io_port(port: u16) -> bool {
+        port == COM1_PORT
+    }
+
     fn irq_num() -> Option<usize> {
         Some(COM1_IRQ_VECTOR)
     }

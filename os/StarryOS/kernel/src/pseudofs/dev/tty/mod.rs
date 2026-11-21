@@ -88,7 +88,6 @@ pub struct Tty<R, W> {
     terminal: Arc<Terminal>,
     ldisc: Mutex<LineDiscipline<R, W>>,
     writer: W,
-    termios_update: Mutex<()>,
     is_ptm: bool,
     open_count: AtomicUsize,
     binding: RawSpinLock<Option<Weak<dyn Any + Send + Sync>>>,
@@ -104,7 +103,6 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             terminal,
             ldisc,
             writer,
-            termios_update: Mutex::new(()),
             is_ptm,
             open_count: AtomicUsize::new(0),
             binding: RawSpinLock::new(None),
@@ -113,6 +111,10 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
+    fn termios_update_lock(&self) -> &Mutex<()> {
+        &self.terminal.termios_update
+    }
+
     pub fn bind_to(self: &Arc<Self>, proc: &Process) -> StarryResult<()> {
         self.bind_to_at(proc, None)
     }
@@ -270,9 +272,11 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     // Note: vm_read() must complete before acquiring the terminal lock.
                     // Faultable user memory access inside an atomic context (preemption
                     // disabled) will call might_sleep() in handle_page_fault and panic.
-                    let termios =
-                        Arc::new(Termios2::new((arg as *const Termios).vm_read(current)?));
-                    let _update = self.termios_update.lock();
+                    let legacy_termios = (arg as *const Termios).vm_read(current)?;
+                    let _update = self.termios_update_lock().lock();
+                    // The legacy ABI has no numeric speed fields for BOTHER.
+                    let mut termios = self.terminal.load_termios().with_legacy(legacy_termios);
+                    termios.normalize_baudrates();
                     apply_termios_update(
                         &self.writer,
                         &self.terminal,
@@ -284,8 +288,9 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     }
                 }
                 TCSETS2 | TCSETSF2 | TCSETSW2 => {
-                    let termios = Arc::new((arg as *const Termios2).vm_read(current)?);
-                    let _update = self.termios_update.lock();
+                    let mut termios = (arg as *const Termios2).vm_read(current)?;
+                    termios.normalize_baudrates();
+                    let _update = self.termios_update_lock().lock();
                     apply_termios_update(
                         &self.writer,
                         &self.terminal,
@@ -387,8 +392,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
 
                     let proc = proc_data.proc.clone();
                     let session = proc.group().session();
-                    let is_session_leader =
-                        session.sid().pid_number() == proc.pid().pid_number();
+                    let is_session_leader = session.sid().pid_number() == proc.pid().pid_number();
                     if is_session_leader {
                         if let Some(foreground) = self.terminal.job_control.foreground() {
                             let _ = send_signal_to_process_group_ref(
@@ -431,12 +435,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
 fn apply_termios_update<W: TtyWrite>(
     writer: &W,
     terminal: &Terminal,
-    termios: Arc<Termios2>,
+    termios: Termios2,
     drain: bool,
 ) -> StarryResult<()> {
     let old = terminal.load_termios();
-    writer.update_termios(old.as_ref(), termios.as_ref(), drain, &mut || {
-        *terminal.termios.lock_irqsave() = termios.clone();
+    writer.update_termios(old.as_ref(), &termios, drain, &mut |applied| {
+        let applied = Arc::new(*applied);
+        *terminal.termios.lock_irqsave() = applied;
     })
 }
 
@@ -517,6 +522,7 @@ mod tests {
     use super::{Terminal, Termios2, TtyWrite, apply_termios_update};
     use crate::StarryResult;
 
+    #[derive(Clone)]
     struct TermiosOrderWriter {
         terminal: Arc<Terminal>,
         events: Arc<Mutex<Vec<&'static str>>>,
@@ -552,6 +558,47 @@ mod tests {
     }
 
     #[test]
+    fn tty_endpoints_serialize_updates_to_shared_termios() {
+        use super::{ProcessMode, Tty, TtyConfig, TtyRead};
+
+        struct IdleReader;
+
+        impl TtyRead for IdleReader {
+            fn read(&mut self, _buf: &mut [u8]) -> usize {
+                0
+            }
+
+            fn discard_input(&mut self) -> StarryResult<()> {
+                Ok(())
+            }
+        }
+
+        let terminal = Arc::new(Terminal::default());
+        let writer = TermiosOrderWriter {
+            terminal: terminal.clone(),
+            events: Arc::new(Mutex::new(Vec::new())),
+            fail_configuration: false,
+        };
+        let endpoint = || {
+            Tty::new(
+                terminal.clone(),
+                TtyConfig {
+                    reader: IdleReader,
+                    writer: writer.clone(),
+                    process_mode: ProcessMode::Passive(Arc::new(axpoll_set::PollSet::new())),
+                },
+            )
+        };
+        let left = endpoint();
+        let right = endpoint();
+
+        assert!(core::ptr::eq(
+            left.termios_update_lock(),
+            right.termios_update_lock(),
+        ));
+    }
+
+    #[test]
     fn termios_hardware_update_precedes_publication() {
         let terminal = Arc::new(Terminal::default());
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -564,7 +611,7 @@ mod tests {
         apply_termios_update(
             &writer,
             &terminal,
-            Arc::new(Termios2::default_b115200()),
+            Termios2::default_b115200(),
             true,
         )
         .unwrap();
@@ -591,7 +638,7 @@ mod tests {
             apply_termios_update(
                 &writer,
                 &terminal,
-                Arc::new(Termios2::default_b115200()),
+                Termios2::default_b115200(),
                 false,
             )
             .is_err()

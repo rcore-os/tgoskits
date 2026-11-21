@@ -25,6 +25,11 @@ impl Kind for Port {
 }
 
 impl Ns16550<Port> {
+    /// Returns the I/O port base without accessing the hardware.
+    pub const fn io_port(&self) -> u16 {
+        self.base.port
+    }
+
     /// 创建一个新的 NS16550 IO Port 版本驱动实例
     ///
     /// # 参数

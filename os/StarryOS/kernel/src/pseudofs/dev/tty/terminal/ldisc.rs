@@ -126,13 +126,13 @@ pub trait TtyWrite: Send + Sync + 'static {
         old: &Termios2,
         new: &Termios2,
         drain: bool,
-        publish: &mut dyn FnMut(),
+        publish: &mut dyn FnMut(&Termios2),
     ) -> StarryResult<()> {
         if drain {
             self.drain()?;
         }
         self.termios_changed(old, new)?;
-        publish();
+        publish(new);
         Ok(())
     }
 }

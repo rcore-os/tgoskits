@@ -6,10 +6,7 @@ use crate::arch::elx::set_user_table;
 use crate::{
     arch::elx::{flush_tlb, set_kernal_table, setup_sctlr, setup_table_regs},
     console::print_mapping,
-    mem::{
-        __kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt,
-        page_size,
-    },
+    mem::{__kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt},
     smp::PerCpuMeta,
 };
 
@@ -135,10 +132,9 @@ fn setup_page_table() -> anyhow::Result<()> {
         })
         .unwrap();
 
-    let debug_base = unsafe { crate::console::DEBUG_BASE };
-    if debug_base != 0 {
-        let start = debug_base.align_down(page_size());
-        let size = page_size();
+    if let Some(console) = crate::console::debug_to_memory_desc() {
+        let start = console.physical_start;
+        let size = console.size_in_bytes;
         let pte = PteConfig {
             read: true,
             writable: true,
@@ -147,8 +143,9 @@ fn setup_page_table() -> anyhow::Result<()> {
             ..Default::default()
         };
 
+        // EL1 uses the same root for TTBR0 and TTBR1 during boot. The identity
+        // window and the kernel I/O alias therefore share these table entries.
         print_mapping("Debug serial", __va(start) as _, start, size);
-
         table.map(&MapConfig {
             vaddr: start.into(),
             paddr: start.into(),

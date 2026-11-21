@@ -8,7 +8,7 @@ use some_serial::ns16550::rockchip_fiq::{
     RockchipFiqSerial,
 };
 
-use super::{PlatformSerialDevice, erase_uart, prop_u32};
+use super::{PlatformSerialDevice, SerialRegisterAddress, erase_uart, prop_u32};
 use crate::BindingInfo;
 
 model_register!(
@@ -63,7 +63,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         serial,
         fdt_config.uart_path,
         Some(fdt_config.config.serial_id as usize),
-        fdt_config.reg.address as usize,
+        SerialRegisterAddress::Mmio(fdt_config.reg.address as usize),
         irq,
     ));
     Ok(())

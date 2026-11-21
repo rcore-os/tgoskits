@@ -16,6 +16,8 @@ pub use self::{raw::*, types::*};
 pub enum ConfigError {
     #[error("invalid baud rate")]
     InvalidBaudrate,
+    #[error("UART input clock rate is unavailable")]
+    BaudrateUnavailable,
     #[error("unsupported data bits")]
     UnsupportedDataBits,
     #[error("unsupported stop bits")]
@@ -51,6 +53,14 @@ pub enum Parity {
     Odd,
     Mark,
     Space,
+}
+
+/// Data bits, stop bits and parity currently configured on a UART.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Framing {
+    pub data_bits: DataBits,
+    pub stop_bits: StopBits,
+    pub parity: Parity,
 }
 
 #[derive(Debug, Clone, Default)]

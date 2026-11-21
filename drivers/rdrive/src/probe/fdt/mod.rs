@@ -999,6 +999,16 @@ impl<'a> FdtInfo<'a> {
         ClockLine::from_ref(self.node.name(), clock)
     }
 
+    /// Resolves an indexed clock reference if its provider has an rdrive interface.
+    ///
+    /// Zero-cell references and providers without an interface yield `Ok(None)`.
+    pub fn optional_clock_line(&self, clock: &ClockRef) -> Result<Option<ClockLine>, OnProbeError> {
+        if clock.cells == 0 {
+            return Ok(None);
+        }
+        ClockLine::from_ref_optional(self.node.name(), clock)
+    }
+
     pub fn find_clock_line_by_name(&self, name: &str) -> Result<Option<ClockLine>, OnProbeError> {
         let Some(clock) = self
             .clocks()?
@@ -1032,10 +1042,7 @@ impl<'a> FdtInfo<'a> {
         else {
             return Ok(None);
         };
-        if clock.cells == 0 {
-            return Ok(None);
-        }
-        ClockLine::from_ref_optional(self.node.name(), &clock)
+        self.optional_clock_line(&clock)
     }
 
     pub fn resets(&self) -> Result<Vec<ResetRef>, OnProbeError> {

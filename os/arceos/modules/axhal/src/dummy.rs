@@ -48,6 +48,14 @@ impl ConsoleIf for DummyConsole {
         Ok(())
     }
 
+    fn early_console_reserves_mmio(_paddr: usize) -> bool {
+        false
+    }
+
+    fn early_console_reserves_io_port(_port: u16) -> bool {
+        false
+    }
+
     fn commit_runtime_handoff() -> ConsoleHandoffResult {
         Ok(())
     }
