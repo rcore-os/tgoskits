@@ -63,6 +63,12 @@ pub trait ConsoleIf {
     /// Stops new low-level console accesses and drains in-flight accesses.
     fn begin_runtime_handoff() -> ConsoleHandoffResult;
 
+    /// Reports whether the low-level console reserves this MMIO UART.
+    fn early_console_reserves_mmio(paddr: usize) -> bool;
+
+    /// Reports whether the low-level console reserves this port-mapped UART.
+    fn early_console_reserves_io_port(port: u16) -> bool;
+
     /// Publishes runtime ownership after configuration and routing succeed.
     fn commit_runtime_handoff() -> ConsoleHandoffResult;
 

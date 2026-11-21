@@ -15,8 +15,7 @@ pub fn primary_init_early(params: PrimaryCpuInitInfo) {
         params.kernel_start_link,
     );
 
-    crate::fdt::setup_earlycon();
-    let _ = crate::acpi::earlycon::acpi_setup_earlycon();
+    let _ = crate::acpi::earlycon::acpi_setup_earlycon(crate::fdt::setup_earlycon());
     crate::entropy::capture();
 
     #[cfg(efi)]

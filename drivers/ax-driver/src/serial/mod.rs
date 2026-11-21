@@ -24,11 +24,28 @@ struct ProbedUart {
     parts: ErasedSerialParts,
 }
 
+/// Hardware address space and base of a serial port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SerialRegisterAddress {
+    Mmio(usize),
+    IoPort(u16),
+}
+
+impl SerialRegisterAddress {
+    /// Numeric register base for diagnostic output.
+    pub fn base(self) -> usize {
+        match self {
+            Self::Mmio(paddr) => paddr,
+            Self::IoPort(port) => usize::from(port),
+        }
+    }
+}
+
 struct PlatformSerialDevice {
     name: String,
     firmware_path: String,
     alias_index: Option<usize>,
-    paddr: usize,
+    address: SerialRegisterAddress,
     initial_baudrate: u32,
     irq: Option<BindingIrq>,
     parts: Option<ErasedSerialParts>,
@@ -40,7 +57,7 @@ pub struct SerialDeviceInfo {
     pub device_id: DeviceId,
     pub firmware_path: String,
     pub alias_index: Option<usize>,
-    pub paddr: usize,
+    pub address: SerialRegisterAddress,
     pub initial_baudrate: u32,
     pub irq: Option<BindingIrq>,
 }
@@ -57,14 +74,14 @@ impl PlatformSerialDevice {
         probe: ProbedUart,
         firmware_path: String,
         alias_index: Option<usize>,
-        paddr: usize,
+        address: SerialRegisterAddress,
         irq: Option<BindingIrq>,
     ) -> Self {
         Self {
             name: probe.hardware.name.into(),
             firmware_path,
             alias_index,
-            paddr,
+            address,
             initial_baudrate: probe.hardware.initial_baudrate,
             irq,
             parts: Some(probe.parts),
@@ -79,12 +96,19 @@ impl DriverGeneric for PlatformSerialDevice {
 }
 
 fn erase_uart(raw: impl SplitUart) -> ProbedUart {
-    let hardware = raw.runtime_info();
+    let (hardware, parts) = {
+        // Boot probes run before SMP. The 16550 divisor read switches the
+        // register bank, so local early-console I/O must not interrupt it.
+        // Host tests use synthetic UARTs with no local interrupts to mask.
+        #[cfg(not(feature = "host-test"))]
+        let _guard = ax_sync::PreemptIrqSaveGuard::new();
+        (raw.runtime_info(), raw.split())
+    };
     let SerialParts {
         control,
         irq,
         emergency_tx,
-    } = raw.split();
+    } = parts;
     let register_gate: Box<UartRegisterGate<dyn UartEmergencyTx>> =
         Box::new(UartRegisterGate::new(emergency_tx));
     ProbedUart {
@@ -110,7 +134,7 @@ impl TryFrom<Device<PlatformSerialDevice>> for SerialDevice {
                 device_id,
                 firmware_path: dev.firmware_path.clone(),
                 alias_index: dev.alias_index,
-                paddr: dev.paddr,
+                address: dev.address,
                 initial_baudrate: dev.initial_baudrate,
                 irq: dev.irq.clone(),
             },

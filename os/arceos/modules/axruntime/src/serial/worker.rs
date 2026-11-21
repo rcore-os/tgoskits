@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
+use ax_driver::serial::SerialRegisterAddress;
 use axpoll::IoEvents;
 #[cfg(test)]
 use rdif_serial::ConfigError;
@@ -268,8 +269,27 @@ impl SerialWorker {
         if self.shared.started() {
             return Ok(());
         }
-        self.shared
-            .with_port(|port| prepare_port_for_start(port, start))
+        // The console coordinator drains early access before submitting an
+        // adoption. Ordinary starts have no such ownership transfer.
+        if matches!(start, PortStart::Configure(_)) {
+            let reserved = match self.shared.info.address {
+                SerialRegisterAddress::Mmio(paddr) => {
+                    ax_hal::console::early_console_reserves_mmio(paddr)
+                }
+                SerialRegisterAddress::IoPort(port) => {
+                    ax_hal::console::early_console_reserves_io_port(port)
+                }
+            };
+            if reserved {
+                return Err(RuntimeError::SerialConsoleBusy);
+            }
+        }
+        let framing = self
+            .shared
+            .with_port(|port| {
+                prepare_port_for_start(port, start)?;
+                Ok::<_, rdif_serial::ConfigError>(port.framing())
+            })
             .ok_or(RuntimeError::SerialNotStarted)??;
         if let Err(err) = self.shared.enable_irq() {
             self.shared.disable_irq();
@@ -277,6 +297,7 @@ impl SerialWorker {
                 .with_port(|port| cleanup_failed_port_start(port, start));
             return Err(err);
         }
+        self.shared.initial_framing.call_once(|| framing);
         self.shared.ingress.start_accepting();
         self.shared.set_started(true);
         self.pending_rearm = SerialEventSet::RX;
@@ -284,6 +305,9 @@ impl SerialWorker {
     }
 
     fn shutdown_port(&mut self) {
+        if !self.shared.started() {
+            return;
+        }
         self.shared.disable_irq();
         self.shared.set_started(false);
         self.shared.ingress.stop_and_discard();

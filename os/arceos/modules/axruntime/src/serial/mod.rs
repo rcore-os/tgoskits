@@ -25,7 +25,7 @@ use ax_lazyinit::OnceLock;
 use axpoll::IoEvents;
 use axpoll_set::PollSet;
 use rdif_serial::UartRegisterGate;
-pub use rdif_serial::{Config, ConfigError, DataBits, Parity, RxFlag, StopBits};
+pub use rdif_serial::{Config, ConfigError, DataBits, Framing, Parity, RxFlag, StopBits};
 
 pub(crate) use self::log_mailbox::{LogRecord, LogRecordKind};
 use self::{
@@ -227,6 +227,7 @@ fn try_enter_irq_registers<'a, E: ?Sized>(
 struct RuntimeShared {
     index: usize,
     info: SerialDeviceInfo,
+    initial_framing: OnceLock<Option<Framing>>,
     owner_cpu: usize,
     #[cfg(feature = "fault-injection")]
     deferred_test_consumed: AtomicU8,
@@ -401,6 +402,11 @@ pub struct SerialRuntimeHandle {
 impl SerialRuntimeHandle {
     pub fn info(&self) -> &SerialDeviceInfo {
         &self.shared.info
+    }
+
+    /// Returns the framing read during the first successful port start, when available.
+    pub fn initial_framing(&self) -> Option<Framing> {
+        self.shared.initial_framing.get().copied().flatten()
     }
 
     /// Injects a diagnostic only after the real worker is blocked with an
@@ -1044,6 +1050,7 @@ fn build_runtime(
     let shared = Arc::new(RuntimeShared {
         index,
         info,
+        initial_framing: OnceLock::new(),
         owner_cpu: primary_cpu,
         #[cfg(feature = "fault-injection")]
         deferred_test_consumed: AtomicU8::new(0),

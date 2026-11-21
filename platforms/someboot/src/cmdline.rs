@@ -49,6 +49,7 @@ pub fn var(key: &str) -> Option<&'static str> {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EarlyconConfig {
+    /// Console driver name; `xscale` selects an MMIO 16550 with IER.UUE set.
     pub uart_type: &'static str,
     pub io_type: &'static str,
     pub base_addr: Option<usize>,
@@ -56,12 +57,9 @@ pub struct EarlyconConfig {
 }
 
 fn parse_earlycon_argument(val: &'static str) -> Option<EarlyconConfig> {
-    // 参考 Linux earlycon 语法，支持以下常见形式：
-    // 1) earlycon=<drv>
-    // 2) earlycon=<drv>,<io>,<addr>[,<opts>]
-    //    其中 <io> ∈ { io, mmio, mmio32 }，<addr> 支持 0xHEX 或十进制
-    // 3) earlycon=<drv>,<addr>[,<opts>] （省略 io，默认按 mmio 处理）
-    // 4) 兼容同义词：uart|uart8250|8250|ns16550|ns16550a 统一视作 ns16550
+    // Accept <drv>, <drv>,<addr>[,<opts>] and <drv>,<io>,<addr>[,<opts>].
+    // An omitted I/O mode defaults to byte MMIO for RISC-V NS16550,
+    // port I/O on x86_64, and 32-bit MMIO otherwise.
 
     // 注意：cmdline::var 返回 &'static str，故从中切片得到的 &str 仍为 'static
     // 保证后续所有派生切片均来源于 &'static str
@@ -82,9 +80,12 @@ fn parse_earlycon_argument(val: &'static str) -> Option<EarlyconConfig> {
         _ => first,
     };
 
-    // 预设输出字段
     #[cfg(not(target_arch = "x86_64"))]
-    let mut io_type = "mmio32";
+    let mut io_type = if cfg!(target_arch = "riscv64") && uart_type == "ns16550" {
+        "mmio"
+    } else {
+        "mmio32"
+    };
     #[cfg(target_arch = "x86_64")]
     let mut io_type = "io";
 
@@ -129,5 +130,20 @@ fn parse_usize(s: &str) -> Option<usize> {
         usize::from_str_radix(hex, 16).ok()
     } else {
         t.parse::<usize>().ok()
+    }
+}
+
+#[cfg(all(test, target_arch = "riscv64"))]
+mod tests {
+    use super::parse_earlycon_argument;
+
+    #[test]
+    fn ns16550_shorthand_uses_byte_mmio() {
+        let config = parse_earlycon_argument("ns16550,0x10000000").unwrap();
+        assert_eq!(config.io_type, "mmio");
+        assert_eq!(config.base_addr, Some(0x1000_0000));
+
+        let config = parse_earlycon_argument("ns16550,mmio32,0x10000000").unwrap();
+        assert_eq!(config.io_type, "mmio32");
     }
 }

@@ -18,6 +18,7 @@ ax-sync = { workspace = true }
 ax-lazyinit.workspace = true
 fdt-edit.workspace = true
 fdt-raw.workspace = true
+kernutil = { workspace = true, features = ["acpi"] }
 log = "0.4"
 mmio-api.workspace = true
 paste = "1"

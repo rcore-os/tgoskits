@@ -63,7 +63,7 @@ rockchip-ehci = ["usb", "rockchip-soc", "rockchip-pm"]
 sg2002-dwc2 = ["usb", "dep:sg200x-bsp"]
 xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
-serial = ["dep:rdif-serial", "dep:some-serial"]
+serial = ["dep:ax-sync", "dep:rdif-serial", "dep:some-serial"]
 rknpu = ["rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rga = ["rockchip-pm", "rockchip-soc", "dep:rockchip-rga"]
 jpeg = ["rockchip-pm", "rockchip-soc", "dep:rockchip-jpeg"]
@@ -234,6 +234,7 @@ zerocopy = { workspace = true, optional = true }
 [dev-dependencies]
 ax-crate-interface.workspace = true
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
+rdif-clk.workspace = true
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"

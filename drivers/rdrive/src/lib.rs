@@ -307,7 +307,8 @@ pub fn acpi_resource_address_to_device_id(
     probe::acpi::try_system().and_then(|system| system.resource_address_to_device_id(address))
 }
 
-pub fn acpi_spcr_console_device_id() -> Option<DeviceId> {
+/// Resolves an enabled ACPI SPCR console without falling back to another UART.
+pub fn acpi_spcr_console_device_id() -> Result<Option<DeviceId>, probe::acpi::SpcrConsoleNotFound> {
     probe::acpi::spcr_console_device_id()
 }
 

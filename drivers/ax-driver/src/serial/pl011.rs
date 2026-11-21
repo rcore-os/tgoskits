@@ -4,7 +4,9 @@ use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use some_serial::pl011;
 
-use super::{PlatformSerialDevice, erase_uart, prop_u32, serial_device_info};
+use super::{
+    PlatformSerialDevice, SerialRegisterAddress, erase_uart, prop_u32, serial_device_info,
+};
 
 model_register!(
     name: "PL011 serial",
@@ -40,7 +42,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         serial,
         device_info.path,
         device_info.alias_index,
-        device_info.paddr,
+        SerialRegisterAddress::Mmio(device_info.paddr),
         device_info.irq,
     ));
     Ok(())

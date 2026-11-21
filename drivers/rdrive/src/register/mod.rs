@@ -67,6 +67,8 @@ pub enum ProbeKind {
         compatibles: &'static [&'static str],
         on_probe: fdt::FnOnProbe,
     },
+    /// Matches devices in the ACPI namespace. An empty ID list probes the root
+    /// if this registration has no successful ACPI probe yet.
     Acpi {
         ids: &'static [acpi::AcpiId],
         on_probe: acpi::FnOnProbe,

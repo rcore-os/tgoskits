@@ -265,6 +265,12 @@ fn set_config_waits_for_enabled_tx_drain_before_disabling_uart() {
     let (mut regs, mut uart) = pl011_with_registers();
     regs.uartcr
         .write(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
+    let lcr = UARTLCR_H::WLEN::SixBit
+        + UARTLCR_H::STP2::SET
+        + UARTLCR_H::PEN::SET
+        + UARTLCR_H::EPS::SET
+        + UARTLCR_H::SPS::SET;
+    regs.uartlcr_h.write(lcr);
     write_test_reg(
         &mut regs,
         0x018,
@@ -290,6 +296,16 @@ fn set_config_waits_for_enabled_tx_drain_before_disabling_uart() {
     assert!(cr.is_set(UARTCR::UARTEN));
     assert!(cr.is_set(UARTCR::TXE));
     assert!(cr.is_set(UARTCR::RXE));
+    let line_control = regs.uartlcr_h.get();
+    assert_eq!(
+        uart.framing(),
+        Some(Framing {
+            data_bits: DataBits::Six,
+            stop_bits: StopBits::Two,
+            parity: Parity::Space,
+        })
+    );
+    assert_eq!(regs.uartlcr_h.get(), line_control);
 }
 
 #[test]

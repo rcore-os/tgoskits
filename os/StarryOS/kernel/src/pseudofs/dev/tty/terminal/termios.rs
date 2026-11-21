@@ -2,25 +2,17 @@
 
 use core::ops::{Deref, DerefMut};
 
+use ax_runtime::serial::{DataBits, Framing, Parity, StopBits};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::{
-    B50, B75, B110, B134, B150, B200, B300, B600, B1200, B1800, B2400, B4800, B9600, B19200,
+    B0, B50, B75, B110, B134, B150, B200, B300, B600, B1200, B1800, B2400, B4800, B9600, B19200,
     B38400, B57600, B115200, B230400, B460800, B500000, B576000, B921600, B1000000, B1152000,
     B1500000, B2000000, B2500000, B3000000, B3500000, B4000000, BOTHER, CBAUD, CMSPAR, CREAD, CS5,
-    CS6, CS7, CS8, CSIZE, CSTOPB, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ICANON, ICRNL, IEXTEN, ISIG,
-    IXON, ONLCR, OPOST, PARENB, PARODD, VDISCARD, VEOF, VEOL, VEOL2, VERASE, VINTR, VKILL, VLNEXT,
-    VQUIT, VREPRINT, VSUSP, VWERASE, speed_t, tcflag_t,
+    CS6, CS7, CS8, CSIZE, CSTOPB, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, IBSHIFT, ICANON, ICRNL,
+    IEXTEN, ISIG, IXON, ONLCR, OPOST, PARENB, PARODD, VDISCARD, VEOF, VEOL, VEOL2, VERASE, VINTR,
+    VKILL, VLNEXT, VQUIT, VREPRINT, VSUSP, VWERASE, speed_t, tcflag_t,
 };
 use starry_signal::Signo;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TermiosParity {
-    None,
-    Odd,
-    Even,
-    Mark,
-    Space,
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
@@ -89,34 +81,29 @@ impl Termios {
         self.c_cflag
     }
 
-    pub fn data_bits(&self) -> u8 {
-        match self.c_cflag & CSIZE {
-            CS5 => 5,
-            CS6 => 6,
-            CS7 => 7,
-            CS8 => 8,
-            _ => 8,
-        }
-    }
-
-    pub fn stop_bits(&self) -> u8 {
-        if self.has_cflag(CSTOPB) { 2 } else { 1 }
-    }
-
-    pub fn parity(&self) -> TermiosParity {
-        if !self.has_cflag(PARENB) {
-            return TermiosParity::None;
-        }
-        if self.has_cflag(CMSPAR) {
-            if self.has_cflag(PARODD) {
-                TermiosParity::Mark
-            } else {
-                TermiosParity::Space
-            }
-        } else if self.has_cflag(PARODD) {
-            TermiosParity::Odd
+    pub fn framing(&self) -> Framing {
+        let data_bits = match self.c_cflag & CSIZE {
+            CS5 => DataBits::Five,
+            CS6 => DataBits::Six,
+            CS7 => DataBits::Seven,
+            _ => DataBits::Eight,
+        };
+        let stop_bits = if self.has_cflag(CSTOPB) {
+            StopBits::Two
         } else {
-            TermiosParity::Even
+            StopBits::One
+        };
+        let parity = match self.c_cflag & (PARENB | PARODD | CMSPAR) {
+            flags if flags & PARENB == 0 => Parity::None,
+            PARENB => Parity::Even,
+            flags if flags == PARENB | PARODD => Parity::Odd,
+            flags if flags == PARENB | CMSPAR => Parity::Space,
+            _ => Parity::Mark,
+        };
+        Framing {
+            data_bits,
+            stop_bits,
+            parity,
         }
     }
 
@@ -168,83 +155,146 @@ pub struct Termios2 {
 
 impl Default for Termios2 {
     fn default() -> Self {
-        Self::new(Termios::default())
+        Self {
+            termios: Termios::default(),
+            c_ispeed: 38_400,
+            c_ospeed: 38_400,
+        }
     }
 }
+
 impl Termios2 {
-    pub fn new(termios: Termios) -> Self {
-        Self {
-            termios,
-            c_ispeed: B38400,
-            c_ospeed: B38400,
-        }
+    pub fn with_legacy(self, termios: Termios) -> Self {
+        Self { termios, ..self }
     }
 
     pub fn default_b115200() -> Self {
-        let mut termios = Termios::default();
-        termios.c_cflag = (termios.c_cflag & !CBAUD) | B115200;
-        Self {
-            termios,
-            c_ispeed: B115200,
-            c_ospeed: B115200,
+        Self::with_baudrate(115_200)
+    }
+
+    pub fn with_baudrate(baudrate: u32) -> Self {
+        let mut termios = Self::default();
+        termios.set_baudrate(baudrate);
+        termios
+    }
+
+    pub fn set_baudrate(&mut self, baudrate: u32) {
+        let encoding = BAUDRATES
+            .iter()
+            .find_map(|&(encoding, rate)| (rate == baudrate).then_some(encoding))
+            .unwrap_or(BOTHER);
+        self.c_cflag = (self.c_cflag & !CBAUD) | encoding;
+        self.c_ispeed = baudrate;
+        self.c_ospeed = baudrate;
+    }
+
+    pub fn with_unknown_baudrate() -> Self {
+        // BOTHER with a zero numeric speed keeps an unknown rate distinct
+        // from the B0 hangup request and from any programmable baud rate.
+        let mut termios = Self::with_baudrate(0);
+        termios.c_cflag |= BOTHER;
+        termios
+    }
+
+    pub fn use_output_baudrate_for_input(&mut self) {
+        let output = self.c_cflag & CBAUD;
+        let input_mask = CBAUD << IBSHIFT;
+        if output != B0 {
+            self.c_ispeed = self.c_ospeed;
+            if self.c_cflag & input_mask != 0 {
+                self.c_cflag = (self.c_cflag & !input_mask) | (output << IBSHIFT);
+            }
         }
     }
 
-    pub fn input_speed(&self) -> speed_t {
-        self.c_ispeed
+    pub fn set_framing(&mut self, framing: Framing) {
+        let size = match framing.data_bits {
+            DataBits::Five => CS5,
+            DataBits::Six => CS6,
+            DataBits::Seven => CS7,
+            DataBits::Eight => CS8,
+        };
+        let stop = match framing.stop_bits {
+            StopBits::One => 0,
+            StopBits::Two => CSTOPB,
+        };
+        let parity = match framing.parity {
+            Parity::None => 0,
+            Parity::Odd => PARENB | PARODD,
+            Parity::Even => PARENB,
+            Parity::Mark => PARENB | PARODD | CMSPAR,
+            Parity::Space => PARENB | CMSPAR,
+        };
+        self.c_cflag =
+            (self.c_cflag & !(CSIZE | CSTOPB | PARENB | PARODD | CMSPAR)) | size | stop | parity;
     }
 
-    pub fn output_speed(&self) -> speed_t {
-        self.c_ospeed
+    pub fn normalize_baudrates(&mut self) {
+        self.c_ospeed = self.baudrate().unwrap_or(0);
+        self.c_ispeed = match (self.cflag() >> IBSHIFT) & CBAUD {
+            B0 => self.c_ospeed,
+            BOTHER => self.c_ispeed,
+            encoding => baudrate_from_constant(encoding),
+        };
+    }
+
+    /// Whether termios represents a firmware speed that could not be read.
+    pub fn is_baudrate_unknown(&self) -> bool {
+        self.cflag() & CBAUD == BOTHER && self.c_ospeed == 0
+    }
+
+    pub fn is_hangup(&self) -> bool {
+        self.cflag() & CBAUD == B0
     }
 
     pub fn baudrate(&self) -> Option<u32> {
-        let speed = if self.output_speed() != 0 {
-            self.output_speed()
-        } else {
-            self.input_speed()
-        };
-        if speed != 0 && self.cflag() & CBAUD == BOTHER {
-            return Some(speed);
+        match self.cflag() & CBAUD {
+            B0 => None,
+            BOTHER => (self.c_ospeed != 0).then_some(self.c_ospeed),
+            encoding => Some(baudrate_from_constant(encoding)),
         }
-        baudrate_from_constant(self.cflag() & CBAUD)
     }
 }
 
-fn baudrate_from_constant(speed: speed_t) -> Option<u32> {
-    Some(match speed {
-        B50 => 50,
-        B75 => 75,
-        B110 => 110,
-        B134 => 134,
-        B150 => 150,
-        B200 => 200,
-        B300 => 300,
-        B600 => 600,
-        B1200 => 1200,
-        B1800 => 1800,
-        B2400 => 2400,
-        B4800 => 4800,
-        B9600 => 9600,
-        B19200 => 19200,
-        B38400 => 38400,
-        B57600 => 57600,
-        B115200 => 115200,
-        B230400 => 230400,
-        B460800 => 460800,
-        B500000 => 500000,
-        B576000 => 576000,
-        B921600 => 921600,
-        B1000000 => 1000000,
-        B1152000 => 1152000,
-        B1500000 => 1500000,
-        B2000000 => 2000000,
-        B2500000 => 2500000,
-        B3000000 => 3000000,
-        B3500000 => 3500000,
-        B4000000 => 4000000,
-        _ => return None,
-    })
+const BAUDRATES: [(tcflag_t, speed_t); 31] = [
+    (B0, 0),
+    (B50, 50),
+    (B75, 75),
+    (B110, 110),
+    (B134, 134),
+    (B150, 150),
+    (B200, 200),
+    (B300, 300),
+    (B600, 600),
+    (B1200, 1_200),
+    (B1800, 1_800),
+    (B2400, 2_400),
+    (B4800, 4_800),
+    (B9600, 9_600),
+    (B19200, 19_200),
+    (B38400, 38_400),
+    (B57600, 57_600),
+    (B115200, 115_200),
+    (B230400, 230_400),
+    (B460800, 460_800),
+    (B500000, 500_000),
+    (B576000, 576_000),
+    (B921600, 921_600),
+    (B1000000, 1_000_000),
+    (B1152000, 1_152_000),
+    (B1500000, 1_500_000),
+    (B2000000, 2_000_000),
+    (B2500000, 2_500_000),
+    (B3000000, 3_000_000),
+    (B3500000, 3_500_000),
+    (B4000000, 4_000_000),
+];
+
+fn baudrate_from_constant(encoding: tcflag_t) -> speed_t {
+    BAUDRATES
+        .iter()
+        .find_map(|&(flag, rate)| (flag == encoding).then_some(rate))
+        .unwrap_or(0)
 }
 
 impl Deref for Termios2 {

@@ -313,7 +313,10 @@ pub(crate) fn memory_map_setup() {
         #[cfg(target_arch = "loongarch64")]
         unsafe { MEMORY_MAP.update(|map| insert_loongarch_console_memory_descriptor(map, desc)) }
             .unwrap();
-        #[cfg(not(target_arch = "loongarch64"))]
+        #[cfg(target_arch = "riscv64")]
+        unsafe { MEMORY_MAP.update(|map| insert_riscv_console_memory_descriptor(map, desc)) }
+            .unwrap();
+        #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
         add_memory_descriptor(desc).unwrap();
     }
 }
@@ -346,6 +349,50 @@ fn insert_memory_descriptor(
     desc: MemoryDescriptor,
 ) -> Result<(), RangeError<MemoryDescriptor>> {
     map.merge_add(desc)
+}
+
+#[cfg(any(target_arch = "riscv64", test))]
+fn insert_riscv_console_memory_descriptor(
+    map: &mut MemoryMap,
+    desc: MemoryDescriptor,
+) -> Result<(), RangeError<MemoryDescriptor>> {
+    let requested = desc.range();
+    let Some(index) = map.iter().position(|existing| {
+        let range = existing.range();
+        existing.memory_type == MemoryType::Reserved
+            && requested.start < range.end
+            && range.start < requested.end
+    }) else {
+        return insert_memory_descriptor(map, desc);
+    };
+
+    // The boot page table maps this window as Device. Keep the same type in
+    // the published physical map without making surrounding bytes allocatable.
+    // Descriptors are disjoint, so a complete cover excludes any other overlap.
+    let reserved = map[index].range();
+    if requested.start < reserved.start || reserved.end < requested.end {
+        return Err(RangeError::Conflict {
+            new: desc,
+            existing: map[index].clone(),
+        });
+    }
+    let fragments = [reserved.start..requested.start, requested.end..reserved.end]
+        .into_iter()
+        .filter(|range| !range.is_empty());
+    if map.len() + fragments.clone().count() > map.capacity() {
+        return Err(RangeError::Capacity);
+    }
+    map[index] = desc;
+    for range in fragments {
+        // Each fragment fits because the full split was checked above.
+        map.push(MemoryDescriptor::new_with_range(
+            range,
+            MemoryType::Reserved,
+        ))
+        .expect("early console reservation split exceeds prechecked capacity");
+    }
+    map.merge_same_kind();
+    Ok(())
 }
 
 #[cfg(any(target_arch = "loongarch64", test))]
@@ -408,6 +455,46 @@ pub(crate) fn replace_boot_map(map: MemoryMap) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn riscv_console_replaces_only_the_mmio_window_of_a_firmware_reservation() {
+        let mmio = MemoryDescriptor::new_with_range(0x2000..0x3000, MemoryType::Mmio);
+        let left = MemoryDescriptor::new_with_range(0x1000..0x2000, MemoryType::Reserved);
+        let right = MemoryDescriptor::new_with_range(0x3000..0x4000, MemoryType::Reserved);
+        let ordinary_ram = MemoryDescriptor::new_with_range(0x4000..0x5000, MemoryType::Free);
+        let mut map = MemoryMap::new();
+        map.push(MemoryDescriptor::new_with_range(
+            0x1000..0x4000,
+            MemoryType::Reserved,
+        ))
+        .unwrap();
+        map.push(ordinary_ram.clone()).unwrap();
+
+        insert_riscv_console_memory_descriptor(&mut map, mmio.clone()).unwrap();
+        map.sort_unstable_by_key(|entry| entry.physical_start);
+        assert_eq!(map.as_slice(), &[left, mmio, right, ordinary_ram]);
+    }
+
+    #[test]
+    fn riscv_console_preserves_partial_reservations_and_boot_ownership() {
+        let mmio = MemoryDescriptor::new_with_range(0x2000..0x3000, MemoryType::Mmio);
+        for protected in [
+            MemoryDescriptor::new_with_range(0x1800..0x2800, MemoryType::Reserved),
+            MemoryDescriptor::new_with_range(0x2000..0x3000, MemoryType::KImage),
+            MemoryDescriptor::new_with_range(0x2000..0x3000, MemoryType::BootData),
+        ] {
+            let mut map = MemoryMap::new();
+            map.push(protected.clone()).unwrap();
+            assert_eq!(
+                insert_riscv_console_memory_descriptor(&mut map, mmio.clone()),
+                Err(RangeError::Conflict {
+                    new: mmio.clone(),
+                    existing: protected.clone(),
+                })
+            );
+            assert_eq!(map.as_slice(), &[protected]);
+        }
+    }
 
     #[test]
     fn loongarch_console_mmio_inside_reserved_keeps_map_unchanged() {

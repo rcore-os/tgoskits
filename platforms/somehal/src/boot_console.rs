@@ -18,7 +18,8 @@ pub enum ConsoleDeviceIdError {
 pub fn device_id() -> Result<DeviceId, ConsoleDeviceIdError> {
     match device_id_from_bootargs(someboot::cmdline()) {
         Ok(device_id) => Ok(device_id),
-        Err(ConsoleDeviceIdError::NotSpecified) => device_id_from_acpi_spcr()
+        Err(ConsoleDeviceIdError::NotSpecified) => rdrive::acpi_spcr_console_device_id()
+            .map_err(|_| ConsoleDeviceIdError::DeviceNotFound)?
             .or_else(device_id_from_fdt_stdout)
             .ok_or(ConsoleDeviceIdError::NotSpecified),
         Err(
@@ -131,7 +132,9 @@ fn parse_number_suffix(name: &str, prefix: &str) -> Option<usize> {
 }
 
 fn device_id_from_serial_index(index: usize) -> Option<DeviceId> {
-    device_id_from_serial_index_with(index, fdt_serial_alias_device_id, device_id_from_acpi_spcr)
+    device_id_from_serial_index_with(index, fdt_serial_alias_device_id, || {
+        rdrive::acpi_spcr_console_device_id().ok().flatten()
+    })
 }
 
 fn device_id_from_serial_index_with(
@@ -159,10 +162,6 @@ fn device_id_from_rockchip_fiq_index(index: usize) -> Option<DeviceId> {
             .nth(index)
     })
     .flatten()
-}
-
-fn device_id_from_acpi_spcr() -> Option<DeviceId> {
-    rdrive::acpi_spcr_console_device_id()
 }
 
 fn device_id_from_fdt_stdout() -> Option<DeviceId> {

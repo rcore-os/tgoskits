@@ -63,7 +63,7 @@ byteorder = { version = "1", default-features = false }
 fdt-edit.workspace = true
 fdt-raw.workspace = true
 heapless = "0.9"
-kernutil = { workspace = true }
+kernutil = { workspace = true, features = ["acpi"] }
 num-align = "0.1"
 page-table-generic = { workspace = true }
 ranges-ext = { workspace = true }

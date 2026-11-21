@@ -288,6 +288,58 @@ StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直
 11. 启动参数与页表对其他处理器可见后才释放次处理器。
 12. 体系结构钩子只负责唤醒传输。someboot 公共所有者在调用前发布逐处理器 `KICKED`，等待次处理器在公共入口报告 `ALIVE`，再把该处理器释放为 `SHOULD_ONLINE`。握手不进入不可变跳板元数据，并与稍后的调度器、中断和定时器在线发布分离。详见 `docs/design/someboot-secondary-cpu-startup.md`。
 
+### NS16550 的重定位地址重绑
+
+`bind_earlycon_ns16550()` 统一命令行、FDT stdout 和 ACPI SPCR 的 MMIO 绑定。
+`EarlyconState::initialized_ns16550_mmio_paddr` 只记录已初始化的物理设备；
+同一设备在 `primary_init_early()` 与 `prime_entry()` 之间重新绑定时，不再
+`open()`、清收发 FIFO 或改写 IER/MCR。更换物理设备仍执行首次初始化。
+绑定在早期所有权守卫与现有寄存器锁内完成，运行时接管后不再触碰硬件。
+只选择虚拟控制台（例如 `console=tty0`）且发现运行时串口时，启动阶段先关闭早期访问，再允许打开普通 `/dev/ttyS*`。未发现运行时串口时仍保留早期输出。
+RISC-V 继续使用 SBI 控制台时，根据 FDT 的 `/chosen/stdout-path` 找到固件 UART。若系统回退到 SBI 输出，运行时普通串口仍须等待接管完成才能打开同一 UART。
+
+K3 的 `spacemit,k3-uart` 使用 `UartVariant::XScale` 保留 IER.UUE，并在使能 RX 中断时设置 IER.RTOIE，确保 UART 能通知未达到 FIFO 阈值的短输入。设备树的 `reg-shift` 决定寄存器步长，`reg-io-width` 决定事务宽度。需要显式选择早期串口时，使用 `earlycon=xscale,mmio32,0xd4017000`。
+
+早期控制台与运行时串口各自读取 FDT，再用 `UartVariant::mmio_layout()` 返回已校验的 `MmioLayout`。
+缺少 `reg-shift` 时，普通 NS16550 沿用访问宽度作为步长，XScale 使用 4 字节步长。
+布局属性必须各为一个 32 位值，只有缺失时才使用默认值。命令行 `earlycon=xscale`
+也使用 4 字节步长，由 `mmio`、`mmio16` 或 `mmio32` 选择事务宽度。
+
+FDT `reg` 必须覆盖驱动访问的全部寄存器，包括最后一次访问的宽度。普通
+NS16550 和 XScale 在启动和运行时都将 `reg-offset` 加到 `reg` 的基址，用偏移后的
+物理地址识别串口，并校验剩余区间能否涵盖寄存器。SPCR 和显式命令行没有提供
+区间长度，启动层使用 `MmioLayout::required_len()` 确定最小映射长度。
+ACPI 运行时串口在 AML 资源中查找覆盖 SPCR GAS 地址的区间，从 GAS 地址映射寄存器，
+并与早期控制台共用 SPCR 布局解析。Generic 16550 的 GAS Register Bit Width
+决定步长，Access Size 决定事务宽度。SPCR 未提供输入时钟时，保留固件分频，
+并采用 SPCR 声明的波特率作为初始值。
+
+NS16550 在时钟提供者注册后、控制台接管前探测。XScale 优先使用
+`clock-frequency` 或设备树的 `core` 时钟。输入时钟不可用时保留固件分频。
+早期控制台和运行时共用 SPCR 读取逻辑。旧版 SPCR 使用旧版波特率和 GAS 地址。
+第 4 版起，先检查表长和字段范围，再读取精确波特率和命名空间路径。
+运行时规范化 ACPI 路径后匹配设备，确保 `_SB` 和 `_SB_` 识别为同一命名段。
+SPCR 未指定命名空间设备时按 GAS 查找已登记资源。显式路径无效或设备未登记时，
+`somehal` 返回 `DeviceNotFound`，避免回退到 FDT 或 `ttyS0`。路径无效且 GAS 落在
+当前候选 UART 资源内时，驱动在首次寄存器访问前拒绝该探测。x86 的 COM1 后备只检查
+AML 串口资源是否覆盖对应端口范围。早期控制台保留的 MMIO 地址和端口 I/O 地址分别
+匹配，普通 TTY 启动前检查对应地址空间的所有权。
+RISC-V 的 `earlycon=ns16550,<addr>` 省略 I/O 模式时使用 `mmio`，寄存器访问宽度
+和步长均为 1 字节。硬件需要更宽的访问时，在命令行显式指定 `mmio16` 或 `mmio32`。
+RISC-V 成功绑定显式 `earlycon` 后继续使用指定的串口和寄存器布局。
+AArch64 和 RISC-V 的启动页表使用绑定记录的范围，覆盖物理恒等窗口和重定位后
+的 `__io()` 窗口。AArch64 EL1 启动时用同一张页表根，两个窗口共享页表项。
+`prime_entry()` 直接重绑页表切换前生效的 MMIO UART。FDT 和 SPCR 指向不同
+设备时，重定位后沿用已映射的设备。
+RISC-V 的启动内存图中，一个固件 `Reserved` 条目完整覆盖已选 UART 的页对齐窗口时，
+只把 UART 窗口登记为 `Mmio`，供运行时继续使用 Device 映射。两侧区间保留
+`Reserved`，部分重叠以及内核映像或启动数据重叠仍按冲突处理。
+
+诊断 MMU 切换日志截断时，用 QEMU `serial_write` 跟踪检查第一次初始化
+确实写入 FCR，而 `MMU enabled, jumping to ...` 到 `Trap vector at ...`
+之间没有控制寄存器写入。仅匹配后续 Shell 或应用成功不足以证明 FIFO 被保留。
+QEMU 写入跟踪只覆盖模拟器中的寄存器访问；K3 物理 FIFO 的行为需实板核验。
+
 ### PL011 的重定位地址重绑
 
 `primary_init_early()` 与重定位后的 `prime_entry()` 都会建立 early console 绑定。
@@ -976,8 +1028,8 @@ LoongArch 在 `Trap vector at` 之后、第二次内存图打印前停住时，�
 会在 Reserved/Mmio 类型冲突时 panic。LoongArch UART 使用固定 DMW I/O
 映射、串口参数来自 earlycon 时，完整覆盖该页的 Reserved 已能保证物理预留；
 不要为重复登记改写整片保留区。只接受完整 Reserved 覆盖，不可笼统忽略
-BootData/KImage 或部分覆盖冲突。需要独立页表 MMIO 映射的其他架构必须
-保留其原有登记语义。
+BootData/KImage 或部分覆盖冲突。RISC-V 需要独立页表 MMIO 映射，按前文的
+NS16550 重绑规则登记串口窗口。
 LoongArch 的 AML 初始化失败时，保留原始错误并离线提取 DSDT/SSDT，
 通过真实解释器入口复现；不要把 tables-only 模式当成无损替代，也不要永久保留
 全表转储框架。解释器缺陷应在上游 ACPI 仓库修复，项目只保留平台适配。

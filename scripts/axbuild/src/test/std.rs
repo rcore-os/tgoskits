@@ -29,9 +29,9 @@ const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfil
 
 const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
-        name: "host-test+rtc+starfive-jh7110-dwmmc",
+        name: "host-test+rtc+serial+starfive-jh7110-dwmmc",
         no_default_features: false,
-        features: &["host-test", "rtc", "starfive-jh7110-dwmmc"],
+        features: &["host-test", "rtc", "serial", "starfive-jh7110-dwmmc"],
     },
     PackageFeatureProfile {
         name: "pci-fdt-irq-capability",
