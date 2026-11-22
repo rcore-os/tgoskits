@@ -12,7 +12,7 @@ use super::{
     transaction::{
         MetadataTransactionStart, MetadataTransactionStep, finalize_restarted_inode_update,
     },
-    zero::zero_mapped_inode_tail,
+    zero::{restore_tail_on_error, zero_mapped_inode_tail, zero_mapped_inode_tail_with_undo},
     *,
 };
 
@@ -212,8 +212,13 @@ fn truncate_inode_mapping<B: BlockIo>(
                 u64::from(u32::MAX) + 1,
                 &removal,
             )?;
-            zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
+            let zeroed_tail =
+                zero_mapped_inode_tail_with_undo(device, fs, inode_num, &mut inode, truncate_size)?;
             if let Some(credit_limit) = restart_limit {
+                // A restarted shrink commits in several transactions, and an
+                // earlier one may already be durable, so its zeroed tail is
+                // not put back.
+                drop(zeroed_tail);
                 if purpose == TruncatePurpose::UserResize {
                     begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
                 }
@@ -240,7 +245,9 @@ fn truncate_inode_mapping<B: BlockIo>(
                     )
                 };
             } else {
-                return commit_extent_mapping_removal(
+                // One transaction carries the whole shrink and rolls back on
+                // failure, so the zeroed tail is put back with it.
+                let result = commit_extent_mapping_removal(
                     device,
                     fs,
                     inode_num,
@@ -252,6 +259,7 @@ fn truncate_inode_mapping<B: BlockIo>(
                         payload: removal,
                     },
                 );
+                return restore_tail_on_error(device, fs, zeroed_tail, result);
             }
         }
 
@@ -280,8 +288,11 @@ fn truncate_inode_mapping<B: BlockIo>(
     // Linux zeros the retained partial EOF block before detaching later
     // mappings. A corrupt hidden branch therefore still fails during the plan
     // preflight before any data or metadata is changed.
-    zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
+    let zeroed_tail =
+        zero_mapped_inode_tail_with_undo(device, fs, inode_num, &mut inode, truncate_size)?;
     if let Some(credit_limit) = restart_limit {
+        // As for extents: a restarted shrink keeps its zeroed tail.
+        drop(zeroed_tail);
         if purpose == TruncatePurpose::UserResize {
             begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
         }
@@ -308,7 +319,7 @@ fn truncate_inode_mapping<B: BlockIo>(
             )
         }
     } else {
-        commit_legacy_mapping_removal(
+        let result = commit_legacy_mapping_removal(
             device,
             fs,
             inode_num,
@@ -319,7 +330,8 @@ fn truncate_inode_mapping<B: BlockIo>(
                 start: MetadataTransactionStart::Join,
                 payload: transaction,
             },
-        )
+        );
+        restore_tail_on_error(device, fs, zeroed_tail, result)
     }
 }
 

@@ -2017,6 +2017,43 @@ mod file_functional_tests {
     }
 
     #[test]
+    fn failed_extent_truncate_restores_the_zeroed_tail_of_the_retained_block() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/extent-truncate-tail", None, None)
+            .expect("file creation failed");
+        let original: Vec<u8> = (0..2 * BLOCK_SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        write_file(
+            &mut jbd2_dev,
+            &mut fs,
+            "/extent-truncate-tail",
+            0,
+            &original,
+        )
+        .unwrap();
+        jbd2_dev.umount_commit().unwrap();
+        jbd2_dev.set_journal_use(false).unwrap();
+        let inode_table = fs.group_descs[0].inode_table();
+
+        fail_after_write_sector.set(Some(inode_table));
+        let error = truncate(&mut jbd2_dev, &mut fs, "/extent-truncate-tail", 100)
+            .expect_err("inode finalize failure must abort the extent truncate");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        let data = read_file(&mut jbd2_dev, &mut fs, "/extent-truncate-tail").unwrap();
+        assert_eq!(data.len(), original.len());
+        let first_changed = data.iter().zip(&original).position(|(now, was)| now != was);
+        assert_eq!(
+            first_changed, None,
+            "a failed truncate must leave every byte of the file as it was"
+        );
+    }
+
+    #[test]
     fn deleting_fast_symlink_does_not_treat_inline_bytes_as_indirect_blocks() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
