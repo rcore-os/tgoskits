@@ -1197,6 +1197,48 @@ fn owned_empty_metadata_update_is_a_noop() {
 }
 
 #[test]
+fn owned_metadata_update_reports_whole_times() {
+    let mut filesystem = owned_test_filesystem();
+    let root = filesystem.root_inode();
+    let context = MutationContext::new(1000, 1001, 0, 0);
+    let inode = filesystem
+        .create_regular_file(
+            context,
+            root,
+            FileName::new(b"metadata-times").expect("valid raw name"),
+            FilePermissions::new(0o644).expect("valid permissions"),
+        )
+        .expect("create regular file");
+    assert_eq!(inode.btime, Some(inode.ctime));
+
+    let before_1970 = Ext4Timestamp::new(-86_400, 123_456_789);
+    let after_2106 = Ext4Timestamp::new(5_000_000_000, 999_999_999);
+    let updated = filesystem
+        .update_inode_metadata(
+            inode.number,
+            InodeMetadataUpdate {
+                atime: Some(before_1970),
+                mtime: Some(after_2106),
+                ..Default::default()
+            },
+        )
+        .expect("set access and modification times");
+    assert_eq!(updated.atime, before_1970);
+    assert_eq!(updated.mtime, after_2106);
+
+    filesystem.sync().expect("sync times before remount");
+    let read_only = MountOptions {
+        readonly: true,
+        ..filesystem.options()
+    };
+    filesystem.remount(read_only).expect("remount read-only");
+    let reread = filesystem.inode(inode.number).expect("inspect inode");
+    assert_eq!(reread.atime, before_1970);
+    assert_eq!(reread.mtime, after_2106);
+    assert_eq!(reread.btime, inode.btime);
+}
+
+#[test]
 fn owned_metadata_update_exposes_typed_flags_and_project_id() {
     let mut filesystem = owned_test_filesystem();
     let root = filesystem.root_inode();

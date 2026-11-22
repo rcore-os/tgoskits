@@ -35,9 +35,9 @@ impl NodeOps for Inode {
                 .device_number
                 .map(|device| DeviceId::new(device.major(), device.minor()))
                 .unwrap_or_default(),
-            atime: core::time::Duration::from_secs(u64::from(inode.atime)),
-            mtime: core::time::Duration::from_secs(u64::from(inode.mtime)),
-            ctime: core::time::Duration::from_secs(u64::from(inode.ctime)),
+            atime: Self::duration(inode.atime),
+            mtime: Self::duration(inode.mtime),
+            ctime: Self::duration(inode.ctime),
         })
     }
 
@@ -111,5 +111,13 @@ impl Inode {
         let seconds = i64::try_from(value.as_secs())
             .map_err(|_| into_vfs_err(rsext4::Ext4Error::overflow()))?;
         Ok(Ext4Timestamp::new(seconds, value.subsec_nanos()))
+    }
+
+    /// Converts an inode time to the VFS's time since the epoch. A `Duration`
+    /// cannot hold a time before 1970, so such a time reads as the epoch.
+    fn duration(value: Ext4Timestamp) -> core::time::Duration {
+        u64::try_from(value.sec).map_or(core::time::Duration::ZERO, |seconds| {
+            core::time::Duration::new(seconds, value.nsec)
+        })
     }
 }
