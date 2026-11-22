@@ -94,7 +94,12 @@ pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     #[cfg(target_arch = "aarch64")]
     {
         if is_hardware_crc32_supported() {
-            return unsafe { crc32c_hardware(crc, data) };
+            return unsafe {
+                // SAFETY: `crc32c_hardware` needs the ARMv8 CRC32 extension,
+                // and `is_hardware_crc32_supported` has just read it as present
+                // from `ID_AA64ISAR0_EL1[19:16]` (see `crc32c::arm64`).
+                crc32c_hardware(crc, data)
+            };
         }
     }
 
@@ -104,7 +109,12 @@ pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
         if is_hardware_crc32_supported() {
-            return unsafe { crc32c_hardware(crc, data) };
+            return unsafe {
+                // SAFETY: `crc32c_hardware` needs SSE4.2, and
+                // `is_hardware_crc32_supported` has just read it as present
+                // from CPUID leaf 1 ECX bit 20 (see `crc32c::x86_64`).
+                crc32c_hardware(crc, data)
+            };
         }
     }
 
@@ -219,7 +229,12 @@ mod tests {
                 for len in 0..=257 {
                     let data = &storage[offset..offset + len];
                     assert_eq!(
-                        unsafe { crate::crc32c::x86_64::crc32c_hardware(seed, data) },
+                        unsafe {
+                            // SAFETY: the test returned early above unless
+                            // `is_hardware_crc32_supported` read SSE4.2 as
+                            // present from CPUID leaf 1 ECX bit 20.
+                            crate::crc32c::x86_64::crc32c_hardware(seed, data)
+                        },
                         crc32c_update(seed, data),
                         "offset={offset} length={len} seed={seed:#x}"
                     );
