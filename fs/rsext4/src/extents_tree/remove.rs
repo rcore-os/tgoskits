@@ -423,7 +423,14 @@ impl<'a> ExtentTree<'a> {
                                 entries.sort_unstable_by_key(|e| e.ei_block);
                                 header.eh_entries = entries.len() as u16;
 
-                                if let Some(block_id) = phy_block {
+                                // An external index node whose last child was just removed is
+                                // not written back: e2fsck cannot walk an index node with no
+                                // entries, and the parent removes and frees this block as soon
+                                // as it sees `empty`. The root has no block here; phase 3
+                                // turns an empty root into an empty leaf.
+                                if let Some(block_id) = phy_block
+                                    && !entries.is_empty()
+                                {
                                     let disk_node = ExtentNode::Index {
                                         header: *header,
                                         entries: entries.clone(),

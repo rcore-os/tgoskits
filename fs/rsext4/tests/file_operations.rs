@@ -2016,6 +2016,57 @@ mod file_functional_tests {
         assert!(data.iter().all(|&byte| byte == 0));
     }
 
+    /// Writing every other block makes one single-block extent per block, so
+    /// 1500 of them need a depth-2 tree whose root holds two level-1 index
+    /// nodes. Shrinking to one block removes every leaf under the second
+    /// index node, which must then be freed rather than written back empty.
+    #[test]
+    fn shrinking_extent_inode_past_a_whole_index_node_frees_that_node() {
+        const EXTENTS: u64 = 1500;
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/extent-depth-two", None, None)
+            .expect("file creation failed");
+        for index in 0..EXTENTS {
+            let block = vec![(index % 251) as u8 + 1; BLOCK_SIZE];
+            write_file(
+                &mut jbd2_dev,
+                &mut fs,
+                "/extent-depth-two",
+                2 * index * BLOCK_SIZE as u64,
+                &block,
+            )
+            .unwrap();
+        }
+        let (inode_number, inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/extent-depth-two")
+                .unwrap()
+                .unwrap();
+        // The inline root header is eh_magic, eh_entries, eh_max, eh_depth.
+        let root_entries = inode.i_block[0] >> 16;
+        let root_depth = inode.i_block[1] >> 16;
+        assert_eq!(root_depth, 2, "the fixture must build a depth-2 tree");
+        assert!(root_entries >= 2, "the root must hold two index nodes");
+        let free_blocks_before = fs.superblock.free_blocks_count();
+
+        truncate_inode(&mut jbd2_dev, &mut fs, inode_number, 100)
+            .expect("shrinking a depth-2 tree must succeed");
+
+        let data = read_file(&mut jbd2_dev, &mut fs, "/extent-depth-two").unwrap();
+        assert_eq!(data, vec![1u8; 100]);
+        // 1499 data blocks and at least the second index node and its
+        // leaves are free again.
+        assert!(fs.superblock.free_blocks_count() > free_blocks_before + EXTENTS);
+
+        umount(fs, &mut jbd2_dev).expect("unmount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("remount failed");
+        let data = read_file(&mut jbd2_dev, &mut fs, "/extent-depth-two").unwrap();
+        assert_eq!(data, vec![1u8; 100]);
+    }
+
     #[test]
     fn deleting_fast_symlink_does_not_treat_inline_bytes_as_indirect_blocks() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
