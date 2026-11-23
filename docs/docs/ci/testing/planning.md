@@ -69,7 +69,7 @@ push 和手动运行的 `_matches_impact()` 不缩小矩阵，但选中的 Clipp
 
 `Cargo.lock` 是 `SOFT_GLOBAL_PATHS` 中的软全局输入：仅有锁文件等软全局输入时回退全量；它与可解释的源码或套件一起变化时，不会单独扩大已有选择。普通 `apps/**` 被忽略，但 `apps/arceos/virtio-blk-test/**` 是显式的 AxVisor AArch64 QEMU 输入。
 
-Clippy独立采用完整矩阵策略：`ci_clippy.py classify`只决定是否仅修改已确认的静态文档；代码、配置和未知输入均完整检查支持的workspace包。它不使用上面的OS/套件影响选择缩小Clippy范围。差异历史不可用时仍完整检查，详见[Clippy独立作业](./clippy-shards)。
+Clippy的粗门禁不替代实际选择：Rust选择器按已有since_ref分析变更包并保守纳入中间消费者，增量单作业，显式全量或比较不可靠的全量回退才使用四组。它不使用OS/套件planner复制一套Clippy选择规则。原共享lock/Markdown/包外输入政策保持；暂未进行额外输入收紧、测试目标补齐或test-only传播裁剪。详见[Clippy独立作业](./clippy-shards)。
 
 ## 3. 套件精确选择
 

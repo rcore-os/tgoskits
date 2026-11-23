@@ -55,7 +55,7 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 |----------|------|
 | `scripts/axbuild/src/cli/mod.rs` | `ClippyArgs` 参数定义与命令分派 |
 | `scripts/axbuild/src/checks/clippy/mod.rs` | 检查入口、模块级常量（如 `AXSTD_STD_*`、`AX_HAL_PACKAGE`） |
-| `scripts/axbuild/src/checks/clippy/selection.rs` | 参数校验、包选择（全量 / `--package`）、包覆盖校验、不支持的包过滤 |
+| `scripts/axbuild/src/checks/clippy/selection.rs` | 参数校验、包选择（全量 / `--package` / `--since`）、包覆盖校验、不支持的包过滤 |
 | `scripts/axbuild/src/checks/clippy/check.rs` | `ClippyCheck` / `ClippyCheckKind` 数据模型与 `cargo_args` 构造 |
 | `scripts/axbuild/src/checks/clippy/configurations.rs` | 解析并校验 package metadata 中声明的命名 target 配置 |
 | `scripts/axbuild/src/checks/clippy/expand.rs` | 把每个包按 feature × target 展开为 `ClippyCheck` 列表 |
@@ -70,14 +70,15 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 
 ## 3. 包选择
 
-`ClippyArgs` 提供全量与显式包两种选择模式，由 `validate_clippy_args` 强制约束；正式CI使用完整矩阵，不按变更包缩圈：
+`ClippyArgs` 恢复全量、显式包和 `--since` 增量三种选择。增量使用原共享输入政策，再补足必要的中间消费者；CI只在全量或全量回退时分组：
 
 | 模式 | 触发条件 | 行为 |
 |------|----------|------|
-| 全量 | `--all` 或不带任何参数 | 对全部 workspace 成员执行完整检查矩阵 |
+| 全量 | `--all` 或不带任何参数 | 对全部支持workspace成员执行既有检查矩阵 |
+| 增量 | `--since <REF>` | 修改包及必要中间消费者；不启用test-only缩圈 |
 | 显式 | `--package <name>`（可多次） | 仅指定包，未知包名直接报错 |
 
-`workspace_packages` 每次从 Cargo metadata 的 `workspace_members` 自动发现包；`validate_package_coverage` 确认每个选中包都产生检查，或属于有明确理由的排除项。新增包加入 Cargo workspace 后会自动进入分组，无需另写 Clippy 包名单；独立 workspace 不属于该发现范围。Clippy 的旧 `--since` 参数和专属增量选择已删除，其他测试的 Git 差异分析保持。
+`workspace_packages` 每次从 Cargo metadata 的 `workspace_members` 自动发现包；`validate_package_coverage` 确认每个选中包都产生检查，或属于有明确理由的排除项。新增包加入 Cargo workspace 后会自动进入分组，无需另写 Clippy 包名单；独立 workspace 不属于该发现范围。Clippy 的 `--since` 已恢复。`scope.rs`将原共享选择结果与workspace声明依赖关系取并集，包含optional、target-specific、build/dev消费者；默认feature下resolve缺少的边不会被直接排除。shared Git选择政策及其他测试的行为保持。
 
 `--no-deps` 只禁止 Clippy 检查依赖 crate；Cargo 仍会编译选中包完成类型检查所需的依赖。
 
@@ -161,7 +162,7 @@ targets = ["aarch64-unknown-linux-gnu", "riscv64gc-unknown-none-elf"]
 
 ## 6. 报告处理
 
-`run_clippy_checks` 默认采用串行 **fail-fast**：任何一个 check 非零退出就 `bail!`，剩余 check 不再执行，并在错误信息中带出剩余数量。`run_parallel_clippy_checks` 在 `--jobs N` 大于 1 时启动最多 N 个 worker；一个检查失败后停止分发新检查，等待已领取的检查结束，再报告全部已完成的失败项。正式CI使用独立分组，作业内保持串行；普通本地并行入口不改变CI设置。
+`run_clippy_checks` 默认采用串行 **fail-fast**：任何一个 check 非零退出就 `bail!`，剩余 check 不再执行，并在错误信息中带出剩余数量。`run_parallel_clippy_checks` 在 `--jobs N` 大于 1 时启动最多 N 个 worker；一个检查失败后停止分发新检查，等待已领取的检查结束，再报告全部已完成的失败项。CI增量单作业串行，全量四组；普通本地并行入口保持。
 
 ### 6.1 执行顺序
 
@@ -199,7 +200,7 @@ struct ClippyPackageReport {
 
 ## 7. 命令示例
 
-这些命令覆盖全量和指定 package 两种入口，它们会经过相同的展开与报告流程。
+这些命令覆盖全量、指定 package 与增量入口，它们会经过相同的展开与报告流程。
 
 ```bash
 # 全量 workspace clippy（手动或定时检查）
@@ -214,3 +215,5 @@ cargo xtask clippy --package starry-kernel --jobs 4
 > `aic8800` 的 crate build script 会根据固定 manifest 从本地 cache 读取并校验 Wi-Fi 固件 blob；cache 缺失时才从固定 upstream 下载。首次构建因此需要网络或预置且校验通过的 cache，后续 `starry`、`clippy` 等命令复用同一供应路径。
 
 CI数量分组、工具分发和完整性校验见[完整矩阵与独立作业](../ci/testing/clippy-shards)。
+
+增量只规划及CI分流使用 `cargo xtask clippy --print-selection --since <REF>`。JSON在stdout，诊断在stderr。测试目标补齐暂缓，因此原host-test之外的测试覆盖边界保持；不能仅凭包被选中宣称所有测试目标已经lint。

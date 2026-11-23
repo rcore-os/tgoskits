@@ -86,12 +86,14 @@ cargo xtask ktest board -p arceos-axtest-sg2002-usb-msc --test axtest -b aka-00-
 
 ### 3.3 Clippy 检查
 
-对 workspace 包按声明的 feature、target 和配置执行完整矩阵。`--all` 或无参数为全量，`--package` 为本地显式选择；两者互斥。
+对选中的 workspace 包按既有 feature、target 和配置执行检查。`--since` 为增量，`--all` 或无参数为全量，`--package` 为本地显式选择，三者互斥。
 
 | 参数 | 说明 |
 |------|------|
 | `--all` | 审计全部支持的 workspace 包 |
 | `--package <PACKAGE>`（可重复） | 仅检查指定的 workspace 包 |
+| `--since <REF>` | 按Git差异选择变更包及必要消费者 |
+| `--print-selection` | 输出单行JSON而不执行，不与--package或--jobs混用 |
 | `--emit-plan <FILE>`、`--shards <N>` | 将全量检查分为N组并写出计划 |
 
 ```bash
@@ -100,7 +102,7 @@ cargo xtask clippy --package axcpu
 cargo xtask clippy --all --emit-plan target/ci/clippy-plan.json --shards 4
 ```
 
-Clippy 的旧 `--since` 参数已移除。只检查受影响包时明确使用 `--package`；正式CI检查全量支持矩阵。
+`--since` 检查修改包及必要反向消费者，包含optional和target-specific声明。CI增量单作业，仅全量使用四组。测试目标补齐及独立测试减少传播暂未启用，现有测试覆盖边界保持。
 
 详见 [Clippy 检查](./clippy)。
 

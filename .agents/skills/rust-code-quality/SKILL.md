@@ -25,7 +25,7 @@ description: 编写、修改、重构或审查本 TGOSKits 仓库中的 Rust 代
 
 ## 3. 项目验证
 
-使用仓库任务工具作为验证入口。修改代码后运行 `cargo fmt`；本地用 `cargo xtask clippy --package <软件包>` 检查受影响范围；正式 CI 使用完整支持矩阵，不再使用 Clippy `--since` 选包。需要标准库测试证明改动行为时，按 `AGENTS.md` 使用 `cargo xtask test --since <引用>`；直接修改白名单时遵循 `update-std-tests`。ArceOS、StarryOS 和 Axvisor 的构建、测试与运行也使用相应的 `cargo xtask` 子命令，QEMU 或板卡测试按受影响目标和用例选择。提交拉取请求不要求额外执行全量本地矩阵。
+使用仓库任务工具作为验证入口。修改代码后运行 `cargo fmt`；本地用 `cargo xtask clippy --package <软件包>` 检查受影响范围；Clippy 保留 `--since` 增量选包并包含必要中间消费者；CI 增量单作业，只有全量或保守全量回退采用四组。需要标准库测试证明改动行为时，按 `AGENTS.md` 使用 `cargo xtask test --since <引用>`；直接修改白名单时遵循 `update-std-tests`。ArceOS、StarryOS 和 Axvisor 的构建、测试与运行也使用相应的 `cargo xtask` 子命令，QEMU 或板卡测试按受影响目标和用例选择。提交拉取请求不要求额外执行全量本地矩阵。
 
 模块通过 `include!` 等方式间接声明时，先确认 `cargo fmt` 是否覆盖实际变更文件；例如 Starry 的 `include!("root.rs")` 不保证 Rustfmt 会遍历其模块树。仍须运行 `cargo fmt`，并用仓库固定工具链的 `rustfmt --edition 2024` 对遗漏的变更文件定向格式化和检查，不能把未被遍历文件的格式问题记为通过。
 

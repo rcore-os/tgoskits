@@ -3,8 +3,8 @@ phase = "test"
 group = "Workspace"
 default_runner = "qcs"
 
-# Full Clippy is planned and verified by the dedicated clippy_checks chain in
-# ci.yml; do not also execute a single incremental Clippy workspace row.
+# Incremental/full Clippy is selected and verified by clippy_checks in ci.yml.
+# Incremental checks run in one job; only full validation uses independent shards.
 
 [[check]]
 id = "test-with-std"

@@ -1,30 +1,49 @@
-# Clippy完整矩阵与独立作业
+# Clippy增量与全量分组
 
-`expand_clippy_checks`每次从当前Cargo workspace生成全部支持的检查。CI固定四个独立runner，作业内串行；checkout继续清理，不依赖上次任务的target，不使用Clippy增量包选择。
+CI先使用同一个Rust选择器确定范围：可靠增量在一个作业内串行执行，只有显式全量或原分析回退全量时才使用四组。不是每次提交都完整检查，也不按检查数量自动增加并行。
 
-## 1. 发现与分组
+## 1. 范围选择
 
-发现、检查展开与任务分配是三步，分组权重不能成为第二份检查名单。新包遵循同一规则，无需登记到固定组。
+`cargo xtask clippy --since <REF>`恢复原Git基线和输入分类。修改包与原反向消费者结果，再与声明的workspace依赖闭包取并集，包含optional、target-specific、build和dev依赖。中间消费者不再被“只保留少数OS根”的过滤排除；这是保守超集，公共包修改可能仍选出较多检查。
 
-### 1.1 新增包和配置
+std、sync-lint使用的共享输入政策和测试期望保持。原lock混合变化、Markdown及包外输入分类没有在本次收紧，不能把“增量恢复”表述为已经修复所有输入覆盖问题。现有AxVisor定制构建包和chainloader等明确排除项继续输出理由。
 
-包必须属于根`Cargo.toml`的workspace成员或成员通配符。`workspace_packages`从Cargo metadata取全部成员；`expand_clippy_checks`按feature、声明目标和专用配置展开。`validate_package_coverage`拒绝有包未产生检查，除非它在明确的不支持清单中且输出原因。独立workspace不属于这次发现范围。
+用户暂缓了测试目标补齐和依赖它的test-only传播裁剪：本次不新增宿主测试profile、不把测试改动直接判定为独立，也不升级全量计划schema。原有feature、架构和命令保持，仍存在未明确检查所有测试目标的边界。
 
-新增feature按原规则展开，不自动穷举所有feature组合；特殊构建组合在包内`package.metadata.clippy`声明。无法准备的配置直接失败。清单总数动态计算，不固定为某次验收的数量。
+## 2. 本地命令与选择JSON
 
-### 1.2 数量分配
+```sh
+# 已提交差异的增量；未提交修改仍应显式选包
+cargo xtask clippy --since origin/dev
+cargo xtask clippy --package axbuild
 
-`partition`将同包/target/env检查成块，较大域按32项切分，先安排较大的任务块，再依次放入当前检查数量最少的组；平局按组编号选择。各组继续按原检查ID顺序执行。一个包可分布在多个组，新增包可能使其他组归属改变，相同清单下分组确定。
+# 本地默认全量仍是单作业
+cargo xtask clippy --all
 
-CI固定四组，不维护四份包名单，也不依赖历史耗时文件。此前试验的耗时权重、文件和开关已移除，避免维护两套调度策略。axbuild脱离仓库仍直接使用同一算法。
+# 只选择，不执行；stdout恰一行JSON，诊断写stderr
+cargo xtask clippy --print-selection --since origin/dev
+```
 
-## 2. 计划与判定
+`--since`与`--all`、`--package`及保存计划模式互斥。`--print-selection`不与`--package`、`--jobs`及保存计划模式混用。非Git环境的`--print-selection --since`报错；本地显式全量可无Git身份，CI必须有与checkout一致的SHA。
 
-计划将检查对象、分组、Git身份、工具链和构建配置绑定在一起；执行和汇总重新核对本地完整检查目录与有效输入。
+选择JSON的`mode`为full/incremental/empty，记录请求ref、实际diff base、受测SHA、输入指纹、修改包、消费者、实际检查和稳定原因码。`cut`保持空，因为没有启用独立性裁剪。摘要按规范化JSON的SHA256生成，集合按稳定身份排序、workspace路径归一化，Cargo参数/rustflags的顺序保持；执行前重新计算摘要拒绝漂移。
 
-### 2.1 本地命令
+CI在准备作业构建一次工具，生成选择后用同一工具执行。增量传递原请求ref、冻结的`--diff-base <SHA>`和`--expected-selection <DIGEST>`；不重新解释浮动基线，也不允许增量执行意外转全量。没有选择Digest时，本地原增量命令仍允许正常全量回退。
 
-`--emit-plan`必须与`--all`一起使用，默认四组；分组编号从1开始，所有组执行结束后才能汇总。计划仅由当前完整目录和组数生成。
+## 3. CI模式与结果
+
+主workflow传入现有since_ref，不改变push/PR去重。准备作业初始checkout深度100；缺基线时尝试单次fetch，无法解析共同祖先则全量。Git对象只属于当前作业，不能把主Plan取得的历史当作已传到Clippy作业。
+
+| mode | 执行及通过条件 |
+| --- | --- |
+| incremental | 准备作业内按原串行入口执行全部选中检查，作业成功，四组未运行 |
+| full | 四组成功，并用原逐项结果验证确认完整性 |
+| empty | 原选择政策确定无相关支持检查；准备作业成功，明确记录原因 |
+| 未知mode、规划错误、失败、取消、超时 | 失败，不靠skipped或旧结果放行 |
+
+`workflow_call.inputs.incremental_timeout_minutes`默认120，主workflow显式配置；要求1—360的整数。它是初始运维上限，不是所有增量必在此时间内完成的保证。超时失败，不自动增组。手动workflow_dispatch可设置`clippy_full=true`运行完整四组排障；此结果不保证替代PR required checks，也不强制其他OS检查全量。
+
+## 4. 全量计划、工具与批次
 
 ```sh
 cargo xtask clippy --all --emit-plan target/ci/clippy-plan.json --shards 4
@@ -34,38 +53,14 @@ cargo xtask clippy --verify-results target/ci/clippy-plan.json \
   --results-dir target/ci/results
 ```
 
-本地定向检查保留`--package`，全量可省略`--all`；Clippy的`--since`及其专属增量选择已删除。std测试、sync-lint及CI文档门禁仍有各自的有效差异分析。
+完整目录由Cargo workspace及包内声明展开，不维护四份包清单。按package/target/env成块、最多32项，大块优先放入当前检查数最少组；同一清单分配确定。新包和配置自动纳入，每项恰好一次，缺包、缺项、重复、错身份、失败和NotRun均被拒绝。计划schema仍为1，因为测试目标扩展本轮暂缓。
 
-### 2.2 失败传播
+工具只构建一次，对复制件去调试信息并以xz压缩，保留原调试构建。分发验证SHA256，只恢复唯一普通可执行文件，拒绝损坏、路径穿越与链接。不引入长期target缓存或历史耗时权重。
 
-`CheckPlan::validate`和CI matrix生成都确认每个ID恰好分配一次。每项记录成功、失败或未执行，先失败则本分片后项停止。汇总拒绝错误身份、重复、缺组、缺项、失败或未执行；取消和超时不能被后续成功覆盖。
+准备作业输出`run_id-preparation_attempt`批次和实际制品名称。失败分组重跑沿用生产者输出，仅overwrite本组结果；整轮重跑生成新批次。汇总同时检查作业状态和该批次完整结果，不使用残留成功掩盖取消或失败。制品保留7天，过期或缺失必须重新准备，不能借其他批次。
 
-### 2.3 自动回归保护
+## 5. 回归与边界
 
-`plan.rs`、`partition.rs`、`selection.rs`中的源码内单元测试由`cargo xtask test`标准入口执行，保护计划完整性、分组唯一性、结果身份及全部检查成功的规则。结果负例先建立完整有效的分组结果，再只修改一个条件；修改计划分配时重新计算摘要，确保漏项或重复确实由覆盖校验拒绝。临时Cargo workspace验证新增成员会被发现，不能在检查展开后整包消失。
+原Clippy增量测试已恢复；源码内计划/汇总/包覆盖回归保持，并增加声明依赖超集、选择摘要与路径归一化测试。CI Python验证选择JSON和三种模式的实际状态门禁。外部CLI验收需包含A→B→C中的真实lint错误、optional/条件依赖、空选择、坏历史、输入变化及全量回退，不只比较检查数量。
 
-这些持续回归与一次性完整矩阵验收分别保留：正常全量通过证明当前检查实际执行，负例测试防止以后误删拒绝逻辑后仍被正常CI放行。
-
-## 3. 工具分发
-
-`.github/workflows/clippy-checks.yml`负责规划、四组执行及汇总。每次构建一个当前SHA的tg-xtask分发副本，各job下载复用，不在随机runner寻找上次残留工具。
-
-### 3.1 小体积工具制品
-
-`scripts/test/ci_clippy_tool.py pack`只复制可执行文件，对副本去除调试信息并以xz低级别压缩；原调试构建保持。归档记录SHA256，接收方先验和，再确认只含唯一普通文件后原子还原可执行程序，拒绝损坏、链接或路径穿越。计划、工具、结果是不同制品；已经压缩的工具归档关闭Actions外层压缩。
-
-剥离副本减少工具自身崩溃的详细调试信息，必要时用同SHA未剥离构建排查。执行器仍使用原Cargo参数与warnings标准，汇总也继续用同一工具核对完整身份和结果，不另写宽松判定。xz解压由Python标准库lzma完成，运行环境必须提供此模块；缺失会明确失败。
-
-### 3.2 失败重跑与批次
-
-准备作业使用`github.run_id`与该作业执行时的`github.run_attempt`生成批次编号，并通过job输出发布批次和实际计划、工具制品名称。后续作业只读取这些输出，不根据自己的重跑编号重新拼接名称。
-
-只重跑失败组时，准备作业的输出保持，继续下载原计划和工具。每组结果按批次与组号命名，上传时覆盖本组旧结果，未重跑组的结果保留。汇总先要求准备及检查作业全部成功，再读取该批次所有分组结果并执行原严格校验。重跑失败、取消或上传失败不能由残留成功结果放行；只重跑汇总也不能绕过作业状态或结果完整性检查。
-
-重跑全部作业时，准备作业生成新批次，旧批次结果不参与新汇总。制品保留7天；过期或缺失时明确失败，应重跑全部作业重新准备，不能自动借用其他批次的结果。
-
-## 4. 触发与维护
-
-PR的workflow路径规则先包含全部路径，再排除两个静态说明树，确保未知路径与未来新增顶层目录也能进入规划；无需另写源码目录白名单。`scripts/test/ci_clippy.py classify`只允许`docs/docs/`和`docs/blog/`已确认静态说明树跳过Clippy。其他代码、README、配置、脚本、依赖及未知输入均完整检查，历史不可用、merge-base等于HEAD或基准不确定也全量；其他OS任务仍由原规划器选取。
-
-计划和结果写target或Actions制品，不加入Git。新增包不维护Clippy白名单；特殊排除必须给出理由。分组只改变排班，不改变功能覆盖；不得通过合并feature配置、忽略warnings或跳过错误制造提速。
+本轮只恢复增量与中间消费者，不实现测试profile补齐、独立测试输入缩圈、额外输入收紧、push/PR重设计或跨提交结果继承。全量及增量检查仍使用原来的有效feature/架构矩阵，不声称穷举所有组合或覆盖所有特殊测试目标。

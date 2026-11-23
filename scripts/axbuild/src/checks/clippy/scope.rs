@@ -150,6 +150,10 @@ pub(super) fn select(
     }
     let checks = expand_clippy_checks(&supported, metadata)?;
     validate_package_coverage(&packages, &checks)?;
+    if checks.is_empty() && mode == Mode::Incremental {
+        mode = Mode::Empty;
+        reason = "only_explicitly_excluded_packages";
+    }
     let fingerprint = plan::input_fingerprint(root, &checks)?;
     let mut scope = Scope {
         schema_version: 1,
