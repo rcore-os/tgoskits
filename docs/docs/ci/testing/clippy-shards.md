@@ -4,7 +4,9 @@ CI先使用同一个Rust选择器确定范围：可靠增量在一个作业内�
 
 ## 1. 范围选择
 
-`cargo xtask clippy --since <REF>`恢复原Git基线和输入分类。修改包与原反向消费者结果，再与声明的workspace依赖闭包取并集，包含optional、target-specific、build和dev依赖。中间消费者不再被“只保留少数OS根”的过滤排除；这是保守超集，公共包修改可能仍选出较多检查。
+`cargo xtask clippy --since <REF>`沿用原输入分类。修改包与原反向消费者结果，再与声明的workspace依赖闭包取并集，包含optional、target-specific、build和dev依赖。中间消费者不再被“只保留少数OS根”的过滤排除；这是保守超集，公共包修改可能仍选出较多检查。
+
+Clippy要求请求的ref能解析为实际提交，再使用它与HEAD的共同祖先。共同祖先等于受测HEAD时必须全量，包括`--since HEAD`、同提交的SHA/tag和位于HEAD之后的ref；这类输入不能用空选择宣告检查通过。请求为空、零SHA、对象缺失或共同祖先不可得时也回退全量，不根据其他远端分支猜测基线。两个不同提交之间确实没有相关输入变化时仍允许empty。std、sync-lint原有的历史推断行为不变。
 
 std、sync-lint使用的共享输入政策和测试期望保持。原lock混合变化、Markdown及包外输入分类没有在本次收紧，不能把“增量恢复”表述为已经修复所有输入覆盖问题。现有AxVisor定制构建包和chainloader等明确排除项继续输出理由。
 
@@ -26,7 +28,7 @@ cargo xtask clippy --print-selection --since origin/dev
 
 `--since`与`--all`、`--package`及保存计划模式互斥。`--print-selection`不与`--package`、`--jobs`及保存计划模式混用。非Git环境的`--print-selection --since`报错；本地显式全量可无Git身份，CI必须有与checkout一致的SHA。
 
-选择JSON的`mode`为full/incremental/empty，记录请求ref、实际diff base、受测SHA、输入指纹、修改包、消费者、实际检查和稳定原因码。`cut`保持空，因为没有启用独立性裁剪。摘要按规范化JSON的SHA256生成，集合按稳定身份排序、workspace路径归一化，Cargo参数/rustflags的顺序保持；执行前重新计算摘要拒绝漂移。
+选择JSON的`mode`为full/incremental/empty，记录请求ref、实际diff base、受测SHA、输入指纹、修改包、消费者、实际检查和稳定原因码。选择规则版本为2；相同HEAD的全量原因码为`comparison_base_is_head`。CI解析拒绝基线等于受测SHA却标记为incremental/empty的矛盾结果，也拒绝没有检查的full/incremental。`cut`保持空，因为没有启用独立性裁剪。摘要按规范化JSON的SHA256生成，集合按稳定身份排序、workspace路径归一化，Cargo参数/rustflags的顺序保持；执行前重新计算摘要拒绝漂移。
 
 CI在准备作业构建一次工具，生成选择后用同一工具执行。增量传递原请求ref、冻结的`--diff-base <SHA>`和`--expected-selection <DIGEST>`；不重新解释浮动基线，也不允许增量执行意外转全量。没有选择Digest时，本地原增量命令仍允许正常全量回退。
 
