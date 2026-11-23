@@ -19,7 +19,7 @@ flowchart TB
 
     subgraph Selection["selection.rs"]
         VALID["validate_clippy_args"]
-        RESOLVE["resolve_requested_packages<br/>(全量 / 显式)"]
+        RESOLVE["scope::select<br/>(全量 / 增量 / 显式)"]
         SKIP["skip_unsupported_packages"]
     end
 

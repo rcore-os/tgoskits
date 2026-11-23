@@ -29,6 +29,7 @@ pub(super) enum Mode {
 #[serde(deny_unknown_fields)]
 pub(super) struct Scope {
     pub schema_version: u32,
+    pub selection_rules_version: u32,
     pub mode: Mode,
     pub reason_code: String,
     pub requested_since: Option<String>,
@@ -157,6 +158,7 @@ pub(super) fn select(
     let fingerprint = plan::input_fingerprint(root, &checks)?;
     let mut scope = Scope {
         schema_version: 1,
+        selection_rules_version: 1,
         mode,
         reason_code: reason.into(),
         requested_since: args.since.clone(),
@@ -191,10 +193,6 @@ impl Scope {
             .as_object_mut()
             .context("selection object")?
             .remove("selection_digest");
-        document
-            .as_object_mut()
-            .unwrap()
-            .insert("selection_rules_version".into(), 1.into());
         normalize_paths(&mut document, &root.to_string_lossy());
         for key in ["selected_packages", "changed", "affected", "cut", "checks"] {
             if let Some(array) = document[key].as_array_mut() {
@@ -335,6 +333,7 @@ mod tests {
     fn fixture_scope(root: &str) -> Scope {
         Scope {
             schema_version: 1,
+            selection_rules_version: 1,
             mode: Mode::Incremental,
             reason_code: "fixture".into(),
             requested_since: Some("base".into()),
@@ -381,6 +380,9 @@ mod tests {
             rustflags.reverse();
         }
         assert_ne!(original, a.digest(root).unwrap());
+        let mut version_changed = fixture_scope("/workspace");
+        version_changed.selection_rules_version += 1;
+        assert_ne!(original, version_changed.digest(root).unwrap());
         let mut value = serde_json::json!([
             "/workspace-sibling/asset",
             "/workspace/asset",
