@@ -1,11 +1,46 @@
 """Validate routing facts, never reimplement Rust package selection."""
 import copy
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
-from ci_clippy import result_succeeded, selection_outputs
+from ci_clippy import classify, result_succeeded, selection_outputs
 
 
 class ClippyModeTests(unittest.TestCase):
+    def test_classification_requires_planning_when_comparison_is_uncertain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", *args],
+                    cwd=root, text=True, stderr=subprocess.PIPE,
+                ).strip()
+
+            git("init", "-b", "main")
+            (root / "source.rs").write_text("pub fn operation() {}\n")
+            git("add", ".")
+            git("commit", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            self.assertTrue(classify(root, base)[0])
+            git("commit", "--allow-empty", "-m", "identical inputs")
+            self.assertFalse(classify(root, base)[0])
+            docs = root / "docs/docs/guide.md"
+            docs.parent.mkdir(parents=True)
+            docs.write_text("static documentation\n")
+            git("add", ".")
+            git("commit", "-m", "docs")
+            self.assertFalse(classify(root, base)[0])
+            (root / "future-input.cfg").write_text("unknown input\n")
+            git("add", ".")
+            git("commit", "-m", "unknown input")
+            self.assertTrue(classify(root, base)[0])
+            for since in ["HEAD", "missing-ref", "1" * 40]:
+                with self.subTest(since=since):
+                    self.assertTrue(classify(root, since)[0])
+
     def test_selection_json_rejects_wrong_identity_and_contradictory_modes(self):
         value = {"schema_version": 1, "mode": "incremental", "tested_sha": "a" * 40,
                  "diff_base_sha": "b" * 40, "selection_digest": "c" * 64, "checks": ["fixture"]}

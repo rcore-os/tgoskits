@@ -5,7 +5,7 @@ mod selection;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use refs::{changed_paths_since, resolve_since_diff_base};
+pub(crate) use refs::{changed_paths_since, resolve_existing_diff_base};
 pub(crate) use selection::IncrementalPackageSelection;
 
 pub(crate) fn select_incremental_packages(

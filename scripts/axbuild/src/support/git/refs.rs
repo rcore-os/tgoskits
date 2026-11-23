@@ -59,7 +59,7 @@ pub(super) fn changed_paths_since_with_base(
     ))
 }
 
-pub(crate) fn resolve_since_diff_base(
+pub(super) fn resolve_since_diff_base(
     workspace_root: &Path,
     since: &str,
 ) -> anyhow::Result<String> {
@@ -92,12 +92,31 @@ pub(crate) fn resolve_since_diff_base(
             return Err(err).with_context(|| format!("failed to resolve `{since}` to a commit"));
         }
     };
-    if git_ref_is_ancestor_of_head(workspace_root, &since_commit)? {
+    resolve_commit_diff_base(workspace_root, since, &since_commit)
+}
+
+/// Resolve only an existing requested commit. Lint planning must fall back to
+/// full coverage when that identity is unavailable, rather than infer a scope
+/// from unrelated remote tips. Legacy std/sync-lint inference stays unchanged.
+pub(crate) fn resolve_existing_diff_base(
+    workspace_root: &Path,
+    since: &str,
+) -> anyhow::Result<String> {
+    let since_commit = git_commit_for_ref(workspace_root, since)?;
+    resolve_commit_diff_base(workspace_root, since, &since_commit)
+}
+
+fn resolve_commit_diff_base(
+    workspace_root: &Path,
+    since: &str,
+    since_commit: &str,
+) -> anyhow::Result<String> {
+    if git_ref_is_ancestor_of_head(workspace_root, since_commit)? {
         eprintln!("using input ref `{since}` (`{since_commit}`) as incremental diff base");
-        return Ok(since_commit);
+        return Ok(since_commit.to_owned());
     }
 
-    let merge_base = git_merge_base_with_head(workspace_root, &since_commit)
+    let merge_base = git_merge_base_with_head(workspace_root, since_commit)
         .with_context(|| format!("failed to find merge-base between `{since}` and HEAD"))?;
     eprintln!(
         "input ref `{since}` (`{since_commit}`) is not an ancestor of HEAD; using merge-base \

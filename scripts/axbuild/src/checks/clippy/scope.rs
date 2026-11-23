@@ -69,16 +69,23 @@ pub(super) fn select(
     let mut affected = Vec::new();
     let selected = if let Some(since) = &args.since {
         let resolved = if let Some(fixed) = &args.diff_base {
-            let resolved = git::resolve_since_diff_base(root, fixed)?;
+            let resolved = git::resolve_existing_diff_base(root, fixed)?;
             ensure!(
                 &resolved == fixed,
                 "fixed Clippy diff base is no longer an ancestor"
             );
             Ok(resolved)
         } else {
-            git::resolve_since_diff_base(root, since)
+            git::resolve_existing_diff_base(root, since)
         };
         match resolved {
+            Ok(resolved) if tested_sha.as_deref() == Some(resolved.as_str()) => {
+                // An identical base is not evidence that a requested validation
+                // is unnecessary, including when the requested ref is ahead.
+                base = Some(resolved);
+                reason = "comparison_base_is_head";
+                all.iter().map(|p| p.name.to_string()).collect()
+            }
             Ok(resolved) => {
                 base = Some(resolved.clone());
                 match git::select_incremental_packages(root, metadata, all, &resolved)? {
@@ -158,7 +165,7 @@ pub(super) fn select(
     let fingerprint = plan::input_fingerprint(root, &checks)?;
     let mut scope = Scope {
         schema_version: 1,
-        selection_rules_version: 1,
+        selection_rules_version: 2,
         mode,
         reason_code: reason.into(),
         requested_since: args.since.clone(),
@@ -386,6 +393,19 @@ mod tests {
         );
         frozen.diff_base = Some(git(&["rev-parse", "HEAD"]));
         assert!(select(&frozen, root, &metadata, &packages).is_err());
+
+        // Remote tips are not evidence of what an unavailable requested commit
+        // contained. Shared legacy inference must not narrow this lint plan.
+        git(&["update-ref", "refs/remotes/origin/base", "HEAD~1"]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        for since in [
+            "1111111111111111111111111111111111111111",
+            "0000000000000000000000000000000000000000",
+        ] {
+            let scope = select_since(since);
+            assert_eq!(scope.mode, Mode::Full, "unknown base {since}");
+            assert_eq!(scope.checks, full.checks);
+        }
     }
 
     #[test]

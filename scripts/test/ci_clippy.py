@@ -57,8 +57,10 @@ def selection_outputs(selection, expected_sha):
     base = selection.get("diff_base_sha")
     if mode in {"incremental", "empty"} and not re.fullmatch(r"[0-9a-f]{40,64}", base or ""):
         raise ValueError("Clippy comparison base is not immutable")
-    if mode == "incremental" and not selection.get("checks"):
-        raise ValueError("incremental selection has no checks")
+    if mode != "full" and base == expected_sha:
+        raise ValueError("Clippy comparison base is HEAD; a full selection is required")
+    if mode in {"full", "incremental"} and not selection.get("checks"):
+        raise ValueError("non-empty selection has no checks")
     if mode == "empty" and selection.get("checks"):
         raise ValueError("empty selection contains checks")
     return {"mode": mode, "digest": digest, "base": base or ""}
