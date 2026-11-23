@@ -126,6 +126,46 @@ pub(super) fn metadata_with_packages(
     serde_json::from_value(value).unwrap()
 }
 
+pub(super) fn metadata_with_resolve(packages: Vec<Package>, deps: &[(&str, &[&str])]) -> Metadata {
+    let members = packages
+        .iter()
+        .map(|package| package.id.repr.as_str())
+        .collect::<Vec<_>>();
+    let ids = packages
+        .iter()
+        .map(|package| (package.name.as_str(), package.id.repr.as_str()))
+        .collect::<HashMap<_, _>>();
+    let nodes = deps
+        .iter()
+        .map(|(name, deps)| {
+            serde_json::json!({
+                "id": ids[name],
+                "dependencies": deps.iter().map(|dep| ids[dep]).collect::<Vec<_>>(),
+                "deps": deps.iter().map(|dep| {
+                    serde_json::json!({
+                        "name": dep,
+                        "pkg": ids[dep],
+                        "dep_kinds": [{ "kind": null, "target": null }]
+                    })
+                }).collect::<Vec<_>>(),
+                "features": []
+            })
+        })
+        .collect::<Vec<_>>();
+    let value = serde_json::json!({
+        "packages": packages,
+        "workspace_members": members,
+        "workspace_default_members": members,
+        "resolve": { "nodes": nodes, "root": null },
+        "target_directory": "/tmp/target",
+        "version": 1,
+        "workspace_root": "/tmp/ws",
+        "metadata": null,
+    });
+
+    serde_json::from_value(value).unwrap()
+}
+
 pub(super) fn metadata_for_packages(packages: &[Package]) -> Metadata {
     let members = packages
         .iter()
@@ -146,6 +186,7 @@ pub(super) fn args(all: bool, packages: &[&str]) -> crate::ClippyArgs {
             .iter()
             .map(|package| (*package).to_string())
             .collect(),
+        since: None,
         jobs: 1,
         emit_plan: None,
         shards: 4,

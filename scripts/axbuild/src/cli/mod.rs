@@ -29,6 +29,9 @@ pub(crate) struct ClippyArgs {
     /// Run clippy only for the named workspace package(s)
     #[arg(long = "package", value_name = "PACKAGE")]
     pub(crate) packages: Vec<String>,
+    /// Select checks affected since this Git reference.
+    #[arg(long, conflicts_with_all = ["all", "packages", "emit_plan", "execute_plan", "verify_results"])]
+    pub(crate) since: Option<String>,
     /// Number of independent Cargo workers (default: serial execution)
     #[arg(long, default_value_t = 1)]
     pub(crate) jobs: usize,

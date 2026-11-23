@@ -1,8 +1,9 @@
-use super::common::{expand, pkg, pkg_with_metadata};
+use super::common::{expand, metadata_with_resolve, pkg, pkg_with_metadata};
 use crate::checks::clippy::{
     AXSTD_STD_CLIPPY_FEATURES, AXSTD_STD_DEFAULT_FEATURE, AXSTD_STD_PACKAGE,
     check::{ClippyCheck, ClippyCheckKind},
     configurations::package_clippy_configurations,
+    selection::incremental_clippy_selections,
     targets::docs_rs_targets,
 };
 
@@ -148,6 +149,97 @@ fn clippy_preserves_non_bare_docs_rs_targets() {
     );
     assert!(!invocation.args.iter().any(|arg| arg == "json-target-spec"));
     assert!(invocation.env.is_empty());
+}
+
+#[test]
+fn incremental_selection_checks_changed_packages_and_affected_os_roots_only() {
+    let selected = incremental_clippy_selections(
+        vec!["shared".into()],
+        vec![
+            "app".into(),
+            "ax-std".into(),
+            "intermediate".into(),
+            "shared".into(),
+            "starryos".into(),
+        ],
+    );
+
+    assert_eq!(
+        selected,
+        vec!["shared".to_string(), "ax-std".into(), "starryos".into()]
+    );
+}
+
+#[test]
+fn incremental_selection_keeps_changed_unsupported_package_for_filtering() {
+    let selected = incremental_clippy_selections(
+        vec!["axvisor".into()],
+        vec!["axvisor".into(), "axvm".into()],
+    );
+
+    assert_eq!(selected, vec!["axvisor"]);
+}
+
+#[test]
+fn incremental_os_roots_expand_full_clippy_matrix_with_no_deps() {
+    let packages = vec![
+        pkg(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[("feat-a", &[])],
+            None,
+        ),
+        pkg_with_metadata(
+            "starryos",
+            "starryos 0.1.0 (path+file:///tmp/starryos)",
+            &[("feat-b", &[])],
+            serde_json::json!({
+                "clippy": {
+                    "configurations": [{
+                        "name": "aarch64-system",
+                        "target": "aarch64-unknown-none-softfloat",
+                    }],
+                },
+            }),
+        ),
+    ];
+    let metadata = metadata_with_resolve(
+        packages.clone(),
+        &[("alpha", &[]), ("starryos", &["alpha"])],
+    );
+    let selections = incremental_clippy_selections(
+        vec!["alpha".into()],
+        vec!["alpha".into(), "starryos".into()],
+    )
+    .into_iter()
+    .map(|name| {
+        packages
+            .iter()
+            .find(|package| package.name == name)
+            .cloned()
+            .unwrap()
+    })
+    .collect::<Vec<_>>();
+
+    let checks =
+        crate::checks::clippy::expand::expand_clippy_checks(&selections, &metadata).unwrap();
+
+    assert_eq!(
+        checks.iter().map(|check| check.label()).collect::<Vec<_>>(),
+        vec![
+            "alpha (base)",
+            "alpha (feature: feat-a)",
+            "starryos (base)",
+            "starryos (feature: feat-b)",
+            "starryos (configuration: aarch64-system, features: , target: \
+             aarch64-unknown-none-softfloat)",
+        ]
+    );
+    assert!(
+        checks
+            .iter()
+            .all(|check| check.cargo_args().contains(&"--no-deps".into()))
+    );
 }
 
 #[test]
