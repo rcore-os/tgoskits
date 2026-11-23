@@ -24,6 +24,7 @@ fail_regex = [
     "ivc validation failed",
     "ivc recv error",
     "ivc send error",
+    "ivc session failed",
     "VM\\[\\d+\\] boot failed",
 ]
 timeout = 300

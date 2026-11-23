@@ -2,7 +2,10 @@ use super::{
     IvcMessageError, IvcMessageMeta, IvcReceiveProgress,
     frame::{DecodedFrame, decode_frame},
 };
-use crate::{IVC_RING_CAPACITY, IVC_SLOT_SIZE, endpoint::IvcSlotConsumer};
+use crate::{
+    IVC_RING_CAPACITY, IVC_SLOT_SIZE,
+    endpoint::{IvcSlotConsumer, slot_error},
+};
 
 /// Stateful nonblocking receiver for one direction of an IVC channel.
 ///
@@ -34,7 +37,9 @@ impl<'a> IvcMessageReceiver<'a> {
 
     /// Returns whether a read can inspect a queued frame or report a retained
     /// protocol error. An active message with no queued continuation is not
-    /// ready. This does not promise that a complete message is available.
+    /// ready. This does not promise that a complete message is available. A
+    /// newly detected ivshmem session loss reports `false`; the next receive
+    /// records and reports [`IvcMessageError::SessionLost`].
     pub fn can_receive(&self) -> bool {
         matches!(self.state, ReceiveState::Failed(_)) || self.consumer.has_pending_slots()
     }
@@ -51,8 +56,9 @@ impl<'a> IvcMessageReceiver<'a> {
     /// Reports [`IvcMessageError::StreamingRequired`] if a full ring contains
     /// no terminal frame, even when the declared length fits in one ring of
     /// maximally sized fragments. `Ok(false)` means more frames can still arrive
-    /// without consuming slots. Also reports invalid frames and retained
-    /// protocol errors. This inspection alone does not poison the receiver.
+    /// without consuming slots. Also reports invalid frames, retained protocol
+    /// errors, ivshmem session loss, and invalid peer cursor windows. This
+    /// inspection alone does not poison the receiver.
     pub fn complete_message_available(&self) -> Result<bool, IvcMessageError> {
         let mut state = self.state;
         if let ReceiveState::Failed(error) = state {
@@ -60,8 +66,10 @@ impl<'a> IvcMessageReceiver<'a> {
         }
         let mut slot = [0; IVC_SLOT_SIZE];
         for offset in 0..IVC_RING_CAPACITY {
-            if !self.consumer.try_peek_slot_at(offset, &mut slot) {
-                return Ok(false);
+            match self.consumer.try_peek_slot_at(offset, &mut slot) {
+                Ok(true) => {}
+                Ok(false) => return Ok(false),
+                Err(error) => return Err(slot_error(error)),
             }
             let frame = decode_frame(&slot)?;
             let transition = validate_transition(state, &frame)?;
@@ -92,8 +100,10 @@ impl<'a> IvcMessageReceiver<'a> {
         }
 
         let mut slot = [0u8; IVC_SLOT_SIZE];
-        if !self.consumer.try_peek_slot(&mut slot) {
-            return Ok(None);
+        match self.consumer.try_peek_slot(&mut slot) {
+            Ok(true) => {}
+            Ok(false) => return Ok(None),
+            Err(error) => return self.fail(slot_error(error)),
         }
         let frame = match decode_frame(&slot) {
             Ok(frame) => frame,
@@ -123,9 +133,10 @@ impl<'a> IvcMessageReceiver<'a> {
     /// # Errors
     ///
     /// Returns a concrete protocol error for malformed or inconsistent frames,
-    /// or [`IvcMessageError::TransferAborted`] after consuming a valid peer
-    /// `ABORT`. Protocol errors poison this receiver; buffer exhaustion does
-    /// not.
+    /// [`IvcMessageError::SessionLost`] after an ivshmem reset, or
+    /// [`IvcMessageError::TransferAborted`] after consuming a valid peer
+    /// `ABORT`. Protocol and ivshmem state errors poison this receiver; buffer
+    /// exhaustion does not.
     pub fn try_read(&mut self, output: &mut [u8]) -> Result<IvcReceiveProgress, IvcMessageError> {
         self.process_available_slots(Some(output))
     }
@@ -155,8 +166,12 @@ impl<'a> IvcMessageReceiver<'a> {
         let mut consumed_slots = 0;
         loop {
             let mut slot = [0u8; IVC_SLOT_SIZE];
-            if !self.consumer.try_peek_slot(&mut slot) {
-                return Ok(IvcReceiveProgress::new(written, consumed_slots, false));
+            match self.consumer.try_peek_slot(&mut slot) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Ok(IvcReceiveProgress::new(written, consumed_slots, false));
+                }
+                Err(error) => return self.fail(slot_error(error)),
             }
             let frame = match decode_frame(&slot) {
                 Ok(frame) => frame,
@@ -191,7 +206,9 @@ impl<'a> IvcMessageReceiver<'a> {
                 written += frame.fragment.len();
             }
 
-            self.consumer.pop_slot();
+            if let Err(error) = self.consumer.pop_slot() {
+                return self.fail(slot_error(error));
+            }
             consumed_slots += 1;
             self.state = transition.next_state;
             if transition.aborted {

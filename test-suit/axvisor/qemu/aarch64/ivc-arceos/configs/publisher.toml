@@ -50,5 +50,10 @@ disabled = [
 
 # Virtual devices.
 [[devices.virtual]]
-id = "ivc0"
-model = "ivc-channel"
+id = "ivshmem0"
+model = "ivshmem-pci"
+link_id = 5
+peer_id = 0
+max_peers = 2
+common_size = 0
+output_size = 0x7000

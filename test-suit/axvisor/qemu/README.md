@@ -11,8 +11,8 @@
 | AArch64 | `memory-web` | `memory-root` → `dashboard` | 全组，无盘Memory根 |
 | AArch64 | `pci-memory-test` | ECAM发现、BAR2边界、memory decode与写入读回 | 上游新增专项 |
 | AArch64 | `ivshmem-pci` | 三客户机轮询、ArceOS交换、UIO与MSI-X doorbell | 全组，一项 |
-| AArch64 | `ivc-local` | 源码 publisher → Linux subscriber | 全组，一项 |
-| AArch64 | `ivc-arceos` | 源码 publisher → 源码 subscriber | 全组，一项 |
+| AArch64 | `ivc-local` | 源码 publisher → 镜像内 Linux subscriber，显式使用旧 IVC 承载 | 全组，一项 |
+| AArch64 | `ivc-arceos` | 双 ArceOS 客户机经 ivshmem 运行 Message V1，验证晚启动、长消息与双向交换 | 全组，一项 |
 | AArch64 | `ivc` | Linux/ArceOS 混合 IVC | 未登记；原客户机协议不匹配问题保留 |
 | RISC-V64 | `smoke` | `shell-and-block` → `smp-ipi` | 只选择 `shell-and-block` |
 | LoongArch64 | `smoke` | `shell-and-block` | 全组 |

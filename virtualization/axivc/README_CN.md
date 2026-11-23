@@ -22,6 +22,7 @@ IVC channel 映射给 publisher 和 subscriber 之后。它提供：
 - 通过 Release/Acquire 发布的固定大小 opaque slot ring；
 - Message V1 编码、校验、分片、重组和中止；
 - 支持消息大于整个 ring 的非阻塞 partial-progress API；
+- 基于 owner-only ivshmem output region 和 session incarnation 握手的双工传输；
 - 用于 IRQ 唤醒和有界 fallback polling 的对端事件辅助类型。
 
 Hypercall、GPA 映射、IRQ 注册、阻塞等待、通知和应用协议仍属于客户机
@@ -33,10 +34,40 @@ OS glue。Request/Ack 类型和应用 sequence 应编码在 payload 中，不是
 应用 payload（RPC、Request/Ack、文件块等）
 IvcMessageSender / IvcMessageReceiver（Message V1 slots）
 IvcRegion 中的 opaque SPSC rings
+IvshmemMessagePort（本端可写 TX / 对端只读 RX region）
 AxVisor HVC 映射和客户机 notify glue
 ```
 
 ring 不解释 slot；Message frame 编解码也不依赖 hypercall 或具体 runtime。
+
+# ivshmem Output Region
+
+每个 ivshmem peer 提供自己的可写 output section，并以只读方式映射对端的
+output section。每个 section 的前 8448 字节沿用 Message V1 的 slot 大小和容量：
+256 字节原子 header 后接 32 个按 256 字节对齐的 slot。owner 只在自己的 section
+中写 TX tail、RX head 和 slots；对端 section 只原子读取对应字段和 slots。
+
+```rust
+# use axivc::{IvshmemMessageError, IvshmemMessagePort};
+unsafe fn connect<'a>(
+    local_output: *mut u8,
+    local_len: usize,
+    peer_output: *const u8,
+    peer_len: usize,
+) -> Result<axivc::IvcEndpoints<'a>, IvshmemMessageError> {
+    // SAFETY: 设备层提供一致、非重叠映射，且本端是该 output 的唯一 writer。
+    let mut port = IvshmemMessagePort::attach(local_output, local_len, peer_output, peer_len)?;
+    // SAFETY: 本函数调用方保证上一代 endpoint 已全部停止。
+    unsafe { port.begin_session() }?;
+    port.try_connect()
+}
+```
+
+`begin_session` 发布非零 incarnation；同一 backing 重启时从旧值递增且拒绝回绕到
+零。双方确认稳定的对端 incarnation 后，`try_connect` 才返回 Message V1 endpoints。
+endpoint 每次 producer/consumer 操作都会核对双方 incarnation 与相互确认；
+对端重启后返回 `IvcMessageError::SessionLost`，不会把旧游标或 slot 当作新会话。
+PCI discovery、BAR 映射、doorbell、State 变化和非一致内存维护仍由设备层/OS 负责。
 
 # Message V1
 
@@ -133,7 +164,10 @@ endpoint 或清除 magic 不能证明该条件。unsafe 初始化与 attach 契�
   `IvcRing` 大小为 8448 字节，slots 从 ring 内偏移 256 开始。
 - Message V1 不支持消息交错、重传、乱序重排，也不进行分配。
 - 通信双方必须使用相同的 region 布局和 slot 参数，仅 region 版本相同不足以保证兼容。
-- ivshmem、PCI BAR、doorbell、MSI-X 和 owner-RW/peer-RO section 不属于本次协议。
+- ivshmem message layout 版本 1 每个 peer output pair 支持一个 SPSC lane；
+  对端只读视图要求平台提供 32 位原子操作及小尺寸 Relaxed 原子读只读内存保证；
+  Acquire 采用 Relaxed load 后接 Acquire fence。PCI BAR、doorbell、MSI-X、映射和
+  State 生命周期不属于本次协议。
 
 # 开发验证
 

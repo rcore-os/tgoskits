@@ -406,6 +406,7 @@ dependencies = [
 name = "arceos-ivc-publisher"
 version = "0.1.0"
 dependencies = [
+ "arceos-ivshmem-pci",
  "ax-mm",
  "ax-std",
  "axhvc",
@@ -416,9 +417,8 @@ dependencies = [
 name = "arceos-ivc-subscriber"
 version = "0.1.0"
 dependencies = [
- "ax-mm",
+ "arceos-ivshmem-pci",
  "ax-std",
- "axhvc",
  "axivc",
 ]
 

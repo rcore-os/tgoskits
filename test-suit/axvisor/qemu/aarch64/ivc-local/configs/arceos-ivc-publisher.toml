@@ -16,6 +16,10 @@ phys_cpu_ids = [0]
 # Vm kernel configs
 #
 [kernel]
+# The Linux ivc-subscribe peer still uses the external axvisor.ko transport.
+# Keep this single explicit transition marker on the shared publisher artifact
+# until the Linux peer migrates to ivshmem Message V1.
+cmdline = "axvisor.ivc_backend=legacy"
 # The entry point of the kernel image.
 entry_point = 0x8020_0000
 # Built from this workspace before staging guest assets; never use the rootfs copy.

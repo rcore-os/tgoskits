@@ -2,22 +2,26 @@
 
 //! Shared-memory logical-message protocol helpers for AxVisor IVC channels.
 //!
-//! The crate transports allocation-free, fragmented messages over two opaque
-//! single-producer/single-consumer slot rings. Hypercalls, GPA mapping, IRQ
-//! registration, blocking waits, and application payload semantics remain in
-//! guest OS glue.
+//! The crate transports allocation-free, fragmented messages over either two
+//! opaque single-producer/single-consumer slot rings or two owner-only ivshmem
+//! output regions. Hypercalls, PCI discovery, GPA mapping, IRQ registration,
+//! blocking waits, and application payload semantics remain in guest OS glue.
 
 #[cfg(test)]
 extern crate std;
 
 mod endpoint;
 mod event;
+mod ivshmem;
 mod message;
 mod region;
 mod ring;
 
 pub use endpoint::IvcEndpoints;
 pub use event::{IvcPeerEventWaiter, fallback_poll, record_peer_event};
+pub use ivshmem::{
+    IvshmemMessageError, IvshmemMessagePort, IvshmemRegionRole, IvshmemSessionState,
+};
 pub use message::{
     IvcMessageError, IvcMessageId, IvcMessageMeta, IvcMessageReceiver, IvcMessageSender,
     IvcReceiveProgress, IvcSendProgress,
