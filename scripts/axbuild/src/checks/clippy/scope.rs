@@ -265,7 +265,8 @@ pub(super) fn consumer_closure(
             }
         }
     }
-    let mut pending = changed.iter().chain(resolved).cloned().collect::<Vec<_>>();
+    let mut pending =
+        super::selection::incremental_clippy_selections(changed.to_vec(), resolved.to_vec());
     let mut seen = BTreeSet::new();
     while let Some(p) = pending.pop() {
         if seen.insert(p.clone())

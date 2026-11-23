@@ -6,13 +6,7 @@ use std::{
 use anyhow::{bail, ensure};
 use cargo_metadata::{Metadata, Package};
 
-use super::{AXSTD_STD_PACKAGE, check::ClippyCheck};
-
-const INCREMENTAL_CLIPPY_OS_ROOT_PACKAGES: &[&str] = &[
-    AXSTD_STD_PACKAGE,
-    crate::context::STARRY_KERNEL_PACKAGE,
-    crate::context::STARRY_PACKAGE,
-];
+use super::check::ClippyCheck;
 
 const UNSUPPORTED_CLIPPY_PACKAGES: &[(&str, &str)] = &[
     (
@@ -124,27 +118,17 @@ pub(super) fn resolve_requested_packages(
         .collect()
 }
 
-/// Build the incremental clippy selection from a `--since` diff.
-///
-/// Changed crates and affected OS roots are linted with `--no-deps` and their
-/// full feature/target/configuration matrix. Intermediate reverse dependencies
-/// are intentionally excluded because the selected OS roots cover integration.
+/// Keep changed packages and all resolved consumers before unsupported filtering.
+/// Compiling an intermediate consumer as a dependency does not lint that crate.
 pub(super) fn incremental_clippy_selections(
     changed: Vec<String>,
     affected: Vec<String>,
 ) -> Vec<String> {
-    let changed = changed.into_iter().collect::<BTreeSet<_>>();
-    let affected = affected.into_iter().collect::<BTreeSet<_>>();
-
     changed
-        .iter()
-        .cloned()
-        .chain(
-            INCREMENTAL_CLIPPY_OS_ROOT_PACKAGES
-                .iter()
-                .filter(|package| affected.contains(**package) && !changed.contains(**package))
-                .map(|package| (*package).to_string()),
-        )
+        .into_iter()
+        .chain(affected)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
