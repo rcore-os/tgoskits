@@ -286,10 +286,54 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
+    // The x86_64 helper's precondition is a property of the CPU that runs it,
+    // and x86_64 has no system-wide feature contract like aarch64's
+    // `HWCAP_CRC32`. So the test pins its thread to one CPU, reads CPUID on
+    // that CPU, and only then runs the helper. Pinning uses Linux
+    // `sched_setaffinity`; other x86_64 hosts skip the test. Linux moves a
+    // pinned thread off its CPU only if that CPU is taken offline, a cpuset
+    // change removes it, or another process with permission changes the
+    // thread's affinity; the test assumes none of these happens while it
+    // runs, as no user-space pin can prevent them.
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     #[test]
     fn x86_64_hardware_crc_matches_software_for_unaligned_slices() {
-        if !std::is_x86_feature_detected!("sse4.2") {
+        // A dedicated thread, so the harness thread keeps its affinity.
+        std::thread::spawn(x86_64_hardware_crc_on_one_cpu)
+            .join()
+            .unwrap();
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    fn x86_64_hardware_crc_on_one_cpu() {
+        unsafe extern "C" {
+            fn sched_getcpu() -> i32;
+            fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const CpuSet) -> i32;
+        }
+
+        // glibc's and musl's 1024-bit `cpu_set_t`.
+        #[repr(C)]
+        struct CpuSet {
+            bits: [usize; 16],
+        }
+
+        // SAFETY: `sched_getcpu` takes no arguments and only reads state.
+        let Ok(cpu) = usize::try_from(unsafe { sched_getcpu() }) else {
+            return;
+        };
+        let word_bits = usize::BITS as usize;
+        let mut mask = CpuSet { bits: [0; 16] };
+        let Some(word) = mask.bits.get_mut(cpu / word_bits) else {
+            return;
+        };
+        *word |= 1 << (cpu % word_bits);
+        // SAFETY: `mask` has the `cpu_set_t` layout and outlives the call; pid
+        // 0 selects the calling thread.
+        if unsafe { sched_setaffinity(0, size_of::<CpuSet>(), &mask) } != 0 {
+            return;
+        }
+        // The thread now runs only on `cpu`, so this read describes it.
+        if core::arch::x86_64::__cpuid(1).ecx & (1 << 20) == 0 {
             return;
         }
 
@@ -303,10 +347,12 @@ mod tests {
                     let data = &storage[offset..offset + len];
                     assert_eq!(
                         unsafe {
-                            // SAFETY: the test returned early above unless
-                            // CPUID leaf 1 ECX bit 20 reported SSE4.2. That
-                            // read covers one CPU; the test assumes the host's
-                            // CPUs agree, which library code never assumes.
+                            // SAFETY: this thread is pinned to one CPU, and
+                            // CPUID leaf 1 ECX bit 20 read on that CPU after
+                            // pinning reported SSE4.2, so the CPU executing
+                            // `crc32` here is the one that reported it,
+                            // barring an outside change to the thread's
+                            // affinity during the test (see above).
                             crate::crc32c::x86_64::crc32c_hardware(seed, data)
                         },
                         crc32c_update(seed, data),
