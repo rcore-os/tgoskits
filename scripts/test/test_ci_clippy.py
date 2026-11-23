@@ -12,6 +12,7 @@ class ClippyModeTests(unittest.TestCase):
         self.assertEqual(selection_outputs(value, "a" * 40)["mode"], "incremental")
         for field, bad in [("schema_version", 99), ("mode", "unknown"),
                            ("tested_sha", "d" * 40), ("diff_base_sha", "branch"),
+                           ("diff_base_sha", "a" * 40),
                            ("selection_digest", "bad"), ("checks", [])]:
             candidate = copy.deepcopy(value)
             candidate[field] = bad
@@ -22,8 +23,14 @@ class ClippyModeTests(unittest.TestCase):
             selection_outputs(value, "a" * 40)
         value["checks"] = []
         self.assertEqual(selection_outputs(value, "a" * 40)["mode"], "empty")
+        value["diff_base_sha"] = "a" * 40
+        with self.assertRaises(ValueError):
+            selection_outputs(value, "a" * 40)
         value["mode"] = "full"
         value["diff_base_sha"] = None
+        with self.assertRaises(ValueError):
+            selection_outputs(value, "a" * 40)
+        value["checks"] = ["fixture"]
         self.assertEqual(selection_outputs(value, "a" * 40)["base"], "")
 
     def test_final_gate_requires_the_actual_path_to_finish_successfully(self):

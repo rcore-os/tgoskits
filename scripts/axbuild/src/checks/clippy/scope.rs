@@ -285,6 +285,110 @@ mod tests {
     use super::{super::check::ClippyCheckKind, *};
 
     #[test]
+    fn comparison_identity_and_changed_inputs_determine_the_execution_mode() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Command {
+            #[command(flatten)]
+            args: crate::ClippyArgs,
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"alpha\",\"beta\"]\nresolver=\"3\"\n",
+        )
+        .unwrap();
+        for name in ["alpha", "beta"] {
+            fs::create_dir_all(root.join(name).join("src")).unwrap();
+            fs::write(
+                root.join(name).join("Cargo.toml"),
+                format!("[package]\nname=\"{name}\"\nversion=\"0.1.0\"\nedition=\"2024\"\n"),
+            )
+            .unwrap();
+            fs::write(root.join(name).join("src/lib.rs"), "").unwrap();
+        }
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                ])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-b", "main"]);
+        git(&["add", "."]);
+        git(&["commit", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["tag", "same-head"]);
+        git(&["checkout", "-b", "future"]);
+        git(&["commit", "--allow-empty", "-m", "future"]);
+        git(&["checkout", "main"]);
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(root.join("Cargo.toml"))
+            .no_deps()
+            .exec()
+            .unwrap();
+        let packages = super::super::selection::workspace_packages(&metadata);
+        let select_since = |since: &str| {
+            let command = Command::parse_from(["clippy", "--print-selection", "--since", since]);
+            select(&command.args, root, &metadata, &packages).unwrap()
+        };
+        let full = select(
+            &Command::parse_from(["clippy", "--all"]).args,
+            root,
+            &metadata,
+            &packages,
+        )
+        .unwrap();
+        for since in ["HEAD", &base, "same-head", "future"] {
+            let scope = select_since(since);
+            assert_eq!(scope.mode, Mode::Full, "base {since} must run lint");
+            assert_eq!(scope.checks, full.checks);
+            assert_eq!(scope.diff_base_sha.as_deref(), Some(base.as_str()));
+        }
+
+        // A different commit with an identical tree really has no changed inputs.
+        git(&["commit", "--allow-empty", "-m", "no input changes"]);
+        let empty = select_since(&base);
+        assert_eq!(empty.mode, Mode::Empty);
+        assert!(empty.checks.is_empty());
+
+        fs::write(root.join("alpha/src/lib.rs"), "pub fn operation() {}\n").unwrap();
+        git(&["commit", "-am", "change alpha"]);
+        let incremental = select_since(&base);
+        assert_eq!(incremental.mode, Mode::Incremental);
+        assert_eq!(incremental.selected_packages, ["alpha"]);
+        assert!(!incremental.checks.is_empty());
+        // Changes on the other side of a fork must not broaden our selection.
+        assert_eq!(select_since("future").checks, incremental.checks);
+        assert_eq!(select_since("missing-ref").checks, full.checks);
+
+        let mut frozen = Command::parse_from(["clippy", "--since", &base]).args;
+        frozen.diff_base = incremental.diff_base_sha;
+        frozen.expected_selection = Some(incremental.selection_digest);
+        assert_eq!(
+            select(&frozen, root, &metadata, &packages).unwrap().mode,
+            Mode::Incremental
+        );
+        frozen.diff_base = Some(git(&["rev-parse", "HEAD"]));
+        assert!(select(&frozen, root, &metadata, &packages).is_err());
+    }
+
+    #[test]
     fn declared_optional_target_build_and_dev_consumers_are_not_filtered() {
         let root = tempfile::tempdir().unwrap();
         fs::write(
