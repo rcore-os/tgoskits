@@ -716,6 +716,102 @@ fn zero_link_legacy_reap_restarts_before_final_inode_transaction() {
     );
 }
 
+#[test]
+fn failed_first_restart_transaction_restores_the_extent_tail() {
+    let mut fixture = build_large_extent_fixture("/restart-tail-extent");
+    install_small_journal(&mut fixture);
+    let retained_block = fixture.data_blocks[0];
+    assert_failed_first_restart_transaction_restores_tail(
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        fixture.inode_number,
+        retained_block,
+    );
+}
+
+#[test]
+fn failed_first_restart_transaction_restores_the_legacy_tail() {
+    let mut fixture = build_large_legacy_fixture("/restart-tail-legacy");
+    // Map a second group-zero block behind the retained one, so the shrink
+    // still detaches blocks from both allocation groups and must restart.
+    let second_direct = fixture.gap_blocks[0];
+    fixture
+        .filesystem
+        .modify_inode(&mut fixture.journal, fixture.inode_number, |inode| {
+            inode.i_block[1] = second_direct.to_u32().expect("direct block number");
+            inode.i_blocks_lo += (BLOCK_SIZE / 512) as u32;
+        })
+        .expect("second direct mapping failed");
+    fixture
+        .filesystem
+        .sync_filesystem(&mut fixture.journal)
+        .expect("fixture sync failed");
+    fixture.journal.flush().expect("fixture checkpoint failed");
+    install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 24);
+    let retained_block = fixture.removed_blocks[0];
+    assert_failed_first_restart_transaction_restores_tail(
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        fixture.inode_number,
+        retained_block,
+    );
+}
+
+/// Fails the size-and-orphan transaction that starts a restarted shrink and
+/// checks that the file keeps its old size and every byte of its EOF block.
+fn assert_failed_first_restart_transaction_restores_tail(
+    journal: &mut Jbd2Dev<RestartDevice>,
+    filesystem: &mut Ext4FileSystem,
+    inode_number: InodeNumber,
+    retained_block: AbsoluteBN,
+) {
+    filesystem
+        .datablock_cache
+        .modify(journal, retained_block, |block| {
+            for (index, byte) in block.iter_mut().enumerate() {
+                *byte = (index % 251) as u8 + 1;
+            }
+        })
+        .expect("retained block fill failed");
+    // A stale orphan link makes `add_orphan` fail inside the first
+    // transaction, after the EOF tail was zeroed. No earlier check reads it.
+    filesystem
+        .modify_inode(journal, inode_number, |inode| inode.i_dtime = 1)
+        .expect("stale orphan link injection failed");
+    let original_size = filesystem
+        .get_inode_by_num(journal, inode_number)
+        .expect("inode read failed")
+        .size();
+    let mut original = vec![0u8; BLOCK_SIZE];
+    read_inode_data_into(journal, filesystem, inode_number, 0, &mut original)
+        .expect("retained block read failed");
+
+    let error = truncate_inode(journal, filesystem, inode_number, 100)
+        .expect_err("a failed first restart transaction must fail the truncate");
+    assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+    assert_eq!(
+        error.context(),
+        Some(rsext4::error::ErrorContext::Operation {
+            op: "orphan:add_stale_dtime"
+        }),
+        "the shrink must take the restart path and fail in its first transaction"
+    );
+
+    let inode = filesystem
+        .get_inode_by_num(journal, inode_number)
+        .expect("failed truncate must leave the inode readable");
+    assert_eq!(inode.size(), original_size);
+    assert_eq!(filesystem.superblock.s_last_orphan, 0);
+    let mut data = vec![0u8; BLOCK_SIZE];
+    read_inode_data_into(journal, filesystem, inode_number, 0, &mut data)
+        .expect("retained block read failed");
+    let first_changed = data.iter().zip(&original).position(|(now, was)| now != was);
+    assert_eq!(
+        first_changed, None,
+        "a failed truncate must leave every byte of the file as it was"
+    );
+}
+
 fn assert_large_extent_removal_restarts(path: &str, operation: ExtentRemovalOperation) {
     let mut fixture = build_large_extent_fixture(path);
     install_small_journal(&mut fixture);

@@ -215,12 +215,18 @@ fn truncate_inode_mapping<B: BlockIo>(
             let zeroed_tail =
                 zero_mapped_inode_tail_with_undo(device, fs, inode_num, &mut inode, truncate_size)?;
             if let Some(credit_limit) = restart_limit {
-                // A restarted shrink commits in several transactions, and an
-                // earlier one may already be durable, so its zeroed tail is
-                // not put back.
-                drop(zeroed_tail);
+                // A restarted shrink commits in several transactions. For a
+                // user truncate the first one publishes the new size and
+                // rolls back on failure, so the zeroed tail is put back with
+                // it. Once it commits, later transactions may be durable, so
+                // the tail stays zeroed. Recovery and reap shrink an inode
+                // whose size is already published, so they keep it zeroed.
                 if purpose == TruncatePurpose::UserResize {
-                    begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
+                    let result =
+                        begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size);
+                    restore_tail_on_error(device, fs, zeroed_tail, result)?;
+                } else {
+                    drop(zeroed_tail);
                 }
                 remove_extent_mapping_with_restarts(
                     device,
@@ -291,10 +297,13 @@ fn truncate_inode_mapping<B: BlockIo>(
     let zeroed_tail =
         zero_mapped_inode_tail_with_undo(device, fs, inode_num, &mut inode, truncate_size)?;
     if let Some(credit_limit) = restart_limit {
-        // As for extents: a restarted shrink keeps its zeroed tail.
-        drop(zeroed_tail);
+        // As for extents: the zeroed tail is put back only when the first
+        // transaction fails.
         if purpose == TruncatePurpose::UserResize {
-            begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
+            let result = begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size);
+            restore_tail_on_error(device, fs, zeroed_tail, result)?;
+        } else {
+            drop(zeroed_tail);
         }
         remove_legacy_mapping_with_restarts(
             device,
