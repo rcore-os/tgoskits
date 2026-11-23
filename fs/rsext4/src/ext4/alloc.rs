@@ -164,6 +164,7 @@ impl Ext4FileSystem {
             ));
         }
 
+        let inodes_per_group = self.superblock.s_inodes_per_group;
         for (group_idx, bitmap_block, inode_uninit, desc) in group_meta {
             let cache_key = CacheKey::new_inode(group_idx);
             let mut inodes: Vec<InodeNumber> = Vec::with_capacity(count as usize);
@@ -187,8 +188,11 @@ impl Ext4FileSystem {
                     let mut candidate = data.to_vec();
                     // When EXT4_BG_INODE_UNINIT is set the on-disk bitmap is
                     // stale. Linux synthesizes an all-free bitmap in memory.
+                    // The padding bits past the group's last inode are set,
+                    // because e2fsck rejects a bitmap whose padding is clear.
                     if inode_uninit {
                         candidate.fill(0);
+                        mark_inode_bitmap_padding(&mut candidate, inodes_per_group);
                     }
                     for _ in 0..count {
                         match self.inode_allocator.alloc_inode_in_group(
@@ -490,6 +494,17 @@ impl Ext4FileSystem {
     }
 }
 
+/// Sets the bits past the group's last inode, up to the end of the bitmap
+/// block. e2fsck checks that they are set; the Linux kernel sets them the
+/// same way in `ext4_mark_bitmap_end`.
+fn mark_inode_bitmap_padding(bitmap: &mut [u8], inodes_per_group: u32) {
+    let first = inodes_per_group as usize;
+    let end = bitmap.len() * 8;
+    for bit in first.min(end)..end {
+        bitmap[bit / 8] |= 1 << (bit % 8);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::cell::Cell;
@@ -739,6 +754,10 @@ mod tests {
             .get(&CacheKey::new_inode(BGIndex::new(0)))
             .unwrap();
         assert_eq!(bitmap.data[0], 0b0000_0001);
+        // Bits past the group's last inode are padding, and e2fsck requires
+        // them set ("Padding at end of inode bitmap is not set").
+        assert_eq!(bitmap.data.len(), BLOCK_SIZE);
+        assert!(bitmap.data[1..].iter().all(|byte| *byte == 0xff));
     }
 
     #[test]
