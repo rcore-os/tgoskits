@@ -95,6 +95,23 @@ impl ZeroedTail {
             block[self.offset..].copy_from_slice(&self.bytes)
         })
     }
+
+    /// Restores the replaced bytes after `error` failed the operation that
+    /// zeroed them, and returns the error to report.
+    ///
+    /// That is `error` when the bytes are back, and the restore's own error
+    /// when they are not, since the file has then lost them.
+    fn restore_after<B: BlockIo>(
+        self,
+        device: &mut Jbd2Dev<B>,
+        fs: &mut Ext4FileSystem,
+        error: Ext4Error,
+    ) -> Ext4Error {
+        match self.restore(device, fs) {
+            Ok(()) => error,
+            Err(restore_error) => restore_error.with_operation("rollback:truncate_tail_restore"),
+        }
+    }
 }
 
 /// Zeroes the retained EOF block's tail and returns what it replaced.
@@ -118,31 +135,40 @@ pub(super) fn zero_mapped_inode_tail_with_undo<B: BlockIo>(
     };
     let offset = usize::try_from(tail_offset).map_err(|_| Ext4Error::overflow())?;
     let mut bytes = Vec::new();
-    fs.datablock_cache.modify(device, physical, |block| {
+    let mut zeroed = false;
+    let zeroing = fs.datablock_cache.modify(device, physical, |block| {
         bytes.extend_from_slice(&block[offset..]);
         block[offset..].fill(0);
-    })?;
-    Ok(Some(ZeroedTail {
+        zeroed = true;
+    });
+    let zeroed_tail = ZeroedTail {
         physical,
         offset,
         bytes,
-    }))
+    };
+    match zeroing {
+        Ok(()) => Ok(Some(zeroed_tail)),
+        // The write-through can fail after the cached block was zeroed and
+        // marked dirty, so the tail is put back before the error is returned.
+        Err(error) if zeroed => Err(zeroed_tail.restore_after(device, fs, error)),
+        Err(error) => Err(error),
+    }
 }
 
 /// Puts a zeroed tail back when the shrink that zeroed it failed.
 ///
-/// The shrink's own error is the one returned; a failure to restore the bytes
-/// cannot be reported in its place without hiding why the shrink failed.
+/// The shrink's own error is returned when the bytes are restored. When the
+/// restore fails too, its error is returned instead, with the operation
+/// `rollback:truncate_tail_restore`, so the caller knows the file lost the
+/// bytes and not only that the shrink failed.
 pub(super) fn restore_tail_on_error<B: BlockIo, T>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     zeroed_tail: Option<ZeroedTail>,
     result: Ext4Result<T>,
 ) -> Ext4Result<T> {
-    if result.is_err()
-        && let Some(zeroed_tail) = zeroed_tail
-    {
-        let _ = zeroed_tail.restore(device, fs);
+    match (result, zeroed_tail) {
+        (Err(error), Some(zeroed_tail)) => Err(zeroed_tail.restore_after(device, fs, error)),
+        (result, _) => result,
     }
-    result
 }
