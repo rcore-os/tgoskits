@@ -163,3 +163,14 @@ fn since_rejects_explicit_package_selection() {
             .contains("cannot be combined with `--package`")
     );
 }
+
+#[test]
+fn full_plans_cannot_be_limited_to_explicit_packages() {
+    let args = args(true, &["alpha"]);
+    assert!(
+        validate_clippy_args(&args)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be combined")
+    );
+}
