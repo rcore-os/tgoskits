@@ -8,7 +8,8 @@ static CRC32_HW_CHECKED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
 static CRC32_HW_SUPPORTED: AtomicBool = AtomicBool::new(false);
 
-/// Returns whether the current CPU supports hardware CRC32C instructions.
+/// Returns whether the first CPU to call this supports hardware CRC32C
+/// instructions. The caller relies on every CPU sharing that answer.
 ///
 /// The result is computed once on first call and cached for all subsequent calls.
 ///

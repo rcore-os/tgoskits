@@ -95,9 +95,13 @@ pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     {
         if is_hardware_crc32_supported() {
             return unsafe {
-                // SAFETY: `crc32c_hardware` needs the ARMv8 CRC32 extension,
-                // and `is_hardware_crc32_supported` has just read it as present
-                // from `ID_AA64ISAR0_EL1[19:16]` (see `crc32c::arm64`).
+                // SAFETY: `crc32c_hardware` needs the ARMv8 CRC32 extension on
+                // the CPU that runs it. `is_hardware_crc32_supported` read
+                // `ID_AA64ISAR0_EL1[19:16]` once, on the first CPU to call it,
+                // and caches that answer. This relies on every CPU that may run
+                // this code reporting the same CRC32 field, which the operating
+                // system must guarantee; checking again here would not, since
+                // the task could migrate between the check and the instruction.
                 crc32c_hardware(crc, data)
             };
         }
@@ -110,9 +114,11 @@ pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     {
         if is_hardware_crc32_supported() {
             return unsafe {
-                // SAFETY: `crc32c_hardware` needs SSE4.2, and
-                // `is_hardware_crc32_supported` has just read it as present
-                // from CPUID leaf 1 ECX bit 20 (see `crc32c::x86_64`).
+                // SAFETY: `crc32c_hardware` needs SSE4.2 on the CPU that runs
+                // it. `is_hardware_crc32_supported` read CPUID leaf 1 ECX bit
+                // 20 once, on the first CPU to call it, and caches that answer.
+                // This relies on every CPU that may run this code reporting the
+                // same bit, which the operating system must guarantee.
                 crc32c_hardware(crc, data)
             };
         }
