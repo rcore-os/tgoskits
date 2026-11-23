@@ -9,14 +9,20 @@ static CRC32_HW_CHECKED: AtomicBool = AtomicBool::new(false);
 static CRC32_HW_SUPPORTED: AtomicBool = AtomicBool::new(false);
 
 /// Returns whether the first CPU to call this supports hardware CRC32C
-/// instructions. The caller relies on every CPU sharing that answer.
+/// instructions.
 ///
 /// The result is computed once on first call and cached for all subsequent calls.
+/// It describes only that first CPU, so it does not establish the precondition
+/// of [`crc32c_hardware`] for a later call that may run on another CPU.
+/// rsext4 no longer uses it; see `enable_hardware_crc32c`.
 ///
 /// Safety: `CRC32_HW_CHECKED` (Acquire/Release) provides happens-before ordering;
 /// `CRC32_HW_SUPPORTED` uses Relaxed because it is always accessed after
 /// the Acquire load on `CRC32_HW_CHECKED` has observed the init-complete store.
 #[cfg(target_arch = "aarch64")]
+#[deprecated(note = "describes only the first CPU to call it; call \
+                     `rsext4::crc32c::enable_hardware_crc32c` from code that can guarantee the \
+                     feature on every CPU")]
 #[inline]
 pub fn is_hardware_crc32_supported() -> bool {
     if CRC32_HW_CHECKED.load(Ordering::Acquire) {
@@ -36,7 +42,9 @@ pub fn is_hardware_crc32_supported() -> bool {
 use core::arch::aarch64::{__crc32cb, __crc32cd, __crc32ch, __crc32cw};
 /// Returns whether the current CPU advertises CRC32/CRC32C instructions.
 ///
-/// This reads `ID_AA64ISAR0_EL1[19:16]`.
+/// This reads `ID_AA64ISAR0_EL1[19:16]` on the CPU that executes it, so the
+/// answer says nothing about other CPUs. rsext4 does not call it on the
+/// checksum path.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 #[allow(dead_code)]

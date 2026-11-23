@@ -1,9 +1,10 @@
 // crc32c.rs
+use core::sync::atomic::{AtomicBool, Ordering};
+
 #[cfg(target_arch = "aarch64")]
-#[allow(dead_code)]
-use crate::crc32c::arm64::*;
+use crate::crc32c::arm64::crc32c_hardware;
 #[cfg(target_arch = "x86_64")]
-use crate::crc32c::x86_64::{crc32c_hardware, is_hardware_crc32_supported};
+use crate::crc32c::x86_64::crc32c_hardware;
 use crate::superblock::Ext4Superblock;
 
 const POLY: u32 = 0x82F63B78;
@@ -88,37 +89,64 @@ pub fn crc32c_finalize(crc: u32) -> u32 {
     crc ^ 0xFFFF_FFFF
 }
 
+/// Set only by [`enable_hardware_crc32c`].
+static HARDWARE_CRC32C: AtomicBool = AtomicBool::new(false);
+
+/// Lets [`crc32c_append`] use the CPU's CRC32C instructions.
+///
+/// Until this is called, rsext4 computes CRC32C with its table-driven code,
+/// which runs on any CPU, so one build of the crate works everywhere. rsext4
+/// does not read CPU feature registers to decide this itself: a register read
+/// describes only the CPU that made it, and the code may later run on another.
+///
+/// The instructions are the ARMv8 CRC32 extension on aarch64
+/// (`ID_AA64ISAR0_EL1.CRC32` at least 1) and SSE4.2 on x86_64 (CPUID leaf 1,
+/// ECX bit 20). On other architectures this call has no effect.
+///
+/// # Safety
+///
+/// The caller guarantees that every CPU that may execute rsext4 code from this
+/// call on implements those instructions, including any CPU brought online
+/// later and any CPU a task may move to.
+///
+/// # Where the guarantee comes from
+///
+/// - A monolithic kernel such as ArceOS, which runs rsext4 inside the kernel,
+///   can call this once its CPU bring-up has read the feature register on every
+///   CPU and found the extension on all of them, provided it never brings up a
+///   CPU without it afterwards.
+/// - A file-system server in user space under a microkernel can call this when
+///   the feature set its kernel publishes for all CPUs includes the extension.
+/// - A Linux user-space program on aarch64 can call this when
+///   `std::arch::is_aarch64_feature_detected!("crc")` returns true. std reads
+///   `HWCAP_CRC32` from `AT_HWCAP`; Linux sets that bit from the value it
+///   sanitises across all CPUs and refuses to bring up a later CPU that lacks
+///   it. On x86_64, `is_x86_feature_detected!("sse4.2")` runs CPUID on the
+///   calling CPU only, so it is not by itself such a guarantee.
+pub unsafe fn enable_hardware_crc32c() {
+    // Relaxed is enough: the flag publishes no other data, and a CPU that has
+    // not yet observed the store only keeps using the table-driven path.
+    HARDWARE_CRC32C.store(true, Ordering::Relaxed);
+}
+
+/// Returns whether [`enable_hardware_crc32c`] has been called.
+#[inline]
+pub fn hardware_crc32c_enabled() -> bool {
+    HARDWARE_CRC32C.load(Ordering::Relaxed)
+}
+
 #[inline]
 pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
-    // Use hardware acceleration on aarch64 when the CPU advertises CRC support.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     {
-        if is_hardware_crc32_supported() {
+        if hardware_crc32c_enabled() {
             return unsafe {
-                // SAFETY: `crc32c_hardware` needs the ARMv8 CRC32 extension on
-                // the CPU that runs it. `is_hardware_crc32_supported` read
-                // `ID_AA64ISAR0_EL1[19:16]` once, on the first CPU to call it,
-                // and caches that answer. This relies on every CPU that may run
-                // this code reporting the same CRC32 field, which the operating
-                // system must guarantee; checking again here would not, since
-                // the task could migrate between the check and the instruction.
-                crc32c_hardware(crc, data)
-            };
-        }
-    }
-
-    // x86 CRC32C uses only GPR operands. Runtime detection keeps the generic
-    // binary valid on CPUs without SSE4.2 and leaves the OS lock model out of
-    // this portable algorithm boundary.
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_hardware_crc32_supported() {
-            return unsafe {
-                // SAFETY: `crc32c_hardware` needs SSE4.2 on the CPU that runs
-                // it. `is_hardware_crc32_supported` read CPUID leaf 1 ECX bit
-                // 20 once, on the first CPU to call it, and caches that answer.
-                // This relies on every CPU that may run this code reporting the
-                // same bit, which the operating system must guarantee.
+                // SAFETY: `crc32c_hardware` needs the ARMv8 CRC32 extension
+                // (aarch64) or SSE4.2 (x86_64) on the CPU that runs it. The
+                // flag is set only by `enable_hardware_crc32c`, whose caller
+                // guarantees that every CPU that may run this code implements
+                // it, so the precondition holds on whichever CPU runs this
+                // call.
                 crc32c_hardware(crc, data)
             };
         }
@@ -219,10 +247,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn table_path_is_used_until_hardware_is_enabled() {
+        // No test in this crate calls `enable_hardware_crc32c`, so every
+        // checksum in the test run goes through the table-driven path.
+        assert!(!hardware_crc32c_enabled());
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_hardware_crc_matches_software_for_unaligned_slices() {
+        if !std::arch::is_aarch64_feature_detected!("crc") {
+            return;
+        }
+
+        let mut storage = [0u8; 265];
+        for (index, byte) in storage.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_mul(29).wrapping_add(13);
+        }
+        for seed in [0, crc32c_init(), 0x1234_5678] {
+            for offset in 0..8 {
+                for len in 0..=257 {
+                    let data = &storage[offset..offset + len];
+                    assert_eq!(
+                        unsafe {
+                            // SAFETY: the test returned early above unless std
+                            // reported `crc`. On Linux that is `HWCAP_CRC32`,
+                            // which holds for every CPU; on macOS every CPU is
+                            // ARMv8.1 or later, where the extension is
+                            // mandatory.
+                            crate::crc32c::arm64::crc32c_hardware(seed, data)
+                        },
+                        crc32c_update(seed, data),
+                        "offset={offset} length={len} seed={seed:#x}"
+                    );
+                }
+            }
+        }
+    }
+
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn x86_64_hardware_crc_matches_software_for_unaligned_slices() {
-        if !crate::crc32c::x86_64::is_hardware_crc32_supported() {
+        if !std::is_x86_feature_detected!("sse4.2") {
             return;
         }
 
@@ -237,8 +304,9 @@ mod tests {
                     assert_eq!(
                         unsafe {
                             // SAFETY: the test returned early above unless
-                            // `is_hardware_crc32_supported` read SSE4.2 as
-                            // present from CPUID leaf 1 ECX bit 20.
+                            // CPUID leaf 1 ECX bit 20 reported SSE4.2. That
+                            // read covers one CPU; the test assumes the host's
+                            // CPUs agree, which library code never assumes.
                             crate::crc32c::x86_64::crc32c_hardware(seed, data)
                         },
                         crc32c_update(seed, data),
