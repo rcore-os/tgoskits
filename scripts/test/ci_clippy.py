@@ -43,6 +43,35 @@ def matrix(plan):
     return {"include": rows}
 
 
+def selection_outputs(selection, expected_sha):
+    """Translate the Rust selector's facts, without implementing package selection."""
+    import re
+    mode = selection.get("mode")
+    if selection.get("schema_version") != 1 or mode not in {"full", "incremental", "empty"}:
+        raise ValueError("unsupported Clippy selection")
+    if selection.get("tested_sha") != expected_sha or not re.fullmatch(r"[0-9a-f]{40,64}", expected_sha):
+        raise ValueError("Clippy selection is not for this checkout")
+    digest = selection.get("selection_digest", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("invalid Clippy selection digest")
+    base = selection.get("diff_base_sha")
+    if mode in {"incremental", "empty"} and not re.fullmatch(r"[0-9a-f]{40,64}", base or ""):
+        raise ValueError("Clippy comparison base is not immutable")
+    if mode == "incremental" and not selection.get("checks"):
+        raise ValueError("incremental selection has no checks")
+    if mode == "empty" and selection.get("checks"):
+        raise ValueError("empty selection contains checks")
+    return {"mode": mode, "digest": digest, "base": base or ""}
+
+
+def result_succeeded(mode, prepare, checks):
+    if prepare != "success":
+        return False
+    if mode in {"incremental", "empty"}:
+        return checks == "skipped"
+    return mode == "full" and checks == "success"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -51,8 +80,21 @@ def main():
     gate.add_argument("--workspace", type=Path, default=Path(__file__).resolve().parents[2])
     plan_parser = sub.add_parser("matrix")
     plan_parser.add_argument("plan", type=Path)
+    selection_parser = sub.add_parser("selection")
+    selection_parser.add_argument("document", type=Path)
+    selection_parser.add_argument("--sha", required=True)
+    result_parser = sub.add_parser("result")
+    result_parser.add_argument("--selection-mode", required=True)
+    result_parser.add_argument("--prepare", required=True)
+    result_parser.add_argument("--checks", required=True)
     args = parser.parse_args()
-    if args.mode == "classify":
+    if args.mode == "selection":
+        for key, value in selection_outputs(json.loads(args.document.read_text()), args.sha).items():
+            print(f"{key}={value}")
+    elif args.mode == "result":
+        if not result_succeeded(args.selection_mode, args.prepare, args.checks):
+            raise SystemExit("Clippy validation failed, was cancelled, or lacks a valid mode/result")
+    elif args.mode == "classify":
         required, reason = classify(args.workspace, args.since)
         print(f"required={str(required).lower()}")
         print(f"reason={reason}")

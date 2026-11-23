@@ -83,7 +83,7 @@ pub(super) fn resolve_requested_packages(
             crate::support::git::IncrementalPackageSelection::Packages { changed, affected } => {
                 let changed_count = changed.iter().collect::<BTreeSet<_>>().len();
                 let selections = incremental_clippy_selections(changed, affected);
-                println!(
+                eprintln!(
                     "incremental clippy since `{since}` selected {} changed package(s) and {} \
                      affected OS root package(s)",
                     changed_count,
@@ -92,7 +92,7 @@ pub(super) fn resolve_requested_packages(
                 selections
             }
             crate::support::git::IncrementalPackageSelection::Full { reason } => {
-                println!(
+                eprintln!(
                     "incremental clippy since `{since}` fell back to full workspace: {reason}"
                 );
                 all_packages
@@ -166,7 +166,7 @@ pub(super) fn validate_package_coverage(
         missing.join(", "),
         unexpected.join(", ")
     );
-    println!(
+    eprintln!(
         "CLIPPY_PACKAGE_COVERAGE: selected={} supported={} excluded={} checks={}",
         packages.len(),
         expected.len(),
@@ -196,7 +196,7 @@ pub(super) fn validate_requested_packages(
     Ok(packages)
 }
 
-fn clippy_skip_reason(package: &Package) -> Option<&str> {
+pub(super) fn clippy_skip_reason(package: &Package) -> Option<&str> {
     UNSUPPORTED_CLIPPY_PACKAGES
         .iter()
         .find_map(|(name, reason)| (package.name == *name).then_some(*reason))
@@ -207,7 +207,7 @@ pub(super) fn skip_unsupported_packages(packages: Vec<Package>) -> Vec<Package> 
         .into_iter()
         .filter(|package| {
             if let Some(reason) = clippy_skip_reason(package) {
-                println!("skipping clippy for package `{}`: {reason}", package.name);
+                eprintln!("skipping clippy for package `{}`: {reason}", package.name);
                 false
             } else {
                 true

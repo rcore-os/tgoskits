@@ -32,6 +32,15 @@ pub(crate) struct ClippyArgs {
     /// Select checks affected since this Git reference.
     #[arg(long, conflicts_with_all = ["all", "packages", "emit_plan", "execute_plan", "verify_results"])]
     pub(crate) since: Option<String>,
+    /// Print a selection as one JSON line without running Clippy.
+    #[arg(long, conflicts_with_all = ["packages", "emit_plan", "execute_plan", "verify_results", "jobs"])]
+    pub(crate) print_selection: bool,
+    /// Require the selection digest computed by the planning step.
+    #[arg(long, requires = "since", conflicts_with_all = ["print_selection", "all", "packages", "emit_plan", "execute_plan", "verify_results"])]
+    pub(crate) expected_selection: Option<String>,
+    /// Freeze the resolved comparison base used by the planning step.
+    #[arg(long, requires = "since")]
+    pub(crate) diff_base: Option<String>,
     /// Number of independent Cargo workers (default: serial execution)
     #[arg(long, default_value_t = 1)]
     pub(crate) jobs: usize,

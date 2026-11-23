@@ -386,6 +386,11 @@ fn plan_input(root: &Path, checks: &[ClippyCheck]) -> anyhow::Result<PlanInput> 
     })
 }
 
+pub(super) fn input_fingerprint(root: &Path, checks: &[ClippyCheck]) -> anyhow::Result<String> {
+    let portable = relocate(checks, &root.to_string_lossy(), WORKSPACE)?;
+    Ok(hash(&serde_json::to_vec(&plan_input(root, &portable)?)?))
+}
+
 pub(super) fn write_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
     let parent = path
         .parent()

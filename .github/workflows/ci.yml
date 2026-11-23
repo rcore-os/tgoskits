@@ -17,6 +17,11 @@ on:
         required: false
         default: ""
         type: string
+      clippy_full:
+        description: Force full four-shard Clippy validation (does not replace PR required checks).
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -493,9 +498,12 @@ jobs:
     if: >-
       always() && needs.plan_ci.result == 'success' &&
       needs.plan_ci.outputs.should_run == 'true' &&
-      needs.plan_ci.outputs.clippy_required == 'true' &&
+      (needs.plan_ci.outputs.clippy_required == 'true' || inputs.clippy_full) &&
       (needs.static_checks.result == 'success' || needs.static_checks.result == 'skipped')
     uses: ./.github/workflows/clippy-checks.yml
     with:
       shards: 4
       checkout_ref: ${{ github.sha }}
+      since_ref: ${{ needs.plan_ci.outputs.since_ref }}
+      force_full: ${{ inputs.clippy_full || false }}
+      incremental_timeout_minutes: 120

@@ -59,7 +59,7 @@ pub(super) fn changed_paths_since_with_base(
     ))
 }
 
-pub(super) fn resolve_since_diff_base(
+pub(crate) fn resolve_since_diff_base(
     workspace_root: &Path,
     since: &str,
 ) -> anyhow::Result<String> {
@@ -69,7 +69,7 @@ pub(super) fn resolve_since_diff_base(
     if since == ZERO_SINCE_REF {
         let diff_base = infer_zero_since_diff_base(workspace_root)
             .context("failed to infer diff base for zero since ref")?;
-        println!("input ref `{since}` is zero; inferred `{diff_base}` as incremental diff base");
+        eprintln!("input ref `{since}` is zero; inferred `{diff_base}` as incremental diff base");
         return Ok(diff_base);
     }
 
@@ -82,7 +82,7 @@ pub(super) fn resolve_since_diff_base(
                      resolution failed: {err:#}"
                 )
             })?;
-            println!(
+            eprintln!(
                 "input ref `{since}` could not be resolved; inferred `{diff_base}` as incremental \
                  diff base"
             );
@@ -93,13 +93,13 @@ pub(super) fn resolve_since_diff_base(
         }
     };
     if git_ref_is_ancestor_of_head(workspace_root, &since_commit)? {
-        println!("using input ref `{since}` (`{since_commit}`) as incremental diff base");
+        eprintln!("using input ref `{since}` (`{since_commit}`) as incremental diff base");
         return Ok(since_commit);
     }
 
     let merge_base = git_merge_base_with_head(workspace_root, &since_commit)
         .with_context(|| format!("failed to find merge-base between `{since}` and HEAD"))?;
-    println!(
+    eprintln!(
         "input ref `{since}` (`{since_commit}`) is not an ancestor of HEAD; using merge-base \
          `{merge_base}` as incremental diff base"
     );
