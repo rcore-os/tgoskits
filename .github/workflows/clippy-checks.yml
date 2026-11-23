@@ -66,7 +66,10 @@ jobs:
           INCREMENTAL_TIMEOUT: ${{ inputs.incremental_timeout_minutes }}
         run: |
           set -euo pipefail
-          [[ "$INCREMENTAL_TIMEOUT" =~ ^[0-9]+$ ]] && (( INCREMENTAL_TIMEOUT > 0 && INCREMENTAL_TIMEOUT <= 360 ))
+          if ! [[ "$INCREMENTAL_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || (( INCREMENTAL_TIMEOUT > 360 )); then
+            echo "error: incremental timeout must be an integer from 1 to 360" >&2
+            exit 1
+          fi
           mkdir -p target/ci
           if [ "$FORCE_FULL" != true ] && [ -n "$SINCE_REF" ] && ! git cat-file -e "${SINCE_REF}^{commit}" 2>/dev/null; then
             git fetch --no-tags --depth=100 origin "$SINCE_REF" || true
