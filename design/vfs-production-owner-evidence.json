@@ -13078,5 +13078,190 @@
       "Shared-filesystem versus mount-only read-only timestamp behavior is source-aligned but has no new direct runtime regression in this phase.",
       "Full mount-attribute authorization and atomic reconfiguration, other original VFS work, same-condition performance/resource measurements and independent domain review remain open."
     ]
+  },
+  "ordinary_link_access_time_20261124": {
+    "recorded_at": "2026-11-24T13:43:25.079194+00:00",
+    "source": "95bc2981ab5fae515dbcc1038d500c6ecabf5819",
+    "regression_source": "5251e00b26ecb8c8a25f3e36552b683ea93eac14",
+    "base": "c8d0c778b479d5b78249f65d543e6e5a75b85047",
+    "problem": "Ordinary static link access returned its target without updating the actual inode access time.",
+    "change": "Location ordinary follow and readlink perform best-effort access-time work through the existing write preparation, fixed metadata request, actual owner exclusion and completion protocol. Optional AccessTimeOps is discovered before preparation. MemoryFs alone opts in. The fresh owner observation decides whether atime alone changes; no-work attempts remain Unchanged. Cached traversal never calls this updater.",
+    "source_files": [
+      {
+        "path": "fs/ax-fs-ng/src/fs/memory.rs",
+        "sha256": "61f17214bc0e38ff2d8a75afc19bc49cf27d9ab03490169c02fbb3c9a0224596"
+      },
+      {
+        "path": "fs/ax-fs-ng/src/fs/memory/metadata.rs",
+        "sha256": "c21345201c239a41306dcea5ada5d332a8a0dfb370bdb20dbd0e9a8fb0b7cfc2"
+      },
+      {
+        "path": "fs/ax-fs-ng/src/fs_core/lookup.rs",
+        "sha256": "e10018249a8503144f46d5696c48e8b8dc77f85fb24786f722169aedeb89b0a3"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/metadata/authorize.rs",
+        "sha256": "f0bf2eb55776f1c77e96f9392c881b54591c572dfff7f37f95573c17634e01fa"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/metadata/forward.rs",
+        "sha256": "fbcf6eb1fa00c5e06e00c2af200b0dcc10bd2f98419f4230b0e86a4eedf3f7a6"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/metadata/mod.rs",
+        "sha256": "0a439c2c09583385fd93ccb2070e7d66eb9997861daf790d6cdf6cb8b505183b"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/mod.rs",
+        "sha256": "31ecf00993eebee3a72c30c33178f439254f111a99178c48370f734f807199e9"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/node/mod.rs",
+        "sha256": "e5b475b8be57524d7f78abc73603f62bd25b146f44972b9c158cb6c6afc31691"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/metadata/access_time.rs",
+        "sha256": "c9b8c532a688f51bcb877564c5b81e2f9e43d3fe20b1827ca125662f86bc4b24"
+      }
+    ],
+    "test_source": {
+      "path": "test-suit/starryos/qemu/standard/system/fs/test-path-lookup-ownership/src/main.c",
+      "sha256": "5305cd041231239b67c301e012560be81c3058323012f7cb3be85c9d00ea5eb3"
+    },
+    "deterministic_regression": {
+      "source": "5251e00b26ecb8c8a25f3e36552b683ea93eac14",
+      "test_sha256": "5305cd041231239b67c301e012560be81c3058323012f7cb3be85c9d00ea5eb3",
+      "same_final_c_linux_passed": true,
+      "linux_pass_markers": 291,
+      "old_starry_failures": 5,
+      "fixture_failures": 0,
+      "no_production_changes": true,
+      "readonly_source_cases_passed": true,
+      "next_production_implementation": "Deferred while published c8d0c778b4 LoongArch CI failure is diagnosed. No ordinary-time Rust edits yet."
+    },
+    "linux": {
+      "source_sha256": "5305cd041231239b67c301e012560be81c3058323012f7cb3be85c9d00ea5eb3",
+      "exit_code": 0,
+      "pass_markers": 291,
+      "fail_markers": 0,
+      "fixture_failures": 0,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ordinary-link-time-linux-candidate.private.log",
+      "clock_bound": "Coarse realtime lower bound and realtime upper bound, matching Linux current_time granularity; no arbitrary tolerance or sleep."
+    },
+    "local_validation": {
+      "source": "95bc2981ab5fae515dbcc1038d500c6ecabf5819",
+      "test_sha256": "5305cd041231239b67c301e012560be81c3058323012f7cb3be85c9d00ea5eb3",
+      "stages": [
+        {
+          "stage": "std",
+          "command": [
+            "cargo",
+            "xtask",
+            "test",
+            "--since",
+            "c8d0c778b479d5b78249f65d543e6e5a75b85047"
+          ],
+          "exit_code": 0,
+          "started_at": "2026-11-24T13:29:17.602461+00:00",
+          "finished_at": "2026-11-24T13:33:58.942292+00:00",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ordinary-link-time-after-std.private.log",
+          "log_sha256": "b1836a0daa23cc8885197335f41331e372ecdfab35a53924cf2329a819a2cc5c"
+        },
+        {
+          "stage": "x86_64",
+          "command": [
+            "unshare",
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "--fork",
+            "bash",
+            "/home/zhourui/.codex/artifacts/pr2800-continuation/run-starry-validation.sh",
+            "x86_64"
+          ],
+          "exit_code": 0,
+          "started_at": "2026-11-24T13:33:59.011124+00:00",
+          "finished_at": "2026-11-24T13:38:29.950561+00:00",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ordinary-link-time-after-x86_64.private.log",
+          "log_sha256": "39b916c03d3e3b3e7cdc9b3173880b73030cfeedcd43a4402926396ebe5a228f"
+        }
+      ],
+      "complete": true,
+      "policy_algorithm_test_executed": true,
+      "existing_link_budget_test_executed": true,
+      "ordinary_time_updates_passed": 5,
+      "runtime_pass_markers": 291,
+      "same_test_red_then_green": true,
+      "scope": "Local validation only; remaining original VFS scope and exact published-head CI stay separate."
+    },
+    "clippy": {
+      "source": "95bc2981ab5fae515dbcc1038d500c6ecabf5819",
+      "exit_code": 0,
+      "packages": 3,
+      "checks": 81,
+      "failed_packages": 0,
+      "skipped_packages": 0,
+      "rust_bytes_match_snapshot": true,
+      "log_sha256": "ba14da3ec948fb099003d1f2418c85909cdc3bdea6cc5d7cfd77cca0dcf135f6"
+    },
+    "readonly_source_witness": "Same enhanced C distinguishes mount-local read-only from shared-filesystem read-only on a fresh private MemoryFs and bind alias. These cases already passed in the test-only old production run; the five old failures were ordinary current-atime assertions.",
+    "clock_fixture": "The final common C uses coarse realtime as its lower bound and realtime as its upper bound. The earlier Linux high-resolution lower-bound fixture error is retained separately and is not a product regression.",
+    "remaining": [
+      "Other architectures require this source to execute; older results are not substituted.",
+      "Native inode flags and precision, dynamic or layered producers, directory-time policy, complete mount authorization and reconfiguration remain separate audits.",
+      "Current runtime CI failures, remaining original VFS behavior, controlled concurrency, same-condition performance/resources and independent domain review remain open."
+    ]
+  },
+  "ci_c8d0c778b4_runtime_failures_20261124": {
+    "recorded_at": "2026-11-24T13:43:25.079194+00:00",
+    "source": "c8d0c778b479d5b78249f65d543e6e5a75b85047",
+    "run_id": 45390738345,
+    "run_url": "https://github.com/rcore-os/tgoskits/actions/runs/45390738345",
+    "counts": {
+      "success": 42,
+      "failure": 2,
+      "skipped": 5
+    },
+    "pending": 0,
+    "skipped_duplicate_wrapper_names": [
+      "ArceOS",
+      "Workspace",
+      "AxVisor",
+      "Starry",
+      "Preflight"
+    ],
+    "failures": [
+      {
+        "job_id": 138438636957,
+        "scope": "LoongArch Axvisor original complete row",
+        "result": "Guest startup timeout; preceding CSR cross-target checks passed 9/0.",
+        "raw_log_sha256": "4c664adbffa8e3f1cf49bb4a8923527741ad23d3f2385d1e7acba4d7fed24895"
+      },
+      {
+        "job_id": 138438634533,
+        "scope": "AArch64 Starry original complete row",
+        "result": "514 ordinary system programs passed; separate performance case failed, so the complete architecture row did not pass.",
+        "raw_log_sha256": "109b73e7043d966fa651a98909d8616914e0f88684869668a312f7d3a64db3ff"
+      }
+    ],
+    "local_reproduction": {
+      "aarch64_original_source_targeted_failure": {
+        "source": "c8d0c778b479d5b78249f65d543e6e5a75b85047",
+        "task_exit": 1,
+        "runtime_log_sha256": "d707f228714ee9b9df3bdb434658230dc39caa26b0127103789502c9539588c4",
+        "original_c_and_rust": true,
+        "diagnostic_qemu_options": false,
+        "fifo_timeout_observed": true,
+        "first_remote_case_reached": true,
+        "input_capture": "The suite exit was saved before a post-run host copy failed due to ownership on the task artifact directory; no exact runtime ELF capture is claimed for this baseline."
+      },
+      "loongarch_unchanged_stock_observations": {
+        "original_complete_row_passes": 7,
+        "bounded_repeat_count": 6,
+        "captured_elf_sha256": "1a50877a74725ad5c8d3c6d55dcacb961ebbaadf5763d59dadd2b67c30c58f81",
+        "failure_reproduced": false
+      }
+    },
+    "conclusion": "Both runtime issues remain under diagnosis. Successful unchanged-source observations do not prove a fix. Original assertions, SMP, clock and deadlines are retained. Detailed runtime snapshots stay in private task artifacts."
   }
 }
