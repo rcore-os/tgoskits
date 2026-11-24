@@ -12378,5 +12378,394 @@
       "manual_boots": 1,
       "limit": "The existing project passes when selected alone; the same stop regression still fails in the full CI batch. This does not prove the root cause fixed."
     }
+  },
+  "merged_head_compiler_and_runtime_ci_readback_20261124": {
+    "published_head": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+    "production_code": "29887eb7769737d732d26488819832d98675c896",
+    "scope": "Current-head compiler and runtime evidence; production implementation is unchanged from the preceding merged native-ABI phase.",
+    "native_test_source_sha256": "d5b97beac82c5d50ae28434f5ec48e41df32c3625c9ad0b0ba83b499293140a1",
+    "verified_successful_ci_jobs": {
+      "x86_64": {
+        "head": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "job": 138317145687,
+        "url": "https://github.com/rcore-os/tgoskits/actions/runs/45349775044/job/138317145687",
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-ebb06f2ea3-x86_64-job138317145687.log",
+        "sha256": "361c617899f4c5e92ec856df0804df798ba65fe764e24f9d12ca5f1af81333cd",
+        "conclusion": "success",
+        "native_exec_program_passed": true,
+        "kernel_suite_success_markers": 1,
+        "system_program_pass_markers": 543
+      },
+      "aarch64": {
+        "head": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "job": 138317144493,
+        "url": "https://github.com/rcore-os/tgoskits/actions/runs/45349775044/job/138317144493",
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-ebb06f2ea3-aarch64-job138317144493.log",
+        "sha256": "b4267105262b096c418fb5fbace40935fb4530323b43b4bd263dcb7a9e1bc2c4",
+        "conclusion": "success",
+        "native_exec_program_passed": true,
+        "kernel_suite_success_markers": 1,
+        "system_program_pass_markers": 539
+      },
+      "riscv64": {
+        "head": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "job": 138317145667,
+        "url": "https://github.com/rcore-os/tgoskits/actions/runs/45349775044/job/138317145667",
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-ebb06f2ea3-riscv64-job138317145667.log",
+        "sha256": "b57b5ea3e02f667d9477bd80f2bc6d64832c74b58e6f3960e0d4b05df28284f4",
+        "conclusion": "success",
+        "native_exec_program_passed": true,
+        "kernel_suite_success_markers": 1,
+        "system_program_pass_markers": 539
+      },
+      "loongarch64": {
+        "head": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "job": 138317145818,
+        "url": "https://github.com/rcore-os/tgoskits/actions/runs/45349775044/job/138317145818",
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-ebb06f2ea3-loongarch64-job138317145818.log",
+        "sha256": "663d2c977c1e961ff3ba57c21f94fc80c7500ba4320ef7643a7e6fa045da090f",
+        "conclusion": "success",
+        "native_exec_program_passed": true,
+        "kernel_suite_success_markers": 1,
+        "system_program_pass_markers": 539
+      },
+      "clippy": {
+        "head": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "job": 138317145733,
+        "url": "https://github.com/rcore-os/tgoskits/actions/runs/45349775044/job/138317145733",
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-ebb06f2ea3-clippy-job138317145733.log",
+        "sha256": "3ec0f70dae6cb0e512239f24432bd1a24f0d38e6cee5a818fa9b75d9b4ef0f7a",
+        "conclusion": "success",
+        "terminal_summary_candidates": [
+          "2026-11-24T07:51:49.6301449Z no clippy packages selected from /home/runner/_work/tgoskits/tgoskits; skipping"
+        ]
+      },
+      "std": {
+        "head": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "job": 138317146228,
+        "url": "https://github.com/rcore-os/tgoskits/actions/runs/45349775044/job/138317146228",
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-ebb06f2ea3-std-job138317146228.log",
+        "sha256": "d6a19924c796f87de7acd3223ed701f11bdd2210f993900681f8a961bad1e614",
+        "conclusion": "success",
+        "terminal_summary_candidates": []
+      }
+    },
+    "aarch64_original_ci_row_local": {
+      "source": "29887eb7769737d732d26488819832d98675c896",
+      "exit": 0,
+      "qemu_cases_passed": 12,
+      "system_programs_passed": 539,
+      "system_programs_failed": 0,
+      "kernel_cases_passed": 275,
+      "kernel_cases_failed": 0,
+      "task_binary": "Exact tg-xtask-bin artifact from run 45330675076",
+      "environment": "Immutable CI container image, original command and mirror-region selection, checksum-verified dependency and image archive caches.",
+      "result": {
+        "artifact": "ci-container-aarch64-original-row-result.json",
+        "sha256": "ad279694aee8cfbed460c323b5954cfc3b3cae7e62818a509b9ff6ed28b81716"
+      }
+    },
+    "performance_controlled_diagnostic": {
+      "source": "29887eb7769737d732d26488819832d98675c896",
+      "exit": 0,
+      "programs_passed": 23,
+      "guest_cpu_count": 4,
+      "host_cpu_quota": 2,
+      "kernel_and_disk_bytes_preserved": true,
+      "runtime_binary_matches_preserved_elf": true,
+      "startup_symbol_archive_regenerated": true,
+      "gdb_snapshot_taken": false,
+      "result": {
+        "artifact": "ci-perf-fixed-input-two-cpu-diagnostic-classification.json",
+        "sha256": "ff33984d8d88c9dc98c85b9a1d81e8ac411fad1221553e78ca189f3e3c08ea88"
+      },
+      "limit": "This is a liveness diagnostic, not a performance measurement or a proof that the historical failure is fixed."
+    },
+    "axvisor_aarch64_local": {
+      "source": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+      "initial_three_case_command_exit": 1,
+      "control_plane_and_browser_console_passed": true,
+      "arceos_full_duplex_passed": true,
+      "linux_reused_image_attempt": "Required guest module could not be loaded; retained as a failed environment attempt.",
+      "linux_fresh_managed_rootfs_exit": 0,
+      "image_configuration_restored": true,
+      "transport": "Previously fetched first-party registry served over container loopback; archive digests retained and checked.",
+      "fresh_result": {
+        "artifact": "ci-container-axvisor-ivc-local-fresh-rootfs-receipt.private.json",
+        "sha256": "8dd289ed602fed7027b514b8261a110a24a9ec11a9ad8beb51b702a9b19d913c"
+      },
+      "limit": "The prior image failure is not recorded as a product-code repair."
+    },
+    "remote_ci_first_attempt": {
+      "head": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+      "run": 45349775044,
+      "success": 43,
+      "failure": 1,
+      "intentional_duplicate_wrapper_skips": 5,
+      "failed_job": 138297507470,
+      "failed_scope": "Axvisor LoongArch guest console progress",
+      "snapshot": {
+        "artifact": "ci-ebb06f2ea3-attempt1-terminal-snapshot.json",
+        "sha256": "dabb9e85c24e3d51eecf66a9b20d31dc48669ed8f282040542f9464909b1543b"
+      }
+    },
+    "loongarch_same_head_repeatability_observation": {
+      "reruns_requested": 1,
+      "head": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+      "job": 138317146020,
+      "conclusion": "failure",
+      "serial_step_indexes": [
+        3,
+        12
+      ],
+      "production_source_changed": false,
+      "qmp_samples_per_failure": 3,
+      "first_log": {
+        "artifact": "ci-ebb06f2ea3-loongarch.log",
+        "sha256": "cbd54050363ec3c9af0e24c54f262220fc6e88334430bcaf87e2c2b2ef1836f2"
+      },
+      "second_log": {
+        "artifact": "ci-ebb06f2ea3-loongarch-attempt2.log",
+        "sha256": "ab2b9d93d329bfa086c95e8c50c36629b5b1e981b1264fb1615f97f62dd627a7"
+      },
+      "limit": "The two failures stop at different guest commands. Root cause remains unproved; local reproduction and read-only state capture continue."
+    },
+    "test_matrix_change": {
+      "new_programs": 0,
+      "new_std_tests": 0,
+      "default_boot_change": 0
+    },
+    "remaining": "Resolve the LoongArch console failure, complete the remaining VFS implementation and controlled concurrency evidence, comparable performance/resource measurements and independent domain review. This record does not declare the PR complete."
+  },
+  "loongarch_eio_ack_before_dispatch_20261124": {
+    "source": "2f2ba53329f44d24c83cd7792b20594b03f59c84",
+    "production_baseline": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+    "mainline": "3bfe4a027e340f8ea8071aed7872ef9109a8ea79",
+    "pre_fix_driver_blob": "bc739e230c1e35af4f4d55d3fbcdfa13177a640b",
+    "pre_fix_driver_matches_mainline": true,
+    "compiler": {
+      "binary": "rustc",
+      "commit-hash": "8eb778d04094d3af4b26580cab327e0413eb1e02",
+      "commit-date": "2026-11-12",
+      "host": "x86_64-unknown-linux-gnu",
+      "release": "1.102.0-nightly",
+      "LLVM version": "23.1.5"
+    },
+    "problem": "EIOINTC 的锁存事件在设备处理结束后才确认，可能清除处理期间同来源的新 pending。",
+    "change": "在 EioIntcCpuInterface::claim 内只确认实际返回的事件；删除独立 EIO complete 及 somehal 的延后清除责任，同步迁移全部仓库消费者。",
+    "api_change": {
+      "removed": "EioIntcCpuInterface::complete",
+      "consumer": "somehal",
+      "compatibility_layer_added": false,
+      "new_unsafe_or_dependencies": false,
+      "other_controller_completion_protocols_changed": false
+    },
+    "deterministic_regression": {
+      "test": "eio_routes_vectors_and_preserves_interrupts_raised_during_service",
+      "existing_functional_test_enhanced": true,
+      "test_source_sha256": {
+        "drivers/intc/loongarch-intc-driver/tests/common/mod.rs": "68a460547e53706a5233b5516e27ee9cfff30f9d375722f9d60fb01eef96021b",
+        "drivers/intc/loongarch-intc-driver/tests/core.rs": "d213be5ce3d9afd40f39277f8ca382f2656b7f20b540db18c9ec4b07f125e6e2"
+      },
+      "before": {
+        "source": "b23cebc26cc162680012d36c28625c02175d992b",
+        "production_baseline": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "command": [
+          "cargo",
+          "xtask",
+          "test",
+          "--since",
+          "ebb06f2ea32cbfe34f8efd688331a58763344199"
+        ],
+        "exit": 1,
+        "expected_functional_failure_observed": true,
+        "test_log_sha256": "e8253dafe7bff490a95c6ae9be3834e59f4c1554ce869c267e8ff6235029f6a1"
+      },
+      "after": {
+        "stage": "std",
+        "command": [
+          "cargo",
+          "xtask",
+          "test",
+          "--since",
+          "ebb06f2ea32cbfe34f8efd688331a58763344199"
+        ],
+        "source": "2f2ba53329f44d24c83cd7792b20594b03f59c84",
+        "exit": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/eio-claim-after-supported-tools-std.log",
+        "log_sha256": "6bc3c1e8270afe818ed9c0256ff5edce4a3f99cffc194f04b8bd162aa87169f6",
+        "regression_executed_and_passed": true,
+        "selected_package_count": 20,
+        "same_regression_test_bytes": true
+      },
+      "actual_driver_profile": "project default std invocation; repeated failure summaries are not separate profiles",
+      "behavior": "真实驱动 claim 后，所取事件已确认；处理窗口内再次到达的同来源事件和相邻 vector 均可继续交付，最后排空。"
+    },
+    "host_validation": {
+      "source": "2f2ba53329f44d24c83cd7792b20594b03f59c84",
+      "filesystem_tools": "task-local e2fsprogs 1.47.3; same overlay as previous merged-head validation",
+      "stages": [
+        {
+          "stage": "std",
+          "command": [
+            "cargo",
+            "xtask",
+            "test",
+            "--since",
+            "ebb06f2ea32cbfe34f8efd688331a58763344199"
+          ],
+          "source": "2f2ba53329f44d24c83cd7792b20594b03f59c84",
+          "exit": 0,
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/eio-claim-after-supported-tools-std.log",
+          "log_sha256": "6bc3c1e8270afe818ed9c0256ff5edce4a3f99cffc194f04b8bd162aa87169f6",
+          "regression_executed_and_passed": true,
+          "selected_package_count": 20,
+          "same_regression_test_bytes": true
+        },
+        {
+          "stage": "clippy-loongarch-intc-driver",
+          "command": [
+            "cargo",
+            "xtask",
+            "clippy",
+            "--package",
+            "loongarch-intc-driver"
+          ],
+          "source": "2f2ba53329f44d24c83cd7792b20594b03f59c84",
+          "exit": 0,
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/eio-claim-after-supported-tools-clippy-loongarch-intc-driver.log",
+          "log_sha256": "a19438ef053898e02653fc200e439002ec45e1febdc4fe1ce9086fc29dad01d6"
+        },
+        {
+          "stage": "clippy-somehal",
+          "command": [
+            "cargo",
+            "xtask",
+            "clippy",
+            "--package",
+            "somehal"
+          ],
+          "source": "2f2ba53329f44d24c83cd7792b20594b03f59c84",
+          "exit": 0,
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/eio-claim-after-supported-tools-clippy-somehal.log",
+          "log_sha256": "b881fbb91c49c6cd8e23773bb06646ad7b216566cdb2f261a3602eb0a867a7eb"
+        },
+        {
+          "stage": "clippy-axplat-dyn",
+          "command": [
+            "cargo",
+            "xtask",
+            "clippy",
+            "--package",
+            "axplat-dyn"
+          ],
+          "source": "2f2ba53329f44d24c83cd7792b20594b03f59c84",
+          "exit": 0,
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/eio-claim-after-supported-tools-clippy-axplat-dyn.log",
+          "log_sha256": "7390cdac820dd8447298b67bc5b770bcebdb3f60b19330b878ed12df9681c3c0"
+        }
+      ],
+      "complete": true
+    },
+    "original_loongarch_ci_row_local_replay": {
+      "source": "2f2ba53329f44d24c83cd7792b20594b03f59c84",
+      "full_original_row_exit": 0,
+      "guest_smoke_passed": true,
+      "cross_test_summaries": [
+        [
+          "9",
+          "0"
+        ]
+      ],
+      "kernel_suite_ok_marker": true,
+      "kernel_summaries": [
+        "AXTEST_SUMMARY pass=3 fail=0 skip=0 total=3"
+      ],
+      "actual_elf_sha256": "e5fd791385c1c19a6207bb4b19ab2452d9bd8f59ccc253d8150b86768052751f",
+      "runtime_elf_match_count": 1,
+      "actual_debug_info_present": false,
+      "snapshot_taken": false,
+      "image_config_restored": true,
+      "source_clean_after_run": true
+    },
+    "linux_reference": {
+      "repository": "torvalds/linux",
+      "ref": "v7.1",
+      "file": "drivers/irqchip/irq-loongson-eiointc.c",
+      "git_blob": "a9e8b481d31ddb14cbbe570ce9fb44264641c316",
+      "sha256": "8a3ad7686b3d63c6a07b40e6f36fb4157d1cb182d3014204ca3a9666300235d2",
+      "clears_pending_before_dispatch": true
+    },
+    "earlier_diagnostics": {
+      "unchanged_production_trace_pass": {
+        "source": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "full_row_exit": 0,
+        "production_elf_matches_failing_baseline": true,
+        "trace_enabled_after_guest_prompt": true,
+        "stall_state_taken": false,
+        "case_qemu_config_restored": true,
+        "image_config_restored": true,
+        "trace_bytes": 806522,
+        "classification": "Diagnostic pass with the exact unchanged production kernel; does not establish that the intermittent issue is fixed."
+      },
+      "effective_dwarf_pass": {
+        "source": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "preserved_elf_sha256": "eb3030efd83a255e499bebafd048aa53675a56896c774374cdac8ffe37ecd22b",
+        "elf_bytes": 283603168,
+        "actual_elf_has_debug_info": true,
+        "actual_elf_has_debug_line": true,
+        "full_row_exit": 0,
+        "case_build_config_restored": true,
+        "image_config_restored": true,
+        "classification": "Diagnostic full-row pass with explicitly configured DWARF and frame pointers; not a production fix or proof that compiler flags caused the intermittent failure."
+      },
+      "requested_no_frame_pointer_condition_not_established": {
+        "source": "ebb06f2ea32cbfe34f8efd688331a58763344199",
+        "full_row_exit": 0,
+        "requested_no_frame_pointers": true,
+        "actual_elf": {
+          "size": 8788968,
+          "sha256": "67c91187f5620d212fb10d47b8e88b821fa3f1aaa0110701b20692331bd8a8ec",
+          "debug_info": true
+        },
+        "comparison_dwarf_elf": {
+          "size": 8788968,
+          "sha256": "67c91187f5620d212fb10d47b8e88b821fa3f1aaa0110701b20692331bd8a8ec",
+          "debug_info": true
+        },
+        "text_section_identical_to_frame_pointer_diagnostic": true,
+        "case_build_config_restored": true,
+        "image_config_restored": true,
+        "interpretation": "Requested compiler options are not enough to establish a changed code-generation condition. Identical text is not evidence of a frame-pointer-related fix."
+      },
+      "interpretation": "未修改代码时也有通过，不能据此判定修复。寄存器与串口原始现场仅保存在任务产物中，不写入公开说明。"
+    },
+    "environment_failure_retained": {
+      "receipt": "/home/zhourui/.codex/artifacts/pr2800-continuation/eio-claim-after-host-validation.json",
+      "cause": "宿主旧 mkfs.ext4 不识别主线测试使用的文件系统选项；改用之前验证采用的任务内 e2fsprogs 1.47.3，未修改测试断言。"
+    },
+    "limits": [
+      "确定性组件证明覆盖事件确认协议；不把它冒充已捕获的远端间歇失败根因。",
+      "本地使用原始完整 LoongArch 行及正常发布构建；未增加默认测试程序或启动。",
+      "新发布提交的全部必需 CI 仍待终态回读；实体板卡未在本地另行执行。",
+      "独立平台与中断领域审查、其余 VFS 和同条件性能交付仍未关闭。"
+    ],
+    "clippy_counts": {
+      "loongarch-intc-driver": {
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "somehal": {
+        "passed": 10,
+        "failed": 0,
+        "skipped": 0
+      },
+      "axplat-dyn": {
+        "passed": 10,
+        "failed": 0,
+        "skipped": 0
+      }
+    }
   }
 }
