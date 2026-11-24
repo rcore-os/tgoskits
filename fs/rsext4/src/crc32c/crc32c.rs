@@ -317,23 +317,35 @@ mod tests {
             bits: [usize; 16],
         }
 
+        // Every skip prints this marker and one of two reasons, so a log run
+        // with `--nocapture` shows whether the hardware path was checked and,
+        // if not, whether the thread could not be pinned or the CPU lacks
+        // SSE4.2.
+        const SKIPPED: &str = "RSEXT4_X86_64_HARDWARE_CRC32C_TEST_SKIPPED";
+
         // SAFETY: `sched_getcpu` takes no arguments and only reads state.
         let Ok(cpu) = usize::try_from(unsafe { sched_getcpu() }) else {
+            let error = std::io::Error::last_os_error();
+            std::println!("{SKIPPED} reason=cannot-pin-cpu sched_getcpu: {error}");
             return;
         };
         let word_bits = usize::BITS as usize;
         let mut mask = CpuSet { bits: [0; 16] };
         let Some(word) = mask.bits.get_mut(cpu / word_bits) else {
+            std::println!("{SKIPPED} reason=cannot-pin-cpu cpu={cpu} is outside cpu_set_t");
             return;
         };
         *word |= 1 << (cpu % word_bits);
         // SAFETY: `mask` has the `cpu_set_t` layout and outlives the call; pid
         // 0 selects the calling thread.
         if unsafe { sched_setaffinity(0, size_of::<CpuSet>(), &mask) } != 0 {
+            let error = std::io::Error::last_os_error();
+            std::println!("{SKIPPED} reason=cannot-pin-cpu cpu={cpu} sched_setaffinity: {error}");
             return;
         }
         // The thread now runs only on `cpu`, so this read describes it.
         if core::arch::x86_64::__cpuid(1).ecx & (1 << 20) == 0 {
+            std::println!("{SKIPPED} reason=no-sse4.2 cpu={cpu}");
             return;
         }
 
