@@ -25,7 +25,13 @@ timeout = 600
 to_bin = true
 uefi = true
 
+
+[host_http_probe]
+asset_dir = "../../../../common/web-ui"
+nic_model = "e1000"
+request_timeout_secs = 30
+probe_script = "../dashboard/default_guest_probe.py"
+
 [axbuild]
-checks = [
-    "tests/dashboard.toml",
-]
+id = "qemu/x86_64/vmx/web-ui"
+aliases = ["dashboard"]

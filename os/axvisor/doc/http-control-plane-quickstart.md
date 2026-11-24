@@ -32,7 +32,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/http-contr
 AXVM_HTTP_BIND = "0.0.0.0:8080"
 ```
 
-`tests/control-plane.toml` 中的 `[host_http_probe]` 让 runner 追加 hostfwd 与
+`control-plane/qemu-aarch64.toml` 中的 `[host_http_probe]` 让 runner 追加 hostfwd 与
 virtio-net-pci，并在转发端口可达后执行 `control-plane/http_probe.py`；
 该脚本的退出码即用例判定（0 通过，非 0 失败），QEMU 串口的全局失败模式也会使检查失败。
 

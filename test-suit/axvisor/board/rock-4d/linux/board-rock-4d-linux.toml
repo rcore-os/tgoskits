@@ -10,7 +10,21 @@ fail_regex = [
 ]
 timeout = 300
 
-[axbuild]
-checks = [
-    "tests/smoke.toml",
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+    "(?m)^rock-4d-spi login: ?$",
 ]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)\\bSError\\b",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+]
+
+[axbuild]
+id = "board/rock-4d/linux"
+aliases = ["smoke"]

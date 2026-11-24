@@ -1,0 +1,7 @@
+id = "qemu/riscv64/smoke"
+timeout = 420
+# Ordered complete runtime files; this declaration owns the shared boot.
+cases = [
+    "shell-and-block/qemu-riscv64.toml",
+    "smp-ipi/qemu-riscv64.toml",
+]

@@ -27,12 +27,13 @@ Axvisor 测试资产位于：
 test-suit/axvisor/
 ├── qemu/<架构>/<启动组>/
 │   ├── build-*.toml
-│   ├── qemu-*.toml
-│   └── tests/<用途>.toml
+│   ├── qemu-*.toml                  # 单项完整运行配置
+│   ├── boot-group.toml             # 多成员组才需要
+│   ├── <功能>/qemu-*.toml          # 组内完整成员
+│   └── tests/<准备>.toml
 └── board/<板型>/<启动组>/
     ├── build-*.toml
-    ├── board-*.toml
-    └── tests/<用途>.toml
+    └── board-*.toml                # 启动和检查放在一起
 ```
 
 AxVisor直接按QEMU架构和板型组织启动组，不再增加normal物理目录。发现算法统一通过 `build-{target}.toml` 定位构建组、`qemu-{arch}.toml` 定位用例。
@@ -127,7 +128,7 @@ flowchart TD
 
 板级测试通过 `board-{board_name}.toml` 配置文件定义。执行链位于 `scripts/axbuild/src/test/normal/axvisor/board.rs::test_board()`，使用 `BoardTestRunState` 逐 group 运行并收集结果（与 QEMU 测试的 `QemuTestSummary` 类似）。
 
-板卡运行先完成 guest 准备并按实际 Cargo 身份复用宿主构建，再由 `load_selected_board_config()` 展开当前场景选择的 `[axbuild].checks`。`prepare_guest_payload()` 为该场景准备资源，`app.board_prepared_elf()` 将保存的宿主产物部署到远程板卡并按完整检查序列判定；某项检查通过不能替代整组通过。
+板卡运行先完成 guest 准备并按实际 Cargo 身份复用宿主构建，再由 `load_selected_board_config()` 读取当前完整板卡运行配置；外部应用原检查引用仍兼容。`prepare_guest_payload()` 为该场景准备资源，`app.board_prepared_elf()` 将保存的宿主产物部署到远程板卡并按完整检查序列判定；某项检查通过不能替代整组通过。
 
 `--test-case` 和 `--board` 支持按用例名和板卡名过滤；`--list` 列出所有 board test group。发现算法通过 `discover_board_test_groups()` 递归扫描，board 配置按板卡名命名（`board-{name}.toml`），通过 `nearest_build_wrapper()` 向上查找最近的构建配置。
 
@@ -179,7 +180,7 @@ Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和�
 
 ## 6. VMX 合并任务
 
-VMX 主 CI 保留八项功能检查，由 `smoke`、`functional`、`web-ui` 三个启动组承接。`functional` 内按序执行 direct ACPI、MP fallback、OVMF ACPI、PCI 枚举及 PCI block 读写/只读六项；每项完成后恢复控制台并回收客户机。`prepare_case_build_groups()` 继续按 Cargo 身份复用编译，`[axbuild].checks` 决定同一次启动中的检查顺序。
+VMX 主 CI 保留八项功能检查，由 `smoke`、`functional`、`web-ui` 三个启动组承接。`functional` 内按序执行 direct ACPI、MP fallback、OVMF ACPI、PCI 枚举及 PCI block 读写/只读六项；每项完成后恢复控制台并回收客户机。`prepare_case_build_groups()` 继续按 Cargo 身份复用编译，`boot-group.toml` 决定同一次启动中的完整成员与顺序；成员 `[axbuild].requires` 只引用准备步骤。
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 \

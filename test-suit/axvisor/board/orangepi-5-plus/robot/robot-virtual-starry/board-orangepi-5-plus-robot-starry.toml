@@ -11,7 +11,31 @@ fail_regex = [
     "(?m)^(?:\\x1b\\[[0-9;]*m)*USB_DIR_MISSING d=/home/orangepi/robot-ci/aka-rk3588-virtual(?:\\x1b\\[[0-9;]*m)*[ \\t\\r]*$",
 ]
 
-[axbuild]
-checks = [
-    "tests/robot-virtual.toml",
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:~#"
+shell_cmd = "sleep 3"
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:~#"
+shell_cmd = "d=/home/orangepi/robot-ci/aka-rk3588-virtual; [ -x $d/run_vision_usb_ci_once.sh ] && b=OK || b=MISSING; echo USB_DIR_$b d=$d"
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:~#"
+shell_cmd = "i=0; while [ $i -lt 10 ]; do grep -l 0403 /sys/bus/usb/devices/*/idVendor >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; echo USB_PRESENT_WAITED=$i"
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:~#"
+shell_cmd = "cd \"$d\" && FTDI_TRANSPORT=usb ./run_vision_usb_ci_once.sh 28.0"
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*\\[VISION_USB_CI\\] RESULT=PASS attempts=1(?:[ \\t\\r]*$|\\[\\s*\\d+\\.\\d+\\].*$)",
 ]
+timeout = 300
+
+[axbuild]
+id = "board/orangepi-5-plus/robot/robot-virtual-starry"
+aliases = ["robot-virtual"]

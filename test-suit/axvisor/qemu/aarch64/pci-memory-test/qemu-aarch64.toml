@@ -19,5 +19,16 @@ timeout = 120
 to_bin = true
 uefi = false
 
+
+# Attach to the explicitly started guest before checking ECAM discovery,
+# private PCI memory test identity, BAR2 decode and the write/read round trip.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+  "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ARCEOS_PCI_MEMORY_TEST_PASS\\s*$",
+]
+
 [axbuild]
-checks = ["tests/memory.toml"]
+id = "qemu/aarch64/pci-memory-test"
+aliases = ["memory"]

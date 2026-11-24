@@ -6,7 +6,22 @@ fail_regex = [
 ]
 timeout = 300
 
-[axbuild]
-checks = [
-    "tests/smoke.toml",
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "pwd && echo 'starry guest test pass'"
+success_regex = [
+    "(?m)^starry guest test pass\\s*$",
 ]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "Failed to initialize guest VM",
+]
+
+[axbuild]
+id = "board/orangepi-5-plus/starry"
+aliases = ["smoke"]

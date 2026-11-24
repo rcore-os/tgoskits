@@ -1,5 +1,6 @@
 mod assets;
 mod board;
+mod boot_group;
 pub(crate) mod checks;
 pub(crate) mod discovery;
 mod host_checks;

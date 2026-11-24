@@ -1,6 +1,0 @@
-timeout = 90
-
-[[shell_check_steps]]
-success_regex = [
-    "host root selected: Memory",
-]

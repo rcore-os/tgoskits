@@ -1,0 +1,55 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "rv64",
+    "-machine",
+    "virt",
+    "-bios",
+    "default",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-append",
+    "root=/dev/nvme0n1 rw init=/bin/sh axvisor.vm_start=1,2",
+    "-m",
+    "4G",
+    "-device",
+    "virtio-blk-device,drive=disk1",
+    "-drive",
+    "id=disk1,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img,readonly=on,snapshot=on",
+]
+fail_regex = [
+    "(?m)^VIRTIO_BLK_MOUNT_FAIL:",
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+    "(?m)^(?:echo|cat|rm):\\s",
+    "(?i)IPI extension is not available",
+]
+timeout = 120
+to_bin = true
+uefi = false
+
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "mount -t proc proc /proc 2>/dev/null || true; [ \"$(nproc)\" -ge 3 ] && dmesg | grep -q 'SBI IPI extension detected' && grep -Eq 'IPI[^:]*:.*[1-9]' /proc/interrupts && echo 'guest smp ipi pass!' || exit 1"
+success_regex = [
+    "(?m)^guest smp ipi pass!\\s*$",
+]
+fail_regex = [
+    "(?m)^(?:echo|cat|rm):",
+    "(?i)IPI extension is not available",
+]
+
+[axbuild]
+id = "qemu/riscv64/smoke/smp-ipi"
+requires = ["../tests/prepare-smp-ipi.toml"]

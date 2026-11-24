@@ -1,0 +1,7 @@
+id = "qemu/aarch64/http-control-plane"
+timeout = 780
+# Ordered complete runtime files; this declaration owns the shared boot.
+cases = [
+    "browser-console/qemu-aarch64.toml",
+    "control-plane/qemu-aarch64.toml",
+]

@@ -7,7 +7,319 @@ fail_regex = [
     "(?m)^VM[0-9]{1,2}_VIRTIO_NET_FAIL(?:[ \\t]+[^\\r\\n]*)?\\r?$",
 ]
 
-[axbuild]
-checks = [
-    "tests/network-vcpus.toml",
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+    "VM1_VIRTIO_NET_HB_TX.*ack=\"ACK VM2 seq=",
 ]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM1_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = [
+    "VM2_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM2_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+success_regex = [
+    "VM3_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM3_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 4"
+success_regex = [
+    "VM4_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM4_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 5"
+success_regex = [
+    "VM5_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM5_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 6"
+success_regex = [
+    "VM6_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM6_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 7"
+success_regex = [
+    "VM7_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM7_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 8"
+success_regex = [
+    "VM8_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM8_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 9"
+success_regex = [
+    "VM9_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM9_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 10"
+success_regex = [
+    "VM10_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM10_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 11"
+success_regex = [
+    "VM11_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM11_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 12"
+success_regex = [
+    "VM12_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM12_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 13"
+success_regex = [
+    "VM13_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM13_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 14"
+success_regex = [
+    "VM14_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM14_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 15"
+success_regex = [
+    "VM15_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM15_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 16"
+success_regex = [
+    "VM16_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM16_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 17"
+success_regex = [
+    "VM17_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM17_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 18"
+success_regex = [
+    "VM18_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM18_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 19"
+success_regex = [
+    "VM19_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM19_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 20"
+success_regex = [
+    "VM20_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM20_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 21"
+success_regex = [
+    "VM21_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM21_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 22"
+success_regex = [
+    "VM22_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM22_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 23"
+success_regex = [
+    "VM23_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM23_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 24"
+success_regex = [
+    "VM24_VIRTIO_NET_HB_RX",
+]
+timeout = 300
+
+[[shell_check_steps]]
+success_regex = [
+    "VM24_VIRTIO_NET_HB_RX",
+]
+
+[axbuild]
+id = "board/orangepi-5-plus/virtio-net-peer-vcpus"
+aliases = ["network-vcpus"]
