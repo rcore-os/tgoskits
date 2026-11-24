@@ -5151,6 +5151,29 @@ LoongArch Axvisor 在客户机启动检查超时；AArch64 的普通 514 项程�
 `fifo_pmu_watchdog_exit_progress_20261124`。原生标志、时间精度、动态及组合
 producer、受控并发、完整挂载授权、性能资源对照和独立领域审查仍需继续。
 
+
+### 6.58 原生时间编码范围
+
+原生 inode 的访问、修改、状态和创建时间由同一物理编码入口处理。
+`Ext4Inode::encode_time()` 先将完整时间限制在当前字段可表示的范围内，
+再生成基本字段和扩展字段；各 setter 使用该入口，创建时间的可缺失状态
+继续由字段是否存在决定。边界的小数秒处理采用固定 Linux v7.1 的
+[timestamp_truncate](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2625)
+语义，字段范围对照
+[ext4_inode_info_init](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/ext4/super.c#L4293)。
+
+既有 `extra_timestamp_roundtrip_works_when_extra_fields_fit` 扩展为四个字段
+的完整编码旅程。旧实现由同一断言确定性拒收，其余 19 个标准库软件包
+通过；保持测试字节一致后，修正实现通过该回归及 20 个标准库软件包，
+`rsext4` 的 3 项 Clippy 组合也通过。测试数与默认启动数均未增加。
+
+Rust 源码与 `f29130dfd3` 一致的候选完成了 x86_64 的
+`cargo xtask starry test qemu --arch x86_64 -c qemu/system/test-vfs-ownership`。
+目标程序实际开始、通过，套件成功且没有跳过。详细证据保存在
+`native_inode_time_encoding_ranges_20261125`。完整的 VFS 时间表示与消费方
+迁移继续基于 [PR #2840](https://github.com/rcore-os/tgoskits/pull/2840)
+的接口在隔离组合分支验证，合入顺序仍为该依赖后本 PR。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。

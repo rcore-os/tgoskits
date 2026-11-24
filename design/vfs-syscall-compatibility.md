@@ -970,3 +970,18 @@ stdout 被收起，不补写断言数量。三者的入口、编号、固定 Lin
 `c8d0c778b4` 两项历史失败保留原记录；`775e993228` 唯一失败及后续看门狗
 修复的本地证明见 `fifo_pmu_watchdog_exit_progress_20261124`。局部通过不等于
 完整 PR 验收，其他间接消费者的时间行为也不由本节推导。
+
+## 27. 原生时间的磁盘范围
+
+本批新增证据锚定 `Ext4Inode::encode_time()`：四种原生时间在同一入口完成
+物理范围与边界的小数秒处理，字段缺失仍由原生 inode 的布局表达。固定
+Linux v7.1 的
+[timestamp_truncate](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2625)
+与
+[ext4_inode_info_init](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/ext4/super.c#L4293)
+给出本次范围判断的依据。
+
+同一原生编码回归由旧实现失败转为通过，修正实现的标准库检查为 20/20、
+定向 Clippy 为 3/3，x86_64 的 `test-vfs-ownership` 实际运行通过，未出现
+跳过。证据条目为 `native_inode_time_encoding_ranges_20261125`；完整时间
+表示的系统接口对照将在依赖 #2840 的组合验证后补齐。

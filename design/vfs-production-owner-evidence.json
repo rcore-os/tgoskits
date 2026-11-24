@@ -13348,5 +13348,51 @@
     "ci_after_fix": "发布后继续取得当前 head 完整终态，不能用本地通过代替。",
     "local_limitation": "补充 LoongArch 容器观察在固件阶段未到目标程序，已停止并恢复配置；时间结论使用当前精确 head 的 CI 原程序成功记录。",
     "remaining": "完整 CI、原生时间/标志及原 VFS 剩余交付和独立领域审查。"
+  },
+  "native_inode_time_encoding_ranges_20261125": {
+    "recorded_at": "2026-11-24T17:46:37.587624+00:00",
+    "candidate_rust_source": "f29130dfd39d4986272c654f8c5ea342b0dd8e10",
+    "native_validation_source": "7a9c4be4eae5477cee2eea9528a8be044069c72e",
+    "source_files": {
+      "fs/rsext4/src/disknode/inode.rs": "599543d19f1a7bf87780cd7421dcfaa6d14820689e2629c7471c6252c8ce0542",
+      "fs/rsext4/src/disknode/mod.rs": "cde923b997ab5c6e8d718c5c9e870ffc0f2d8d49b7be5f42ee47ac3e32ecd9e3"
+    },
+    "rust_source_equivalence": true,
+    "red": {
+      "source": "d88954bdd166bbae639d18b70184c085d2a3a9cb",
+      "exit": 1,
+      "test_sha256": "cde923b997ab5c6e8d718c5c9e870ffc0f2d8d49b7be5f42ee47ac3e32ecd9e3",
+      "sole_failed_behavior": "disknode::tests::extra_timestamp_roundtrip_works_when_extra_fields_fit",
+      "other_packages_passed": 19
+    },
+    "green": {
+      "std_exit": 0,
+      "std_packages_passed": 20,
+      "same_regression_passes": 1,
+      "clippy_exit": 0,
+      "clippy_checks_passed": 3,
+      "qemu_exit": 0,
+      "qemu_arch": "x86_64",
+      "qemu_case": "qemu/system/test-vfs-ownership",
+      "program_begins": 1,
+      "program_passes": 1,
+      "skips": 0
+    },
+    "evidence_files": [
+      "native-timestamp-physical-encoding-before-verified.private.json",
+      "native-timestamp-physical-encoding-after-std-result.private.json",
+      "native-timestamp-physical-encoding-after-clippy-result.private.json",
+      "native-timestamp-physical-progress-qemu-x86-f29130dfd3-result.private.json"
+    ],
+    "test_count_change": 0,
+    "default_boot_count_change": 0,
+    "linux_baseline": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "semantics": [
+        "fs/inode.c: timestamp_truncate",
+        "fs/ext4/super.c: ext4_inode_info_init"
+      ]
+    },
+    "scope": "Independent physical inode encoding normalization; complete signed VFS migration continues on isolated dependency integration."
   }
 }
