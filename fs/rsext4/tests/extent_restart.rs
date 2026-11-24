@@ -34,6 +34,8 @@ struct PowerCutProbe {
     commit_trigger: Cell<Option<u32>>,
     commit_writes: Cell<u32>,
     commits_before_cut: Cell<Option<u32>>,
+    failed_commit_trigger: Cell<Option<u32>>,
+    cut_before_commit_trigger: Cell<Option<u32>>,
 }
 
 impl PowerCutProbe {
@@ -41,6 +43,8 @@ impl PowerCutProbe {
         self.commit_trigger.set(None);
         self.commit_writes.set(0);
         self.commits_before_cut.set(None);
+        self.failed_commit_trigger.set(None);
+        self.cut_before_commit_trigger.set(None);
     }
 
     fn arm_committed_transaction_power_cut(&self, occurrence: u32) {
@@ -49,8 +53,26 @@ impl PowerCutProbe {
         self.commit_trigger.set(Some(occurrence));
     }
 
+    /// Fails the `occurrence`th JBD2 commit-block write without writing it,
+    /// so that transaction never becomes durable.
+    fn arm_failed_commit(&self, occurrence: u32) {
+        assert!(occurrence > 0, "failed-commit occurrence must be positive");
+        self.reset_observation();
+        self.failed_commit_trigger.set(Some(occurrence));
+    }
+
+    /// Cuts power just before the `occurrence`th JBD2 commit-block write, so
+    /// that transaction never becomes durable.
+    fn arm_power_cut_before_commit(&self, occurrence: u32) {
+        assert!(occurrence > 0, "power-cut occurrence must be positive");
+        self.reset_observation();
+        self.cut_before_commit_trigger.set(Some(occurrence));
+    }
+
     fn disable(&self) {
         self.commit_trigger.set(None);
+        self.failed_commit_trigger.set(None);
+        self.cut_before_commit_trigger.set(None);
     }
 }
 
@@ -86,6 +108,26 @@ impl BlockIo for RestartDevice {
             self.power_cut
                 .commit_writes
                 .set(self.power_cut.commit_writes.get() + 1);
+            if let Some(occurrence) = self.power_cut.failed_commit_trigger.get() {
+                if occurrence == 1 {
+                    self.power_cut.failed_commit_trigger.set(None);
+                    return Err(Ext4Error::io());
+                }
+                self.power_cut
+                    .failed_commit_trigger
+                    .set(Some(occurrence - 1));
+            }
+            if let Some(occurrence) = self.power_cut.cut_before_commit_trigger.get() {
+                if occurrence == 1 {
+                    self.power_cut
+                        .commits_before_cut
+                        .set(Some(self.power_cut.commit_writes.get() - 1));
+                    panic!("simulated power loss before a JBD2 commit block");
+                }
+                self.power_cut
+                    .cut_before_commit_trigger
+                    .set(Some(occurrence - 1));
+            }
         }
         let start = sector.as_usize()? * BLOCK_SIZE;
         let end = start
@@ -316,7 +358,9 @@ fn large_extent_range_removal_restarts_across_small_journal_transactions() {
 fn large_extent_truncate_recovery_resumes_after_transaction_boundary_power_cut() {
     let mut fixture = build_large_extent_fixture("/restart-crash");
     install_small_journal(&mut fixture);
-    fixture.power_cut.arm_committed_transaction_power_cut(1);
+    // The first commit carries the new size and the orphan record, and the
+    // second the first removal chunk.
+    fixture.power_cut.arm_committed_transaction_power_cut(2);
 
     let power_cut = catch_unwind(AssertUnwindSafe(|| {
         truncate_inode(
@@ -336,8 +380,8 @@ fn large_extent_truncate_recovery_resumes_after_transaction_boundary_power_cut()
         .get()
         .expect("power cut must record the durable commit count");
     assert_eq!(
-        commits_before_cut, 1,
-        "the first removal chunk must be durable"
+        commits_before_cut, 2,
+        "the new size and the first removal chunk must be durable"
     );
 
     let LargeExtentFixture {
@@ -584,7 +628,9 @@ fn large_legacy_punch_remains_consistent_after_committed_transaction_power_cut()
 fn large_legacy_truncate_recovery_resumes_after_committed_transaction_power_cut() {
     let mut fixture = build_large_legacy_fixture("/legacy-restart-crash");
     install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 24);
-    fixture.power_cut.arm_committed_transaction_power_cut(1);
+    // The first commit carries the new size and the orphan record, and the
+    // second the first truncate chunk.
+    fixture.power_cut.arm_committed_transaction_power_cut(2);
 
     let power_cut = catch_unwind(AssertUnwindSafe(|| {
         truncate_inode(
@@ -604,8 +650,8 @@ fn large_legacy_truncate_recovery_resumes_after_committed_transaction_power_cut(
         .get()
         .expect("power cut must record the durable commit count");
     assert_eq!(
-        commits_before_cut, 1,
-        "the first truncate chunk must be durable before power loss"
+        commits_before_cut, 2,
+        "the new size and the first truncate chunk must be durable before power loss"
     );
 
     let device = fixture.journal.into_inner();
@@ -731,7 +777,20 @@ fn failed_first_restart_transaction_restores_the_extent_tail() {
 
 #[test]
 fn failed_first_restart_transaction_restores_the_legacy_tail() {
-    let mut fixture = build_large_legacy_fixture("/restart-tail-legacy");
+    let mut fixture = build_restarting_legacy_tail_fixture("/restart-tail-legacy");
+    let retained_block = fixture.removed_blocks[0];
+    assert_failed_first_restart_transaction_restores_tail(
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        fixture.inode_number,
+        retained_block,
+    );
+}
+
+/// Builds an indirect-block file whose shrink to a partial first block
+/// restarts.
+fn build_restarting_legacy_tail_fixture(path: &str) -> LargeLegacyFixture {
+    let mut fixture = build_large_legacy_fixture(path);
     // Map a second group-zero block behind the retained one, so the shrink
     // still detaches blocks from both allocation groups and must restart.
     let second_direct = fixture.gap_blocks[0];
@@ -748,13 +807,7 @@ fn failed_first_restart_transaction_restores_the_legacy_tail() {
         .expect("fixture sync failed");
     fixture.journal.flush().expect("fixture checkpoint failed");
     install_journal_with_maxlen_raw(&mut fixture.journal, &fixture.filesystem, 24);
-    let retained_block = fixture.removed_blocks[0];
-    assert_failed_first_restart_transaction_restores_tail(
-        &mut fixture.journal,
-        &mut fixture.filesystem,
-        fixture.inode_number,
-        retained_block,
-    );
+    fixture
 }
 
 /// Fails the size-and-orphan transaction that starts a restarted shrink and
@@ -774,7 +827,7 @@ fn assert_failed_first_restart_transaction_restores_tail(
         })
         .expect("retained block fill failed");
     // A stale orphan link makes `add_orphan` fail inside the first
-    // transaction, after the EOF tail was zeroed. No earlier check reads it.
+    // transaction. No earlier check reads it.
     filesystem
         .modify_inode(journal, inode_number, |inode| inode.i_dtime = 1)
         .expect("stale orphan link injection failed");
@@ -810,6 +863,206 @@ fn assert_failed_first_restart_transaction_restores_tail(
         first_changed, None,
         "a failed truncate must leave every byte of the file as it was"
     );
+}
+
+#[test]
+fn failed_first_restart_commit_keeps_the_extent_tail() {
+    assert_extent_first_restart_commit(FirstRestartCommit::Fails);
+}
+
+#[test]
+fn failed_first_restart_commit_keeps_the_legacy_tail() {
+    assert_legacy_first_restart_commit(FirstRestartCommit::Fails);
+}
+
+#[test]
+fn power_cut_before_first_restart_commit_keeps_the_extent_tail() {
+    assert_extent_first_restart_commit(FirstRestartCommit::PowerCutBefore);
+}
+
+#[test]
+fn power_cut_before_first_restart_commit_keeps_the_legacy_tail() {
+    assert_legacy_first_restart_commit(FirstRestartCommit::PowerCutBefore);
+}
+
+#[test]
+fn power_cut_after_first_restart_commit_zeroes_the_extent_tail() {
+    assert_extent_first_restart_commit(FirstRestartCommit::PowerCutAfter);
+}
+
+#[test]
+fn power_cut_after_first_restart_commit_zeroes_the_legacy_tail() {
+    assert_legacy_first_restart_commit(FirstRestartCommit::PowerCutAfter);
+}
+
+/// What happens to the first commit of a restarted shrink, the one that
+/// carries its new size and orphan record.
+#[derive(Clone, Copy, Debug)]
+enum FirstRestartCommit {
+    /// Writing the commit block fails and returns an error.
+    Fails,
+    /// Power is cut just before the commit block is written.
+    PowerCutBefore,
+    /// Power is cut just after the commit block is written.
+    PowerCutAfter,
+}
+
+fn assert_extent_first_restart_commit(fault: FirstRestartCommit) {
+    let mut fixture = build_large_extent_fixture("/restart-commit-extent");
+    install_small_journal(&mut fixture);
+    let retained_block = fixture.data_blocks[0];
+    assert_first_restart_commit(
+        fault,
+        &fixture.power_cut,
+        fixture.journal,
+        fixture.filesystem,
+        fixture.inode_number,
+        retained_block,
+    );
+}
+
+fn assert_legacy_first_restart_commit(fault: FirstRestartCommit) {
+    let fixture = build_restarting_legacy_tail_fixture("/restart-commit-legacy");
+    let retained_block = fixture.removed_blocks[0];
+    assert_first_restart_commit(
+        fault,
+        &fixture.power_cut,
+        fixture.journal,
+        fixture.filesystem,
+        fixture.inode_number,
+        retained_block,
+    );
+}
+
+/// Shrinks a file to 100 bytes on the restart path, applies `fault` to the
+/// shrink's first commit, remounts, and checks the EOF block.
+///
+/// When that commit never became durable, the file must keep its old size
+/// and every byte of its EOF block. When it did, recovery must finish the
+/// shrink: the file has 100 bytes, those bytes are unchanged, and the rest of
+/// the EOF block is zero.
+fn assert_first_restart_commit(
+    fault: FirstRestartCommit,
+    power_cut: &PowerCutProbe,
+    mut journal: Jbd2Dev<RestartDevice>,
+    mut filesystem: Ext4FileSystem,
+    inode_number: InodeNumber,
+    retained_block: AbsoluteBN,
+) {
+    const NEW_SIZE: usize = 100;
+    filesystem
+        .datablock_cache
+        .modify(&mut journal, retained_block, |block| {
+            for (index, byte) in block.iter_mut().enumerate() {
+                *byte = (index % 251) as u8 + 1;
+            }
+        })
+        .expect("retained block fill failed");
+    filesystem
+        .sync_filesystem(&mut journal)
+        .expect("fixture sync failed");
+    journal.flush().expect("fixture checkpoint failed");
+    let original_size = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("inode read failed")
+        .size();
+    let mut original = vec![0u8; BLOCK_SIZE];
+    read_inode_data_into(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        0,
+        &mut original,
+    )
+    .expect("retained block read failed");
+
+    match fault {
+        FirstRestartCommit::Fails => {
+            power_cut.arm_failed_commit(1);
+            let error =
+                truncate_inode(&mut journal, &mut filesystem, inode_number, NEW_SIZE as u64)
+                    .expect_err("a failed first commit must fail the truncate");
+            assert_eq!(
+                error.kind(),
+                Ext4ErrorKind::Io,
+                "unexpected error {error:?}"
+            );
+            assert_eq!(
+                power_cut.commit_writes.get(),
+                1,
+                "the failed commit must be the first commit of the restarted shrink"
+            );
+        }
+        FirstRestartCommit::PowerCutBefore | FirstRestartCommit::PowerCutAfter => {
+            if matches!(fault, FirstRestartCommit::PowerCutBefore) {
+                power_cut.arm_power_cut_before_commit(1);
+            } else {
+                power_cut.arm_committed_transaction_power_cut(1);
+            }
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                truncate_inode(&mut journal, &mut filesystem, inode_number, NEW_SIZE as u64)
+            }));
+            assert!(outcome.is_err(), "the fixture must cut power");
+            let durable = if matches!(fault, FirstRestartCommit::PowerCutBefore) {
+                0
+            } else {
+                1
+            };
+            assert_eq!(power_cut.commits_before_cut.get(), Some(durable));
+        }
+    }
+
+    drop(filesystem);
+    let device = journal.into_inner();
+    device.power_cut.disable();
+    if matches!(fault, FirstRestartCommit::PowerCutAfter) {
+        // The cut comes before the tail is zeroed, so recovery has to do it.
+        let start = retained_block.to_u32().expect("block number") as usize * BLOCK_SIZE;
+        assert_eq!(
+            device.bytes[start..start + BLOCK_SIZE],
+            original[..],
+            "the tail must still be intact on the device at the cut"
+        );
+    }
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("mount after the fault failed");
+    let inode = remounted
+        .get_inode_by_num(&mut remount_device, inode_number)
+        .expect("inode read after remount failed");
+    let mut data = vec![0u8; BLOCK_SIZE];
+    remount_device
+        .read_blocks(&mut data, retained_block, 1)
+        .expect("retained block read after remount failed");
+    if matches!(fault, FirstRestartCommit::PowerCutAfter) {
+        assert_eq!(
+            inode.size(),
+            NEW_SIZE as u64,
+            "recovery must keep the new size"
+        );
+        assert_eq!(
+            remounted.superblock.s_last_orphan, 0,
+            "recovery must finish the shrink"
+        );
+        assert_eq!(
+            data[..NEW_SIZE],
+            original[..NEW_SIZE],
+            "the retained bytes must survive"
+        );
+        assert_eq!(
+            data[NEW_SIZE..].iter().position(|byte| *byte != 0),
+            None,
+            "recovery must zero the EOF block past the new size"
+        );
+    } else {
+        assert_eq!(inode.size(), original_size, "the shrink never committed");
+        let first_changed = data.iter().zip(&original).position(|(now, was)| now != was);
+        assert_eq!(
+            first_changed, None,
+            "a shrink whose first commit is not durable must leave every byte of the file as it \
+             was"
+        );
+    }
 }
 
 fn assert_large_extent_removal_restarts(path: &str, operation: ExtentRemovalOperation) {

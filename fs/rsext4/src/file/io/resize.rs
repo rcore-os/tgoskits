@@ -212,22 +212,18 @@ fn truncate_inode_mapping<B: BlockIo>(
                 u64::from(u32::MAX) + 1,
                 &removal,
             )?;
-            let zeroed_tail =
-                zero_mapped_inode_tail_with_undo(device, fs, inode_num, &mut inode, truncate_size)?;
             if let Some(credit_limit) = restart_limit {
-                // A restarted shrink commits in several transactions. For a
-                // user truncate the first one publishes the new size and
-                // rolls back on failure, so the zeroed tail is put back with
-                // it. Once it commits, later transactions may be durable, so
-                // the tail stays zeroed. Recovery and reap shrink an inode
-                // whose size is already published, so they keep it zeroed.
+                // A restarted shrink commits in several transactions, so it
+                // cannot roll the tail back with them. For a user truncate
+                // the tail is zeroed only after the new size and the orphan
+                // record have committed: before that, a failure or a crash
+                // leaves the old size with its tail intact, and after it,
+                // orphan recovery zeroes the tail. Recovery and reap
+                // shrink an inode whose size is already published.
                 if purpose == TruncatePurpose::UserResize {
-                    let result =
-                        begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size);
-                    restore_tail_on_error(device, fs, zeroed_tail, result)?;
-                } else {
-                    drop(zeroed_tail);
+                    begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
                 }
+                zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
                 remove_extent_mapping_with_restarts(
                     device,
                     fs,
@@ -253,6 +249,13 @@ fn truncate_inode_mapping<B: BlockIo>(
             } else {
                 // One transaction carries the whole shrink and rolls back on
                 // failure, so the zeroed tail is put back with it.
+                let zeroed_tail = zero_mapped_inode_tail_with_undo(
+                    device,
+                    fs,
+                    inode_num,
+                    &mut inode,
+                    truncate_size,
+                )?;
                 let result = commit_extent_mapping_removal(
                     device,
                     fs,
@@ -294,17 +297,13 @@ fn truncate_inode_mapping<B: BlockIo>(
     // Linux zeros the retained partial EOF block before detaching later
     // mappings. A corrupt hidden branch therefore still fails during the plan
     // preflight before any data or metadata is changed.
-    let zeroed_tail =
-        zero_mapped_inode_tail_with_undo(device, fs, inode_num, &mut inode, truncate_size)?;
     if let Some(credit_limit) = restart_limit {
-        // As for extents: the zeroed tail is put back only when the first
-        // transaction fails.
+        // As for extents: a user truncate zeroes the tail only after the new
+        // size and the orphan record have committed.
         if purpose == TruncatePurpose::UserResize {
-            let result = begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size);
-            restore_tail_on_error(device, fs, zeroed_tail, result)?;
-        } else {
-            drop(zeroed_tail);
+            begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
         }
+        zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
         remove_legacy_mapping_with_restarts(
             device,
             fs,
@@ -328,6 +327,8 @@ fn truncate_inode_mapping<B: BlockIo>(
             )
         }
     } else {
+        let zeroed_tail =
+            zero_mapped_inode_tail_with_undo(device, fs, inode_num, &mut inode, truncate_size)?;
         let result = commit_legacy_mapping_removal(
             device,
             fs,
@@ -361,6 +362,15 @@ pub fn truncate<B: BlockIo>(
     truncate_inode(device, fs, inode_num, truncate_size)
 }
 
+/// Publishes the new size and the orphan record of a restarted shrink and
+/// commits them.
+///
+/// The caller zeroes the retained EOF tail only after this returns. Without
+/// the commit, these updates would stay in the running transaction for the
+/// first removal step to join, and a failure or a crash before that
+/// transaction committed would bring back the old size over a zeroed tail.
+/// Once this succeeds, orphan recovery finishes the shrink and zeroes the
+/// tail after a crash.
 fn begin_restarted_truncate<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -386,7 +396,7 @@ fn begin_restarted_truncate<B: BlockIo>(
         Ok(updated)
     })?;
     *inode = updated;
-    Ok(())
+    device.commit()
 }
 
 fn finish_orphaned_truncate<B: BlockIo>(
