@@ -35,7 +35,7 @@ Linux 基准为 v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。编号�
 | openat2/CACHED 普通只读文件；四架构 437 | v7.1 [complete_walk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L1045)、[may_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4238) | 缓存解析完成后按本次身份检查最终对象，每次打开取得新的打开描述和零位置 | sys_openat2 → captured binding/CachedLookup → OpenOptions.open_loc_with_credentials → _open/current DAC → File.new/CachedFileShared → original fd table | 部分正确 | 4c2ab40a5e 相同 C 在 Linux 通过，旧 Starry 缺少文件与目录只读打开并有两个 nofollow 失败；536b9c90af x86 QEMU 1/1，原数据、独立游标与实际描述见 15.4；原生后端、额外策略与其他架构本轮运行仍待补 |
 | openat2/CACHED 只读目录；四架构 437 | v7.1 [do_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4655) | 检查目录读权限，描述保留原目录并拥有独立枚举位置 | sys_openat2 → CachedLookup → OpenOptions.open_loc_with_credentials/current DAC → OpenResult.Dir → Directory.new | 部分正确 | 相同 C 的 Linux 与 x86 QEMU 均打开目录并原始 getdents64 读到条目；未把其他类型、后端及目录枚举边界当作已证明 |
 | openat2/CACHED 写入与额外准入；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1293) | create/truncate/tmpfile 组合先为 EAGAIN；已有对象的写打开及 O_NOATIME 等策略另按各自条件准入 | sys_openat2 保留变更类参数顺序；open_cached_path 支持 O_PATH 及常规访问模式；create/truncate/tmpfile 在入口先拒绝，未验证的额外标志和端点仍返回 WouldBlock | 不正确 | O_RDWR 的实际写描述已按第 22 节验证；O_APPEND 打开、O_NOATIME 等额外策略和端点尚未实现，本行保留不正确结论 |
-| openat2/CACHED 文本链接；四架构 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2003) | 可用的缓存链接参与同一次预算和 root/mount 策略，不能调用需要慢路径的链接 producer | sys_openat2 → CachedLookup.walk/path frames → NodeOps.cached_link_target → MemoryFs 实际 Arc 文本；普通与缓存共用 SYMLINKS_MAX | 部分正确 | 同一 C 在 Linux 通过、5983630d73 失败 10 项、c854aa5f7f x86 QEMU 1/1；覆盖绝对/相对、IN_ROOT/BENEATH、NO_MAGICLINKS/NO_SYMLINKS/nofollow、尾斜杠及预热后 40/41 预算；02baa6365f 的旧 C 已在四架构 CI 通过；atime、挂载时间策略、动态 producer 和新增 nofollow 组合仍由后续阶段核对 |
+| openat2/CACHED 文本链接；四架构 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2003) | 可用的缓存链接参与同一次预算和 root/mount 策略，不能调用需要慢路径的链接 producer | sys_openat2 → CachedLookup.walk/path frames → NodeOps.cached_link_target → MemoryFs 实际 Arc 文本；普通与缓存共用 SYMLINKS_MAX | 部分正确 | 同一 C 在 Linux 通过、5983630d73 失败 10 项、c854aa5f7f x86 QEMU 1/1；覆盖绝对/相对、IN_ROOT/BENEATH、NO_MAGICLINKS/NO_SYMLINKS/nofollow、尾斜杠及预热后 40/41 预算；02baa6365f 的旧 C 已在四架构 CI 通过；时间准入见第 25 节；普通自动时间、动态 producer 和其余组合仍按各自范围核对 |
 | openat2/CACHED BENEATH dotdot；四架构 437 | v7.1 [follow_dotdot_rcu](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2151)、[try_to_unlazy](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L930) | 根处向上遍历在 RCU 返回 ECHILD，CACHED 不能进入 ref-walk，最终 EAGAIN；绝对输入和绝对链接仍为 EXDEV | sys_openat2 → CachedLookup.ascend root check → WouldBlock；绝对链接经 jump_root → CrossesDevices | 部分正确 | 相同 C 的 Linux EAGAIN，5983630d73 错为 EXDEV，c854aa5f7f x86 客机 EAGAIN；绝对链接另经 EXDEV 断言，其他目标和受控并发仍待补 |
 | openat2/CACHED NO_XDEV 向上；四架构 437 | v7.1 [follow_dotdot_rcu](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2151) | 向上跨挂载需要离开 RCU 时缓存模式为 EAGAIN；不能套用普通模式的 EXDEV | sys_openat2 → CachedLookup.ascend → cached_covered_location → NO_XDEV/WouldBlock，保持原路径引用 | 部分正确 | Linux 对照 EAGAIN，5983630d73 的 EXDEV 稳定失败，c854aa5f7f x86 QEMU 通过；向下及全部组合另需相应证明 |
 | openat2/CACHED 原生后端元数据；四架构 437 | v7.1 [inode_permission](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 每个搜索目录检查实际有效属性；需要 I/O 或重验证则为 EAGAIN | CachedLookup.check_search → NodeOps.cached_metadata；目前仅 MemoryNode 实现，其余默认 WouldBlock | 不正确 | 实际 tmpfs 属性已接入；原生 Ext4、FAT 和动态 producer 的缓存属性能力尚未实现，既有负项版本证明不能替代此门禁 |
@@ -883,3 +883,34 @@ d09445de51 的完整四架构 CI 已实际包含本节最终 C，原路径程序
 
 Clippy 四包 112/112、标准库 51 包及格式通过。本节不增加默认程序或
 启动，原失败证据按精确提交保留；当前合并 head 的完整远端 CI 仍单独跟踪。
+
+## 25. 链接时间的缓存准入
+
+本阶段只扩展静态 MemoryFs 链接的缓存资格，不执行自动时间写入。生产源码
+为 `8b4799a6a0`；同一增强 C 在 Linux 通过、旧 Starry 失败四项、修后 x86_64
+通过 260 项且项目运行器为 1/1。其余架构等待本次发布提交的实际任务，不能
+由此前的四架构结果替代。详细证据为 `cached_link_timestamp_admission_20261124`。
+
+### 25.1 时间条件与模式保留
+
+时间条件在链接展开前检查，最终 nofollow 不读取目标。原挂载状态交给
+`AccessTimePolicy`，MemoryFs 在实际元数据保护内计算；时钟只使用明确允许
+非阻塞采样的能力。以下结论暂保留未完成的架构边界。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| openat2/CACHED 静态链接时间；四架构 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2003)、[atime_needs_update](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2212) | 需要更新时间时退出缓存路径并返回 EAGAIN；NoAtime 或无需更新的 relatime 可跟随，缓存成功或拒绝均不改时间；最终 nofollow 保留原链接 | sys_openat2 → CachedLookup.walk → Mountpoint.cached_link_time_policy → NodeOps.cached_link_target(AccessTimePolicy) → MemoryFs 实际元数据、try_wall_time 和静态文本；状态属于所选挂载和实际 inode | 无法确认 | 相同 C 的 Linux/旧 Starry/修后 x86 证明必要拒绝、relatime 正项、strictatime、nofollow、禁止链接的优先级和无时间副作用；19 包标准库含日边界算法，115 项 Clippy 通过；其余三架构待本提交 CI |
+| mount/remount 未指定时间选项；x86_64 165；其余三架构 40 | v7.1 [path_mount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4110) | 未指定时间选项的 remount 保留原模式；显式 strictatime 覆盖同次 noatime，默认选择 relatime | sys_mount/MS_REMOUNT → 原 readonly 重配置 → 原 mount_flags 的时间模式保留 → CachedLookup 的实际选项解释；未增加策略镜像 | 无法确认 | 同一增强旅程在 Linux 与修后 x86 证明严格模式、无模式 remount 保留及组合优先级；其余架构与完整挂载授权/原子重配置仍按各自范围验证 |
+
+本地运行证明这些已选路径，不能替代尚未执行的目标。普通访问的自动时间
+更新、目录时间策略、原生特殊标志和动态链接继续按原计划实现与验证。
+
+### 25.2 只读来源的边界
+
+Linux 的共享文件系统只读状态与挂载局部只读状态对缓存链接的影响不同。
+当前实现直接读取原共享状态，保护不可立即取得时返回重试；本阶段尚未增加
+这两种来源的直接系统旅程，因此保留独立的证据缺口。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| openat2/CACHED 链接与只读来源；四架构 437 | v7.1 [IS_NOATIME](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/fs.h#L2148)、[touch_atime](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2248) | 共享 superblock 只读抑制 atime；仅挂载只读并不免除 pick_link 的时间条件，实际写时间可能随后被拒绝 | sys_openat2 → Mountpoint.cached_link_time_policy → 原 FilesystemMountState.writes.try_lock；不使用本挂载 readonly 作为抑制条件 | 无法确认 | 源码与固定 Linux 对齐；本阶段暂无该只读来源差异的直接系统回归，原只读/写访问旅程不能代替本项 |

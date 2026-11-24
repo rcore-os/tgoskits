@@ -12767,5 +12767,316 @@
         "skipped": 0
       }
     }
+  },
+  "ci_88529d4ce0_complete_runtime_terminal_20261124": {
+    "recorded_at": "2026-11-24T12:05:02.549177+00:00",
+    "published_head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+    "production_source": "2f2ba53329f44d24c83cd7792b20594b03f59c84",
+    "canonical_run": 45375219973,
+    "url": "https://github.com/rcore-os/tgoskits/actions/runs/45375219973",
+    "all_checks_terminal": true,
+    "checks": {
+      "success": 44,
+      "skipped": 5
+    },
+    "duplicate_skips": "All five belong to the duplicate PR wrapper; the canonical push run supplies the corresponding execution. No CI workflow code changed.",
+    "compiler_and_native_runtime": {
+      "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+      "records": {
+        "x86_64": {
+          "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+          "job": 138384775298,
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/45375219973/job/138384775298",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-88529d4ce0-x86_64-job138384775298.log",
+          "sha256": "693c212cb4a5051cdf949e66d97df2b7d946b9da2ccd00325b73f8d3d43455bf",
+          "conclusion": "success",
+          "native_exec_program_passed": true,
+          "kernel_suite_success_markers": 1,
+          "system_program_pass_markers": 543
+        },
+        "aarch64": {
+          "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+          "job": 138384775114,
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/45375219973/job/138384775114",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-88529d4ce0-aarch64-job138384775114.log",
+          "sha256": "c0704101c46b944e6359c9f1688747ec3c0cec12adee6f8ab731c94a087774dc",
+          "conclusion": "success",
+          "native_exec_program_passed": true,
+          "kernel_suite_success_markers": 1,
+          "system_program_pass_markers": 539
+        },
+        "riscv64": {
+          "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+          "job": 138384775023,
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/45375219973/job/138384775023",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-88529d4ce0-riscv64-job138384775023.log",
+          "sha256": "c64e760f38355ce89863955597c75d7721aea08da74ddd4970f4e9bd8add2133",
+          "conclusion": "success",
+          "native_exec_program_passed": true,
+          "kernel_suite_success_markers": 1,
+          "system_program_pass_markers": 539
+        },
+        "loongarch64": {
+          "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+          "job": 138384775066,
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/45375219973/job/138384775066",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-88529d4ce0-loongarch64-job138384775066.log",
+          "sha256": "eea91b3071f3acfbf7b1e170d963bc1e5c7835d79bdc26d0d9c1510c960ca8f4",
+          "conclusion": "success",
+          "native_exec_program_passed": true,
+          "kernel_suite_success_markers": 1,
+          "system_program_pass_markers": 539
+        },
+        "clippy": {
+          "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+          "job": 138384774864,
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/45375219973/job/138384774864",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-88529d4ce0-clippy-job138384774864.log",
+          "sha256": "dd4c937a76afd96c17201cebd19178a8e62f7f567906f6304d6d4fc00ec0ccb1",
+          "conclusion": "success",
+          "terminal_summary_candidates": [
+            "2026-11-24T11:03:00.7051180Z clippy summary: 5 package(s), 133 check(s), 5 package(s) passed, 0 package(s) failed, 0 package(s) skipped",
+            "2026-11-24T11:03:00.7052637Z all clippy checks passed"
+          ]
+        },
+        "std": {
+          "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+          "job": 138384774764,
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/45375219973/job/138384774764",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-88529d4ce0-std-job138384774764.log",
+          "sha256": "a0fced24fdf46ca9c1f599af30ab9082d3277824f89d4eccf312e3d4dc64243f",
+          "conclusion": "success",
+          "terminal_summary_candidates": []
+        },
+        "axvisor-loongarch": {
+          "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+          "job": 138384777055,
+          "url": "https://github.com/rcore-os/tgoskits/actions/runs/45375219973/job/138384777055",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-88529d4ce0-axvisor-loongarch-job138384777055.log",
+          "sha256": "b7f9c0994f8d11cc8890c9337149c21e40eaefc2ef4747047d76967fa76be4ea",
+          "conclusion": "success",
+          "guest_smoke_passed": true,
+          "linux_guest_boot_count": 2,
+          "kernel_suite_success_markers": 1,
+          "cross_test_summaries": [
+            [
+              "9",
+              "0"
+            ]
+          ]
+        }
+      },
+      "limit": "Seven successful jobs were verified against this exact head, including the original complete LoongArch Axvisor row. Historical failures remain recorded; this does not declare the whole PR complete."
+    },
+    "additional_loongarch_runtime": {
+      "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+      "records": [
+        {
+          "job": 138384776066,
+          "label": "arceos-loongarch",
+          "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+          "conclusion": "success",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-88529d4ce0-arceos-loongarch-job138384776066.private.log",
+          "sha256": "a3fc12a189f231688313925eae7db6653c293a2fb4b0a9362d83c8c2f6b54f57",
+          "exact_terminal_markers": [
+            "all arceos rust qemu tests passed",
+            "all arceos c qemu tests passed"
+          ]
+        },
+        {
+          "job": 138384776465,
+          "label": "board-loongson",
+          "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+          "conclusion": "success",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-88529d4ce0-board-loongson-job138384776465.private.log",
+          "sha256": "5b1828560a0585e4904d5ebf149749525bc9cb416abc6aafdcfae9ec99a26dd5",
+          "exact_terminal_markers": [
+            "all axvisor board test groups passed"
+          ]
+        }
+      ]
+    },
+    "compiler_summary": {
+      "head": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+      "std_selected_packages": 91,
+      "std_package_pass_markers": 91,
+      "eio_regression_passed_in_remote_std": true,
+      "clippy_packages": 5,
+      "clippy_checks": 133,
+      "clippy_failed_packages": 0,
+      "clippy_skipped_packages": 0
+    },
+    "limits": "Historical evidence for the published 88529d4ce0 head only. It does not validate later timestamp-admission production changes or prove the cause of every earlier intermittent failure."
+  },
+  "cached_link_timestamp_admission_20261124": {
+    "recorded_at": "2026-11-24T12:05:02.549177+00:00",
+    "source": "8b4799a6a005a33765feef6bc2b91e2d8beac44c",
+    "regression_source": "faf2c1f8efb1f7916aa29c0d1c61b1aa17e1658d",
+    "base": "88529d4ce00dbb7edce971314fe6e49f5e4772ee",
+    "mainline": "3bfe4a027e340f8ea8071aed7872ef9109a8ea79",
+    "source_files": [
+      {
+        "path": "fs/ax-block/src/os/mod.rs",
+        "sha256": "7c2471f36501c9bd9094493670c1900258f68a830338e5789f93510b42013a04"
+      },
+      {
+        "path": "fs/ax-block/src/os/time.rs",
+        "sha256": "5fd8ca4fa51195a5fff438da9322d0a632ef5775098f3d41bb2356d81c508be6"
+      },
+      {
+        "path": "fs/ax-fs-ng/src/fs/memory.rs",
+        "sha256": "1ab2430bcd55178dff4f687ccddb3acfc185d58f7ca79b17f1cde142a2c0ac05"
+      },
+      {
+        "path": "fs/ax-fs-ng/tests/lookup.rs",
+        "sha256": "81afec7f7acac8594d41e93bdff80135d2914a861b81fd638541be0138e71356"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/lookup/cached.rs",
+        "sha256": "964129aaf3d08736e4cce0ae642b510010f3f7804780dc3f91a44033bc371c4d"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/metadata/mod.rs",
+        "sha256": "7a67f62b8a21cb29d8f2aff441d6464afd9e51e5bd13611b61f38e0089f85806"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/mount/mod.rs",
+        "sha256": "35efc025661652966c076055daa702830e1bff8a8b2e8777a0af24b196f414aa"
+      },
+      {
+        "path": "fs/axfs-ng-vfs/src/node/mod.rs",
+        "sha256": "f3e7d86ce7ea7bdebb5c5ab344eb123f7ca9e93e006c1796261c234de2ee5b14"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/fs/mount.rs",
+        "sha256": "1c6ebbbe5e7ce4a5e97f4c993ff888a388cc2f807bdef3b590849fc93259c8f8"
+      },
+      {
+        "path": "os/arceos/modules/axruntime/src/fs/block.rs",
+        "sha256": "4fc766b15f8c57037cfcc8b7f4d5ce4a66d620fa4205c6318e9c37a254848611"
+      }
+    ],
+    "problem": "A cached static link was accepted even when following it required access-time work. A legacy remount with no time options also discarded the previous policy.",
+    "change": "Observe the original mount options and shared filesystem state; pass AccessTimePolicy to the existing static producer. MemoryFs only tries its actual metadata and link locks, and uses a default-refusing nonblocking wall-clock capability. Runtime clock conversion is prepared before publication. No cached path writes timestamps or falls back to ordinary link lookup.",
+    "api_change": "NodeOps::cached_link_target now receives AccessTimePolicy; the sole opted-in MemoryFs producer is migrated and the breaking change is recorded in the VFS Unreleased changelog. BlockTimeProvider::try_wall_time is an explicit optional capability, with None by default.",
+    "test_source": {
+      "path": "test-suit/starryos/qemu/standard/system/fs/test-path-lookup-ownership/src/main.c",
+      "sha256": "c7f3c6621bd09be99ea9c2861e00cb6d586168a314da0fea946206284f54611d"
+    },
+    "deterministic_regression": {
+      "old_source": "faf2c1f8efb1f7916aa29c0d1c61b1aa17e1658d",
+      "test_sha256": "c7f3c6621bd09be99ea9c2861e00cb6d586168a314da0fea946206284f54611d",
+      "same_c_linux_passed": true,
+      "old_starry_outer_exit": 1,
+      "functional_failures": 4,
+      "fixture_failures": 0,
+      "test_only_commit_no_production_changes": true,
+      "old_log_sha256": "2aa1c1db7368417c9af5d23ac72677de077eac6e97da80dcd8fec428874b9323",
+      "same_test_required_after": true
+    },
+    "linux": {
+      "result": {
+        "source_sha256": "c7f3c6621bd09be99ea9c2861e00cb6d586168a314da0fea946206284f54611d",
+        "exit_code": 0,
+        "log": "cached-link-atime-linux-candidate.private.log"
+      },
+      "pass_markers": 260,
+      "same_final_c": true
+    },
+    "local_validation": {
+      "source": "8b4799a6a005a33765feef6bc2b91e2d8beac44c",
+      "test_sha256": "c7f3c6621bd09be99ea9c2861e00cb6d586168a314da0fea946206284f54611d",
+      "stages": [
+        {
+          "stage": "std",
+          "command": [
+            "cargo",
+            "xtask",
+            "test",
+            "--since",
+            "88529d4ce00dbb7edce971314fe6e49f5e4772ee"
+          ],
+          "exit_code": 0,
+          "started_at": "2026-11-24T11:56:32.147639+00:00",
+          "finished_at": "2026-11-24T11:59:34.510528+00:00",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-link-atime-after-std.private.log",
+          "log_sha256": "a9ec3e52241fedc43383af9f30064745339c56c9a9e93ebdc7531efd2748a026"
+        },
+        {
+          "stage": "x86_64",
+          "command": [
+            "unshare",
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "--fork",
+            "bash",
+            "/home/zhourui/.codex/artifacts/pr2800-continuation/run-starry-validation.sh",
+            "x86_64"
+          ],
+          "exit_code": 0,
+          "started_at": "2026-11-24T11:59:34.684561+00:00",
+          "finished_at": "2026-11-24T12:04:02.561166+00:00",
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-link-atime-after-x86_64.private.log",
+          "log_sha256": "acdcf8cee27788ed4cc2bf9ef6d3c02c70eebbfcc0121bd0dfc990e925abc781"
+        }
+      ],
+      "complete": true,
+      "policy_algorithm_test_executed": true,
+      "existing_link_budget_test_executed": true,
+      "runtime_pass_markers": 260,
+      "same_test_red_then_green": true,
+      "scope": "Local validation only; remaining original VFS scope and exact published-head CI stay separate."
+    },
+    "clippy": {
+      "packages": 5,
+      "checks": 115,
+      "failed": 0,
+      "skipped": 0,
+      "command": [
+        "cargo",
+        "xtask",
+        "clippy",
+        "--package",
+        "axfs-ng-vfs",
+        "--package",
+        "ax-block",
+        "--package",
+        "ax-fs-ng",
+        "--package",
+        "ax-runtime",
+        "--package",
+        "starry-kernel"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-11-24T11:42:13.005432+00:00",
+      "finished_at": "2026-11-24T11:54:07.395728+00:00",
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/cached-link-atime-clippy.private.log",
+      "selection": "five changed Rust packages, working-tree changes"
+    },
+    "format": {
+      "passed": true,
+      "rust_bytes_identical_to_clippy_snapshot": true,
+      "starry_include_module_formatted_directly": true
+    },
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "namei": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2003",
+      "inode": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2212",
+      "readonly_macro": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/fs.h#L2148",
+      "legacy_mount": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4110"
+    },
+    "test_matrix_change": {
+      "new_system_programs": 0,
+      "new_default_kernel_boots": 0,
+      "new_std_algorithm_tests": 1,
+      "existing_budget_test": "The same link-budget assertions use an explicit noatime mount, matching the existing Linux system fixture and keeping timestamp work separate from the budget."
+    },
+    "remaining": [
+      "Exact published-head CI and the other three architecture runtime rows are pending for this source.",
+      "Ordinary automatic timestamp writes, native inode flags and dynamic link producers remain separate original work.",
+      "Shared-filesystem versus mount-only read-only timestamp behavior is source-aligned but has no new direct runtime regression in this phase.",
+      "Full mount-attribute authorization and atomic reconfiguration, other original VFS work, same-condition performance/resource measurements and independent domain review remain open."
+    ]
   }
 }
