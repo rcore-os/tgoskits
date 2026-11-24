@@ -92,3 +92,117 @@ fn test_group_desc_64bit_values() {
     assert_eq!(desc.free_inodes_count(), 200);
     assert_eq!(desc.used_dirs_count(), 10);
 }
+
+/// Writes `descs` into one table of `desc_size`-byte records that starts one
+/// byte into its buffer, so the table is not aligned for `Ext4GroupDesc`.
+fn unaligned_table(descs: &[Ext4GroupDesc], desc_size: usize) -> alloc::vec::Vec<u8> {
+    let mut buffer = alloc::vec![0u8; 1 + descs.len() * desc_size];
+    for (index, desc) in descs.iter().enumerate() {
+        let start = 1 + index * desc_size;
+        desc.encode_checked(&mut buffer[start..start + desc_size])
+            .unwrap();
+    }
+    buffer
+}
+
+#[test]
+fn descriptor_table_reads_and_updates_32_byte_records_in_place() {
+    use super::{BlockGroupDescTable, BlockGroupDescTableMut};
+    use crate::bmalloc::BGIndex;
+
+    let descs = [
+        Ext4GroupDesc {
+            bg_block_bitmap_lo: 0x0000_0101,
+            bg_free_blocks_count_lo: 5,
+            ..Default::default()
+        },
+        Ext4GroupDesc {
+            bg_block_bitmap_lo: 0xffff_ffff,
+            bg_inode_bitmap_lo: 0xffff_ffff,
+            bg_inode_table_lo: 0xffff_ffff,
+            bg_free_blocks_count_lo: 9,
+            bg_used_dirs_count_lo: 3,
+            ..Default::default()
+        },
+    ];
+    let mut buffer = unaligned_table(&descs, Ext4GroupDesc::GOOD_OLD_DESC_SIZE);
+    let second_record = buffer[33..65].to_vec();
+
+    let table = BlockGroupDescTable::new(&buffer[1..], Ext4GroupDesc::GOOD_OLD_DESC_SIZE, 2);
+    // A 32-byte record has no high halves: the next record must not be read as them.
+    assert_eq!(
+        table
+            .get_desc(BGIndex::new(0))
+            .map(|desc| desc.block_bitmap()),
+        Some(0x0000_0101)
+    );
+    // The last record of an exactly sized table is still inside the table.
+    assert_eq!(
+        table
+            .get_desc(BGIndex::new(1))
+            .map(|desc| desc.used_dirs_count()),
+        Some(3)
+    );
+    assert_eq!(table.iter().count(), 2);
+    assert_eq!(table.total_free_blocks(), 14);
+
+    let mut mutable_table =
+        BlockGroupDescTableMut::new(&mut buffer[1..], Ext4GroupDesc::GOOD_OLD_DESC_SIZE, 2);
+    assert!(mutable_table.update_free_blocks(BGIndex::new(0), 7));
+    assert!(mutable_table.increment_used_dirs(BGIndex::new(0)));
+    assert!(mutable_table.update_used_dirs(BGIndex::new(1), 4));
+    // Updating the first record leaves every byte of the second one alone,
+    // apart from the field written to it on purpose.
+    let mut expected_second = second_record;
+    expected_second[16..18].copy_from_slice(&4u16.to_le_bytes());
+    assert_eq!(&buffer[33..65], &expected_second[..]);
+
+    let table = BlockGroupDescTable::new(&buffer[1..], Ext4GroupDesc::GOOD_OLD_DESC_SIZE, 2);
+    let first = table.get_desc(BGIndex::new(0)).unwrap();
+    assert_eq!(first.free_blocks_count(), 7);
+    assert_eq!(first.used_dirs_count(), 1);
+}
+
+#[test]
+fn descriptor_table_reads_and_updates_64_byte_records_in_place() {
+    use super::{BlockGroupDescTable, BlockGroupDescTableMut};
+    use crate::bmalloc::BGIndex;
+
+    let descs = [
+        Ext4GroupDesc {
+            bg_block_bitmap_lo: 0x1234_5678,
+            bg_block_bitmap_hi: 0x0000_00ab,
+            bg_free_blocks_count_lo: 1,
+            ..Default::default()
+        },
+        Ext4GroupDesc {
+            bg_free_blocks_count_lo: 2,
+            bg_free_blocks_count_hi: 1,
+            bg_used_dirs_count_lo: 6,
+            ..Default::default()
+        },
+    ];
+    let mut buffer = unaligned_table(&descs, Ext4GroupDesc::EXT4_DESC_SIZE_64BIT);
+    let second_record = buffer[65..129].to_vec();
+
+    let table = BlockGroupDescTable::new(&buffer[1..], Ext4GroupDesc::EXT4_DESC_SIZE_64BIT, 2);
+    assert_eq!(
+        table
+            .get_desc(BGIndex::new(0))
+            .map(|desc| desc.block_bitmap()),
+        Some(0x0000_00ab_1234_5678)
+    );
+    assert_eq!(table.total_free_blocks(), 1 + 0x1_0002);
+
+    let mut mutable_table =
+        BlockGroupDescTableMut::new(&mut buffer[1..], Ext4GroupDesc::EXT4_DESC_SIZE_64BIT, 2);
+    assert!(mutable_table.update_free_blocks(BGIndex::new(0), 0x3_0004));
+    assert!(mutable_table.set_flags(BGIndex::new(0), Ext4GroupDesc::EXT4_BG_INODE_ZEROED));
+    assert_eq!(&buffer[65..129], &second_record[..]);
+
+    let table = BlockGroupDescTable::new(&buffer[1..], Ext4GroupDesc::EXT4_DESC_SIZE_64BIT, 2);
+    let first = table.get_desc(BGIndex::new(0)).unwrap();
+    assert_eq!(first.free_blocks_count(), 0x3_0004);
+    assert!(first.is_inode_table_zeroed());
+    assert_eq!(first.block_bitmap(), 0x0000_00ab_1234_5678);
+}
