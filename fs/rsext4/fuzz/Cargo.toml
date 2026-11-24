@@ -1,0 +1,66 @@
+[package]
+name = "rsext4-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rsext4 = { path = ".." }
+
+# The fuzz targets build with cargo-fuzz's sanitizer flags, so they stay out of the repository
+# workspace and its xtask checks.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "superblock"
+path = "fuzz_targets/superblock.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "group_descriptor_table"
+path = "fuzz_targets/group_descriptor_table.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "extent_tree"
+path = "fuzz_targets/extent_tree.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "directory_block"
+path = "fuzz_targets/directory_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "htree_lookup"
+path = "fuzz_targets/htree_lookup.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mount_and_walk"
+path = "fuzz_targets/mount_and_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_replay"
+path = "fuzz_targets/journal_replay.rs"
+test = false
+doc = false
+bench = false
