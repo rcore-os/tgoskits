@@ -50,10 +50,7 @@ enum JournalBootstrap {
 
 impl Ext4FileSystem {
     pub fn device_has_error_state<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<bool> {
-        let superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
-        if superblock.s_magic != EXT4_SUPER_MAGIC {
-            return Err(Ext4Error::invalid_magic());
-        }
+        let superblock = read_superblock(block_dev)?;
         superblock
             .verify_superblock()
             .map_err(|error| error.with_operation("mount:superblock_checksum"))?;
@@ -131,7 +128,7 @@ impl Ext4FileSystem {
         read_only: bool,
         block_validity: bool,
     ) -> Ext4Result<()> {
-        self.superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
+        self.superblock = read_superblock(block_dev)?;
         self.superblock
             .verify_superblock()
             .map_err(|error| error.with_operation("mount:superblock_checksum"))?;
@@ -518,11 +515,7 @@ impl Ext4FileSystem {
         // 2. load only enough metadata to locate/replay the journal,
         // 3. reload metadata from the recovered home blocks,
         // 4. repair bootstrap directories if they are missing.
-        let mut superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
-
-        if superblock.s_magic != EXT4_SUPER_MAGIC {
-            return Err(Ext4Error::invalid_magic());
-        }
+        let mut superblock = read_superblock(block_dev)?;
         superblock
             .verify_superblock()
             .map_err(|error| error.with_operation("mount:superblock_checksum"))?;

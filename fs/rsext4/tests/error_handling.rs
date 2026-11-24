@@ -152,6 +152,39 @@ mod error_handling_tests {
         assert_eq!(error.kind(), Ext4ErrorKind::Io);
     }
 
+    /// A filesystem block smaller than the device's logical sector cannot be
+    /// addressed, so mount must refuse it, and the refusal must say so rather
+    /// than read as a failed device read. A device without an ext4 magic is
+    /// refused as such before its block size is considered.
+    #[test]
+    fn mount_reports_why_it_refused_the_superblock() {
+        let mut device = ErrorMockDevice::new(1024 * 1024);
+        let magic_offset = rsext4::SUPERBLOCK_OFFSET as usize + 56;
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let Err(error) = Ext4FileSystem::mount(&mut jbd2_dev) else {
+            panic!("a device without an ext4 magic must not mount");
+        };
+        assert_eq!(error.kind(), Ext4ErrorKind::InvalidMagic, "{error:?}");
+
+        // A 1 KiB-block superblock (`s_log_block_size` is 0 in the zeroed
+        // image) on a device of 4096-byte sectors.
+        device = ErrorMockDevice::new(1024 * 1024);
+        device.data[magic_offset..magic_offset + 2]
+            .copy_from_slice(&rsext4::EXT4_SUPER_MAGIC.to_le_bytes());
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let Err(error) = Ext4FileSystem::mount(&mut jbd2_dev) else {
+            panic!("a block smaller than the device sector must not mount");
+        };
+        assert_eq!(error.kind(), Ext4ErrorKind::BadSuperblock, "{error:?}");
+        assert_eq!(
+            error.context(),
+            Some(rsext4::ErrorContext::Operation {
+                op: "device:filesystem_geometry"
+            }),
+            "{error:?}"
+        );
+    }
+
     /// Verifies filesystem-size and ext4 component-length boundaries.
     #[test]
     fn test_filesystem_boundaries() {
