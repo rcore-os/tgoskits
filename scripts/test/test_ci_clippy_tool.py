@@ -25,6 +25,42 @@ def shell_step(name):
 
 
 class ToolReuseTests(unittest.TestCase):
+    def test_bootstrap_restores_or_explicitly_builds_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'scripts').symlink_to(ROOT / 'scripts', target_is_directory=True)
+            (root / 'xtask-bin').mkdir()
+            archive = root / 'xtask-bin/tg-xtask-bin.tar'
+            payload = b'#!/bin/sh\nexit 0\n'
+            with tarfile.open(archive, 'w') as tar:
+                member = tarfile.TarInfo('target/debug/tg-xtask')
+                member.size = len(payload)
+                tar.addfile(member, io.BytesIO(payload))
+            env = dict(os.environ, RUNNER_TEMP=str(root))
+            restore = shell_step('Restore the preflight tool')
+            result = subprocess.run(['bash', '-e', '-c', restore], cwd=root, env=env, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'target/debug/tg-xtask').read_bytes(), payload)
+            archive.unlink()
+            # A stale local binary cannot turn a missing download into success.
+            result = subprocess.run(['bash', '-e', '-c', restore], cwd=root, env=env, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            (root / 'shim').mkdir()
+            cargo = root / 'shim/cargo'
+            cargo.write_text('#!/bin/sh\n[ "$*" = "build --locked -p tg-xtask" ] || exit 97\nexit "$BUILD_STATUS"\n')
+            cargo.chmod(0o755)
+            env['PATH'] = str(root / 'shim') + os.pathsep + env['PATH']
+            for status in ['0', '29']:
+                result = subprocess.run(['bash', '-e', '-c', shell_step('Build the tool for an independent call')],
+                                        cwd=root, env=dict(env, BUILD_STATUS=status), capture_output=True)
+                self.assertEqual(result.returncode, int(status), result.stderr)
+        workflow = (ROOT / '.github/workflows/clippy-checks.yml').read_text()
+        for name in ['Validate preflight tool revision', 'Download the preflight tool', 'Restore the preflight tool']:
+            self.assertIn('if: inputs.reuse_preflight_tool', named_step_block(workflow, name))
+        self.assertIn('if: ${{ !inputs.reuse_preflight_tool }}', named_step_block(workflow, 'Build the tool for an independent call'))
+        caller = (ROOT / '.github/workflows/ci.yml').read_text()
+        self.assertIn("reuse_preflight_tool: ${{ needs.static_checks.result == 'success' }}", caller)
+
     def test_preflight_archive_is_atomic_and_rejects_unsafe_payloads(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
