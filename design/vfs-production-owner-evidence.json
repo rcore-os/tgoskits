@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "filesystem_instances_and_unlink_authorization",
+  "latest_evidence_section": "loongarch_native_firmware_boot_handoff_20261125",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -5674,7 +5674,7 @@
     ],
     "syscall_rows_after_phase": 113
   },
-  "updated_at": "2026-11-17T18:45:43.069225+00:00",
+  "updated_at": "2026-11-24T20:00:09.665816+00:00",
   "mqueue_path_descriptions": {
     "source": "10ed803b4a682ec8099c475910728c3aaeee4e58",
     "source_files": [
@@ -13394,5 +13394,77 @@
       ]
     },
     "scope": "Independent physical inode encoding normalization; complete signed VFS migration continues on isolated dependency integration."
+  },
+  "loongarch_native_firmware_boot_handoff_20261125": {
+    "recorded_at": "2026-11-24T20:00:09.665816+00:00",
+    "candidate_rust_source": "62111100c5f4bae5913f7a1caca5d8bf41664bdb",
+    "integrated_boot_validation_source": "912787b99cf3966466e75c4e6b3eb7d88757d73b",
+    "source_files": {
+      ".agents/skills/arch-platform-porting/references/boot-debugging.md": "f75f912d474adf492011e3e5fc60eed55c0cca9347ceb4133c1850a59210a3c3",
+      "components/axcpu/src/arch/loongarch64/boot.rs": "b29ac3b82870fe931c556f8b7f8aeb36c1c15435ccb4f36fcb2679e85e113acd",
+      "platforms/someboot/src/arch/loongarch64/entry.rs": "df145d4a65ab2bb764bc09219d42d4794d21753b33ec91236431ec2dc72a0493",
+      "platforms/someboot/src/arch/loongarch64/mod.rs": "e0786cd34eef08c25075e0c1465da2873cab03d458c1ac3606101a9989a3af3d",
+      "platforms/someboot/src/arch/loongarch64/paging.rs": "78a54e71dea8214f811cd9550e6e5e115708b2af39f7268450ad39ebbe41134e",
+      "platforms/someboot/src/efi_stub/loongarch64/mod.rs": "c230c5f503e4a185fbcc837bc392438c32ef2ebe314a12d902ef3136e414e694"
+    },
+    "boot_source_equivalence": true,
+    "red": {
+      "source": "03566dcb5b8e491630550bd42a899fcaadf5eb7c",
+      "suite_exit": 1,
+      "classification": "Boot fails before the selected program. This is boot regression evidence, not a timestamp assertion failure.",
+      "same_test_sha256": "c7076c3a6b605aac8ae84f393844afe62c0460cc8010d2f85e99738b6e900487"
+    },
+    "green": {
+      "clippy": {
+        "packages": [
+          "ax-cpu",
+          "someboot"
+        ],
+        "checks_passed": 56,
+        "checks_failed": 0,
+        "checks_skipped": 0
+      },
+      "integrated_starry": {
+        "selector": "qemu/system/syscall-test-utimensat",
+        "suite_exit": 0,
+        "target_started": true,
+        "target_passed": true,
+        "detail_mode": "capture-failures: successful program output is intentionally suppressed"
+      },
+      "arceos": {
+        "selector": "cpu/loong-standard",
+        "suite_exit": 0,
+        "logical_tests": 4,
+        "boots": 1,
+        "completion": true
+      },
+      "independent_starry": {
+        "source": "62111100c5f4bae5913f7a1caca5d8bf41664bdb",
+        "selector": "qemu/system/test-vfs-ownership",
+        "suite_exit": 0,
+        "program_started": true,
+        "program_passed": true,
+        "group_passed": true
+      }
+    },
+    "prior_published_ci": {
+      "source": "e1695c6e9df0ada969edbdc66fd89f2471482f18",
+      "run": 45452857113,
+      "success": 44,
+      "intentional_duplicate_wrapper_skips": 5,
+      "actual_incremental_clippy": 124,
+      "actual_std_packages": 91,
+      "terminal_log_proof": "ci-e1695c6e9d-complete-runtime-terminal-verified.private.json"
+    },
+    "evidence_files": [
+      "loong-boot-independent-final-source.private.json",
+      "loong-firmware-root-exchange-912787b99c-verified.private.json",
+      "loong-boot-final-clippy-912787b99c-verified.private.json",
+      "loong-boot-final-arceos-standard-912787b99c-verified.private.json",
+      "loong-boot-independent-final-runtime-62111100c5-verified.private.json"
+    ],
+    "test_count_change": 0,
+    "default_boot_count_change": 0,
+    "scope": "Independent LoongArch native firmware stack lifetime and CPU boot input preservation. Existing ABI, features, guest CPUs, clocks, and deadlines retained. Unmerged dependency implementation excluded; full VFS work continues."
   }
 }
