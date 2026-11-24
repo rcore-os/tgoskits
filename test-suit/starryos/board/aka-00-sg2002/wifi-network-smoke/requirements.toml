@@ -1,0 +1,3 @@
+required_env = ["STARRY_WIFI_SSID"]
+# Upload/download workers finish before this shared boot completes.
+shared_boot = true

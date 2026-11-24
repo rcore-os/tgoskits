@@ -54,7 +54,7 @@ log = "0.4"
 [target.'cfg(not(target_os = "uefi"))'.dependencies]
 ax-cpu.workspace = true
 trait-ffi.workspace = true
-acpi = "6.0.1"
+acpi.workspace = true
 anyhow = { workspace = true, default-features = false }
 arrayvec = { version = "0.7", default-features = false }
 bit_field = "0.10"

@@ -1,0 +1,44 @@
+cmdline = "root=/dev/nvme0n1 rw axvisor.vm_start=1,2"
+args = [
+    "-no-user-config",
+    "-display",
+    "none",
+    "-serial",
+    "stdio",
+    "-monitor",
+    "none",
+    "-cpu",
+    "host,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
+    "-machine",
+    "q35,smbus=off,usb=off,graphics=off",
+    "-smp",
+    "3",
+    "-accel",
+    "kvm",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65,addr=03.0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-m",
+    "3G",
+    "-net",
+    "none",
+    "-vga",
+    "none",
+]
+timeout = 600
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+    "(?i)failed to initialize guest VM",
+    "(?m)^(?:echo|cat|rm):\\s",
+]
+to_bin = true
+uefi = true
+
+[axbuild]
+checks = [
+    "tests/shell-and-block.toml",
+]

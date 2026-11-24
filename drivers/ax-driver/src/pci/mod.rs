@@ -371,6 +371,7 @@ pub const fn has_pci_endpoint_drivers() -> bool {
         feature = "ahci",
         feature = "intel-net",
         feature = "realtek-rtl8125",
+        feature = "motorcomm-yt6801",
         feature = "nvme",
         feature = "intel-hda",
         feature = "xhci-pci",
@@ -450,8 +451,20 @@ pub fn register_ecam_controller_with_mmio_op(
         return Err(OnProbeError::NotMatch);
     }
 
-    let mut controller = rdrive::probe::pci::new_driver_generic(ecam_base, ecam_size, mmio_op)
+    let controller = rdrive::probe::pci::new_driver_generic(ecam_base, ecam_size, mmio_op)
         .map_err(|err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")))?;
+    register_config_controller(plat_dev, controller, mem32, mem64, dma_coherent);
+    log::info!("registered PCIe ECAM controller");
+    Ok(())
+}
+
+fn register_config_controller(
+    plat_dev: PlatformDevice,
+    mut controller: rdrive::probe::pci::PcieController,
+    mem32: Option<PciMem32>,
+    mem64: Option<PciMem64>,
+    dma_coherent: bool,
+) {
     controller.set_dma_coherent(dma_coherent);
 
     if let Some(mem32) = mem32 {
@@ -461,8 +474,6 @@ pub fn register_ecam_controller_with_mmio_op(
         controller.set_mem64(mem64, true);
     }
     plat_dev.register_pcie(controller);
-    log::info!("registered PCIe ECAM controller");
-    Ok(())
 }
 
 pub fn resolve_intx_binding(info: PciInfo) -> Result<Option<BindingIrq>, OnProbeError> {

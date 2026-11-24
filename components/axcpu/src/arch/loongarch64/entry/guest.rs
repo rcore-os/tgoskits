@@ -53,6 +53,8 @@ core::arch::global_asm!(
     gcsr_save15 = const offset_of!(GuestContext, gcsr_save15),
     gcsr_tid = const offset_of!(GuestContext, gcsr_tid),
     gcsr_tcfg = const offset_of!(GuestContext, gcsr_tcfg),
+    gcsr_tval = const offset_of!(GuestContext, gcsr_tval),
+    timer_counter = const offset_of!(GuestContext, timer_counter),
     gcsr_cntc = const offset_of!(GuestContext, gcsr_cntc),
     gcsr_ticlr = const offset_of!(GuestContext, gcsr_ticlr),
     gcsr_llbctl = const offset_of!(GuestContext, gcsr_llbctl),
@@ -124,14 +126,12 @@ core::arch::global_asm!(
 unsafe extern "C" fn __ax_cpu_lvzvmexit_trampoline() -> ! {
     core::arch::naked_asm!(
         "move $s0, $sp",
-        "move $s1, $a0",
         "li.d $a0, {guest_fp}",
         "add.d $a0, $s0, $a0",
         "bl {save_fp}",
         "li.d $a0, {host_fp}",
         "add.d $a0, $s0, $a0",
         "bl {restore_fp}",
-        "move $a0, $s1",
         "addi.d $t0, $s0, {ctx_size}",
         "ld.d $t1, $t0, 0",
         "move $sp, $t1",

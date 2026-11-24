@@ -22,18 +22,12 @@ impl<'a> BlockGroupDescTable<'a> {
     }
 
     /// Returns the descriptor for the specified group.
-    pub fn get_desc(&self, group_idx: BGIndex) -> Option<&Ext4GroupDesc> {
-        if group_idx.raw() >= self.group_count {
-            return None;
-        }
-
-        let offset = group_idx.as_usize().ok()?.checked_mul(self.desc_size)?;
-        if offset + core::mem::size_of::<Ext4GroupDesc>() > self.data.len() {
-            return None;
-        }
-
-        let desc_ptr = self.data[offset..].as_ptr() as *const Ext4GroupDesc;
-        unsafe { Some(&*desc_ptr) }
+    ///
+    /// The record is decoded from its `desc_size` bytes, so a 32-byte record
+    /// reads zero for every high half and the table needs no alignment.
+    pub fn get_desc(&self, group_idx: BGIndex) -> Option<Ext4GroupDesc> {
+        let range = record_range(group_idx, self.desc_size, self.group_count)?;
+        Ext4GroupDesc::decode_checked(self.data.get(range)?).ok()
     }
 
     /// Returns the number of descriptors in the table.
@@ -112,8 +106,8 @@ pub struct BlockGroupDescIter<'a> {
     current: u32,
 }
 
-impl<'a> Iterator for BlockGroupDescIter<'a> {
-    type Item = &'a Ext4GroupDesc;
+impl Iterator for BlockGroupDescIter<'_> {
+    type Item = Ext4GroupDesc;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.current >= self.table.group_count {
@@ -143,95 +137,103 @@ impl<'a> BlockGroupDescTableMut<'a> {
         }
     }
 
-    /// Returns the mutable descriptor for the specified group.
-    pub fn get_desc_mut(&mut self, group_idx: BGIndex) -> Option<&mut Ext4GroupDesc> {
-        if group_idx.raw() >= self.group_count {
-            return None;
-        }
+    /// Returns the descriptor for the specified group.
+    pub fn get_desc(&self, group_idx: BGIndex) -> Option<Ext4GroupDesc> {
+        let range = record_range(group_idx, self.desc_size, self.group_count)?;
+        Ext4GroupDesc::decode_checked(self.data.get(range)?).ok()
+    }
 
-        let offset = group_idx.as_usize().ok()?.checked_mul(self.desc_size)?;
-        if offset + core::mem::size_of::<Ext4GroupDesc>() > self.data.len() {
-            return None;
-        }
+    /// Writes `desc` into the record of the specified group.
+    ///
+    /// Only the fields that fit the record's `desc_size` are written: a
+    /// 32-byte record drops the high halves, and bytes past the first 64 of a
+    /// larger record are kept.
+    pub fn set_desc(&mut self, group_idx: BGIndex, desc: &Ext4GroupDesc) -> bool {
+        let Some(range) = record_range(group_idx, self.desc_size, self.group_count) else {
+            return false;
+        };
+        let Some(record) = self.data.get_mut(range) else {
+            return false;
+        };
+        desc.encode_checked(record).is_ok()
+    }
 
-        let desc_ptr = self.data[offset..].as_mut_ptr() as *mut Ext4GroupDesc;
-        unsafe { Some(&mut *desc_ptr) }
+    /// Decodes one record, applies `change` to it and writes it back.
+    fn modify(&mut self, group_idx: BGIndex, change: impl FnOnce(&mut Ext4GroupDesc)) -> bool {
+        let Some(mut desc) = self.get_desc(group_idx) else {
+            return false;
+        };
+        change(&mut desc);
+        self.set_desc(group_idx, &desc)
     }
 
     /// Updates the free block count for one group.
     pub fn update_free_blocks(&mut self, group_idx: BGIndex, count: u32) -> bool {
-        if let Some(desc) = self.get_desc_mut(group_idx) {
+        self.modify(group_idx, |desc| {
             desc.bg_free_blocks_count_lo = (count & 0xFFFF) as u16;
             desc.bg_free_blocks_count_hi = ((count >> 16) & 0xFFFF) as u16;
-            true
-        } else {
-            false
-        }
+        })
     }
 
     /// Updates the free inode count for one group.
     pub fn update_free_inodes(&mut self, group_idx: BGIndex, count: u32) -> bool {
-        if let Some(desc) = self.get_desc_mut(group_idx) {
+        self.modify(group_idx, |desc| {
             desc.bg_free_inodes_count_lo = (count & 0xFFFF) as u16;
             desc.bg_free_inodes_count_hi = ((count >> 16) & 0xFFFF) as u16;
-            true
-        } else {
-            false
-        }
+        })
     }
 
     /// Updates the used directory count for one group.
     pub fn update_used_dirs(&mut self, group_idx: BGIndex, count: u32) -> bool {
-        if let Some(desc) = self.get_desc_mut(group_idx) {
+        self.modify(group_idx, |desc| {
             desc.bg_used_dirs_count_lo = (count & 0xFFFF) as u16;
             desc.bg_used_dirs_count_hi = ((count >> 16) & 0xFFFF) as u16;
-            true
-        } else {
-            false
-        }
+        })
     }
 
     /// Increments the used directory count for one group.
     pub fn increment_used_dirs(&mut self, group_idx: BGIndex) -> bool {
-        if let Some(desc) = self.get_desc_mut(group_idx) {
+        self.modify(group_idx, |desc| {
             let count = desc.used_dirs_count() + 1;
             desc.bg_used_dirs_count_lo = (count & 0xFFFF) as u16;
             desc.bg_used_dirs_count_hi = ((count >> 16) & 0xFFFF) as u16;
-            true
-        } else {
-            false
-        }
+        })
     }
 
     /// Decrements the used directory count for one group.
     pub fn decrement_used_dirs(&mut self, group_idx: BGIndex) -> bool {
-        if let Some(desc) = self.get_desc_mut(group_idx) {
+        self.modify(group_idx, |desc| {
             let count = desc.used_dirs_count().saturating_sub(1);
             desc.bg_used_dirs_count_lo = (count & 0xFFFF) as u16;
             desc.bg_used_dirs_count_hi = ((count >> 16) & 0xFFFF) as u16;
-            true
-        } else {
-            false
-        }
+        })
     }
 
     /// Sets descriptor flags for one group.
     pub fn set_flags(&mut self, group_idx: BGIndex, flags: u16) -> bool {
-        if let Some(desc) = self.get_desc_mut(group_idx) {
+        self.modify(group_idx, |desc| {
             desc.bg_flags |= flags;
-            true
-        } else {
-            false
-        }
+        })
     }
 
     /// Clears descriptor flags for one group.
     pub fn clear_flags(&mut self, group_idx: BGIndex, flags: u16) -> bool {
-        if let Some(desc) = self.get_desc_mut(group_idx) {
+        self.modify(group_idx, |desc| {
             desc.bg_flags &= !flags;
-            true
-        } else {
-            false
-        }
+        })
     }
+}
+
+/// The byte range of one group's record, or `None` when the group is past the
+/// table or the range overflows.
+fn record_range(
+    group_idx: BGIndex,
+    desc_size: usize,
+    group_count: u32,
+) -> Option<core::ops::Range<usize>> {
+    if group_idx.raw() >= group_count {
+        return None;
+    }
+    let start = group_idx.as_usize().ok()?.checked_mul(desc_size)?;
+    Some(start..start.checked_add(desc_size)?)
 }

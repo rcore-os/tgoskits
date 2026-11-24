@@ -1,0 +1,36 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-append",
+    "root=/dev/nvme0n1 rw init=/bin/sh axvisor.vm_start=1,2,3",
+    "-m",
+    "4g",
+    "-netdev",
+    "user,id=net0,hostfwd=tcp::8080-:8080",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-monitor",
+    "unix:/tmp/qemu-mon.sock,server,nowait",
+    "-gdb",
+    "tcp::1234",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+]
+success_regex = []
+timeout = 1800
+to_bin = true
+uefi = false
+
+[axbuild]
+id = "qemu-browser-console-3vm"

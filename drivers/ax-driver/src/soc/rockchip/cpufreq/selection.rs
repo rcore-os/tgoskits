@@ -421,7 +421,8 @@ pub fn initialize_post_boot() {
         FLOOR_IDX[cluster.index()].store(0, Ordering::Release);
         LIMITED_FALLBACK[cluster.index()].store(true, Ordering::Release);
         warn!(
-            "cpufreq: {} OPP selection unavailable; limiting to 816 MHz at 750 mV",
+            "cpufreq: {} OPP selection unavailable; holding 816 MHz ring at 750 mV, CPUFreq \
+             NotReady",
             cluster.name()
         );
     }

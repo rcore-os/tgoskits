@@ -8,7 +8,7 @@ use anyhow::Context;
 use ostool::{board::RunBoardOptions, build::config::Cargo, run::uboot::UbootConfig};
 
 use super::{
-    AXVISOR_NORMAL_GROUP, BoardTestGroup,
+    BoardTestGroup,
     discovery::{
         CaseSource, discover_board_test_groups, discover_test_group_names,
         discover_uboot_test_group, suite_roots_label,
@@ -92,13 +92,21 @@ impl Axvisor {
     }
 
     pub(crate) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
-        self.run_board_cases(args, CaseSource::Tests).await
+        let root = args
+            .test_root
+            .as_ref()
+            .map(|path| path.canonicalize())
+            .transpose()?;
+        let source = root
+            .as_deref()
+            .map_or(CaseSource::Tests, CaseSource::External);
+        self.run_board_cases(args, source).await
     }
 
     pub(crate) async fn run_board_cases(
         &mut self,
         args: ArgsTestBoard,
-        source: CaseSource,
+        source: CaseSource<'_>,
     ) -> anyhow::Result<()> {
         if args.list && args.test_group.is_none() {
             let groups = discover_test_group_names(source, self.app.workspace_root())?
@@ -112,7 +120,9 @@ impl Axvisor {
                         &args.board,
                     ) {
                         Ok(groups) if groups.is_empty() => None,
-                        Ok(groups) => Some(Ok((group, board_test::labeled_board_cases(groups)))),
+                        Ok(groups) => {
+                            Some(labeled_board_members(groups).map(|cases| (group, cases)))
+                        }
                         Err(err) => {
                             let message = err.to_string();
                             if message.starts_with("no Axvisor ") {
@@ -137,7 +147,7 @@ impl Axvisor {
             return Ok(());
         }
 
-        let test_group = args.test_group.as_deref().unwrap_or(AXVISOR_NORMAL_GROUP);
+        let test_group = args.test_group.as_deref().unwrap_or(source.default_group());
         let groups = discover_board_test_groups(
             source,
             self.app.workspace_root(),
@@ -146,7 +156,7 @@ impl Axvisor {
             &args.board,
         )?;
         if args.list {
-            let case_names = board_test::labeled_board_cases(groups);
+            let case_names = labeled_board_members(groups)?;
             println!(
                 "{}",
                 test_qemu::render_labeled_case_forest(source.label(), [(test_group, case_names)])
@@ -320,7 +330,11 @@ impl Axvisor {
                         .context("missing resolved Axvisor board group request")?
                         .clone();
                     let mut board_config = self
-                        .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
+                        .load_selected_board_config(
+                            &prepared.cargo,
+                            Some(board_test_config.as_path()),
+                            group.selected_checks.as_deref(),
+                        )
                         .await?;
                     self.prepare_guest_payload(
                         &mut request,
@@ -559,4 +573,21 @@ mod tests {
 
         assert_eq!(merged.boot.cmdline.as_deref(), Some("axvisor.vm_start=1"));
     }
+}
+
+fn labeled_board_members(groups: Vec<BoardTestGroup>) -> anyhow::Result<Vec<(String, String)>> {
+    let mut listed = Vec::new();
+    for group in groups {
+        let names =
+            group
+                .selected_checks
+                .unwrap_or(crate::axvisor::test::checks::runtime_check_names(
+                    &group.board_test_config_path,
+                )?);
+        listed.push((group.name.clone(), group.board_name.clone()));
+        for name in names {
+            listed.push((format!("{}/{name}", group.name), group.board_name.clone()));
+        }
+    }
+    Ok(listed)
 }

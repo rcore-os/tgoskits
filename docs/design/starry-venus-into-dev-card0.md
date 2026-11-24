@@ -293,7 +293,7 @@ Host unit tests (`drivers/gpu/virtio-gpu`, fake transport) cover boundary
 notify, queue-full parking, bounded waits and fence watermark advance;
 `drm.rs` unit tests pin the syncobj command words against the libdrm
 values. QEMU system regressions (`cargo xtask starry test qemu -c
-test-suit/starryos/qemu/system/...`) run `drm-test-drm-atomic` (KMS +
+test-suit/starryos/qemu/standard/system/...`) run `drm-test-drm-atomic` (KMS +
 deferred-release path) and the `drm-test-syncobj` conformance suite
 (host-3D-free; the check count grows with each Linux-semantics case
 added — see the suite source for the current set). The syncobj suite

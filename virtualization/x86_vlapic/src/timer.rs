@@ -268,12 +268,16 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
         // Cancel before retiring the guest-visible state: a host cancellation
         // failure must leave both the retained handle and the deadline/interval
         // intact so the caller can retry instead of dropping a live timer. The
-        // cancel barrier also covers a callback that already completed but whose
-        // host handle has not been reclaimed yet, so "stopped" really means the
-        // producer is quiet.
+        // barrier waits for a mid-fire callback to retire without entering the
+        // scheduler, and it also covers a callback that already completed but
+        // whose host handle has not been reclaimed yet, so "stopped" really
+        // means the producer is quiet; the payload itself may be reclaimed
+        // later by the host timer service. Guest APIC reprogram accesses
+        // (TMICT, SVR) reach this from a vCPU entry window with local
+        // interrupts disabled, so the barrier must not enter the scheduler.
         self.shared
             .registration
-            .invalidate_and_cancel(&self.runtime)?;
+            .invalidate_and_cancel_nowait(&self.runtime)?;
         self.shared.interval_ns.store(0, Ordering::Release);
         self.shared.deadline_ns.store(0, Ordering::Release);
         self.shared.pending.store(0, Ordering::Release);
@@ -290,8 +294,10 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
     /// error so the caller retries rather than silently dropping the handle.
     ///
     /// The full cancel barrier runs even when the callback already completed,
-    /// so the pause ACK only happens once no callback or payload reclamation is
-    /// still in flight. A completed one-shot owes no resume.
+    /// so the pause ACK only happens once the callback has exited and the
+    /// registration has left the host queue; the timer service may still be
+    /// destroying the dequeued payload, which holds only reference-counted
+    /// state. A completed one-shot owes no resume.
     pub fn suspend_timer(&mut self) -> X86VlapicResult {
         if self.suspended {
             return Ok(());
@@ -418,7 +424,7 @@ mod tests {
     use self::std::{
         sync::{Arc, Condvar, Mutex, mpsc},
         thread,
-        time::Duration,
+        time::{Duration, Instant},
         vec::Vec,
     };
     use crate::{
@@ -441,6 +447,8 @@ mod tests {
         cancelled: Vec<usize>,
         deadlines: Vec<u64>,
         fail_cancels: usize,
+        nowait_cancels: usize,
+        progress_waits: usize,
         block_time_read: bool,
         time_read_started: bool,
         allow_time_read: bool,
@@ -451,6 +459,8 @@ mod tests {
         cancelled: Vec::new(),
         deadlines: Vec::new(),
         fail_cancels: 0,
+        nowait_cancels: 0,
+        progress_waits: 0,
         block_time_read: false,
         time_read_started: false,
         allow_time_read: false,
@@ -473,6 +483,8 @@ mod tests {
             state.cancelled.clear();
             state.deadlines.clear();
             state.fail_cancels = 0;
+            state.nowait_cancels = 0;
+            state.progress_waits = 0;
             state.block_time_read = false;
             state.time_read_started = false;
             state.allow_time_read = false;
@@ -491,6 +503,14 @@ mod tests {
 
         fn cancelled() -> Vec<usize> {
             TEST_TIMER_STATE.lock().unwrap().cancelled.clone()
+        }
+
+        fn nowait_cancels() -> usize {
+            TEST_TIMER_STATE.lock().unwrap().nowait_cancels
+        }
+
+        fn progress_waits() -> usize {
+            TEST_TIMER_STATE.lock().unwrap().progress_waits
         }
 
         fn registration_count() -> usize {
@@ -608,6 +628,10 @@ mod tests {
         fn cancel_timer(&self, _handle: Self::TimerHandle) -> X86VlapicResult {
             Ok(())
         }
+
+        fn cancel_timer_nowait(&self, handle: Self::TimerHandle) -> X86VlapicResult {
+            self.cancel_timer(handle)
+        }
     }
 
     impl X86VlapicHostOps for TimerHost {
@@ -696,6 +720,7 @@ mod tests {
         }
 
         fn wait_timer_progress(&self) {
+            TEST_TIMER_STATE.lock().unwrap().progress_waits += 1;
             // Real task-context yield, never a spin: a cancel barrier may be
             // waiting for this test's in-flight callback thread.
             thread::yield_now();
@@ -710,6 +735,11 @@ mod tests {
             state.cancelled.push(token);
             state.callbacks[token - 1].take();
             Ok(())
+        }
+
+        fn cancel_timer_nowait(&self, token: Self::TimerHandle) -> X86VlapicResult {
+            TEST_TIMER_STATE.lock().unwrap().nowait_cancels += 1;
+            self.cancel_timer(token)
         }
     }
 
@@ -871,33 +901,64 @@ mod tests {
         let firing = thread::spawn(|| TimerHost::fire(1, 2));
         TimerHost::wait_for_time_read();
 
-        let (started_tx, started_rx) = mpsc::channel();
+        // Observe the registration directly: the cancelling side holds the
+        // timer lock for the whole stop, so the handshake goes through the
+        // registration.
+        let registration = Arc::clone(&timer.lock().unwrap().shared.registration);
         let (done_tx, done_rx) = mpsc::channel();
         let cancelling_timer = Arc::clone(&timer);
         let cancelling = thread::spawn(move || {
-            started_tx.send(()).unwrap();
             let result = cancelling_timer.lock().unwrap().write_icr(0);
             done_tx.send(result).unwrap();
         });
-        started_rx.recv().unwrap();
-        let returned_while_callback_was_running =
-            done_rx.recv_timeout(Duration::from_millis(100)).ok();
+
+        // Deterministic ordering: hold the callback blocked mid-fire until
+        // the cancelling side has claimed the registration under its lock
+        // while the stable handle is still retained. Every failure exit
+        // first releases the blocked callback and joins both threads, then
+        // reports; the deadline only bounds the wait.
+        let handshake_deadline = Instant::now() + Duration::from_secs(30);
+        let failure = loop {
+            match registration.current_cancel_claim() {
+                Some(true) => break None,
+                Some(false) => {
+                    break Some(
+                        "stop took the handle while its claimed callback was still running",
+                    );
+                }
+                None if done_rx.try_recv().is_ok() => {
+                    break Some("stop returned while its claimed callback was still running");
+                }
+                None if Instant::now() >= handshake_deadline => {
+                    break Some("stop never claimed the mid-fire registration");
+                }
+                _ => thread::yield_now(),
+            }
+        };
+        if let Some(message) = failure {
+            TimerHost::release_time_read();
+            let _ = firing.join();
+            let _ = cancelling.join();
+            panic!("{message}");
+        }
 
         TimerHost::release_time_read();
         firing.join().unwrap();
-        let cancellation = returned_while_callback_was_running
-            .unwrap_or_else(|| done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        let cancellation = done_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("stop must return once its claimed callback retires");
         cancelling.join().unwrap();
 
-        assert!(
-            returned_while_callback_was_running.is_none(),
-            "timer stop returned before its claimed callback completed"
-        );
         cancellation.unwrap();
         assert_eq!(
             TimerHost::cancelled(),
             self::std::vec![1],
             "the claimed callback's handle must be cancelled exactly once after it retires",
+        );
+        assert_eq!(
+            TimerHost::progress_waits(),
+            0,
+            "waiting for a mid-fire callback must not enter the scheduler",
         );
         assert!(
             !timer.lock().unwrap().is_started(),
@@ -927,6 +988,11 @@ mod tests {
 
         timer.suspend_timer().unwrap();
         assert_eq!(TimerHost::cancelled(), self::std::vec![1]);
+        assert_eq!(
+            TimerHost::nowait_cancels(),
+            0,
+            "a task-side suspend must keep the waiting cancellation",
+        );
         assert!(
             timer.has_pending_interrupt(),
             "a quiesced timer must retain its published pending edge",
@@ -1022,17 +1088,22 @@ mod tests {
         );
         assert!(timer.has_pending_interrupt());
 
-        // Stopping still has to cancel the retained handle and reclaim it.
+        // Stopping still has to retire the retained handle.
         timer.stop_timer().unwrap();
         assert_eq!(
             TimerHost::cancelled(),
             self::std::vec![1],
             "a completed callback must not be mistaken for host quiescence",
         );
+        assert_eq!(
+            TimerHost::nowait_cancels(),
+            1,
+            "a guest reprogram stop must accept a deferred reclamation",
+        );
         assert!(!timer.has_pending_interrupt());
     }
 
-    /// New guest programming must retire a completed arm behind the full cancel
+    /// New guest programming must retire a completed arm behind the cancel
     /// barrier before installing exactly one fresh registration.
     #[test]
     fn reprogram_after_a_completed_arm_cancels_the_retained_handle_first() {

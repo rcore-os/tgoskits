@@ -37,6 +37,7 @@ pub enum AcpiIrqPolarity {
 pub enum AcpiGsiController {
     IoApic,
     PchPic,
+    LioPic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

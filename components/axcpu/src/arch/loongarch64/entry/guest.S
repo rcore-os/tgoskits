@@ -33,6 +33,7 @@
 .equ CSR_GSTAT_PVM,    0x2
 .equ CSR_TLBRPRMD_PGM, 0x8
 .equ CSR_GTLBC_TGID,   0xff0000
+.equ CSR_GTLBC_USETGID, 0x1000
 .equ CSR_CRMD_IE,      0x4
 .equ CSR_PRMD_PIE,     0x4
 .equ STAGE2_PWCL,      0x13e4d52c
@@ -40,7 +41,6 @@
 .equ STAGE2_STLBPS,    12
 .equ STAGE2_ASID,      1
 .equ ECFG_VS_MASK,     0x70000
-.equ ECFG_VS_5,        0x50000
 
 .macro SWITCH_TO_GUEST_TRANSLATION
     ld.d    $t0, $sp, {guest_tlbrentry}
@@ -49,9 +49,8 @@
     csrwr   $t0, CSR_EENTRY
     csrrd   $t1, CSR_ECFG
     li.d    $t0, ECFG_VS_MASK
+    // VS=0 sends all ordinary exits to one entry without changing live LIE.
     andn    $t1, $t1, $t0
-    li.d    $t0, ECFG_VS_5
-    or      $t1, $t1, $t0
     csrwr   $t1, CSR_ECFG
 
     li.d    $t0, STAGE2_PWCL
@@ -60,11 +59,25 @@
     csrwr   $t0, CSR_PWCH
     li.d    $t0, STAGE2_STLBPS
     csrwr   $t0, CSR_STLBPS
+    // CSRWR exchanges its operand with the old CSR value.
+    move    $t0, $a1
     csrwr   $a1, CSR_PGDL
-    csrwr   $a1, CSR_PGDH
+    csrwr   $t0, CSR_PGDH
     li.d    $t0, STAGE2_ASID
     csrwr   $t0, CSR_ASID
     invtlb  0x0, $r0, $r0
+
+    // This entry executes through DMW: only now may root TLB fills target
+    // the guest. Paged host code must always run with TGID zero.
+    csrrd   $t1, CSR_GTLBC
+    li.d    $t0, CSR_GTLBC_TGID
+    andn    $t1, $t1, $t0
+    csrrd   $t2, CSR_GSTAT
+    and     $t2, $t2, $t0
+    or      $t1, $t1, $t2
+    li.d    $t0, CSR_GTLBC_USETGID
+    or      $t1, $t1, $t0
+    csrwr   $t1, CSR_GTLBC
 .endm
 
 .macro RESTORE_HOST_TRANSLATION
@@ -149,8 +162,6 @@
     st.d    $t0, $sp, {gcsr_misc}
     gcsrrd  $t0, 0x4
     st.d    $t0, $sp, {gcsr_ectl}
-    gcsrrd  $t0, 0x5
-    st.d    $t0, $sp, {gcsr_estat}
     gcsrrd  $t0, 0x6
     st.d    $t0, $sp, {gcsr_era}
     gcsrrd  $t0, 0x7
@@ -227,11 +238,16 @@
     st.d    $t0, $sp, {gcsr_tid}
     gcsrrd  $t0, 0x41
     st.d    $t0, $sp, {gcsr_tcfg}
-    /*
-     * Keep the software timer's logical TVAL in the Rust context. QEMU-LVZ
-     * reuses GCSR_TVAL as a pause/resume remaining-ticks value while the guest
-     * is stopped, so snapshotting it here pollutes the emulated guest timer.
-     */
+    rdtime.d $t0, $zero
+    st.d    $t0, $sp, {timer_counter}
+    gcsrrd  $t0, 0x42
+    st.d    $t0, $sp, {gcsr_tval}
+    // The register bank is borrowed only while this guest executes.
+    gcsrwr  $zero, 0x41
+    // Capture TI after stopping the countdown: expiration may have raced with
+    // the earlier register saves or the TVAL sample.
+    gcsrrd  $t0, 0x5
+    st.d    $t0, $sp, {gcsr_estat}
     gcsrrd  $t0, 0x43
     st.d    $t0, $sp, {gcsr_cntc}
     gcsrrd  $t0, 0x44
@@ -325,6 +341,10 @@
     gcsrwr  $t0, 0x3
     ld.d    $t0, $sp, {gcsr_ectl}
     gcsrwr  $t0, 0x4
+    // Retire the previous bank's timer before restoring this guest's TI.
+    gcsrwr  $zero, 0x41
+    li.d    $t0, 1
+    gcsrwr  $t0, 0x44
     gcsrrd  $t1, 0x5
     li.d    $t2, 0x0fff
     and     $t1, $t1, $t2
@@ -406,16 +426,29 @@
     ld.d    $t0, $sp, {gcsr_tid}
     gcsrwr  $t0, 0x40
     ld.d    $t0, $sp, {gcsr_tcfg}
+    move    $t1, $t0
     gcsrwr  $t0, 0x41
-    /*
-     * QEMU-LVZ stores GCSR_TVAL as remaining ticks while guest mode is
-     * paused.  Rewriting it on every VM entry re-bases the relative guest
-     * timer and can keep pushing one-shot deadlines into the future.
-     */
+    andi    $t1, $t1, 1
+    beqz    $t1, .Lguest_timer_restored
+    // Rust has deducted host time from the saved remaining ticks. Restoring
+    // TCFG alone would restart the full period on every world switch.
+    ld.d    $t0, $sp, {gcsr_tval}
+    move    $t2, $t0
+    gcsrwr  $t0, 0x42
+    ld.d    $t0, $sp, {gcsr_tcfg}
+    andi    $t1, $t0, 2
+    bnez    $t1, .Lguest_timer_restored
+    bgeu    $t0, $t2, .Lguest_timer_restored
+    ld.d    $t0, $sp, {gcsr_estat}
+    andi    $t0, $t0, 0x800
+    bnez    $t0, .Lguest_timer_restored
+    // Reloading a very short, already acknowledged one-shot can transiently
+    // raise TI before TVAL receives its expired sentinel. It is not a new IRQ.
+    li.d    $t0, 1
+    gcsrwr  $t0, 0x44
+.Lguest_timer_restored:
     ld.d    $t0, $sp, {gcsr_cntc}
     gcsrwr  $t0, 0x43
-    ld.d    $t0, $sp, {gcsr_ticlr}
-    gcsrwr  $t0, 0x44
     ld.d    $t0, $sp, {gcsr_llbctl}
     gcsrwr  $t0, 0x60
     ld.d    $t0, $sp, {gcsr_tlbrentry}
@@ -516,150 +549,30 @@ __ax_cpu_lvz_guest_tlb_refill_vector:
     csrrd   $t0, CSR_PGD
 
     AX_CPU_WALK_4K .Lguest_stage2_tlb_invalid
+    b       .Lguest_stage2_tlb_fill
+
+.Lguest_stage2_tlb_invalid:
+    // Linux's invalid-table sentinels reach zero leaf entries. Do the same
+    // for a missing directory: retry through a page-invalid exception so
+    // ESTAT, BADV and BADI describe this access, not an older guest exit.
+    csrwr   $zero, CSR_TLBRELO0
+    csrwr   $zero, CSR_TLBRELO1
+    csrrd   $t0, CSR_TLBREHI
+    bstrins.d $t0, $zero, 5, 0
+    ori     $t0, $t0, STAGE2_STLBPS
+    csrwr   $t0, CSR_TLBREHI
+
+.Lguest_stage2_tlb_fill:
     tlbfill
     csrrd   $t0, CSR_TLBRSAVE
     ertn
-
-.Lguest_stage2_tlb_invalid:
-    csrrd   $t0, CSR_TLBRSAVE
-    csrwr   $t0, HOST_VCPU_TMP_KS
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
-    SAVE_GUEST_REGS
-    ENTER_HOST_MODE
-    RESTORE_HOST_TRANSLATION
-    li.d    $a0, 0
-    b       __ax_cpu_lvz_guest_exit
 
 .section .text.ax_cpu_lvz_vectors, "ax"
 .align 12
 .global __ax_cpu_lvz_exception_vectors
 .hidden __ax_cpu_lvz_exception_vectors
 __ax_cpu_lvz_exception_vectors:
-    .org 0x0
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x80
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x100
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x180
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x200
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x280
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x400
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x480
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x500
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x580
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x600
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x680
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x700
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x780
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x800
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x880
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x900
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x980
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xa00
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xa80
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xb00
-    b       __ax_cpu_lvz_hvc_handler_vector
-    .org 0xb80
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xc00
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xc80
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xd00
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xd80
-    b       __ax_cpu_lvz_sync_handler_vector
-
-    /*
-     * Hardware interrupts use EENTRY + (64 + vector) * vec_size.  With VS=5
-     * each slot is 0x80 bytes, so local interrupt 11 (timer) lands at 0x2580.
-     */
-    .org 0x2000
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2080
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2100
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2180
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2200
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2280
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2300
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2380
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2400
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2480
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2500
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2580
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2600
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2680
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2700
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2780
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2800
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2880
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2900
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2980
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2a00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2a80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2b00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2b80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2c00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2c80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2d00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2d80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2e00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2e80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2f00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2f80
-    b       __ax_cpu_lvz_irq_handler_vector
-
-__ax_cpu_lvz_irq_handler_vector:
+    // IRQs and synchronous exceptions share the same state-saving path.
     csrwr   $t0, HOST_VCPU_TMP_KS
     csrwr   $sp, 0x502
     csrrd   $sp, HOST_VCPU_KS
@@ -667,27 +580,4 @@ __ax_cpu_lvz_irq_handler_vector:
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     RESTORE_HOST_TRANSLATION
-    li.d    $a0, 1
-    b       __ax_cpu_lvz_guest_exit
-
-__ax_cpu_lvz_sync_handler_vector:
-    csrwr   $t0, HOST_VCPU_TMP_KS
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
-    SAVE_GUEST_REGS
-    ENTER_HOST_MODE
-    RESTORE_HOST_TRANSLATION
-    li.d    $a0, 0
-    b       __ax_cpu_lvz_guest_exit
-
-__ax_cpu_lvz_hvc_handler_vector:
-    csrwr   $t0, HOST_VCPU_TMP_KS
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
-    SAVE_GUEST_REGS
-    ENTER_HOST_MODE
-    RESTORE_HOST_TRANSLATION
-    li.d    $a0, 0
     b       __ax_cpu_lvz_guest_exit

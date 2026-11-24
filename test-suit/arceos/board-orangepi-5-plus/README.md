@@ -43,7 +43,7 @@ PMU保留原计数器范围、启停保持、溢出清除及每核两次真实IR
 cpufreq断言8核和三个RK3588时钟域，切换OPP并以PMU周期数/架构计时器40ms采样测量实际频率，误差门限12%；保留共享域并发和温控检查。温控通过受控温度输入验证真实调频/电压执行，不表示真实加热或传感器校准。
 
 - `CPU_CPUFREQ_THERMAL_OK`：完整温控路径通过。
-- `CPU_CPUFREQ_THERMAL_SKIP_UNREADY domains=... fallback=...`：原允许的未就绪/安全OPP路径，不报为完整温控。
+- `CPU_CPUFREQ_THERMAL_SKIP_UNREADY domains=...` 表示存在未就绪的频率域，本次跳过完整温控验证。`domains` 为未就绪域的数量。
 
 两条路径最终均须正常返回；报告分开记录。pmu-user保留逐核真实EL0、PMU权限、寄存器/IRQ现场、地址空间与ASID生命周期检查。
 

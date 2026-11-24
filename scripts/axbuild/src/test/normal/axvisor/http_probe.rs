@@ -12,7 +12,7 @@
 //! This module is generic orchestration only: resolve the probe asset, spawn it
 //! once the forwarded port is reachable, and collect its exit code as the
 //! verdict. The runner's
-//! [`HostHttpProbeGuard`](super::host_probe::HostHttpProbeGuard) does the rest
+//! ordered QEMU check guard does the rest
 //! of the orchestration: wait for the forwarded port, invoke this probe, store
 //! its verdict, and quit QEMU over QMP.
 //!
@@ -58,12 +58,46 @@ const MAX_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
 /// fixtures). `stop` is the shared abort flag: when the runner marks the case
 /// over (QEMU failure, timeout), a still-running asset is killed instead of
 /// waiting it out.
-pub(crate) fn run(
+#[cfg(test)]
+fn run(
     addr: &str,
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
     builtin_configs: Option<&Path>,
     stop: Arc<AtomicBool>,
+) -> HostHttpProbeOutcome {
+    run_bounded(addr, config, case_dir, builtin_configs, stop, None)
+}
+
+#[cfg(test)]
+pub(crate) fn run_bounded(
+    addr: &str,
+    config: &AxvisorHttpProbeConfig,
+    case_dir: &Path,
+    builtin_configs: Option<&Path>,
+    stop: Arc<AtomicBool>,
+    timeout: Option<Duration>,
+) -> HostHttpProbeOutcome {
+    let deadline = timeout
+        .map(|d| {
+            std::time::Instant::now()
+                .checked_add(d)
+                .context("HTTP deadline overflow")
+        })
+        .transpose();
+    match deadline {
+        Ok(deadline) => run_until(addr, config, case_dir, builtin_configs, stop, deadline),
+        Err(error) => HostHttpProbeOutcome::failed(error),
+    }
+}
+
+pub(crate) fn run_until(
+    addr: &str,
+    config: &AxvisorHttpProbeConfig,
+    case_dir: &Path,
+    builtin_configs: Option<&Path>,
+    stop: Arc<AtomicBool>,
+    deadline: Option<std::time::Instant>,
 ) -> HostHttpProbeOutcome {
     let script = case_dir.join(&config.probe_script);
     let captured = (|| -> anyhow::Result<(Vec<u8>, Option<ExitStatus>)> {
@@ -76,7 +110,7 @@ pub(crate) fn run(
         }
         let (mut child, output_capture) =
             spawn_probe_asset(&script, addr, config, case_dir, builtin_configs)?;
-        let status = wait_probe_asset(&mut child, &stop);
+        let status = wait_probe_asset(&mut child, &stop, deadline);
         let bytes = output_capture.finish()?;
         Ok((bytes, status))
     })();
@@ -201,12 +235,19 @@ fn spawn_probe_asset(
         .try_clone()
         .context("failed to clone probe output pipe")?;
     let mut command = Command::new(script);
+    command.envs(&config.env);
     if let Some(configs) = builtin_configs {
         command.env("AXVISOR_BUILTIN_CONFIG_DIR", configs);
     }
     command
         .env("AXVISOR_HTTP_BASE", format!("http://{addr}"))
-        .env("AXVISOR_HTTP_CASE_DIR", case_dir)
+        .env(
+            "AXVISOR_HTTP_CASE_DIR",
+            config
+                .asset_dir
+                .as_ref()
+                .map_or_else(|| case_dir.to_path_buf(), |path| case_dir.join(path)),
+        )
         .env(
             "AXVISOR_HTTP_CONNECT_TIMEOUT",
             config.connect_timeout_secs.to_string(),
@@ -225,9 +266,15 @@ fn spawn_probe_asset(
 
 /// Wait for the probe asset to exit, killing it if the runner marks the case
 /// over. Returns `Some(status)` on a normal exit and `None` if it was killed.
-fn wait_probe_asset(child: &mut Child, stop: &AtomicBool) -> Option<ExitStatus> {
+fn wait_probe_asset(
+    child: &mut Child,
+    stop: &AtomicBool,
+    deadline: Option<std::time::Instant>,
+) -> Option<ExitStatus> {
     loop {
-        if stop.load(Ordering::Acquire) {
+        if stop.load(Ordering::Acquire)
+            || deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
             let _ = child.kill();
             let _ = child.wait();
             return None;
@@ -277,7 +324,32 @@ mod tests {
             connect_timeout_secs: 120,
             request_timeout_secs: 5,
             probe_script,
+            asset_dir: None,
+            env: Default::default(),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_probe_reaps_a_running_child_and_does_not_report_success() {
+        let dir = fixture_dir();
+        let script = write_blocking_fixture_probe(dir.path(), "blocking.sh");
+        let config = test_config(script);
+        let outcome = run_bounded(
+            "127.0.0.1:1",
+            &config,
+            dir.path(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Some(Duration::from_millis(50)),
+        );
+        assert!(
+            outcome
+                .verdict
+                .unwrap_err()
+                .to_string()
+                .contains("was killed")
+        );
     }
 
     /// Write an executable probe asset that records its environment and exits
@@ -287,7 +359,7 @@ mod tests {
         use std::{fs, os::unix::fs::PermissionsExt};
         let path = dir.join(name);
         let script = format!(
-            "#!/bin/sh\nprintf '%s' \"$AXVISOR_HTTP_BASE|$AXVISOR_HTTP_CASE_DIR\" > \
+            "#!/bin/sh\nprintf '%s' \"$AXVISOR_HTTP_BASE|$AXVISOR_HTTP_CASE_DIR|$CASE_PROFILE\" > \
              \"$AXVISOR_HTTP_CASE_DIR/env.txt\"\nexit {code}\n"
         );
         fs::write(&path, script).unwrap();
@@ -329,7 +401,14 @@ mod tests {
     fn run_executes_the_case_probe_asset_with_env() {
         let dir = fixture_dir();
         let probe = write_fixture_probe(dir.path(), "http_probe.py", 0);
-        let config = test_config(PathBuf::from("http_probe.py"));
+        let mut config = test_config(PathBuf::from("http_probe.py"));
+        config
+            .env
+            .insert("CASE_PROFILE".into(), "fixture-profile".into());
+        config.env.insert(
+            "AXVISOR_HTTP_BASE".into(),
+            "must-not-override-runner".into(),
+        );
         let stop = Arc::new(AtomicBool::new(false));
 
         let outcome = run("127.0.0.1:12345", &config, dir.path(), None, stop);
@@ -344,7 +423,9 @@ mod tests {
         let recorded = std::fs::read_to_string(dir.path().join("env.txt")).unwrap();
         assert_eq!(
             recorded,
-            "http://127.0.0.1:12345|".to_string() + &dir.path().to_string_lossy()
+            "http://127.0.0.1:12345|".to_string()
+                + &dir.path().to_string_lossy()
+                + "|fixture-profile"
         );
         assert!(probe.exists());
     }

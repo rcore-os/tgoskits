@@ -30,11 +30,23 @@ core::arch::global_asm!(
     "rdtime.d $a0, $zero",
     "bltu $a0, $a1, 2b",
     "hvcl 0",
+    ".global cpu_test_lvz_timer_guest",
+    "cpu_test_lvz_timer_guest:",
+    "csrwr $a0, 0x41",
+    "hvcl 0",
+    "hvcl 0",
+    ".global cpu_test_lvz_timer_ack_guest",
+    "cpu_test_lvz_timer_ack_guest:",
+    "li.d $a0, 1",
+    "csrwr $a0, 0x44",
+    "hvcl 0",
 );
 
 unsafe extern "C" {
     fn cpu_test_lvz_guest();
     fn cpu_test_lvz_busy_guest();
+    fn cpu_test_lvz_timer_guest();
+    fn cpu_test_lvz_timer_ack_guest();
 }
 
 fn direct_alias(address: VirtAddr) -> VirtAddr {
@@ -81,7 +93,9 @@ pub fn run() {
     state.context.gcsr_crmd = 1 << 3;
     state.context.gcsr_euen = 1;
     state.context.x[21] = 0xfeed;
-    let entries = entry_addresses().map(direct_alias);
+    let entries = entry_addresses();
+    let refill_phys = ax_hal::mem::virt_to_phys(entries[1]);
+    let entries = entries.map(direct_alias);
     let state_address = direct_alias(VirtAddr::from_usize((&raw mut *state) as usize));
     let irq = interrupt::irqs_enabled();
     let timer_irq = timer_irq_enabled();
@@ -104,7 +118,9 @@ pub fn run() {
         // proves whether a full guest roundtrip respects a host mask applied
         // after the binding was established.
         interrupt::set_timer_irq_enabled(true);
-        state.bind(EntryAddresses::new(entries).unwrap()).unwrap();
+        state
+            .bind(EntryAddresses::new(entries, refill_phys).unwrap())
+            .unwrap();
         // Root-mode interrupts are enabled while the guest runs. Mask the
         // host timer line until the test reaches the explicit IRQ phase so
         // the synchronous entry checks cannot consume a valid clock event.
@@ -148,6 +164,97 @@ pub fn run() {
             state.context.advance_guest_pc();
         }
         let load_pc = state.context.gcsr_era;
+        // With four 9-bit levels and 4 KiB pages, 1 GiB selects a different
+        // intermediate directory from the only mapped page at 0x10000.
+        let refill_address = VirtAddr::from_usize(0x4000_0000);
+        assert!(table.query(refill_address).is_err());
+        state.context.sepc = load_pc;
+        state.context.gcsr_era = load_pc;
+        state.context.x[6] = refill_address.as_usize();
+        let host_crmd = registers::read_csr::<0>();
+        let host_lie = registers::read_csr::<4>() & 0x1fff;
+        let host_timer_pending = registers::read_csr::<5>() & (1 << 11) != 0;
+        // PLV, IE, DA, PG, DATF, DATM and WE are the supported return fields.
+        assert_eq!(host_crmd & 0x3ff, 0xb0);
+        let exit = state.run(1, state_address).unwrap();
+        assert_eq!(exit.kind, ExitKind::Synchronous);
+        assert_eq!(
+            exit.pc, load_pc,
+            "refill exit must retain the faulting load"
+        );
+        assert_eq!(
+            (exit.status >> 16) & 0x3f,
+            1,
+            "missing backing must report a load page-invalid exception"
+        );
+        assert_eq!(
+            exit.instruction, 0x28c0_00c4,
+            "page-invalid exit must capture the faulting LD.D, not stale HVCL"
+        );
+        assert_eq!(
+            state.context.host_tlbrera & 1,
+            0,
+            "the refill must finish before the page-invalid exit"
+        );
+        assert_eq!(
+            state.context.host_badv,
+            refill_address.as_usize(),
+            "page-invalid exit must retain the fault address"
+        );
+        assert_eq!(
+            registers::read_csr::<0x8a>() & 1,
+            0,
+            "refill exit must clear live IsTLBR before returning"
+        );
+        assert_eq!(
+            registers::read_csr::<0>() & 0x3ff,
+            host_crmd & 0x3ff,
+            "refill exit must restore the supported host CRMD fields"
+        );
+        assert_eq!(
+            registers::read_csr::<4>() & 0x1fff,
+            host_lie,
+            "refill exit must preserve live host LIE"
+        );
+        if host_timer_pending {
+            assert_ne!(
+                registers::read_csr::<5>() & (1 << 11),
+                0,
+                "refill exit must preserve an already pending host timer"
+            );
+        }
+        assert_eq!(registers::read_cpu_anchor(), anchor);
+        assert_eq!(registers::read_tp(), tp);
+        assert!(!interrupt::irqs_enabled());
+        let mut restored = FpuState::default();
+        restored.save();
+        assert_eq!(restored.fp[0], 0xabc, "refill exit must restore host FP");
+        table
+            .map(&MapConfig {
+                vaddr: refill_address,
+                paddr: ax_hal::mem::virt_to_phys(VirtAddr::from_usize(
+                    (&raw const *first) as usize,
+                )),
+                size: 4096,
+                pte: MappingFlags::READ,
+                allow_huge: false,
+                flush: false,
+            })
+            .unwrap();
+        state.context.sepc = load_pc;
+        state.context.gcsr_era = load_pc;
+        let exit = state.run(1, state_address).unwrap();
+        assert_eq!(exit.kind, ExitKind::Synchronous);
+        assert_eq!(
+            (exit.status >> 16) & 0x3f,
+            0x17,
+            "guest must reach HVCL after the missing directory is mapped"
+        );
+        assert_eq!(
+            state.context.get_a0(),
+            first.0[0] as usize,
+            "guest must read the backing added after the refill exit"
+        );
         for (index, page) in [&first, &second].into_iter().enumerate() {
             if index != 0 {
                 table.unmap(data_address, 4096).unwrap();
@@ -175,6 +282,60 @@ pub fn run() {
                 "guest reused a retired nested mapping"
             );
         }
+        // A guest timer must keep its deadline across frequent world switches,
+        // including time spent in the host. Guest IE stays masked so the test
+        // can inspect the pending latch without installing a guest IRQ handler.
+        let timer_offset = cpu_test_lvz_timer_guest as *const () as usize
+            - cpu_test_lvz_guest as *const () as usize;
+        let period = (ax_cpu::timer::counter_frequency() / 100) & !3;
+        for periodic in [false, true] {
+            state.context.sepc = guest_address.as_usize() + timer_offset;
+            state.context.gcsr_era = state.context.sepc;
+            state
+                .context
+                .set_a0(period as usize | 1 | (usize::from(periodic) << 1));
+            let exit = state.run(1, state_address).unwrap();
+            assert_eq!((exit.status >> 16) & 0x3f, 0x17);
+            state.context.advance_guest_pc();
+            let sample_pc = state.context.sepc;
+            let started = ax_cpu::timer::read_counter();
+            let mut next_entry = started;
+            while ax_cpu::timer::read_counter().wrapping_sub(started) < period * 2 {
+                while ax_cpu::timer::read_counter().wrapping_sub(next_entry) < period / 8 {
+                    core::hint::spin_loop();
+                }
+                next_entry = ax_cpu::timer::read_counter();
+                state.context.sepc = sample_pc;
+                state.context.gcsr_era = sample_pc;
+                let exit = state.run(1, state_address).unwrap();
+                assert_eq!((exit.status >> 16) & 0x3f, 0x17);
+            }
+            assert_ne!(
+                state.context.gcsr_estat & (1 << 11),
+                0,
+                "guest timer deadline must survive repeated entries; periodic={periodic}"
+            );
+            if !periodic {
+                let ack_offset = cpu_test_lvz_timer_ack_guest as *const () as usize
+                    - cpu_test_lvz_guest as *const () as usize;
+                state.context.sepc = guest_address.as_usize() + ack_offset;
+                state.context.gcsr_era = state.context.sepc;
+                state.run(1, state_address).unwrap();
+                state.context.sepc = state.context.host_era;
+                state.context.gcsr_era = state.context.sepc;
+                state.run(1, state_address).unwrap();
+                assert_eq!(
+                    state.context.gcsr_estat & (1 << 11),
+                    0,
+                    "an acknowledged one-shot must not fire again on re-entry"
+                );
+            }
+            registers::write_guest_csr::<0x41>(0);
+            registers::write_guest_csr::<0x44>(1);
+            state.context.gcsr_tcfg = 0;
+            state.context.gcsr_tval = 0;
+            state.context.gcsr_estat &= !(1 << 11);
+        }
         // A guest with interrupts masked must still be preemptible by the
         // host clockevent. The finite loop exits by HVCL on a broken entry,
         // so failure is an exit-kind assertion rather than a harness timeout.
@@ -188,15 +349,23 @@ pub fn run() {
         interrupt::set_timer_irq_enabled(true);
         ax_hal::time::set_oneshot_timer(ax_hal::time::monotonic_time_nanos() + 1_000_000);
         let exit = state.run(1, state_address).unwrap();
-        ax_hal::time::cancel_oneshot_timer();
         assert_eq!(
             exit.kind,
             ExitKind::Irq,
-            "host timer must interrupt a busy guest"
+            "host timer must interrupt a busy guest; exit={exit:x?}"
         );
         assert_ne!(exit.status & (1 << 11), 0, "host timer must remain pending");
+        assert_eq!((exit.status >> 16) & 0x3f, 0, "timer exit must be an IRQ");
+        assert_ne!(
+            registers::read_csr::<5>() & (1 << 11),
+            0,
+            "guest exit must leave the live host timer pending"
+        );
         assert!(!interrupt::irqs_enabled());
 
+        // Keep TI pending, but mask its host line so the finite guest reaches
+        // HVCL. A pending IRQ must not override this synchronous exit's ECODE.
+        interrupt::set_timer_irq_enabled(false);
         state.context.sepc = guest_address.as_usize();
         state.context.gcsr_era = guest_address.as_usize();
         let exit = state.run(1, state_address).unwrap();
@@ -206,11 +375,24 @@ pub fn run() {
             "guest re-entry after the host timer must reach HVCL"
         );
         assert_eq!((exit.status >> 16) & 0x3f, 0x17, "guest must exit by HVCL");
+        assert_ne!(
+            exit.status & (1 << 11),
+            0,
+            "HVCL must preserve the saved pending host timer"
+        );
+        assert_ne!(
+            registers::read_csr::<5>() & (1 << 11),
+            0,
+            "HVCL must leave the live host timer pending until its owner cancels it"
+        );
         assert!(!interrupt::irqs_enabled());
-        // The host owns ECFG.LIE. A mask changed after the last exit must
-        // survive unbind: the binding returns only the borrowed VS field, so
-        // releasing the guest cannot undo a host-applied clockevent mask.
-        interrupt::set_timer_irq_enabled(false);
+        assert!(
+            !timer_irq_enabled(),
+            "HVCL exit must preserve the masked host clockevent line"
+        );
+        ax_hal::time::cancel_oneshot_timer();
+        // The host owns ECFG.LIE. Its mask applied after bind must survive
+        // unbind as well as exit; the binding returns only the borrowed VS.
         state.unbind().unwrap();
         assert!(
             !timer_irq_enabled(),

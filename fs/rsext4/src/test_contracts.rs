@@ -1512,7 +1512,7 @@ fn rsext4_blockgroup_table_and_stats_rules_hold() {
     assert_eq!(table.iter().count(), 3);
 
     let stats =
-        BlockGroupStats::from_desc(BGIndex::new(0), table.get_desc(BGIndex::new(0)).unwrap());
+        BlockGroupStats::from_desc(BGIndex::new(0), &table.get_desc(BGIndex::new(0)).unwrap());
     assert_eq!(stats.group_idx, BGIndex::new(0));
     assert_eq!(stats.free_blocks, 2);
     assert_eq!(stats.free_inodes, 3);

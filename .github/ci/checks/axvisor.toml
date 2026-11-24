@@ -6,7 +6,7 @@ default_runner = "qcs"
 [[check]]
 id = "test-axvisor-aarch64-qemu-smoke-axtest"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · Smoke + virtio-blk/PCI memory test guests + axtest"
+name = "QEMU aarch64 · General + guest devices + axtest"
 # The shared build and the axtest runs are joined by the two-vCPU AxVM runtime
 # case, whose QEMU budget alone is 900 s, so the job keeps a wider bound than
 # the build-only stages used to need.
@@ -14,14 +14,14 @@ timeout_minutes = 45
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
-echo "==> axvisor aarch64 smoke + host initramfs"
-cargo xtask axvisor test qemu --arch aarch64 --test-case smoke,qemu-host-initramfs
+echo "==> axvisor aarch64 shared general boot (five CI checks)"
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/general
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
 echo "==> axvisor aarch64 five virtio-net guest vCPUs on two host CPUs"
 timeout 600s apps/arceos/virtio-net-peer/run.sh --vcpus
 echo "==> axvisor aarch64 PCI memory test ArceOS guest"
-cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-pci-memory-test
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/pci-memory-test
 echo "==> axvisor aarch64 axtest"
 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 \
   --config os/axvisor/tests/build-memory-root-aarch64.toml \
@@ -61,7 +61,7 @@ run_axvm_cross_test --arch riscv64 --package axvm \
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["smoke", "qemu-host-initramfs", "qemu-pci-memory-test"]
+cases = ["qemu/aarch64/general", "qemu/aarch64/pci-memory-test"]
 
 [[check.suite]]
 # The two-vCPU runtime case is a ktest execution unit of its own: the AxVM
@@ -94,47 +94,43 @@ echo "==> axvisor web UI typecheck, unit tests, and bundle"
 [[check]]
 id = "test-axvisor-aarch64-qemu-web-ui"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · Web dashboard from the disk root and the initramfs root"
+name = "QEMU aarch64 · Memory-root web dashboard"
 timeout_minutes = 30
 node_version = "24"
 command = '''
 echo "==> axvisor aarch64 web dashboard (axbuild runs npm itself for the bundle)"
-cargo xtask axvisor test qemu --arch aarch64 --test-case web-ui,web-ui-diskless
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/memory-web
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["web-ui", "web-ui-diskless"]
+cases = ["qemu/aarch64/memory-web"]
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · HTTP control-plane + VM pool + browser console + ArceOS IVC"
+name = "QEMU aarch64 · HTTP control-plane + browser console + IVC"
 timeout_minutes = 30
 node_version = "24"
 command = '''
-echo "==> axvisor aarch64 HTTP control-plane, VM pool, browser console and ArceOS IVC"
+echo "==> axvisor aarch64 HTTP control-plane, browser console and source-built IVC peers"
 # Keep all cases in one axbuild invocation. The QEMU runner groups cases by
 # Cargo identity before building, so equal AxVisor kernels are compiled once
 # and their per-case initramfs/runtime inputs are still prepared independently.
-cargo xtask axvisor test qemu --arch aarch64 --test-group normal \
-  --test-case http-control-plane,qemu-vm-pool,qemu-vm-pool-http,browser-console,qemu-ivc-arceos
-# Disabled until the Linux IVC guest image matches the v2 publisher protocol.
-# echo "==> axvisor aarch64 IVC"
-# cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
+# Build ArceOS guests from this checkout rather than using prebuilt binaries.
+cargo xtask axvisor test qemu --arch aarch64 \
+  --test-case qemu/aarch64/http-control-plane,qemu/aarch64/ivc-local,qemu/aarch64/ivc-arceos
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
 cases = [
-  "http-control-plane",
-  "qemu-vm-pool",
-  "qemu-vm-pool-http",
-  "browser-console",
-  "qemu-ivc-arceos",
-  # "qemu-ivc", # Linux guest image uses IVC v3; ArceOS publisher uses v2.
+  "qemu/aarch64/http-control-plane",
+  "qemu/aarch64/ivc-local",
+  "qemu/aarch64/ivc-arceos",
+  # "qemu/aarch64/ivc", # Prebuilt guest images must match the publisher protocol.
 ]
 
 [[check]]
@@ -145,8 +141,8 @@ timeout_minutes = 30
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
-echo "==> axvisor riscv64 smoke"
-cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
+echo "==> axvisor riscv64 qemu/riscv64/smoke/shell-and-block"
+cargo xtask axvisor test qemu --arch riscv64 --test-case qemu/riscv64/smoke/shell-and-block
 echo "==> axvisor riscv64 IPI cross-test"
 cargo xtask cross-test --arch riscv64 \
   --package axvm \
@@ -156,18 +152,30 @@ cargo xtask cross-test --arch riscv64 \
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "riscv64"
-cases = ["smoke"]
+cases = ["qemu/riscv64/smoke/shell-and-block"]
 
 [[check]]
 id = "test-axvisor-loongarch64-qemu"
 impact_targets = ["axvisor:loongarch64"]
-name = "QEMU loongarch64 · Suites"
+name = "QEMU loongarch64 · Linux, IOCSR and timers"
 runner = "ubuntu-axvisor-lvz"
-cache_key = "test-axvisor-loongarch64"
+cache_key = ""
 download_xtask_bin_artifact = true
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
+echo "==> axvm loongarch64 guest timer ownership"
+output="$(target/debug/tg-xtask cross-test --arch loongarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib guest_csr 2>&1)" || {
+  printf '%s\n' "$output"
+  exit 1
+}
+printf '%s\n' "$output"
+printf '%s\n' "$output" | grep -Eq 'test result: ok\. [1-9][0-9]* passed;' || {
+  echo "guest timer filter matched no passing test" >&2
+  exit 1
+}
+echo "==> axvisor loongarch64 Linux guests"
 task_capture_bin=$(mktemp -d)
 task_capture_state=$(mktemp -d "$PWD/target/ci-qemu-state.XXXXXX")
 ln -s "$PWD/scripts/test/qemu_state_capture.py" "$task_capture_bin/qemu-system-loongarch64"
@@ -182,13 +190,27 @@ if [ "$task_status" -ne 0 ]; then
 fi
 rm "$task_capture_bin/qemu-system-loongarch64"
 rmdir "$task_capture_bin"
-exit "$task_status"
+if [ "$task_status" -ne 0 ]; then
+  exit "$task_status"
+fi
+echo "==> axvm loongarch64 IOCSR isolation axtest"
+target/debug/tg-xtask ktest qemu --package axvm-kernel-tests --test loongarch_iocsr --arch loongarch64 \
+  --config virtualization/test_crates/axvm-kernel-tests/build-loongarch64-unknown-none-softfloat.toml \
+  --qemu-config virtualization/test_crates/axvm-kernel-tests/qemu-loongarch64.toml
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "loongarch64"
-cases = ["smoke"]
+cases = ["qemu/loongarch64/smoke"]
+
+[[check.suite]]
+kind = "ktest-qemu"
+package = "axvm-kernel-tests"
+test = "loongarch_iocsr"
+arch = "loongarch64"
+config = "virtualization/test_crates/axvm-kernel-tests/build-loongarch64-unknown-none-softfloat.toml"
+qemu_config = "virtualization/test_crates/axvm-kernel-tests/qemu-loongarch64.toml"
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-svm"
@@ -198,13 +220,13 @@ runner = "kvm-amd"
 cache_key = ""
 timeout_minutes = 120
 command = '''
-cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm,direct-acpi-svm,ovmf-acpi-svm,pci-enumeration-svm,pci-block-rw-svm,pci-block-ro-svm
+cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/svm/smoke,qemu/x86_64/svm/functional
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["smoke-svm", "direct-acpi-svm", "ovmf-acpi-svm", "pci-enumeration-svm", "pci-block-rw-svm", "pci-block-ro-svm"]
+cases = ["qemu/x86_64/svm/smoke", "qemu/x86_64/svm/functional"]
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-vmx"
@@ -213,18 +235,18 @@ name = "VMX x86_64 · Smoke, ACPI, PCI and Web UI"
 runner = "kvm-intel"
 cache_key = ""
 timeout_minutes = 120
-# The unified QEMU smoke build (smoke-vmx) carries `web-ui`, so axbuild runs npm.
+# The unified QEMU smoke build (qemu/x86_64/vmx/smoke) carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
 echo "==> axvisor x86_64 VMX smoke, ACPI and PCI"
 cargo xtask axvisor test qemu --arch x86_64 \
-  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx,web-ui-vmx
+  --test-case qemu/x86_64/vmx/smoke,qemu/x86_64/vmx/functional,qemu/x86_64/vmx/web-ui
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["smoke-vmx", "direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx", "pci-enumeration-vmx", "pci-block-rw-vmx", "pci-block-ro-vmx", "web-ui-vmx"]
+cases = ["qemu/x86_64/vmx/smoke", "qemu/x86_64/vmx/functional", "qemu/x86_64/vmx/web-ui"]
 
 [[check]]
 id = "test-axloader-http-smoke"
@@ -285,20 +307,36 @@ resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 echo "==> build the StarryOS guest from this checkout"
-cargo xtask starry build --config test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1 &&
+cargo xtask starry build --config test-suit/axvisor/board/orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1 &&
 echo "==> axvisor OrangePi 5 Plus all-virtualized triple guest" &&
-cargo xtask axvisor test board --test-group normal --test-case functional --board orangepi-5-plus-triple-guest-functional
+cargo xtask axvisor test board --test-case board/orangepi-5-plus/triple-guest-functional --board orangepi-5-plus-triple-guest-functional
 '''
 pull_request_command = '''
 echo "==> build the StarryOS guest from this checkout"
-cargo xtask starry build --config test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1 &&
+cargo xtask starry build --config test-suit/axvisor/board/orangepi-5-plus/triple-guest-functional/starry-guest-build.toml --smp 1 &&
 echo "==> axvisor OrangePi 5 Plus all-virtualized triple guest" &&
-cargo xtask axvisor test board --test-group normal --test-case functional --board orangepi-5-plus-triple-guest-functional
+cargo xtask axvisor test board --test-case board/orangepi-5-plus/triple-guest-functional --board orangepi-5-plus-triple-guest-functional
 '''
 
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-triple-guest-functional"
+
+[[check]]
+id = "test-axvisor-self-hosted-board-loongson-3a6000-ll-linux"
+impact_targets = ["axvisor:loongarch64"]
+name = "Board Loongson-3A6000-LL · Linux guest"
+runner = "board"
+timeout_minutes = 90
+cache_key = ""
+command = '''
+cargo xtask axvisor test board --board loongson-3a6000-ll --test-case smoke
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "loongson-3a6000-ll"
+cases = ["smoke"]
 
 [[check]]
 id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
@@ -376,7 +414,7 @@ kind = "axvisor-board"
 board = "orangepi-5-plus-robot-linux"
 
 # The dual-guest board route `orangepi-5-plus-dualguest-robot` is declared by
-# both test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr and
+# both test-suit/axvisor/board/orangepi-5-plus/robot/dual-linux-zephyr and
 # .../dual-starry-zephyr, so this single check runs the Linux+Zephyr and the
 # StarryOS+Zephyr robot variants sequentially. The runner releases and
 # reacquires the physical board for each case.
@@ -389,7 +427,7 @@ cache_key = ""
 resource_group = "orangepi-5-plus-robot-uart6"
 timeout_minutes = 30
 command = '''
-cargo xtask starry build --config test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr/starry-guest-build.toml --smp 1
+cargo xtask starry build --config test-suit/axvisor/board/orangepi-5-plus/robot/dual-starry-zephyr/starry-guest-build.toml --smp 1
 cargo xtask axvisor test board --board orangepi-5-plus-dualguest-robot
 '''
 

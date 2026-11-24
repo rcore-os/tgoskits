@@ -1,0 +1,48 @@
+args = [
+    "-no-user-config",
+    "-display",
+    "none",
+    "-serial",
+    "stdio",
+    "-monitor",
+    "none",
+    "-cpu",
+    "host,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
+    "-machine",
+    "q35,smbus=off,usb=off,graphics=off",
+    "-smp",
+    "2",
+    "-accel",
+    "kvm",
+    "-m",
+    "1G",
+    "-net",
+    "none",
+    "-vga",
+    "none",
+]
+timeout = 3600
+fail_regex = [
+    "(?i)kernel panic",
+    "(?m)^AXVISOR_X86_ACPI_FAILED\\s*$",
+    "(?m)^AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN\\s*$",
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)page fault",
+    "(?i)vm exit failure",
+    "(?i)failed to initialize guest VM",
+    "(?m)^AXVISOR_X86_VPCI_ENUMERATION_FAILED\\s*$",
+    "(?m)^AXVISOR_X86_PCI_BLOCK_FAILED\\s*$",
+]
+to_bin = true
+uefi = true
+cmdline = ""
+
+[axbuild]
+checks = [
+    "tests/direct-acpi.toml",
+    "tests/mp-fallback.toml",
+    "tests/ovmf-acpi.toml",
+    "tests/pci-enumeration.toml",
+    "tests/pci-block-rw.toml",
+    "tests/pci-block-ro.toml",
+]

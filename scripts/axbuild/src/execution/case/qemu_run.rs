@@ -31,7 +31,10 @@ pub(crate) async fn run_qemu_with_prepared_case_assets(
     println!("  rootfs: {}", prepared_assets.rootfs_path.display());
 
     let qemu_started = std::time::Instant::now();
+    let mut qemu = qemu;
+    let checks = super::super::qemu::checks::prepare_serial_groups(&mut qemu, qemu_config_path)?;
     let result = app.run_qemu_with_axtest_coverage(cargo, qemu).await;
+    let check_result = checks.map(|guard| guard.finish()).transpose();
     let qemu_elapsed = qemu_started.elapsed();
     println!("  qemu run: {:.2?}", qemu_elapsed);
     if let Some(mut fields) = options.qemu_timing_fields {
@@ -40,5 +43,7 @@ pub(crate) async fn run_qemu_with_prepared_case_assets(
     }
 
     drop(prepared_assets);
-    result
+    result?;
+    check_result?;
+    Ok(())
 }

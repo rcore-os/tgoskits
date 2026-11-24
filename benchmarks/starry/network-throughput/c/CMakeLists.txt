@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 project(starry_network_benchmark C)
-set(common "${CMAKE_CURRENT_SOURCE_DIR}/../../../../test-suit/starryos/board-common/network-test")
+set(common "${CMAKE_CURRENT_SOURCE_DIR}/../../../../test-suit/starryos/common/network")
 include("${common}/curl-bundle.cmake")
 install_starry_curl_bundle()
 

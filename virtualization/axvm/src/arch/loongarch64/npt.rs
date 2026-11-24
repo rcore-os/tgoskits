@@ -66,12 +66,9 @@ impl PageTableEntry for LoongArchPTE {
     }
 
     fn new_table(paddr: HostPhysAddr) -> Self {
-        // Retain the guest table owner's directory convention, independently
-        // of the address-only directories selected by the native walker.
-        Self(Pte::from_parts(
-            paddr,
-            DescriptorFlags::V | DescriptorFlags::P | DescriptorFlags::MATL,
-        ))
+        // LDDIR consumes the directory value as the next table's physical base;
+        // leaf attributes would offset that address on real hardware.
+        Self(Pte::new_table(paddr))
     }
 
     fn paddr(&self, is_dir: bool) -> HostPhysAddr {
@@ -83,7 +80,7 @@ impl PageTableEntry for LoongArchPTE {
     }
 
     fn present(&self) -> bool {
-        self.0.flags().contains(DescriptorFlags::V)
+        self.0.present()
     }
 
     fn huge(&self, is_dir: bool) -> bool {

@@ -18,7 +18,11 @@ fn runtime_page_fault_handler(
     addr: ax_memory_addr::VirtAddr,
     flags: ax_hal::trap::PageFaultFlags,
 ) -> bool {
-    crate::diagnostics::panic_on_current_stack_guard_page_fault(addr);
+    if let Some(fault) = crate::diagnostics::diagnose_current_stack_guard_page_fault(addr) {
+        // Keep the guard ranges in the fatal record itself: a separate
+        // pre-panic emergency write can be dropped while the UART is busy.
+        panic!("{fault}");
+    }
 
     crate::kernel_mapping::handle_kernel_page_fault(addr, flags)
 }

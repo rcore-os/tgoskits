@@ -81,6 +81,8 @@ pub enum AcpiGsiController {
     IoApic,
     /// LoongArch PCH-PIC controller.
     PchPic,
+    /// LoongArch LIOPIC controller.
+    LioPic,
 }
 
 /// Fully described ACPI GSI routing metadata.

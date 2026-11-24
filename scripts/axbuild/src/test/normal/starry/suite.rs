@@ -13,9 +13,13 @@ pub(crate) fn discover_board_test_groups(
 ) -> anyhow::Result<Vec<StarryBoardTestGroup>> {
     let test_suite_dir = require_test_suite_dir(workspace_root)?;
     let groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
+    let selected_cases = selected_cases
+        .iter()
+        .map(|case| super::layout::board_case_id(case))
+        .collect::<Vec<_>>();
     board_test::filter_board_test_groups_by_names(
         groups,
-        selected_cases,
+        &selected_cases,
         selected_board,
         "Starry",
         || {
@@ -44,6 +48,15 @@ pub(crate) fn discover_all_qemu_cases_with_archs(
     selected_case: Option<&str>,
 ) -> qemu_test::ListQemuCasesResult<Vec<qemu_test::ListedQemuCase>> {
     let test_suite_dir = require_test_suite_dir(workspace_root)?;
+    if let Some(selected) = selected_case {
+        qemu_test::validate_selected_case_name(selected, "Starry", "qemu")?;
+    }
+    let gicv2_alias = selected_case.is_some_and(super::layout::is_gicv2_boot_alias);
+    let selected_case = if gicv2_alias {
+        Some("qemu/openrc")
+    } else {
+        selected_case
+    };
     let selection = parse_starry_qemu_case_selection(selected_case);
     let selected_case = if selection.grouped_subcase_filter.is_some() {
         match selection.prefer_direct_case.as_deref() {
@@ -55,7 +68,34 @@ pub(crate) fn discover_all_qemu_cases_with_archs(
     } else {
         selected_case
     };
-    qemu_test::discover_all_qemu_cases_with_archs(&test_suite_dir, selected_case, "Starry", "qemu")
+    let mut cases =
+        qemu_test::discover_all_qemu_cases_with_archs(&test_suite_dir, None, "Starry", "qemu")?;
+    cases.retain(|case| {
+        selected_case.is_none_or(|selected| super::layout::matches_case(&case.name, selected))
+    });
+    if gicv2_alias {
+        for case in &mut cases {
+            case.archs.retain(|arch| arch == "aarch64");
+        }
+        cases.retain(|case| !case.archs.is_empty());
+    }
+    if cases.is_empty() {
+        return qemu_test::discover_all_qemu_cases_with_archs(
+            &test_suite_dir,
+            if gicv2_alias {
+                Some("qemu/gicv2-boot")
+            } else {
+                selected_case
+            },
+            "Starry",
+            "qemu",
+        );
+    }
+    for case in &mut cases {
+        case.name = super::layout::case_id(&case.name);
+    }
+    cases.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(cases)
 }
 
 fn starry_qemu_summary(report: &StarryQemuRunReport) -> qemu_test::QemuTestSummary {

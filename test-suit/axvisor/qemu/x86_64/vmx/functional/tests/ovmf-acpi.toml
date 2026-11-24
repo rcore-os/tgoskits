@@ -1,0 +1,26 @@
+timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 3"
+success_regex = ["(?m)^✓ VM\\[3\\] started successfully\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+success_regex = [
+    "(?m)^AXVISOR_X86_OVMF_ACPI_PASSED\\s*$",
+]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[3\\] console"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete --force 3"
+success_regex = ["(?m)^✓ VM\\[3\\] deleted completely\\s*$"]
+timeout = 120

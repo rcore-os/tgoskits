@@ -132,7 +132,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn datagrams_are_preserved_until_the_worker_returns_its_exclusive_socket() {
+    fn datagrams_are_preserved_and_fixture_releases_its_exclusive_port() {
+        // Other host-tool tests replace process stdio and launch children.
+        // Verify descriptor release in a process that owns only this fixture.
+        const CHILD: &str = "AXBUILD_UDP_LIFETIME_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let name = concat!(
+                module_path!(),
+                "::datagrams_are_preserved_and_fixture_releases_its_exclusive_port"
+            );
+            let name = name.split_once("::").unwrap().1;
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         let mut fixture = HostUdpEchoGuard::start(&EchoConfig {
             bind: loopback(),
             port: 0,
@@ -169,6 +191,20 @@ mod tests {
         let (len, peer) = socket.recv_from(&mut received).unwrap();
         assert_eq!(peer, client.local_addr().unwrap());
         assert_eq!(&received[..len], payload);
+        drop(socket);
+        let rebound = UdpSocket::bind(address).unwrap();
+        drop(rebound);
+        let fixture = HostUdpEchoGuard::start(&EchoConfig {
+            bind: address.ip(),
+            port: address.port(),
+        })
+        .unwrap();
+        drop(fixture);
+        let released = UdpSocket::bind(address);
+        assert!(
+            released.is_ok(),
+            "UDP fixture {address} was not released: {released:?}"
+        );
     }
 
     #[test]

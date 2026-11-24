@@ -30,7 +30,7 @@ Starry 的 `sys_ioctl()` 经 `KapiFile::ioctl()`、`drm_ioctl()` 进入
 
 ## 2. 系统回归边界
 
-`test-suit/starryos/qemu/system/drm-test-drm-modeset/src/main.c` 在同一活动模式下验证
+`test-suit/starryos/qemu/standard/system/devices/drm-test-drm-modeset/src/main.c` 在同一活动模式下验证
 相对等待，保留真实 Starry ioctl、软件定时器、等待队列和回包路径，不用宿主替身证明
 运行时语义。内核、测试超时和分组失败传播不因成功时延变化而放宽。
 

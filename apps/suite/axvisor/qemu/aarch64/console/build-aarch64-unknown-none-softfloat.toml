@@ -1,0 +1,9 @@
+features = ["ax-driver/nvme", "web-ui"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 4
+vm_configs = ["apps/suite/axvisor/qemu/aarch64/console/guest.toml"]
+
+[env]
+AXVISOR_VM_POOL = "/pool"
+AXVM_HTTP_BIND = "0.0.0.0:8080"

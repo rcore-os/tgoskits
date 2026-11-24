@@ -45,7 +45,7 @@ Nightly applications live under `apps/axvisor/<group>/...` and run through
 selection rules.
 
 Application and test discovery are separate. `axvisor test` scans
-`test-suit/axvisor`; board discovery for the default `normal` group also retains
+`test-suit/axvisor`; board discovery for the default `.` group also retains
 `benchmarks/axvisor` compatibility. Both commands share the build and execution
 runners. Applications that build guests or generate resources declare their
 preparation steps in `guest-builds.toml` alongside the run configuration.
@@ -67,7 +67,7 @@ checks no longer declare `nightly_only`. Ordinary CI excludes the nightly
 manifest for PRs, pushes and manual runs, even if the change precisely selects
 the nightly case files; a PR changing only nightly test scenarios still
 receives static checks. The default OrangePi Linux check explicitly selects
-only the `smoke` case.
+only the `board/orangepi-5-plus/linux` scenario.
 
 `apps/axvisor/**` is a registered AxVisor suite in the CI impact routing
 (`scripts/test/ci_impact.py`, `scripts/test/ci_suite.py` and
@@ -130,5 +130,5 @@ python3 -m unittest discover -s scripts/test -p 'test_ci*.py'
 Existing commands remain available for local test execution, for example:
 
 ```sh
-cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/general/shell-and-block
 ```

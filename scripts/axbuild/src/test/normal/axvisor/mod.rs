@@ -1,6 +1,8 @@
 mod assets;
 mod board;
+pub(crate) mod checks;
 pub(crate) mod discovery;
+mod host_checks;
 mod host_probe;
 mod http_probe;
 mod initramfs;
@@ -68,4 +70,3 @@ pub(crate) async fn test(axvisor: &mut Axvisor, args: ArgsTest) -> anyhow::Resul
 }
 
 const AXVISOR_TEST_SUITE_OS: &str = "axvisor";
-const AXVISOR_NORMAL_GROUP: &str = "normal";

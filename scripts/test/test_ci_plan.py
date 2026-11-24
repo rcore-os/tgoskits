@@ -5,6 +5,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,12 @@ sys.path.insert(0, str(MODULE_PATH.parent))
 
 from ci_impact import analyze_changed_paths
 from ci_suite import SUITE_ROOTS
+IMPACT_SPEC = importlib.util.spec_from_file_location(
+    "ci_impact", MODULE_PATH.with_name("ci_impact.py")
+)
+assert IMPACT_SPEC is not None and IMPACT_SPEC.loader is not None
+ci_impact = importlib.util.module_from_spec(IMPACT_SPEC)
+IMPACT_SPEC.loader.exec_module(ci_impact)
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
@@ -47,6 +54,17 @@ def board_type_by_board_name() -> dict[str, str]:
             name = config.stem.removeprefix("board-")
             board_types.setdefault(name, tomllib.loads(config.read_text()).get("board_type", ""))
     return board_types
+
+
+def selected_test_cases(command: str) -> set[str]:
+    tokens = shlex.split(command, comments=True)
+    cases = set()
+    for index, token in enumerate(tokens):
+        if token == "--test-case" and index + 1 < len(tokens):
+            cases.update(tokens[index + 1].split(","))
+        elif token.startswith("--test-case="):
+            cases.update(token.partition("=")[2].split(","))
+    return cases
 
 
 class CiPlanTests(unittest.TestCase):
@@ -371,7 +389,13 @@ command = "cargo xtask clippy --all"
                     "--board orangepi-5-plus-linux,orangepi-5-plus-starry",
                     commands,
                 )
-                self.assertIn("--test-case qemu-ivc", commands)
+                active_commands = "\n".join(
+                    line for line in commands.splitlines()
+                    if not line.lstrip().startswith("#")
+                )
+                self.assertRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/general(?:[,\s]|$)")
+                self.assertNotRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/ivc(?:[,\s]|$)")
+                self.assertIn("qemu/aarch64/ivc-local", selected_test_cases(commands))
                 # The ordinary CI check keeps the native StarryOS board suite but no
                 # longer registers the single-guest AxVisor smokes.
                 self.assertIn(
@@ -851,7 +875,7 @@ command = "cargo xtask clippy --all"
     def test_axvisor_board_build_change_groups_cases_by_build_config(self) -> None:
         suite_trees = (
             "apps/axvisor/normal",
-            "test-suit/axvisor/normal",
+            "test-suit/axvisor",
             "benchmarks/axvisor",
         )
         for suite_tree, independent in itertools.product(suite_trees, (False, True)):
@@ -893,7 +917,7 @@ command = "cargo xtask clippy --all"
                 self.assertEqual(
                     selections[0].command,
                     ("cargo xtask axvisor app board --group normal --app " if app_case else
-                     "cargo xtask axvisor test board --test-group normal --test-case ")
+                     "cargo xtask axvisor test board --test-case ")
                     + f"{selector} --board demo",
                 )
 
@@ -1159,11 +1183,11 @@ command = "true"
         pci_checks = [
             check
             for check in ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
-            if "qemu-pci-memory-test" in check["command"]
+            if "qemu/aarch64/pci-memory-test" in check["command"]
             and any(
                 registration["kind"] == "axvisor-qemu"
                 and registration.get("arch") == "aarch64"
-                and "qemu-pci-memory-test" in registration.get("cases", ())
+                and "qemu/aarch64/pci-memory-test" in registration.get("cases", ())
                 for registration in check.get("suite", ())
             )
         ]
@@ -1178,7 +1202,7 @@ command = "true"
                 self.assertIn(check["id"], rows)
                 self.assertEqual(rows[check["id"]]["group"], "AxVisor")
                 self.assertIn(
-                    "qemu-pci-memory-test", rows[check["id"]]["command"]
+                    "qemu/aarch64/pci-memory-test", rows[check["id"]]["command"]
                 )
 
     def test_dualguest_robot_board_is_scheduled_in_main_only(self) -> None:
@@ -1211,14 +1235,28 @@ command = "true"
             benchmark_rows,
         )
 
+    def test_ovmf_guest_markers_remain_anchored_in_the_actual_check_definitions(self) -> None:
+        root = MODULE_PATH.parents[2] / "test-suit/axvisor/qemu/x86_64"
+        marker = "AXVISOR_X86_OVMF_ACPI_PASSED"
+        for backend in ("vmx", "svm"):
+            config_path = root / backend / "functional" / ("qemu-x86_64-vmx.toml" if backend == "vmx" else "qemu-x86_64.toml")
+            config = tomllib.loads(config_path.read_text())
+            steps = [step for relative in config["axbuild"]["checks"]
+                     for step in tomllib.loads((config_path.parent / relative).read_text())["shell_check_steps"]]
+            patterns = [pattern for step in steps for pattern in step.get("success_regex", [])]
+            self.assertTrue(patterns)
+            for output in (f"error: {marker} was not observed\n", f"{marker} failed\n"):
+                self.assertFalse(any(re.search(pattern, output) for pattern in patterns))
+            self.assertTrue(any(re.search(pattern, marker + "\r\n") for pattern in patterns))
+
     def test_dualguest_robot_board_markers_cannot_match_command_echo(self) -> None:
         root = MODULE_PATH.parents[2]
         configs = (
             root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr"
+            / "test-suit/axvisor/board/orangepi-5-plus/robot/dual-linux-zephyr"
             / "board-orangepi-5-plus-dualguest-robot.toml",
             root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr"
+            / "test-suit/axvisor/board/orangepi-5-plus/robot/dual-starry-zephyr"
             / "board-orangepi-5-plus-dualguest-robot.toml",
         )
 
@@ -1228,6 +1266,10 @@ command = "true"
                 self.assertEqual(
                     config["board_type"], "OrangePi-5-Plus-Robot-UART6"
                 )
+                if "axbuild" in config:
+                    config["shell_check_steps"] = [step
+                        for relative in config["axbuild"]["checks"]
+                        for step in tomllib.loads((path.parent / relative).read_text()).get("shell_check_steps", [])]
                 step = config["shell_check_steps"][-1]
                 for pattern in step["success_regex"] + step["fail_regex"]:
                     self.assertIsNone(re.search(pattern, step["shell_cmd"]))
@@ -1839,7 +1881,7 @@ node_version = "latest"
             row_id="suite-synthetic-board-check-synthetic-case",
             leaf_name="Board · synthetic-case",
             command=suite_command,
-            source_path="test-suit/axvisor/normal/synthetic/board-synthetic.toml",
+            source_path="test-suit/axvisor/synthetic/board-synthetic.toml",
         )
         incremental = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
@@ -1877,6 +1919,35 @@ node_version = "latest"
                     ],
                     selection.command,
                 )
+
+    def test_ivc_input_changes_select_their_qemu_cases(self) -> None:
+        scenarios = (
+            ("apps/arceos/ivc_publisher/src/main.rs", {"qemu/aarch64/ivc-local"}),
+            ("apps/arceos/ivc_subscriber/src/main.rs", {"qemu/aarch64/ivc-arceos"}),
+            (
+                "virtualization/axivc/src/message/receiver.rs",
+                {"qemu/aarch64/ivc-local", "qemu/aarch64/ivc-arceos"},
+            ),
+        )
+        for path, expected_cases in scenarios:
+            with self.subTest(path=path):
+                impact = ci_impact.analyze_changed_paths(
+                    ci_plan.WORKSPACE_ROOT, [Path(path)], {}
+                )
+                self.assertFalse(impact.full)
+                self.assertEqual(impact.input_selections, ("axvisor:qemu:aarch64",))
+                self.assertNotIn(path, impact.ignored_apps)
+                rows = ci_plan.build_main_plan(
+                    ci_plan.replace(self.upstream, impact=impact)
+                )["axvisor_matrix"]["include"]
+                check = next(
+                    row
+                    for row in rows
+                    if row["id"]
+                    == "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
+                )
+                selected_cases = selected_test_cases(check["command"])
+                self.assertTrue(expected_cases.issubset(selected_cases))
 
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]

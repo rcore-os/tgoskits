@@ -51,7 +51,7 @@ def boot(arch, image, directory, second_boot):
     if second_boot:
         script = "set -eu; rc-service openrc-test-daemon status; test -L /etc/runlevels/default/openrc-test-daemon; test -f /root/openrc-persisted\n"
     else:
-        script = (WORKSPACE / "test-suit/starryos/qemu/openrc/sh/openrc-test.sh").read_text()
+        script = (WORKSPACE / "test-suit/starryos/qemu/standard/openrc/sh/openrc-test.sh").read_text()
         script += "touch /root/openrc-persisted\nsync\n"
     script += ('test "$(cat /run/openrc-test-autorun-count)" = autorun\n'
                'test "$(cat /run/openrc-test-visual-count)" = visual\n'

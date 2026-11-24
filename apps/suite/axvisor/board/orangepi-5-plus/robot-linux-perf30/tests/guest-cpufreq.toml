@@ -1,0 +1,6 @@
+requires = ["guest-session.toml"]
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = "printf \"%s\\n\" orangepi | sudo -S sh -c '\nset -eu\ntrap '\\''printf \"\\n[AXVISOR_GUEST_CPUFREQ] RESULT=%s\\n\" FAIL'\\'' EXIT\npolicy=/sys/devices/system/cpu/cpufreq/policy0\n[ -d \"$policy\" ]\ndriver=$(cat \"$policy/scaling_driver\")\n[ \"$driver\" = virt-cpufreq ]\ngrep -qw performance \"$policy/scaling_available_governors\"\nprintf performance > \"$policy/scaling_governor\"\ngovernor=$(cat \"$policy/scaling_governor\")\n[ \"$governor\" = performance ]\ncurrent=$(cat \"$policy/scaling_cur_freq\")\n[ \"$current\" -gt 0 ]\nprintf \"[AXVISOR_GUEST_CPUFREQ] driver=%s governor=%s current=%s\\n\" \"$driver\" \"$governor\" \"$current\"\ntrap - EXIT\nprintf \"\\n[AXVISOR_GUEST_CPUFREQ] RESULT=%s\\n\" PASS\n'\n"
+success_regex = ["(?m)^\\[AXVISOR_GUEST_CPUFREQ\\] RESULT=PASS\\s*$"]

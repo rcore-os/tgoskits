@@ -93,6 +93,12 @@ Early -> Preparing -> Runtime
 adopt 该状态：只 mask device-local source、启用已注册的 IRQ action 并发布 runtime 输出路由，
 不调用普通串口的 `startup()`，也不清 `UARTEN` 或等待正在按线速排空的 TX FIFO。只有这些
 步骤全部成功后才提交 `Runtime`；其他非 console UART 仍在显式 open 时执行 startup/config。
+保留固件线路状态不等于继承其轮询中断配置。设备来源的 `UartPort::rearm()` 必须完成
+该驱动所需的中断输出使能；NS16550 在请求启用非空 IER 来源时，以读改写设置
+`MCR.OUT2`，保留其他 MCR 位，不改 LCR、除数、FIFO 或 RX 内容。没有设备来源的
+重新使能请求不改变该门控；来源已经就绪时仍按原规则立即重新屏蔽并交给 worker，
+不能靠保留虚假的 TX 就绪状态推进。`mask_all()` 和 emergency 接管继续屏蔽全部 IER
+来源，不操作共享控制器线路，也不要求关闭不影响线路配置的 OUT2。
 一旦为已探测的 runtime UART 进入 `Preparing`，提交前任何失败都进入 `FailedClosed`；公共层
 不会把一次 runtime 启动失败重新解释为“未探测到 driver”并回退到 raw HAL。该状态吞掉普通
 输出并禁止输入，避免双 owner 再次触碰未知硬件状态。`FailedClosed` 同时是被选中 UART
@@ -120,6 +126,12 @@ panic/FIQ 不反向调用 platform/runtime callback，也不借用 control endpo
 不等待 worker。成功接管后它轮询硬件直到记录写完并返回源字节数；若首次 gate 接管失败
 则返回 0。该语义优先保留完整 panic/backtrace 诊断，硬件永久不 ready 时可能停在 fatal
 输出，属于同步 emergency console 的明确边界。
+
+致命错误的必要上下文应进入同一条 panic 记录。栈保护页故障由
+`diagnose_current_stack_guard_page_fault()` 在屏蔽本地 IRQ 的范围内复制当前栈边界，
+返回拥有地址值的 `StackGuardPageFault`，再由运行时页故障处理器触发包含该诊断的
+panic。不能先单独写出栈范围、忽略返回 0，再只输出不含这些范围的通用 panic；
+普通 UART 事务短暂占用 gate 时会因此丢失唯一的栈保护判定信息。
 
 ## IRQ 与 worker 协议
 
@@ -344,6 +356,8 @@ Starry grouped 回归新增 `test-tty-termios-transaction`，并保留
 `tty-console-input-burst` 的原有断言。合入门槛是在 x86_64、riscv64、aarch64、
 loongarch64 上串行运行 SMP=4 QEMU 用例；当前是否满足以对应 PR head 的终态 CI 为准，
 设计文档不把历史运行结果当成新 head 的验证证据。
+
+以下两段保留 #2108 时的测试名与故障证据；当前入口已迁到 `apps/suite/axvisor/qemu/aarch64/console` 的 `interleave`、`atomic-output` 应用成员，现有步骤与覆盖边界以该目录 README 为准，不能用历史描述扩展当前验收结论。
 
 Axvisor 的 `qemu-console-interleave/interleave` 是 #2108 的确定性红灯：先经公共任务态 output
 直接输出 `rm`，

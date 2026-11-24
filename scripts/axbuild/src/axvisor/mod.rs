@@ -131,6 +131,10 @@ pub enum TestCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsTestQemu {
+    /// Explicit caller-owned suite root, containing the selected test group.
+    #[arg(long)]
+    pub test_root: Option<PathBuf>,
+
     #[arg(
         long,
         value_name = "ARCH",
@@ -150,7 +154,7 @@ pub struct ArgsTestQemu {
         short = 'g',
         long = "test-group",
         value_name = "GROUP",
-        help = "Run Axvisor QEMU test cases from one test group"
+        help = "Select a QEMU configuration group; repository tests default to the suite root"
     )]
     pub test_group: Option<String>,
     #[arg(
@@ -179,11 +183,15 @@ pub struct ArgsTestUboot {
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct ArgsTestBoard {
+    /// Explicit caller-owned suite root, containing the selected test group.
+    #[arg(long)]
+    pub test_root: Option<PathBuf>,
+
     #[arg(
         short = 'g',
         long = "test-group",
         value_name = "GROUP",
-        help = "Run Axvisor board test cases from one test group"
+        help = "Select a board configuration group; repository tests default to the suite root"
     )]
     pub test_group: Option<String>,
 
@@ -387,10 +395,29 @@ impl Axvisor {
         cargo: &Cargo,
         board_config_path: Option<&Path>,
     ) -> anyhow::Result<BoardRunConfig> {
+        self.load_selected_board_config(cargo, board_config_path, None)
+            .await
+    }
+
+    pub(crate) async fn load_selected_board_config(
+        &mut self,
+        cargo: &Cargo,
+        board_config_path: Option<&Path>,
+        selected: Option<&[String]>,
+    ) -> anyhow::Result<BoardRunConfig> {
         match board_config_path {
             Some(path) => {
+                let plan =
+                    crate::axvisor::test::checks::load_selected_runtime_checks(path, selected)?;
+                crate::axvisor::test::checks::require_outer_deadline_contract(&plan)?;
+                let expanded = crate::axvisor::test::checks::materialize_selected_runtime_checks(
+                    path,
+                    &self.app.target_dir().join("axbuild/runtime-configs"),
+                    selected,
+                )?;
+                let runtime_path = expanded.as_ref().map_or(path, |file| file.path());
                 self.app
-                    .read_board_run_config_from_path_for_cargo(cargo, path)
+                    .read_board_run_config_from_path_for_cargo(cargo, runtime_path)
                     .await
             }
             None => {

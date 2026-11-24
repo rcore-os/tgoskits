@@ -8,6 +8,8 @@ pub mod fxmac;
 pub mod intel;
 #[cfg(feature = "ls2k1000-gmac")]
 pub mod loongson_gmac;
+#[cfg(feature = "motorcomm-yt6801")]
+pub mod motorcomm;
 #[cfg(feature = "realtek-rtl8125")]
 pub mod realtek;
 

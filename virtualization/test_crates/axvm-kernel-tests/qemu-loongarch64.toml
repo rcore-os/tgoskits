@@ -1,0 +1,9 @@
+cmdline = "earlycon=ns16550,mmio,0x1fe001e0"
+args = [
+    "-cpu", "la464", "-m", "2G", "-smp", "1",
+    "-no-reboot", "-display", "none", "-serial", "mon:stdio",
+]
+timeout = 60
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

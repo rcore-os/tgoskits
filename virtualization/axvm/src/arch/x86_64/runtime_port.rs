@@ -388,6 +388,20 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
             .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 
+    fn cancel_timer_nowait(&self, handle: Self::TimerHandle) -> X86VlapicResult {
+        // Guest APIC reprogram accesses reach the vLAPIC cancel barrier from
+        // the vCPU entry window, where local interrupts are disabled and a
+        // yield-based wait would spin. The non-blocking host cancel still
+        // guarantees the registration cannot fire again; a completed
+        // registration's payload is reclaimed by the per-CPU timer service.
+        default_host()
+            .cancel_timer(handle)
+            .map(|_| {
+                self.timer_ingress.close();
+            })
+            .map_err(|_| X86VlapicError::TimerUnavailable)
+    }
+
     fn wait_timer_progress(&self) {
         // Task context only: the cancel barrier for a timer whose callback was
         // preempted on this same CPU (or whose host payload is still being

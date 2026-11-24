@@ -10,7 +10,7 @@ license.workspace = true
 [features]
 default = []
 global-allocator = []
-tlsf = []
+tlsf = ["dep:rlsf"]
 buddy-slab = [
   "dep:ax-crate-interface",
   "dep:buddy-slab-allocator",
@@ -27,7 +27,7 @@ all-features = true
 rustdoc-args = ["--cfg", "doc_cfg"]
 
 [dependencies]
-rlsf = "0.2"
+rlsf = { version = "0.2", optional = true }
 ax-crate-interface = { workspace = true, optional = true }
 ax-sync.workspace = true
 ax-memory-addr.workspace = true

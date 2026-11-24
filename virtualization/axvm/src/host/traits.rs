@@ -106,12 +106,14 @@ pub trait HostTimer {
 
     fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<HostTimerCancelOutcome>;
 
-    /// Cancels and waits for callback execution and payload reclamation.
+    /// Cancels and waits for callback execution and queue retirement.
     ///
     /// Task context only, outside locks needed by the callback. A deferred
     /// cancellation closes restart admission but is not a completion barrier;
     /// the same stable registration identity is retained until the host reports
-    /// retirement. Timer callbacks must not synchronously wait for this owner.
+    /// retirement. Retirement means the registration left the timer queue; the
+    /// host's timer service may still be destroying the dequeued payload.
+    /// Timer callbacks must not synchronously wait for this owner.
     #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
     fn cancel_timer_and_wait(&self, handle: Self::TimerHandle) -> AxVmResult<()> {
         loop {

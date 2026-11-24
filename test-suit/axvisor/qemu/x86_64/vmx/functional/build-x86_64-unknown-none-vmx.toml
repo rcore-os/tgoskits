@@ -1,0 +1,12 @@
+# The ordered ACPI/MP/PCI guests share one VMX kernel and host boot.
+features = ["ax-driver/nvme", "web-ui"]
+log = "Info"
+target = "x86_64-unknown-none"
+vm_configs = [
+    "test-suit/axvisor/qemu/x86_64/common/guests/acpi-direct/guest.toml",
+    "test-suit/axvisor/qemu/x86_64/common/guests/acpi-off/guest.toml",
+    "test-suit/axvisor/qemu/x86_64/common/guests/acpi-ovmf/guest.toml",
+    "test-suit/axvisor/qemu/x86_64/common/guests/pci-enumeration/guest.toml",
+    "test-suit/axvisor/qemu/x86_64/common/guests/pci-block-rw/guest.toml",
+    "test-suit/axvisor/qemu/x86_64/common/guests/pci-block-ro/guest.toml",
+]

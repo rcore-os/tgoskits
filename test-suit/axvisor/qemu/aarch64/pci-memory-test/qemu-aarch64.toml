@@ -1,0 +1,23 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-m",
+  "4g",
+  "-append",
+  "axvisor.vm_start=1",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^ARCEOS_PCI_MEMORY_TEST_FAIL(?:\\s|$)",
+]
+timeout = 120
+to_bin = true
+uefi = false
+
+[axbuild]
+checks = ["tests/memory.toml"]

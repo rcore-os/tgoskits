@@ -19,7 +19,9 @@ use crate::{
 const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
 
 mod boot;
+pub(crate) mod checks;
 mod config;
+pub(crate) mod control;
 mod discovery;
 mod grouping;
 mod host_initramfs;
@@ -39,6 +41,7 @@ pub(crate) use config::{
 pub(crate) use discovery::{
     case_name_from_wrapper, discover_all_qemu_cases, discover_all_qemu_cases_with_archs,
     discover_qemu_cases, discover_qemu_cases_allow_empty, nearest_build_wrapper, qemu_config_name,
+    validate_selected_case_name,
 };
 #[cfg(test)]
 pub(crate) use grouping::group_cases_by_build_config;

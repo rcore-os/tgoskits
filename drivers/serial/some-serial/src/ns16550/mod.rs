@@ -361,8 +361,18 @@ impl<T: Kind> UartPort for Ns16550<T> {
     }
 
     fn rearm(&mut self, sources: SerialEventSet) -> SerialEventSet {
+        let enabled = interrupt_enable_for_events(sources);
+        if !enabled.is_empty() {
+            let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
+            if !mcr.contains(ModemControlFlags::OUT_2) {
+                // Firmware may leave a console in polling mode. Open only the
+                // IRQ output gate, preserving its line and modem settings.
+                mcr.insert(ModemControlFlags::OUT_2);
+                self.write_flags(UART_MCR, mcr);
+            }
+        }
         let mut ier: InterruptEnableFlags = self.read_flags(UART_IER);
-        ier.insert(interrupt_enable_for_events(sources));
+        ier.insert(enabled);
         self.write_flags(UART_IER, ier);
 
         let lsr = self.read_lsr_preserving();
@@ -1640,9 +1650,38 @@ mod tests {
     }
 
     #[test]
-    fn rearm_remasks_a_source_that_is_already_ready() {
+    fn rearm_enables_interrupt_delivery_and_remasks_ready_sources() {
         let (_guard, mut uart) = serial();
-        uart.startup(&Config::new()).unwrap();
+        let firmware_mcr = UART_MCR_DTR | UART_MCR_OUT1;
+        REGS[UART_MCR as usize].store(firmware_mcr, Ordering::SeqCst);
+        REGS[UART_LCR as usize].store(0x3, Ordering::SeqCst);
+        DLL_REG.store(37, Ordering::SeqCst);
+        DLH_REG.store(2, Ordering::SeqCst);
+
+        assert!(uart.rearm(SerialEventSet::empty()).is_empty());
+        assert_eq!(REGS[UART_MCR as usize].load(Ordering::SeqCst), firmware_mcr);
+
+        assert!(
+            uart.rearm(SerialEventSet::RX | SerialEventSet::TX_SPACE)
+                .is_empty()
+        );
+        assert_eq!(
+            REGS[UART_MCR as usize].load(Ordering::SeqCst),
+            firmware_mcr | UART_MCR_OUT2,
+            "rearm must enable interrupt delivery without requiring startup"
+        );
+        assert_eq!(
+            REGS[UART_IER as usize].load(Ordering::SeqCst),
+            UART_IER_RDI | UART_IER_RLSI | UART_IER_THRI
+        );
+        assert_eq!(REGS[UART_LCR as usize].load(Ordering::SeqCst), 0x3);
+        assert_eq!(DLL_REG.load(Ordering::SeqCst), 37);
+        assert_eq!(DLH_REG.load(Ordering::SeqCst), 2);
+        assert_eq!(LAST_FCR_WRITE.load(Ordering::SeqCst), 0);
+        assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
+
+        uart.mask_all();
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), 0);
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
 
         let ready = uart.rearm(SerialEventSet::RX);

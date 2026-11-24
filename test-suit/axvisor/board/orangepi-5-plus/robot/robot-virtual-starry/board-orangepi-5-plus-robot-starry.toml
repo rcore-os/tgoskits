@@ -1,0 +1,17 @@
+board_type = "OrangePi-5-Plus"
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"
+timeout = 900
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "Failed to initialize guest VM",
+    "(?i)segmentation fault",
+    "(?i)SIGSEGV",
+    "exit with code: 139",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*\\[VISION_USB_CI\\] RESULT=FAIL .*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*USB_DIR_MISSING d=/home/orangepi/robot-ci/aka-rk3588-virtual(?:\\x1b\\[[0-9;]*m)*[ \\t\\r]*$",
+]
+
+[axbuild]
+checks = [
+    "tests/robot-virtual.toml",
+]

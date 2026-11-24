@@ -192,19 +192,37 @@ def install_toolchain(cache: Path) -> str:
     archive = root / Path(TOOLCHAIN_ARCHIVE_URL).name
     if not Path(f"{prefix}gcc").is_file():
         root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="download-", dir=root) as temporary:
-            candidate = archive if archive.is_file() else Path(temporary) / archive.name
-            if candidate != archive:
-                print(f"[virq] downloading {TOOLCHAIN_ARCHIVE_URL}")
-                run(["curl", "-fL", "--retry", "3", "--output", str(candidate), TOOLCHAIN_ARCHIVE_URL])
-            expected = os.environ.get("VIRQ_TOOLCHAIN_SHA256", TOOLCHAIN_ARCHIVE_SHA256)
-            digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
-            if digest != expected.casefold():
-                raise RuntimeError(
-                    f"toolchain archive {candidate} has sha256 {digest}, expected {expected}"
+        expected = (os.environ.get("VIRQ_TOOLCHAIN_SHA256") or TOOLCHAIN_ARCHIVE_SHA256).casefold()
+        if archive.is_file() and hashlib.sha256(archive.read_bytes()).hexdigest() != expected:
+            print(f"[virq] removing corrupt toolchain archive {archive}")
+            archive.unlink()
+        if not archive.is_file():
+            print(f"[virq] downloading {TOOLCHAIN_ARCHIVE_URL}")
+            with tempfile.NamedTemporaryFile(
+                dir=root, prefix=f"{archive.name}.", suffix=".part", delete=False
+            ) as download:
+                temporary = Path(download.name)
+            try:
+                run(
+                    [
+                        "curl",
+                        "-fL",
+                        "--retry",
+                        "3",
+                        "--retry-all-errors",
+                        "--output",
+                        str(temporary),
+                        TOOLCHAIN_ARCHIVE_URL,
+                    ]
                 )
-            if candidate != archive:
-                candidate.replace(archive)
+                digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
+                if digest != expected:
+                    raise RuntimeError(
+                        f"toolchain archive {temporary} has sha256 {digest}, expected {expected}"
+                    )
+                temporary.replace(archive)
+            finally:
+                temporary.unlink(missing_ok=True)
         print(f"[virq] unpacking {archive}")
         run(["tar", "-xJf", str(archive), "-C", str(root)])
     if not Path(f"{prefix}gcc").is_file():

@@ -1,0 +1,7 @@
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = "d=/home/orangepi/robot-ci/aka-rk3588-virtual"

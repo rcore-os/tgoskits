@@ -91,3 +91,25 @@ python3 scripts/test/check_axbuild_independence.py
 ### 4.2 定向行为检查
 
 Rust修改使用 `cargo xtask clippy --package axbuild`，并运行受影响的宿主测试和QEMU路径。根工具、AxVisor及StarryOS自己的xtask都是消费者；公共入口变化必须核对这些调用方。套件合并不得削弱成员断言、成功条件或失败传播。
+
+## 5. AxVisor功能检查引用
+
+AxVisor普通测试保持QEMU/板卡配置发现方式。运行配置的`[axbuild]`声明有序`checks`文件引用，场景名称默认取配置目录相对分组根的路径；不支持旧兼容别名，外部调用方仍可用`id`显式指定组名；功能定义保存原shell步骤或host probe，工具在内存展开成标准运行配置，必要的临时配置只存放于target目录并自动清理。组内任一失败或未完成均使整组失败，probe完成后才统一退出QEMU。
+
+调用方可以通过`axvisor test qemu/board --test-root <套件根> --test-group <分组>`提供自己的数据树；不依据general或平台目录名接管测试，不要求工具安装于TGOSKits目录。检查引用相对运行配置，probe和asset_dir相对功能定义；构建/客机原路径契约保持。具体项目布局及增改规则见[test-suit/axvisor/README.md](../../test-suit/axvisor/README.md)。
+
+应用也可通过`axvisor app qemu/board --app-root <应用根> --group <分组>`提供显式数据树，按目录路径选择应用；默认的`apps/axvisor`入口保持。仓库新增的手动套件位于`apps/suite`，由调用方传入，不在工具内硬编码其路径或成员。
+
+`--test-case`可选择组内检查文件名或`<组路径>/<检查名>`，整组路径选择全部成员。先选择再展开、按运行配置合并为一次启动，执行顺序由checks决定。功能文件可用`requires`引用同目录或相对路径的准备文件；同一次启动执行一次，循环依赖和未知/歧义成员明确失败。准备文件仍属于调用方数据，不引入setup目录或TGOSKits硬编码。应用使用`--app`选场景，可再用`--test-case`选其中成员。
+
+AxVisor运行时guest归档及其配置索引按内容寻址发布，避免等待板卡期间被其他调用覆盖。构建子进程通过`AXBUILD_GUEST_BUNDLE: ` JSON报告path/sha256，OTA等消费者读取并验证报告中的归档，不依赖固定arch.cpio文件名。
+
+### AxVisor串口与HTTP共用启动
+
+Unix宿主的有序QEMU检查由统一串口socket适配执行纯串口、纯HTTP和混合成员，按调用方checks/requires顺序运行，不依赖组名、架构目录或TGOSKits私有清单。AxVisor专用检查解析位于其适配层；共享`execution::qemu::checks`只拥有传输和生命周期。QEMU以串口wait=on避免丢失启动输出；成员、探针、进程退出和串口排空均成功才通过。无外部成员的传统纯串口配置继续沿用原路径，ostool未修改；非Unix宿主明确拒绝有序串口socket模式。
+
+`[host_http_probe.env]`是可选的字符串映射，用于调用方的客机ID、目录等profile参数。框架的HTTP地址、case目录和连接/请求预算保持优先，不改变父进程环境。选择单项时，显式超时按已选成员及去重后的requires求和，并受整组预算约束；未声明成员预算的旧配置继续使用整组预算。
+
+混合串口的待处理窗口和错误匹配记录各限制为16MiB，超限明确失败；不会截断后仍判通过。退出会读取已排队的数据，再释放串口监控器。
+
+成员总预算覆盖等待服务、提示符、命令发送与检查结果，不因进入下一步骤或HTTP阶段刷新。同次启动的HTTP端口与网卡配置先统一校验；其他成员输入独立。通用纯串口配置可用`[[shell_check_groups]]`声明`name`、`step_count`及`timeout`，按顺序完整覆盖已有`shell_check_steps`；Starry OpenRC通过它保留TTY及OpenRC的原总预算，不复制检查步骤或增加启动。

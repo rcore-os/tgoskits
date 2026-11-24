@@ -25,6 +25,7 @@ pub fn enumerate_by_controller_with_info<'a>(
         root: controller,
         segment: 0,
         bus_max: (range.end - 1) as _,
+        next_bus: range.start + 1,
         function: 0,
         is_mulitple_function: false,
         is_finish: false,
@@ -50,6 +51,7 @@ pub(crate) struct PciIterator<'a> {
     segment: u16,
     stack: Vec<Bridge>,
     bus_max: u8,
+    next_bus: usize,
     function: u8,
     is_mulitple_function: bool,
     is_finish: bool,
@@ -102,17 +104,11 @@ impl<'a> PciIterator<'a> {
             pci_types::HeaderType::PciPciBridge => {
                 let mut bridge = PciPciBridge::new(header_base);
                 let primary_bus = address.bus();
-                let secondary_bus;
-
-                if let Some(parent) = self.stack.last_mut() {
-                    if parent.bridge.subordinate_bus_number() == self.bus_max {
-                        return None;
-                    }
-
-                    secondary_bus = parent.bridge.subordinate_bus_number() + 1;
-                } else {
-                    panic!("no parent");
+                if self.next_bus > usize::from(self.bus_max) {
+                    return None;
                 }
+                let secondary_bus = self.next_bus as u8;
+                self.next_bus += 1;
                 let subordinate_bus = secondary_bus;
                 bridge.update_bus_number(|mut bus| {
                     bus.primary = primary_bus;

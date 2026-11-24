@@ -6,8 +6,8 @@ use super::{
     guest_csr::{GuestTimerRegistration, guest_cpucfg_value},
     host::LoongArchHostOps,
     iocsr::{
-        LoongArchIocsrStateRef, guest_owns_iocsr_write, host_iocsr_write, init_guest_iocsr,
-        inject_enabled_pending_interrupt, inject_guest_eiointc_vector, resolve_iocsr_read,
+        LoongArchIocsrStateRef, guest_pending_interrupts, init_guest_iocsr,
+        inject_enabled_pending_interrupt, inject_guest_eiointc_vector, update_guest_interrupts,
     },
     registers::{INT_HWI0, INT_IPI},
     trap::{ECODE_GSPR, TrapKind, extract_field, get_badi, get_exception_code, is_host_tlb_refill},
@@ -202,10 +202,9 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
     /// Resolves the host CPU-local operands of one LVZ exit while it is pinned.
     ///
     /// `finish_exit` interprets the exit later in plain task context, which may
-    /// run on a different host CPU, so every pinned-only side effect of the
-    /// faulting instruction is taken here: CPUCFG and IOCSR passthrough reads,
-    /// and the raw IOCSR passthrough write. Only the operands that instruction
-    /// needs are captured, never the whole register file, and only bounded local
+    /// run on a different host CPU. Only CPUCFG needs a pinned host read;
+    /// IOCSR accesses operate entirely on VM-owned state in task context.
+    /// Only the operands that instruction needs are captured, and only bounded local
     /// accesses happen: no timer, allocation, device service or sleeping lock is
     /// touched while the backend is bound.
     pub(crate) fn capture_pinned_host(
@@ -216,8 +215,8 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             return LoongArchPinnedHost::None;
         }
         let ctx = &self.machine.context;
-        // Only a software GSPR emulation touches host-local CPUCFG or IOCSR
-        // state. Translation refills, hypercalls and page faults are described
+        // Only CPUCFG emulation touches host-local state.
+        // Translation refills, hypercalls and page faults are described
         // entirely by the durable guest context.
         if is_host_tlb_refill(ctx) || get_exception_code(ctx) != ECODE_GSPR {
             return LoongArchPinnedHost::None;
@@ -232,39 +231,30 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
                     value: guest_cpucfg_value(index),
                 }
             }
-            Some(GsprOp::Iocsr { ty, addr }) if ty <= 3 => LoongArchPinnedHost::IocsrRead {
-                addr,
-                value: resolve_iocsr_read(&self.iocsr_state, self.vm_id, self.vcpu_id, ty, addr),
-            },
-            Some(GsprOp::Iocsr { ty, addr }) => {
-                if guest_owns_iocsr_write(addr) {
-                    // Guest-owned emulation stays on the task side; it only
-                    // touches program-owned IOCSR state.
-                    LoongArchPinnedHost::IocsrWriteGuest
-                } else {
-                    // Raw host passthrough: the only native CPU-local write of
-                    // the exit, so it must run before the backend is unloaded.
-                    let rd = extract_field(ins, 0, 5);
-                    host_iocsr_write(ty, addr, ctx.x[rd]);
-                    LoongArchPinnedHost::IocsrWritePassthrough { addr }
-                }
-            }
             _ => LoongArchPinnedHost::None,
         }
     }
 
     pub(crate) fn bind(&mut self) -> LoongArchVcpuResult {
-        let addresses = ax_cpu::virtualization::entry_addresses().map(|address| {
+        let original_addresses = ax_cpu::virtualization::entry_addresses();
+        let pa = H::virt_to_phys(LoongArchHostVirtAddr::from_usize(
+            original_addresses[1].as_usize(),
+        ));
+        let refill_phys = ax_cpu::PhysAddr::from_usize(pa.as_usize());
+        let addresses = original_addresses.map(|address| {
             ax_cpu::VirtAddr::from_usize(
                 0x9000_0000_0000_0000
                     | H::virt_to_phys(LoongArchHostVirtAddr::from_usize(address.as_usize()))
                         .as_usize(),
             )
         });
-        // SAFETY: the host's permanent direct map provides executable aliases of
-        // CPU entry text. AxVM pins the binding and retains this backend until unbind.
+        // SAFETY: the host owner's valid mapping of the original, currently loaded
+        // refill symbol yields its physically reachable PA and the matching refill
+        // alias in the same entry text. The permanent direct map keeps all three
+        // aliases executable; the code and mappings remain valid throughout the
+        // binding. AxVM pins the binding and retains this backend until unbind.
         unsafe {
-            let entries = ax_cpu::virtualization::EntryAddresses::new(addresses)
+            let entries = ax_cpu::virtualization::EntryAddresses::new(addresses, refill_phys)
                 .map_err(|_| LoongArchVcpuError::InvalidInput)?;
             self.machine
                 .bind(entries)
@@ -351,6 +341,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         } else {
             log::warn!("Ignoring unsupported LoongArch interrupt vector {vector}");
         }
+        update_guest_interrupts(&self.iocsr_state, &mut self.machine.context, self.vcpu_id);
         Ok(())
     }
 
@@ -378,7 +369,10 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             );
             return self.inject_interrupt(hwi);
         }
-        self.inject_interrupt(vector)
+        // A masked or unrouted source remains pending in the VM IOCSR model.
+        // Never reinterpret its source number as a CPU interrupt vector.
+        update_guest_interrupts(&self.iocsr_state, &mut self.machine.context, self.vcpu_id);
+        Ok(())
     }
 
     pub(crate) fn inject_eiointc_interrupt(&mut self, vector: usize) -> LoongArchVcpuResult {
@@ -389,16 +383,35 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             return self.inject_interrupt(hwi);
         }
         log::warn!("Ignoring masked LoongArch EIOINTC vector {vector}");
+        update_guest_interrupts(&self.iocsr_state, &mut self.machine.context, self.vcpu_id);
         Ok(())
     }
 
     pub(crate) fn has_enabled_pending_interrupt(&self) -> bool {
         self.machine.context.gcsr_eentry != 0
             && self.machine.context.gcsr_crmd & CSR_CRMD_IE != 0
-            && self.machine.context.gcsr_estat
+            && guest_pending_interrupts(&self.iocsr_state, &self.machine.context, self.vcpu_id)
                 & self.machine.context.gcsr_ectl
                 & LOCAL_INTERRUPT_MASK
                 != 0
+    }
+
+    /// Arms the existing run-bound producer while IDLE parks the vCPU task.
+    /// The CPU entry owns the hardware timer only while the guest executes.
+    pub(crate) fn arm_idle_timer(&mut self) -> LoongArchVcpuResult {
+        self.guest_timer.cancel()?;
+        let ctx = &mut self.machine.context;
+        ctx.update_timer();
+        let period = ctx.gcsr_tcfg & !3;
+        if ctx.gcsr_tcfg & 1 == 0
+            || ctx.gcsr_estat & (1 << 11) != 0
+            || (ctx.gcsr_tcfg & 2 == 0 && ctx.gcsr_tval > period)
+        {
+            return Ok(());
+        }
+        let deadline =
+            H::current_time_nanos().saturating_add(H::ticks_to_nanos(ctx.gcsr_tval as u64));
+        self.guest_timer.arm(deadline, self.vm_id, self.vcpu_id)
     }
 
     /// Cancels the outstanding guest timer in task context.
@@ -510,6 +523,164 @@ impl<H: LoongArchHostOps> Drop for LoongArchVcpu<H> {
                 self.vm_id,
                 self.vcpu_id
             );
+        }
+    }
+}
+
+#[cfg(any(test, axtest))]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::{
+        AxVmError, GuestMemoryPort, MemoryRevision, RunId, VmKey,
+        arch::loongarch64::{
+            AxvmLoongArchHostOps, AxvmLoongArchVcpu, LoongArch64Arch, LoongArchEntry, LoongArchExit,
+        },
+        architecture::ops::ArchOps,
+        services::{RunServices, RunSignals},
+    };
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn iocsr_backend_gate_and_fault_exit() {
+        let state = super::super::iocsr::LoongArchIocsrState::new(&[0]).unwrap();
+        init_guest_iocsr(&state, 0);
+        let backend = LoongArchVcpu::<AxvmLoongArchHostOps>::new(
+            1,
+            0,
+            LoongArchVCpuCreateConfig {
+                cpu_id: 0,
+                dtb_addr: 0,
+                boot_args: [0; 3],
+                boot_stack_top: 0,
+                firmware_boot: true,
+                iocsr_state: state.clone(),
+            },
+        )
+        .unwrap();
+        let mut vcpu = AxvmLoongArchVcpu { backend };
+        vcpu.backend.machine.context.gcsr_era = 0x1234;
+        vcpu.backend.machine.context.gcsr_crmd = CSR_CRMD_IE;
+        vcpu.backend.machine.context.gcsr_ectl = LOCAL_INTERRUPT_MASK;
+        vcpu.backend.machine.context.gcsr_eentry = 0x8000;
+        vcpu.backend.inject_external_interrupt(7, 7).unwrap();
+        assert_eq!(
+            vcpu.backend.machine.context.gcsr_estat & super::super::trap::HWI_MASK,
+            0
+        );
+        assert!(!vcpu.backend.has_enabled_pending_interrupt());
+        let write_ins = (0x19207 << 10) | (5 << 5) | 4;
+        vcpu.backend.machine.context.x[5] = 0x420;
+        vcpu.backend.machine.context.x[4] = 1 << 48;
+        assert!(matches!(
+            super::super::iocsr::emulate_iocsr(
+                &state,
+                &mut vcpu.backend.machine.context,
+                write_ins,
+                1,
+                0,
+            )
+            .unwrap(),
+            LoongArchVmExit::Nothing
+        ));
+        assert!(vcpu.backend.has_enabled_pending_interrupt());
+        vcpu.backend.machine.context.x[5] = 0x4000_0004;
+        vcpu.backend.machine.context.x[4] = 0;
+        assert!(matches!(
+            super::super::iocsr::emulate_iocsr(
+                &state,
+                &mut vcpu.backend.machine.context,
+                (0x19206 << 10) | (5 << 5) | 4,
+                1,
+                0,
+            )
+            .unwrap(),
+            LoongArchVmExit::Nothing
+        ));
+        vcpu.backend.machine.context.gcsr_estat |= super::super::trap::HWI_MASK;
+        assert!(!vcpu.backend.has_enabled_pending_interrupt());
+        vcpu.backend.inject_external_interrupt(7, 7).unwrap();
+        assert_eq!(
+            vcpu.backend.machine.context.gcsr_estat & super::super::trap::HWI_MASK,
+            0
+        );
+
+        let run_id = RunId::new(VmKey::new(1, 1), 1);
+        let signals = RunSignals::new(run_id, 1).unwrap();
+        let plan = axdevice::VmResourcePlanner::new(axdevice::ResourcePools::new())
+            .plan(std::vec::Vec::<axdevice::DevicePlanRequest>::new())
+            .unwrap();
+        let devices = Arc::new(
+            axdevice::DeviceRuntimeBuilder::new(axdevice::RuntimeAccessPorts::new())
+                .finish(&plan)
+                .unwrap(),
+        );
+        let memory = GuestMemoryPort::new(
+            MemoryRevision {
+                run: run_id,
+                sequence: 1,
+            },
+            std::vec![],
+            || {},
+        );
+        let services = RunServices::new(run_id, devices, memory, signals.clone());
+        let entry = LoongArchEntry {
+            pch_pic: Arc::new(axdevice::LoongArchPchPic::new(
+                axvm_types::GuestPhysAddr::from(0x1000),
+                0x1000,
+            )),
+            run: LoongArchRunPort::new(signals),
+            physical_inputs: [None; crate::arch::loongarch64::irq::LOONGARCH_MAX_IRQ_COUNT],
+        };
+        // Both a rejected IOCSR access and an invalid GSPR survive finish_exit.
+        for ins in [(0x19202 << 10) | (5 << 5) | 4, 0x0648_2004] {
+            let ctx = &mut vcpu.backend.machine.context;
+            ctx.gcsr_era = 0x1234;
+            ctx.host_era = 0x1234;
+            ctx.host_tlbrera = 0;
+            ctx.host_badi = ins;
+            ctx.host_estat = ECODE_GSPR << 16;
+            ctx.x[5] = 0x408;
+            let machine = ax_cpu::virtualization::Exit {
+                kind: ax_cpu::virtualization::ExitKind::Synchronous,
+                status: ECODE_GSPR << 16,
+                instruction: ins,
+                pc: 0x1234,
+            };
+            let pinned = vcpu.backend.capture_pinned_host(&machine);
+            assert_eq!(pinned, LoongArchPinnedHost::None);
+            let exit = LoongArch64Arch::finish_exit(
+                &mut vcpu,
+                &entry,
+                LoongArchExit::Machine {
+                    exit: machine,
+                    host: pinned,
+                },
+            )
+            .unwrap();
+            assert_eq!(vcpu.backend.machine.context.gcsr_era, 0x1234);
+            let error = match LoongArch64Arch::handle_exit(exit, 0, &services) {
+                Err(error) => error,
+                Ok(_) => panic!("invalid guest instruction did not produce a fault"),
+            };
+            let AxVmError::Unsupported { detail, .. } = error else {
+                panic!("{error:?}")
+            };
+            assert!(
+                detail.contains("pc=0x1234")
+                    && detail.contains(&std::format!("instruction={ins:#x}")),
+                "{detail}"
+            );
+            if ins >> 10 == 0x19202 {
+                assert!(
+                    detail.contains("address=0x408")
+                        && detail.contains("Read")
+                        && detail.contains("width=4")
+                        && detail.contains("UnknownAddress"),
+                    "{detail}"
+                );
+            }
         }
     }
 }

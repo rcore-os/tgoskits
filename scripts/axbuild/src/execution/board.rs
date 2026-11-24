@@ -34,11 +34,17 @@ pub(crate) struct BoardCaseBuildInfo {
 
 const BOARD_TEST_REQUIREMENTS_FILE: &str = "requirements.toml";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BoardTestRequirements {
     #[serde(default)]
     required_env: Vec<String>,
+    /// Explicitly verified lifetime contract for sharing one Starry boot.
+    #[serde(default)]
+    shared_boot: bool,
+    /// Opt in selected runtime variants without enabling other board workflows.
+    #[serde(default)]
+    shared_boot_selectors: Vec<String>,
 }
 
 pub(crate) fn labeled_board_cases<T: BoardTestGroupInfo>(groups: Vec<T>) -> Vec<(String, String)> {
@@ -228,10 +234,25 @@ pub(crate) fn discover_board_case_build_infos(
 }
 
 pub(crate) fn load_board_test_required_env(case_dir: &Path) -> anyhow::Result<Vec<String>> {
+    Ok(load_board_test_requirements(case_dir)?.required_env)
+}
+
+pub(crate) fn board_test_shared_boot(case_dir: &Path, selector: &str) -> anyhow::Result<bool> {
+    let requirements = load_board_test_requirements(case_dir)?;
+    Ok(requirements.shared_boot
+        || requirements
+            .shared_boot_selectors
+            .iter()
+            .any(|selected| selected == selector))
+}
+
+fn load_board_test_requirements(case_dir: &Path) -> anyhow::Result<BoardTestRequirements> {
     let path = case_dir.join(BOARD_TEST_REQUIREMENTS_FILE);
     let source = match fs::read_to_string(&path) {
         Ok(source) => source,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BoardTestRequirements::default());
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("failed to read {}", path.display()));
         }
@@ -251,7 +272,15 @@ pub(crate) fn load_board_test_required_env(case_dir: &Path) -> anyhow::Result<Ve
             path.display()
         );
     }
-    Ok(requirements.required_env)
+    let mut selectors = BTreeSet::new();
+    for selector in &requirements.shared_boot_selectors {
+        ensure!(
+            !selector.is_empty() && selector.trim() == selector && selectors.insert(selector),
+            "empty or duplicate shared boot selector in {}",
+            path.display()
+        );
+    }
+    Ok(requirements)
 }
 
 pub(crate) fn missing_required_env(required: &[String]) -> Vec<String> {
@@ -412,6 +441,30 @@ mod tests {
         });
 
         assert_eq!(missing, ["ABSENT", "EMPTY"]);
+    }
+
+    #[test]
+    fn shared_boot_opt_in_does_not_enable_other_runtime_variants() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(BOARD_TEST_REQUIREMENTS_FILE);
+        assert!(!board_test_shared_boot(root.path(), "fixture-loopback").unwrap());
+        fs::write(
+            &path,
+            "required_env = [\"FIXTURE_ENV\"]\nshared_boot_selectors = [\"fixture-loopback\"]\n",
+        )
+        .unwrap();
+        assert!(board_test_shared_boot(root.path(), "fixture-loopback").unwrap());
+        assert!(!board_test_shared_boot(root.path(), "fixture-actuator").unwrap());
+        assert_eq!(
+            load_board_test_required_env(root.path()).unwrap(),
+            ["FIXTURE_ENV"]
+        );
+        fs::write(&path, "shared_boot = true\n").unwrap();
+        assert!(board_test_shared_boot(root.path(), "fixture-loopback").unwrap());
+        for invalid in ["[\"fixture\", \"fixture\"]", "[\"\"]", "[\" fixture\"]"] {
+            fs::write(&path, format!("shared_boot_selectors = {invalid}\n")).unwrap();
+            assert!(board_test_shared_boot(root.path(), "fixture").is_err());
+        }
     }
 
     #[test]

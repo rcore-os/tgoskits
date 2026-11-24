@@ -93,7 +93,7 @@ BusyBox 接收关机或重启请求后执行 `inittab` 的 shutdown 动作。Ope
 
 ## 3. 验证与恢复
 
-必须分别记录四架构的启动、服务和电源终态，构建成功不等于 OpenRC 可用。`test-suit/starryos/qemu/pid1` 使用专用 PID 1 测试根进程语义，`pid1-exit` 与 `pid1-exit-thread` 分别通过原始 `exit_group`、`exit` 验证根进程致命退出，`pid1-fault` 验证未处理同步缺页不会被 init 信号保护吞掉。相关命名空间回归继续通过 system 套件运行。
+必须分别记录四架构的启动、服务和电源终态，构建成功不等于 OpenRC 可用。`test-suit/starryos/qemu/standard/pid1` 使用专用 PID 1 测试根进程语义，`pid1-exit` 与 `pid1-exit-thread` 分别通过原始 `exit_group`、`exit` 验证根进程致命退出，`pid1-fault` 验证未处理同步缺页不会被 init 信号保护吞掉。相关命名空间回归继续通过 system 套件运行。
 
 ### 3.1 执行入口
 

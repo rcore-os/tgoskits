@@ -1,0 +1,23 @@
+board_type = "OrangePi-5-Plus"
+uboot_cmd = [
+    "setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1,2,3",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "Kernel panic - not syncing",
+    "Failed to initialize guest VM",
+    "Failed to start VM",
+    "VM\\[[123]\\] run VCpu\\[0\\] get error",
+    "VFS: Cannot open root device",
+    "(?i)segmentation fault",
+    "(?i)SIGSEGV",
+    "(?m)^(?:LINUX|STARRY)_(?:MOUNTS|SYNC|CPU|FILE|IFLIST|IFNAME|IP|ROUTE|NET|APTSRC|STATE|INSTALL|HELLO|PURGE|RESTORE)_(?:FAIL|NONE)\\b",
+    "(?m)^(?:LINUX|STARRY)_LINKUP_(?:FAIL|[1-9][0-9]*)\\b",
+    "PROJECT\\s+EXECUTION\\s+SUCCESSFUL",
+]
+timeout = 1800
+
+[axbuild]
+checks = [
+    "tests/guest-functional.toml",
+]

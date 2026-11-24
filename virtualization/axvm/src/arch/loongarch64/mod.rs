@@ -84,6 +84,7 @@ pub(crate) struct LoongArchExitRecord {
 }
 
 enum LoongArchExitKind {
+    EmulationFault(LoongArchEmulationFault),
     Hypercall {
         nr: u64,
         args: [u64; 6],
@@ -222,6 +223,11 @@ impl ArchOps for LoongArch64Arch {
     }
 
     fn prepare_vcpu(vcpu: &mut Self::VCpu, entry: &Self::Entry) -> AxVmResult {
+        // Retire any resumed IDLE callback before binding hardware on this CPU.
+        // Cancellation may wait, so it belongs to this unpinned task phase.
+        vcpu.backend
+            .quiet_timer()
+            .map_err(|error| AxVmError::vcpu("retire LoongArch idle timer before entry", error))?;
         vcpu.backend.set_run_port(entry.run.clone());
         Ok(())
     }
@@ -304,10 +310,9 @@ impl ArchOps for LoongArch64Arch {
     /// The engine calls this outside `with_engine_scope`, so guest CSR
     /// emulation and its `H::register_timer`/`H::cancel_timer` calls run in
     /// plain task context instead of inside the pinned guest-entry scope. Every
-    /// host CPU-local read and the native IOCSR passthrough write were resolved
-    /// while the backend was pinned and are carried in `LoongArchPinnedHost`, so
-    /// this stage never reads or writes the CPUCFG or IOCSR bank of the CPU it
-    /// happens to run on. MMIO decoding still reads only the saved guest context
+    /// CPUCFG read was resolved while pinned and is carried in
+    /// `LoongArchPinnedHost`. IOCSR accesses use only VM-owned state.
+    /// MMIO decoding still reads only the saved guest context
     /// and faulting instruction.
     fn finish_exit(
         vcpu: &mut Self::VCpu,
@@ -347,6 +352,10 @@ impl ArchOps for LoongArch64Arch {
             ));
         };
         match kind {
+            LoongArchExitKind::EmulationFault(fault) => Err(AxVmError::unsupported(
+                "interpret LoongArch guest instruction",
+                fault,
+            )),
             LoongArchExitKind::Hypercall { nr, args } => {
                 // The shared exit interpreter already produces this
                 // architecture's completion type.
@@ -509,11 +518,20 @@ impl ArchOps for LoongArch64Arch {
         _entry: &Self::Entry,
         wait: &VcpuWait,
     ) -> AxVmResult {
+        vcpu.backend
+            .arm_idle_timer()
+            .map_err(|error| AxVmError::vcpu("arm LoongArch idle timer", error))?;
         // The predicate only reads this vCPU's own pending-interrupt state, so
         // the backend borrow is hoisted out and shared by the `Fn` closure.
         let backend = vcpu;
         wait.wait_until(|| backend.has_enabled_pending_interrupt());
-        Ok(())
+        // Retire the producer before re-entry, including an external wake or
+        // stop request racing with the deadline. Already-published TI remains
+        // in the canonical run queue and is consumed by the next attempt.
+        backend
+            .backend
+            .quiet_timer()
+            .map_err(|error| AxVmError::vcpu("retire LoongArch idle timer", error))
     }
 }
 
@@ -522,6 +540,7 @@ fn interpret_loongarch_exit(
     exit: LoongArchVmExit,
 ) -> AxVmResult<LoongArchExitKind> {
     match exit {
+        LoongArchVmExit::EmulationFault(fault) => Ok(LoongArchExitKind::EmulationFault(fault)),
         // The LVZ interpreter never nests a raw machine exit inside an
         // interpreted one; `finish_exit` unwraps it before this runs.
         LoongArchVmExit::Machine(_) => Err(AxVmError::vcpu(
@@ -690,8 +709,8 @@ impl AxvmLoongArchVcpu {
 
     /// Resolves the pinned host CPU-local operands of one raw LVZ exit.
     ///
-    /// Runs inside the pinned guest-entry scope, so it may read and write this
-    /// CPU's CPUCFG and IOCSR banks directly. It performs only those bounded
+    /// Runs inside the pinned guest-entry scope and reads CPUCFG only.
+    /// It performs only those bounded
     /// local accesses: no timer registration, allocation, device service or
     /// sleeping lock is touched while the backend is bound.
     fn capture_pinned_host(&self, exit: &ax_cpu::virtualization::Exit) -> LoongArchPinnedHost {

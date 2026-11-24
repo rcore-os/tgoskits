@@ -20,11 +20,13 @@ use ax_runtime::hal::irq::{
 };
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axhvc::ivc::{self, IvcGuestPhysAddr};
-use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion};
 use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use bytemuck::{AnyBitPattern, NoUninit};
 
+use super::ivc_legacy::{
+    self as legacy_ivc, IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion,
+};
 use crate::{
     mm::{VmMutPtr, VmPtr},
     pseudofs::{DeviceBacking, DeviceMmap, DeviceOps, DirMapping, SimpleFsContext},
@@ -1119,12 +1121,12 @@ fn vm_error(_err: starry_vm::VmError) -> VfsError {
     VfsError::BadAddress
 }
 
-fn ring_error(err: axivc::IvcRingError) -> VfsError {
+fn ring_error(err: legacy_ivc::IvcRingError) -> VfsError {
     match err {
-        axivc::IvcRingError::Full => VfsError::WouldBlock,
-        axivc::IvcRingError::PayloadTooLarge { .. } => VfsError::InvalidInput,
-        axivc::IvcRingError::BufferTooSmall { .. } => VfsError::InvalidInput,
-        axivc::IvcRingError::UnknownMessageKind(_) => VfsError::InvalidData,
+        legacy_ivc::IvcRingError::Full => VfsError::WouldBlock,
+        legacy_ivc::IvcRingError::PayloadTooLarge { .. } => VfsError::InvalidInput,
+        legacy_ivc::IvcRingError::BufferTooSmall { .. } => VfsError::InvalidInput,
+        legacy_ivc::IvcRingError::UnknownMessageKind(_) => VfsError::InvalidData,
     }
 }
 

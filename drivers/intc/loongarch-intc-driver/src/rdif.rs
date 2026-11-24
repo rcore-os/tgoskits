@@ -116,20 +116,54 @@ impl DriverGeneric for LioIntcController {
 impl Interface for LioIntcController {
     fn translate_fdt(&self, irq_prop: &[u32]) -> Result<ControllerIrqTranslation, IrqError> {
         let raw = first_specifier_cell("LIOINTC", irq_prop)?;
-        let input = LioInput::new(raw).map_err(map_core_error)?;
+        let input = checked_lio_input(self, HwIrq(raw as u32))?;
         Ok(ControllerIrqTranslation::new(HwIrq(input.raw() as u32)))
     }
 
+    fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
+        route.controller == AcpiGsiController::LioPic
+            // LIOPIC has no hardware ID; only a single instance is supported.
+            && route.controller_id == 0
+            && route.controller_address == self.controller_address()
+            && checked_lio_input(self, HwIrq(u32::from(route.controller_input))).is_ok()
+    }
+
+    fn translate_acpi(&self, route: &AcpiGsiRoute) -> Result<ControllerIrqTranslation, IrqError> {
+        if !self.supports_acpi_gsi(route) {
+            return Err(IrqError::Unsupported);
+        }
+        Ok(ControllerIrqTranslation::new(HwIrq(u32::from(
+            route.controller_input,
+        ))))
+    }
+
     fn configure(&mut self, translation: &IrqTranslation) -> Result<(), IrqError> {
-        let _input = LioInput::new(translation.id.hwirq.0 as usize).map_err(map_core_error)?;
+        checked_lio_input(self, translation.id.hwirq)?;
         match translation.trigger {
             None | Some(Trigger::LevelHigh) => Ok(()),
             Some(_) => Err(IrqError::Unsupported),
         }
     }
 
+    fn configure_acpi(
+        &mut self,
+        translation: &IrqTranslation,
+        route: &AcpiGsiRoute,
+    ) -> Result<(), IrqError> {
+        if !self.supports_acpi_gsi(route) {
+            return Err(IrqError::Unsupported);
+        }
+        if translation.id.hwirq.0 != u32::from(route.controller_input) {
+            return Err(IrqError::InvalidIrq);
+        }
+        if route.trigger != AcpiIrqTrigger::Level || route.polarity != AcpiIrqPolarity::ActiveHigh {
+            return Err(IrqError::Unsupported);
+        }
+        self.configure(translation)
+    }
+
     fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
-        let input = LioInput::new(hwirq.0 as usize).map_err(map_core_error)?;
+        let input = checked_lio_input(self, hwirq)?;
         LioIntcController::set_enabled(self, input, enabled);
         Ok(())
     }
@@ -151,6 +185,14 @@ fn checked_pch_input(controller: &PchPicController, hwirq: HwIrq) -> Result<PchI
         input.raw(),
         controller.config().input_count(),
     )?;
+    Ok(input)
+}
+
+fn checked_lio_input(controller: &LioIntcController, hwirq: HwIrq) -> Result<LioInput, IrqError> {
+    let input = LioInput::new(hwirq.0 as usize).map_err(map_core_error)?;
+    if !controller.config().is_input_routed(input) {
+        return Err(IrqError::InvalidIrq);
+    }
     Ok(input)
 }
 

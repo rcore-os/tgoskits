@@ -56,17 +56,6 @@ register_bitfields! [
         BOX OFFSET(2) NUMBITS(3) [],
         CPU OFFSET(16) NUMBITS(10) [],
         BUF OFFSET(32) NUMBITS(32) []
-    ],
-
-    pub EXTIOI_FEATURES [
-        VIRT_EXTENSION OFFSET(0) NUMBITS(1) [],
-        ENABLE_OPTION OFFSET(1) NUMBITS(1) [],
-        INT_ENCODE OFFSET(2) NUMBITS(1) [],
-        CPU_ENCODE OFFSET(3) NUMBITS(1) []
-    ],
-
-    pub EXTIOI_VIRT_CONFIG_REG [
-        ENABLE_CPU_ENCODE OFFSET(3) NUMBITS(1) []
     ]
 ];
 
@@ -122,10 +111,6 @@ pub fn guest_tcfg_enabled(value: usize) -> bool {
     value & guest_tcfg_enable_mask() != 0
 }
 
-pub fn guest_tcfg_periodic(value: usize) -> bool {
-    value & TCFG::PERIODIC::SET.value != 0
-}
-
 pub fn guest_tcfg_initval(value: usize) -> usize {
     LocalRegisterCopy::<usize, TCFG::Register>::new(value).read(TCFG::INITVAL) << 2
 }
@@ -158,21 +143,6 @@ pub fn iocsr_mbuf_send_box(value: usize) -> usize {
     LocalRegisterCopy::<usize, IOCSR_MBUF_SEND::Register>::new(value).read(IOCSR_MBUF_SEND::BOX)
 }
 
-pub fn iocsr_mbuf_send_cpu(value: usize) -> usize {
-    LocalRegisterCopy::<usize, IOCSR_MBUF_SEND::Register>::new(value).read(IOCSR_MBUF_SEND::CPU)
-}
-
 pub fn iocsr_mbuf_send_buf(value: usize) -> usize {
     LocalRegisterCopy::<usize, IOCSR_MBUF_SEND::Register>::new(value).read(IOCSR_MBUF_SEND::BUF)
-}
-
-pub const fn extioi_features_value() -> usize {
-    EXTIOI_FEATURES::VIRT_EXTENSION::SET.value
-        | EXTIOI_FEATURES::ENABLE_OPTION::SET.value
-        | EXTIOI_FEATURES::INT_ENCODE::SET.value
-        | EXTIOI_FEATURES::CPU_ENCODE::SET.value
-}
-
-pub fn extioi_cpu_encode_enabled(value: usize) -> bool {
-    value & EXTIOI_VIRT_CONFIG_REG::ENABLE_CPU_ENCODE::SET.value != 0
 }

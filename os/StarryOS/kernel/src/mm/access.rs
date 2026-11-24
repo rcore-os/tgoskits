@@ -795,7 +795,9 @@ fn user_page_fault_may_be_serviced(thr: &crate::task::Thread) -> bool {
 }
 
 pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
-    ax_runtime::diagnostics::panic_on_current_stack_guard_page_fault(vaddr);
+    if let Some(fault) = ax_runtime::diagnostics::diagnose_current_stack_guard_page_fault(vaddr) {
+        panic!("{fault}");
+    }
 
     // This callback handles only faults caused by a user mapping or by the
     // kernel explicitly touching one. Reject unrelated kernel addresses before

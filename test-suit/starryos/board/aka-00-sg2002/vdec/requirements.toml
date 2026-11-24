@@ -1,0 +1,3 @@
+required_env = ["STARRY_WIFI_SSID", "STARRY_WIFI_PASSWORD"]
+# Frames and decoder channel are released before the following network check.
+shared_boot = true

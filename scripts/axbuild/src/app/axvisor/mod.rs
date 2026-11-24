@@ -1,4 +1,6 @@
 //! Select applications independently from test suites and reuse the case runners.
+use std::path::PathBuf;
+
 use clap::{Args, Subcommand};
 
 use crate::axvisor::{ArgsTestBoard, ArgsTestQemu, Axvisor, test::discovery::CaseSource};
@@ -21,7 +23,13 @@ pub enum AppCommand {
 
 #[derive(Args, Default)]
 pub struct AppSelection {
-    /// Application directory relative to apps/axvisor/<GROUP>; includes descendants
+    /// Explicit application root containing groups; defaults to the workspace app root
+    #[arg(long, value_name = "PATH")]
+    pub app_root: Option<PathBuf>,
+    /// Run selected checks within each selected application
+    #[arg(long = "test-case", value_delimiter = ',')]
+    pub test_cases: Vec<String>,
+    /// Application directory relative to the selected group; includes descendants
     #[arg(
         short = 't',
         long = "app",
@@ -69,6 +77,7 @@ impl Axvisor {
                 println!("AxVisor board applications:");
                 self.run_board_cases(
                     ArgsTestBoard {
+                        test_root: None,
                         list: true,
                         ..Default::default()
                     },
@@ -78,6 +87,7 @@ impl Axvisor {
                 println!("AxVisor QEMU applications:");
                 self.run_qemu_cases(
                     ArgsTestQemu {
+                        test_root: None,
                         arch: None,
                         target: None,
                         test_group: None,
@@ -89,33 +99,74 @@ impl Axvisor {
                 .await
             }
             AppCommand::Board(args) => {
+                let selectors = app_member_selectors(&args.selection);
+                let root = args
+                    .selection
+                    .app_root
+                    .as_ref()
+                    .map(|path| path.canonicalize())
+                    .transpose()?;
+                let source = root
+                    .as_deref()
+                    .map_or(CaseSource::Apps, CaseSource::ExternalApps);
                 self.run_board_cases(
                     ArgsTestBoard {
+                        test_root: None,
                         test_group: args.selection.group,
-                        test_case: args.selection.apps,
+                        test_case: selectors,
                         board: args.board,
                         board_type: args.board_type,
                         server: args.server,
                         port: args.port,
                         list: args.selection.list,
                     },
-                    CaseSource::Apps,
+                    source,
                 )
                 .await
             }
             AppCommand::Qemu(args) => {
+                let selectors = app_member_selectors(&args.selection);
+                let root = args
+                    .selection
+                    .app_root
+                    .as_ref()
+                    .map(|path| path.canonicalize())
+                    .transpose()?;
+                let source = root
+                    .as_deref()
+                    .map_or(CaseSource::Apps, CaseSource::ExternalApps);
                 self.run_qemu_cases(
                     ArgsTestQemu {
+                        test_root: None,
                         arch: args.arch,
                         target: args.target,
                         test_group: args.selection.group,
-                        test_case: args.selection.apps,
+                        test_case: selectors,
                         list: args.selection.list,
                     },
-                    CaseSource::Apps,
+                    source,
                 )
                 .await
             }
         }
     }
+}
+
+fn app_member_selectors(selection: &AppSelection) -> Vec<String> {
+    if selection.apps.is_empty() {
+        return selection.test_cases.clone();
+    }
+    if selection.test_cases.is_empty() {
+        return selection.apps.clone();
+    }
+    selection
+        .apps
+        .iter()
+        .flat_map(|app| {
+            selection
+                .test_cases
+                .iter()
+                .map(move |case| format!("{app}/{case}"))
+        })
+        .collect()
 }

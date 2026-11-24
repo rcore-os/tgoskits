@@ -157,7 +157,7 @@ runner 统一由 axbuild 的 `cross-test` 命令解析，不把工具链策略�
 
 ```bash
 cargo xtask cross-test --arch riscv64 --package axvm --features host-test --lib
-cargo xtask axvisor test qemu --arch riscv64 --test-group normal --test-case smp-ipi
+cargo xtask axvisor test qemu --arch riscv64 --test-case qemu/riscv64/smoke/smp-ipi
 ```
 
 组件中的 `legacy_ipi_completion_updates_only_a0` 和
@@ -170,3 +170,5 @@ cargo xtask axvisor test qemu --arch riscv64 --test-group normal --test-case smp
 
 若需要回滚，应整体移除 RISC-V IPI 请求处理、独立 QEMU 用例和本设计文档；不得保留公共层
 架构分支或恢复当前 vCPU 直接注入的特殊路径。
+
+当前维护入口为`test-suit/axvisor/qemu/riscv64/smp-ipi`，客户机配置为本目录`guest.toml`。该入口使用已验证的虚拟化Linux/initramfs/virtio块设备启动合同，保留3个vCPU及原SBI IPI和中断计数断言，整组预算120秒；旧OS目录配置不再被此测试引用。

@@ -188,6 +188,7 @@ impl From<rdif_intc::AcpiGsiRoute> for BindingIrqSource {
             controller: match route.controller {
                 rdif_intc::AcpiGsiController::IoApic => irq_framework::AcpiGsiController::IoApic,
                 rdif_intc::AcpiGsiController::PchPic => irq_framework::AcpiGsiController::PchPic,
+                rdif_intc::AcpiGsiController::LioPic => irq_framework::AcpiGsiController::LioPic,
             },
             controller_id: route.controller_id,
             controller_address: route.controller_address,

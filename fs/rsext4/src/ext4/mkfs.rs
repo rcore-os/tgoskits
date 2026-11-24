@@ -352,14 +352,9 @@ pub fn mkfs_with_options<B: BlockIo>(
             fs.umount(block_dev)?;
         }
 
-        // Final sanity check: read back the superblock and validate the magic.
-        let verify_sb = read_superblock(block_dev)?;
-
-        if verify_sb.s_magic == EXT4_SUPER_MAGIC {
-            Ok(())
-        } else {
-            Err(Ext4Error::corrupted())
-        }
+        // Final sanity check: read back the superblock, which validates the
+        // magic and the block size.
+        read_superblock(block_dev).map(|_| ())
     })();
     let restore_result = block_dev.set_journal_use(old_journal_use);
     match result {
@@ -551,12 +546,19 @@ pub(crate) fn write_superblock<B: BlockIo>(
 }
 
 /// Reads the primary superblock from disk.
+///
+/// The magic is checked before the block size, so a device that holds no
+/// ext4 filesystem is refused as `InvalidMagic` rather than by whatever its
+/// block-size field happens to contain.
 pub(crate) fn read_superblock<B: BlockIo>(
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<Ext4Superblock> {
     let mut bytes = [0; SUPERBLOCK_SIZE];
     block_dev.read_device_bytes(SUPERBLOCK_OFFSET, &mut bytes)?;
     let superblock = Ext4Superblock::from_disk_bytes(&bytes);
+    if superblock.s_magic != EXT4_SUPER_MAGIC {
+        return Err(Ext4Error::invalid_magic());
+    }
     let block_size = superblock.checked_block_size()?;
     block_dev.set_filesystem_block_size(block_size as usize)?;
     Ok(superblock)

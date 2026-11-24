@@ -1,0 +1,25 @@
+timeout = 180
+requires = ["reset-before-http-pool.toml"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "mkdir -p /pool"
+
+[[shell_check_steps]]
+shell_cmd = "rm -f /pool/boot.toml /pool/a.toml /pool/b.toml /pool/broken.toml /pool/empty.toml /pool/notes.txt /pool/pool-guest.toml"
+
+[[shell_check_steps]]
+shell_cmd = "cp /usr/bin/pool-guest-1.toml /pool/pool-guest-1.toml"
+
+[[shell_check_steps]]
+shell_cmd = "cp /usr/bin/pool-guest-2.toml /pool/pool-guest-2.toml"
+
+[[shell_check_steps]]
+shell_cmd = "cp /usr/bin/pool-guest-3.toml /pool/pool-guest-3.toml"
+
+[[shell_check_steps]]
+shell_cmd = "cp /usr/bin/pool-broken.toml /pool/pool-broken.toml"
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_HTTP_POOL_PREPARED"
+success_regex = ["(?m)^AXVISOR_HTTP_POOL_PREPARED\\s*$"]

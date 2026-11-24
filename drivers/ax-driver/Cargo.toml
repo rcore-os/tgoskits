@@ -45,6 +45,7 @@ nvme = ["block", "pci", "dep:nvme-driver"]
 fxmac = ["net", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
+motorcomm-yt6801 = ["net", "pci", "dep:motorcomm-yt6801"]
 aic8800-wifi = [
     "net",
     "dep:aic8800",
@@ -207,6 +208,7 @@ rdif-pwm = { workspace = true, optional = true }
 rdif-reset = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
+motorcomm-yt6801 = { workspace = true, optional = true }
 rdrive.workspace = true
 rdrive-macros.workspace = true
 rk3588-pci = { workspace = true, optional = true }

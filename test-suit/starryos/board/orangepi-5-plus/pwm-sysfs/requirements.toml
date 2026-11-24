@@ -1,0 +1,2 @@
+# Verified together on OrangePi-5-Plus; the check returns to the shell.
+shared_boot = true

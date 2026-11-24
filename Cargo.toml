@@ -61,6 +61,7 @@ members = [
     "fs/rsext4",
     "memory/*",
     "virtualization/*",
+    "virtualization/test_crates/axvm-kernel-tests",
     "virtualization/test_crates/virtualization-tests",
     "components/percpu/percpu",
     "components/percpu/percpu_macros",
@@ -139,6 +140,7 @@ exclude = [
 ]
 
 [workspace.dependencies]
+acpi = "=7.0.0-pre2"
 cc = "1"
 ax-sched = { path = "components/axsched", version = "0.5.11" }
 # Local workspace crates
@@ -263,6 +265,7 @@ sg200x-pwm = { version = "0.1", path = "drivers/pwm/sg200x-pwm" }
 rockchip-pwm = { version = "0.2", path = "drivers/pwm/rockchip-pwm" }
 k230-kpu = { version = "0.1", path = "drivers/npu/k230-kpu" }
 realtek-rtl8125 = { version = "0.3", path = "drivers/net/realtek-rtl8125" }
+motorcomm-yt6801 = { version = "0.1", path = "drivers/net/motorcomm-yt6801" }
 rockchip-pm = { version = "0.4", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.4", path = "drivers/soc/rockchip/rockchip-soc" }
 sg2002-tpu = { version = "0.4", path = "drivers/tpu/sg2002-tpu" }
@@ -312,7 +315,6 @@ bindgen = { version = "0.72", default-features = false, features = ["runtime"] }
 buddy-slab-allocator = { version = "0.6", path = "memory/buddy-slab-allocator" }
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
-enum_dispatch = "0.3"
 env_logger = "0.11"
 extern-trait = "0.5.0"
 futures = { version = "0.3", default-features = false }

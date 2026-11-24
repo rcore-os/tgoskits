@@ -33,7 +33,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 
 1. 检查 `test-suit/starryos` 下的目标目录，以及 `scripts/axbuild/src/test/normal/starry/mod.rs` 中当前测试流程。
 2. 判断用例运行于 QEMU 还是板卡，再选择根级用例或 `test-suit/starryos` 下的构建包装目录。
-3. QEMU 用例可以直接位于 `test-suit/starryos/<case>` 并带匹配的 `build-*.toml`，也可以位于含相应构建配置的包装目录下。只为实际通过的体系结构添加 `qemu-<arch>.toml`。`qemu` 包装目录根部只保存构建配置，`system/` 是分组 QEMU 用例。
+3. QEMU 用例可以直接位于 `test-suit/starryos/<case>` 并带匹配的 `build-*.toml`，也可以位于含相应构建配置的包装目录下。只为实际通过的体系结构添加 `qemu-<arch>.toml`。`qemu/standard` 包装目录根部保存构建配置，`system/` 是分组 QEMU 用例。
 4. 客户机需要附加文件时，只能选择一种处理流水线：`c/`、`sh/`、`python/`，或使用子用例目录与 `test_commands` 的分组方式。
 5. 板卡用例在用例目录中添加 `board-<board>.toml`，并确认本目录或最近的构建包装目录提供所需 `build-*.toml`。
 6. 使用匹配的 `cargo xtask starry test ...` 命令验证。
@@ -53,8 +53,19 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - 批量 QEMU 运行跳过缺少所需 `qemu-<arch>.toml` 的目录。显式 `-c/--test-case` 要求匹配构建包装目录下同时存在用例与配置。Starry QEMU 还接受 `-c qemu/<subcase>` 和 `-c qemu/system/<subcase>`，用于运行 `qemu/system` 中的单个分组子用例。
 - 旧的 `--test-group` 和 `--stress` 入口已删除。普通大型应用、压力、K230 和图形功能工作负载位于 `apps/starry`；nightly 性能及基准图像工作负载位于 `benchmarks/starry`，通过 `cargo xtask starry app ... -t benchmark/<case>` 显式选择或运行各自脚本。
 - `-l/--list` 列出所有发现的 Starry QEMU 或板卡用例。`qemu` 等构建包装目录本身没有运行配置时不进入列表。
-- `qemu/system` 是统一 QEMU 构建包装目录下的聚合用例。其子目录只保存文件，不得再放置 `qemu-<arch>.toml`。
+- 公开ID `qemu/system` 对应实体 `qemu/standard/system`。其功能分类下的子项目保留CMakeLists.txt与src，不再放独立qemu配置；原ID与程序名保持，重复叶项目ID必须拒绝。
 - 分组父配置可以用 `[[grouped_qemu_profiles]]` 的 `name`、`subcase_prefix`、`config` 将不同模拟器要求拆成互斥启动。`qemu_profiles::expand()` 保留全部未匹配项，并让定向子用例选择使用同一配置；不得用拆分跳过用例。AArch64 `perf-*` 独立使用 icount，普通 system 测试保留默认 MTTCG。
+
+## 当前布局与共享启动
+
+- `qemu/`是无build的环境容器，主共享构建包装为`qemu/standard`，原独立x86场景在`qemu/x86_64`；板端位于`board/<板型>`，公共代码在`common`。稳定CLI ID由Starry适配器统一解析，不能把物理路径改动当作删除旧选择的理由。
+- 板端自带build的包装继续使用`board-<板型>/<case>`长ID，新`board/<板型>/<case>`路径仅作为兼容别名；复用父build的短ID保持。迁移必须核对全部板测ID与顺序，不能只验证普通板短ID。
+- system仍是一个根CMake工程，递归收集分类下的真实项目并按原ID排序；宿主发现同一组叶项目，定向选择和缓存身份保持一致，不增加plan或suite登记。
+- OpenRC/TTY合批保留两者原检查，先TTY、后服务/终端/关机。旧TTY选择进入复合case，不再默认独立启动。
+- ARM OpenRC还承接原GICv2 boot步骤，显式`virt,gic-version=2`/A53/SMP4；旧GICv2裸名、公开ID和旧实体路径只在aarch64映射，其他架构拒绝，无架构list只显示ARM。CI同时承接旧删除路径；不得用全局无架构别名让其他架构的OpenRC冒充ARM启动覆盖。
+- 板端在环境要求过滤、资产准备和构建完成后，按实际Cargo与完整boot配置比较。必须在`requirements.toml`声明`shared_boot = true`或以`shared_boot_selectors`限定已验证的运行变体；同目录存在真实与虚拟流程时不得整体开启。优先使用测试环境预设DTB，需要指定树才显式设置；缺省/显式、cmdline、板型或地址不同不得猜测等价。
+- 单步成员保留命令预算并累加整批上限；多步只能作为首成员、后继必须为单步且预算不超过首成员，整批沿用首成员总截止时间，保留原步骤超时，不逐步重置成员总预算。后继命令同时受自己的上限与整批剩余预算约束，这会比各自独立启动的总时间预算更严格。没有明确末步成功、存在被动步骤或第二个多步成员时保持独立。
+- 上传文件同名不同内容必须占板前失败；完整批次成功后才报告成员通过，失败中止同批后项。普通OrangePi五项、虚拟robot-flow/UVC各一次，保留原CI命令与1/8CPU构建；真实机器人nightly不启用共享。缺环境只跳过对应成员。
 
 ## QEMU 文件处理流水线
 
@@ -64,7 +75,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - `c`：用例目录含 `c/CMakeLists.txt`，通过 CMake 构建并把产物安装到根文件系统叠加层。
 - `sh`：用例目录含 `sh/`，把脚本复制到客户机叠加层。
 - `python`：用例目录含 `python/`，运行器在准备目录安装 `python3`，并把 `.py` 文件复制到 `/usr/bin/`。
-- `grouped`：`qemu-<arch>.toml` 定义 `test_commands`；构建 `<subcase>/c/` 等子目录，并注入 `/usr/bin/starry-run-case-tests` 运行器。`qemu/system` 使用 `system/CMakeLists.txt` 作为一个根 CMake 项目，子用例的 `CMakeLists.txt` 和 `src/` 直接位于 `system/<subcase>`，扫描 `/usr/bin/starry-test-suit/*`，并以 `STARRY_GROUPED_TESTS_PASSED` 为成功标记。`starry-run-system-tests` 为每个程序创建新的进程标识命名空间和挂载命名空间，从命名空间中的进程 1 重新挂载局部 procfs，派生普通测试进程，并依靠命名空间初始化进程退出清理所有后代，包括通过 `setsid()` 脱离的进程。单个分组子用例通过 `-c qemu/<subcase>` 或 `-c qemu/system/<subcase>` 运行。
+- `grouped`：`qemu-<arch>.toml` 定义 `test_commands`；构建 `<subcase>/c/` 等子目录，并注入 `/usr/bin/starry-run-case-tests` 运行器。`qemu/system` 使用 `system/CMakeLists.txt` 作为一个根 CMake 项目，子用例的 `CMakeLists.txt` 和 `src/` 位于 `system/<功能分类>/<subcase>`，扫描 `/usr/bin/starry-test-suit/*`，并以 `STARRY_GROUPED_TESTS_PASSED` 为成功标记。`starry-run-system-tests` 为每个程序创建新的进程标识命名空间和挂载命名空间，从命名空间中的进程 1 重新挂载局部 procfs，派生普通测试进程，并依靠命名空间初始化进程退出清理所有后代，包括通过 `setsid()` 脱离的进程。单个分组子用例通过 `-c qemu/<subcase>` 或 `-c qemu/system/<subcase>` 运行。
 
 需要注入文件的用例使用逐用例根文件系统副本，并在 `target/<target>/qemu-cases/.../cache/rootfs/` 缓存。`plain` 用例不复制根文件系统。复制与缓存流水线只负责注入文件；QEMU 写入隔离始终由根文件系统修补器负责。测试配置可省略 `rootfs_write_policy` 或设为 `"discard"`，禁止 `"persist"`。不要使用全局 `-snapshot`，因为它还会改变 VVFAT 固件系统分区、附加磁盘和闪存语义。
 

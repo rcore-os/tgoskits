@@ -275,6 +275,8 @@ migration, and clockevent idle.
 
 Architecture validation includes Axvisor smoke tests on aarch64, riscv64,
 loongarch64, and x86_64; Arm GICv2/GICv3 timer stress; and the x86 VMX sequence
-`direct-acpi-vmx`, `mp-fallback-vmx`, and `ovmf-acpi-vmx`. Hardware-dependent
+`qemu/x86_64/vmx/functional/direct-acpi`,
+`qemu/x86_64/vmx/functional/mp-fallback`, and
+`qemu/x86_64/vmx/functional/ovmf-acpi`. Hardware-dependent
 tests must be reported separately when the required KVM or LVZ capability is
 not available.

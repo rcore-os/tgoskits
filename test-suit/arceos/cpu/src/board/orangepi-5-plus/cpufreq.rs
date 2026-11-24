@@ -343,15 +343,25 @@ pub fn run() {
             cpufreq::set_fixed_frequency(domain.id, opps[0].frequency_hz).unwrap();
         }
     }
-    let mut ready_domains = std::vec::Vec::new();
     let mut adjustable_domains = std::vec::Vec::new();
-    let mut fallback_domains = 0;
     let mut unready_domains = 0;
 
     for domain in &domains {
         let opps = match cpufreq::available_opps(domain.id) {
             Ok(opps) => opps,
             Err(FrequencyError::NotReady) => {
+                for (operation, result) in [
+                    ("all OPPs", cpufreq::all_opps(domain.id).map(|_| ())),
+                    ("current OPP", cpufreq::current_opp(domain.id).map(|_| ())),
+                    ("limits", cpufreq::limits(domain.id).map(|_| ())),
+                    ("snapshot", cpufreq::snapshot(domain.id).map(|_| ())),
+                    (
+                        "set frequency",
+                        cpufreq::set_fixed_frequency(domain.id, 816_000_000),
+                    ),
+                ] {
+                    assert_eq!(result, Err(FrequencyError::NotReady), "{operation}");
+                }
                 unready_domains += 1;
                 for &cpu in &domain.cpu_ids {
                     let hz = measure_delivered_hz(cpu);
@@ -372,18 +382,6 @@ pub fn run() {
         std::println!("CPU_CPUFREQ_DOMAIN domain={domain:?} opps={opps:?} limits={limits:?}");
         cpufreq::set_fixed_frequency(domain.id, highest.frequency_hz).unwrap();
         assert_domain(domain, highest);
-        ready_domains.push(domain);
-        if opps.len() == 1 {
-            assert_eq!(
-                domain.cpu_ids.len(),
-                2,
-                "only A76 may use the safe fallback"
-            );
-            assert_eq!(highest.frequency_hz, 816_000_000);
-            assert_eq!(highest.voltage_uv, Some(750_000));
-            fallback_domains += 1;
-            continue;
-        }
         assert!(
             lowest.frequency_hz < highest.frequency_hz,
             "domain {domain:?} has no adjustable OPP range"
@@ -412,20 +410,17 @@ pub fn run() {
         (Ok(()), 0) | (Err(FrequencyError::NotReady), 1..) => {}
         (result, count) => panic!("performance result {result:?} with {count} unready domains"),
     }
-    for domain in &ready_domains {
+    for domain in &adjustable_domains {
         let highest = *cpufreq::available_opps(domain.id)
             .unwrap()
             .last()
             .expect("domain has no available OPP");
         assert_domain(domain, highest);
     }
-    if unready_domains == 0 && fallback_domains == 0 {
+    if unready_domains == 0 {
         assert_controlled_thermal_limits(&adjustable_domains);
     } else {
-        std::println!(
-            "CPU_CPUFREQ_THERMAL_SKIP_UNREADY domains={unready_domains} \
-             fallback={fallback_domains}"
-        );
+        std::println!("CPU_CPUFREQ_THERMAL_SKIP_UNREADY domains={unready_domains}");
     }
     cpufreq::set_governor(Governor::Ondemand).unwrap();
     std::println!("CPU_CPUFREQ_OK");

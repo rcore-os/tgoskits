@@ -9,6 +9,7 @@ ax-percpu
 irq-framework
 rdif-base
 rdrive
+loongarch-intc-driver
 mmio-api
 axbacktrace
 axpanic
@@ -41,6 +42,7 @@ sdhci-host
 dwmmc-host
 nvme-driver
 realtek-rtl8125
+motorcomm-yt6801
 rockchip-jpeg
 rockchip-npu
 rockchip-pwm
@@ -65,6 +67,7 @@ axaddrspace
 axdevice
 x86_vlapic
 axhvc
+axivc
 axvirtio-blk
 axvirtio-common
 axvirtio-net

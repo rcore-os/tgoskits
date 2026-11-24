@@ -1,6 +1,77 @@
 use super::*;
 
 #[test]
+fn retired_arch_specific_case_selects_its_composite_only_on_that_architecture() {
+    let root = tempdir().unwrap();
+    for (arch, target) in [
+        ("aarch64", "aarch64-unknown-none-softfloat"),
+        ("x86_64", "x86_64-unknown-none"),
+    ] {
+        write_flat_qemu_build_config(root.path(), "qemu/standard", target);
+        write_flat_grouped_qemu_test_config(root.path(), "qemu/standard", "openrc", arch);
+    }
+    for selector in ["gicv2-boot", "qemu/gicv2-boot", "qemu/standard/gicv2-boot"] {
+        let cases = discover_qemu_cases(
+            root.path(),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            Some(selector),
+        )
+        .unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].case.display_name, "qemu/openrc");
+        assert!(cases[0].case.grouped_subcase_filter.is_none());
+        assert!(
+            discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", Some(selector))
+                .is_err()
+        );
+        let listed = discover_all_qemu_cases_with_archs(root.path(), Some(selector)).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "qemu/openrc");
+        assert_eq!(listed[0].archs, ["aarch64"]);
+    }
+    let listed = discover_all_qemu_cases_with_archs(root.path(), Some("qemu/openrc")).unwrap();
+    assert_eq!(listed[0].archs, ["aarch64", "x86_64"]);
+}
+
+#[test]
+fn direct_case_selectors_precede_grouped_projects_in_both_layouts() {
+    for wrapper in ["qemu", "qemu/standard"] {
+        let root = tempdir().unwrap();
+        write_flat_qemu_build_config(root.path(), wrapper, "x86_64-unknown-none");
+        for case in ["console-control", "system"] {
+            write_flat_grouped_qemu_test_config(root.path(), wrapper, case, "x86_64");
+        }
+        let project = root
+            .path()
+            .join("test-suit/starryos")
+            .join(wrapper)
+            .join("system/console-control");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("CMakeLists.txt"),
+            "project(console-control C)\n",
+        )
+        .unwrap();
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("qemu/console-control"),
+        )
+        .unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].case.display_name, "qemu/console-control");
+        assert!(cases[0].case.grouped_subcase_filter.is_none());
+        for selector in ["qemu/console-control", "console-control"] {
+            let listed = discover_all_qemu_cases_with_archs(root.path(), Some(selector)).unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].name, "qemu/console-control");
+        }
+    }
+}
+
+#[test]
 fn grouped_qemu_profiles_partition_execution_and_preserve_direct_selection() {
     let root = tempdir().unwrap();
     write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
@@ -325,4 +396,68 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
 
     assert_eq!(cases[0].build_group, "qemu");
     assert_eq!(cases[0].case.name, "smoke");
+}
+
+#[test]
+fn classified_projects_keep_their_ids_and_reject_ambiguous_selection() {
+    let root = tempdir().unwrap();
+    write_flat_qemu_build_config(root.path(), "qemu/standard", "x86_64-unknown-none");
+    let suite = root.path().join("test-suit/starryos/qemu/standard/system");
+    fs::create_dir_all(suite.join("memory/buffer-check/src")).unwrap();
+    fs::write(suite.join("CMakeLists.txt"), "project(classified C)\n").unwrap();
+    fs::write(
+        suite.join("memory/buffer-check/CMakeLists.txt"),
+        "add_executable(buffer-check src/main.c)\n",
+    )
+    .unwrap();
+    fs::write(
+        suite.join("qemu-x86_64.toml"),
+        "test_commands = [\"exec runner\"]\n",
+    )
+    .unwrap();
+    let cases = discover_qemu_cases(
+        root.path(),
+        "x86_64",
+        "x86_64-unknown-none",
+        Some("qemu/buffer-check"),
+    )
+    .unwrap();
+    assert_eq!(cases[0].case.display_name, "qemu/system");
+    assert_eq!(
+        cases[0].case.subcases[0].case_dir,
+        suite.join("memory/buffer-check")
+    );
+    assert_eq!(
+        cases[0].case.grouped_subcase_filter,
+        Some(BTreeSet::from(["buffer-check".into()]))
+    );
+    let physical = discover_qemu_cases(
+        root.path(),
+        "x86_64",
+        "x86_64-unknown-none",
+        Some("qemu/standard/system/memory/buffer-check"),
+    )
+    .unwrap();
+    assert_eq!(
+        physical[0].case.grouped_subcase_filter,
+        cases[0].case.grouped_subcase_filter
+    );
+    assert!(
+        discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("qemu/standard/system/other/buffer-check")
+        )
+        .is_err()
+    );
+    fs::create_dir_all(suite.join("network/buffer-check/src")).unwrap();
+    fs::write(
+        suite.join("network/buffer-check/CMakeLists.txt"),
+        "add_executable(other src/main.c)\n",
+    )
+    .unwrap();
+    let error =
+        discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap_err();
+    assert!(format!("{error:#}").contains("duplicate grouped project ID"));
 }

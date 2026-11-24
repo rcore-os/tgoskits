@@ -1,0 +1,33 @@
+[package]
+name = "axvm-kernel-tests"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+description = "Kernel-runtime harness for private AxVM behavior tests."
+
+[package.metadata.docs.rs]
+targets = ["loongarch64-unknown-linux-musl"]
+
+[package.metadata.axtest]
+runtime = "axvisor"
+target_triples = ["loongarch64-unknown-none-softfloat"]
+
+[[test]]
+name = "loongarch_iocsr"
+harness = false
+required-features = ["axtest", "tls"]
+
+[features]
+axtest = ["axvm/axtest"]
+tls = ["axvm/tls"]
+
+[dependencies]
+axvm.workspace = true
+
+[dev-dependencies]
+axtest.workspace = true
+ax-hal.workspace = true
+ax-runtime = { workspace = true, features = ["deferred-rootfs"] }
+ax-std = { workspace = true, features = ["alloc"] }
