@@ -674,6 +674,33 @@ enum ElfImageKind {
     Interpreter,
 }
 
+struct NativeElfAbi {
+    machine: xmas_elf::header::Machine,
+    requires_class64: bool,
+}
+
+const NATIVE_ELF_ABI: NativeElfAbi = cfg_select! {
+    target_arch = "x86_64" => NativeElfAbi {
+        machine: xmas_elf::header::Machine::X86_64,
+        requires_class64: false,
+    },
+    target_arch = "aarch64" => NativeElfAbi {
+        machine: xmas_elf::header::Machine::AArch64,
+        requires_class64: false,
+    },
+    target_arch = "riscv64" => NativeElfAbi {
+        machine: xmas_elf::header::Machine::RISC_V,
+        requires_class64: true,
+    },
+    target_arch = "loongarch64" => NativeElfAbi {
+        machine: xmas_elf::header::Machine::Other(258),
+        requires_class64: true,
+    },
+};
+
+const ELF_CLASS_OFFSET: usize = xmas_elf::header::MAGIC.len();
+const ELF_CLASS64: u8 = 2;
+
 // Linux bounds the native program-header table in load_elf_phdrs().
 const MAX_PROGRAM_HEADER_BYTES: usize = 65536;
 
@@ -696,12 +723,35 @@ impl ElfImage {
         if read < minimum_header_size {
             return Err(StarryError::UnexpectedEof);
         }
+        let bytes = &mut bytemuck::cast_slice_mut::<_, u8>(&mut data)[..read];
+        let original_class = if bytes.starts_with(&xmas_elf::header::MAGIC) {
+            bytes.get_mut(ELF_CLASS_OFFSET).map(|class| {
+                let original = *class;
+                // Linux's native loader selects the layout from its ABI, not
+                // the class byte. Only this load's private header is changed.
+                *class = ELF_CLASS64;
+                original
+            })
+        } else {
+            None
+        };
         match ElfImage::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
+            if NATIVE_ELF_ABI.requires_class64 && original_class != Some(ELF_CLASS64) {
+                return Err(StarryError::InvalidExecutable);
+            }
             let data = &bytemuck::cast_slice(data)[..read];
             Self::parse_headers(&cache, data, kind)
         }) {
             Ok(e) => Ok(Ok(e)),
-            Err((_, heads)) => Ok(Err(bytemuck::cast_slice(&heads.data)[..read].to_vec())),
+            Err((_, heads)) => {
+                let mut bytes = bytemuck::cast_slice(&heads.data)[..read].to_vec();
+                if let Some(original) = original_class
+                    && let Some(class) = bytes.get_mut(ELF_CLASS_OFFSET)
+                {
+                    *class = original;
+                }
+                Ok(Err(bytes))
+            }
         }
     }
 
@@ -712,13 +762,7 @@ impl ElfImage {
     ) -> StarryResult<ELFHeaders<'a>> {
         // Check the native ABI before following program-header offsets.
         let header = xmas_elf::header::parse_header(data).map_err(map_elf_error)?;
-        let native_machine = cfg_select! {
-            target_arch = "x86_64" => xmas_elf::header::Machine::X86_64,
-            target_arch = "aarch64" => xmas_elf::header::Machine::AArch64,
-            target_arch = "riscv64" => xmas_elf::header::Machine::RISC_V,
-            target_arch = "loongarch64" => xmas_elf::header::Machine::Other(258),
-        };
-        if header.pt2.machine().as_machine() != native_machine
+        if header.pt2.machine().as_machine() != NATIVE_ELF_ABI.machine
             || (matches!(kind, ElfImageKind::Main)
                 && !matches!(
                     header.pt2.type_().as_type(),
