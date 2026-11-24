@@ -18,6 +18,10 @@ on:
       checkout_ref:
         type: string
         default: ''
+      reuse_preflight_tool:
+        description: Require the current run's preflight tool instead of building another one.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,6 +50,35 @@ jobs:
         with:
           ref: ${{ inputs.checkout_ref || github.sha }}
           fetch-depth: 100
+      - name: Validate preflight tool revision
+        if: inputs.reuse_preflight_tool
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION" || {
+            echo "error: preflight tool and checkout must use the same revision" >&2
+            exit 1
+          }
+      - name: Download the preflight tool
+        if: inputs.reuse_preflight_tool
+        uses: actions/download-artifact@v8
+        with:
+          # Same run, including its retained producer on partial reruns.
+          name: tg-xtask-bin
+          path: ${{ runner.temp }}/xtask-bin
+      - name: Restore the preflight tool
+        if: inputs.reuse_preflight_tool
+        run: |
+          set -euo pipefail
+          python3 scripts/test/ci_clippy_tool.py unpack-preflight \
+            --archive "${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar" \
+            --destination target/debug/tg-xtask
+      - name: Build the tool for an independent call
+        if: ${{ !inputs.reuse_preflight_tool }}
+        run: |
+          set -euo pipefail
+          cargo build --locked -p tg-xtask
       # Retained job outputs keep partial reruns on the original preparation.
       - name: Identify artifact batch
         id: artifacts
@@ -78,8 +111,7 @@ jobs:
           if [ "$FORCE_FULL" != true ] && [ -n "$SINCE_REF" ]; then
             selection=(--since "$SINCE_REF")
           fi
-          # Cargo itself writes status messages; the tool's JSON stdout stays separate.
-          cargo xtask clippy --print-selection "${selection[@]}" > target/ci/selection.json
+          target/debug/tg-xtask clippy --print-selection "${selection[@]}" > target/ci/selection.json
           python3 scripts/test/ci_clippy.py selection target/ci/selection.json --sha "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Run the frozen incremental selection
         if: steps.selection.outputs.mode == 'incremental'

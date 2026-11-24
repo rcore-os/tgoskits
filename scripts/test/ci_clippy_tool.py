@@ -48,11 +48,15 @@ def unpack(source, destination):
     checksum = (source / CHECKSUM).read_text().split()
     if len(checksum) != 2 or checksum[1] != ARCHIVE or sha256(archive) != checksum[0]:
         raise ValueError("Clippy tool archive checksum mismatch")
+    restore_archive(archive, "r:xz", "tg-xtask", destination)
+
+
+def restore_archive(archive, mode, member_name, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive, "r:xz") as tar:
+    with tarfile.open(archive, mode) as tar:
         members = tar.getmembers()
-        if len(members) != 1 or members[0].name != "tg-xtask" or not members[0].isfile() or members[0].size == 0:
-            raise ValueError("Clippy tool archive must contain only the regular file tg-xtask")
+        if len(members) != 1 or members[0].name != member_name or not members[0].isfile() or members[0].size == 0:
+            raise ValueError(f"tool archive must contain only the regular file {member_name}")
         stream = tar.extractfile(members[0])
         if stream is None:
             raise ValueError("Clippy tool archive has no executable payload")
@@ -77,11 +81,18 @@ def main():
     restore = sub.add_parser("unpack")
     restore.add_argument("--input-dir", type=Path, required=True)
     restore.add_argument("--destination", type=Path, required=True)
+    preflight = sub.add_parser("unpack-preflight")
+    preflight.add_argument("--archive", type=Path, required=True)
+    preflight.add_argument("--destination", type=Path, required=True)
     args = parser.parse_args()
     if args.mode == "pack":
         pack(args.binary, args.output_dir)
-    else:
+    elif args.mode == "unpack":
         unpack(args.input_dir, args.destination)
+    else:
+        # The workflow downloads only its current run's producer artifact;
+        # use the legacy member name without extracting arbitrary tar paths.
+        restore_archive(args.archive, "r:", "target/debug/tg-xtask", args.destination)
 
 
 if __name__ == "__main__":

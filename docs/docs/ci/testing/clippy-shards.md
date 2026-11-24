@@ -30,7 +30,7 @@ cargo xtask clippy --print-selection --since origin/dev
 
 选择JSON的`mode`为full/incremental/empty，记录请求ref、实际diff base、受测SHA、输入指纹、修改包、消费者、实际检查和稳定原因码。选择规则版本为2；相同HEAD的全量原因码为`comparison_base_is_head`。CI解析拒绝基线等于受测SHA却标记为incremental/empty的矛盾结果，也拒绝没有检查的full/incremental。`cut`保持空，因为没有启用独立性裁剪。摘要按规范化JSON的SHA256生成，集合按稳定身份排序、workspace路径归一化，Cargo参数/rustflags的顺序保持；执行前重新计算摘要拒绝漂移。
 
-CI在准备作业构建一次工具，生成选择后用同一工具执行。增量传递原请求ref、冻结的`--diff-base <SHA>`和`--expected-selection <DIGEST>`；不重新解释浮动基线，也不允许增量执行意外转全量。没有选择Digest时，本地原增量命令仍允许正常全量回退。
+主CI复用同次运行预检发布的`tg-xtask-bin`，不再次编译工具；恢复前要求checkout与触发提交一致，制品缺失或损坏直接失败。下载不指定其他run，部分重跑继续使用原生产者制品，不用当前attempt猜测制品名。独立调用（`reuse_preflight_tool=false`，默认值）或主CI预检被跳过时，明确构建工具；预检失败时主CI不启动Clippy。复用与独立构建两个分支都直接调用二进制选包，生成选择后用同一工具执行。增量传递原请求ref、冻结的`--diff-base <SHA>`和`--expected-selection <DIGEST>`；不重新解释浮动基线，也不允许增量执行意外转全量。没有选择Digest时，本地原增量命令仍允许正常全量回退。
 
 ## 3. CI模式与结果
 

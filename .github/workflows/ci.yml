@@ -506,4 +506,5 @@ jobs:
       checkout_ref: ${{ github.sha }}
       since_ref: ${{ needs.plan_ci.outputs.since_ref }}
       force_full: ${{ inputs.clippy_full || false }}
+      reuse_preflight_tool: ${{ needs.static_checks.result == 'success' }}
       incremental_timeout_minutes: 120
