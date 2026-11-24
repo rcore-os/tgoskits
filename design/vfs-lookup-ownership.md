@@ -5383,6 +5383,41 @@ remount 保留，以及缓存成功或拒绝均不改时间。相同 C 先在 Li
 旧 Starry 失败、修后通过。局部时间算法的日边界由组件测试证明；实际系统调用
 仍需项目 QEMU 入口、受影响 Clippy 和最终提交的持续集成。
 
+### 7.12 普通链接的访问时间
+
+普通链接访问需要在必要时更新实际 inode 的 atime，缓存路径则只允许证明
+无需更新。固定 Linux 的 `pick_link` 与 `do_readlinkat` 都在取得目标前调用
+`touch_atime`；更新失败不覆盖链接操作的结果。该动作只改变 atime，不具有
+用户主动修改时间时的 owner 检查，也不修改 mtime、ctime、模式或所有者。
+本节先定义普通访问的实现边界，证据随后按实际源码补齐。
+
+可选 `AccessTimeOps` 由实际 `NodeOps` producer 声明，在准备写操作前发现。
+私有的自动访问意图沿原 `PreparedWrite`、`NamespaceCommandScope` 和
+`MetadataRequest` 进入真实元数据保护，并由同一提交协议发布。固定授权逻辑
+只接受当前时钟计算出的 atime；无需更新时返回 Unchanged，不制造脏元数据。
+用户 `MetadataChange::Times` 的权限和 ctime 路径保持原有语义。
+
+挂载策略由 `Location` 解释。普通 `read_link` 与 `link_target` 先进行尽力更新，
+`LookupSession::follow` 通过 Location 取得目标；最终 nofollow 不进入该路径。
+初始化与 staging 对原 `DirEntry` 的显式文本读取仍用于保存来源，不作为用户
+链接访问。缓存查找保留其封闭 producer，不调用普通更新入口。
+
+不能把新的自动意图直接交给全部既有 `change_metadata` handler：未迁移的
+原生或组合后端可能在拒绝前执行准备或 copy-up。显式能力默认缺失，当前先由
+MemoryFs 在原 metadata owner 上接入；原生标志、时间精度及组合转发需分别
+审计后启用。原始元数据 setter 或额外时间登记表都会产生另一条修改事实来源，
+因此不采用。该方案不修改持久格式，按提交可回退；共享接口、错误和释放顺序
+仍须独立领域审查后合入。
+
+增强现有链接时间旅程，以明确的未来 atime 检查普通跟随、路径与保留 fd 的
+readlink，以及 mtime/ctime、身份和元数据不变。NoAtime、最终 nofollow、
+挂载局部只读和共享文件系统只读分别验证；只读场景使用独立的小型私有挂载，
+避免把原文件的写描述退休混入时间判定。所有场景复用现有程序和内核启动，
+先用同一 C 取得 Linux 对照及旧实现失败，再实现和验证。
+文件时间以 coarse realtime 作为下界、realtime 作为上界，与 Linux
+`current_time` 的时钟来源对应，不添加任意容差或睡眠。初版采用细粒度起点的
+Linux 失败作为夹具修正保留，不计为产品回归失败。
+
 ## 8. 迁移与验收
 
 本设计改变共享 VFS 契约，迁移需要覆盖实际调用方与后端，而不是只修改 Starry syscall。

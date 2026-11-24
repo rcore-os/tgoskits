@@ -311,6 +311,184 @@ out:
     close_fd(file);
 }
 
+static int same_link_metadata(const struct stat *a, const struct stat *b)
+{
+    return a->st_dev == b->st_dev && a->st_ino == b->st_ino
+        && a->st_mode == b->st_mode && a->st_uid == b->st_uid
+        && a->st_gid == b->st_gid && a->st_nlink == b->st_nlink
+        && a->st_size == b->st_size
+        && a->st_mtim.tv_sec == b->st_mtim.tv_sec
+        && a->st_mtim.tv_nsec == b->st_mtim.tv_nsec
+        && a->st_ctim.tv_sec == b->st_ctim.tv_sec
+        && a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
+}
+
+static int time_between(struct timespec value, struct timespec first,
+                        struct timespec last)
+{
+    return (value.tv_sec > first.tv_sec
+            || (value.tv_sec == first.tv_sec && value.tv_nsec >= first.tv_nsec))
+        && (value.tv_sec < last.tv_sec
+            || (value.tv_sec == last.tv_sec && value.tv_nsec <= last.tv_nsec));
+}
+
+static void ordinary_link_times(int rootfd, int file, int link)
+{
+    const char *operations[] = {
+        "openat2 follows the link", "openat follows the link",
+        "readlinkat reads the named link", "readlinkat reads the retained link",
+#ifdef SYS_readlink
+        "readlink reads the named link",
+#endif
+    };
+    struct timespec first, last;
+    struct timespec times[2] = {{0, 0}, {0, UTIME_OMIT}};
+    struct stat before, after;
+    char text[16];
+
+    REQUIRE(syscall(SYS_mount, NULL, "mount", NULL,
+                    MS_REMOUNT | MS_STRICTATIME, NULL) == 0);
+    for (size_t operation = 0; operation < sizeof(operations) / sizeof(operations[0]); operation++) {
+        REQUIRE(syscall(SYS_clock_gettime, CLOCK_REALTIME, &first) == 0);
+        times[0] = first;
+        times[0].tv_sec += 3600;
+        REQUIRE(syscall(SYS_utimensat, rootfd, "cached-relative", times,
+                        AT_SYMLINK_NOFOLLOW) == 0);
+        REQUIRE(fstat(link, &before) == 0);
+        /* Linux current_time starts from the coarse realtime clock. */
+        REQUIRE(syscall(SYS_clock_gettime, CLOCK_REALTIME_COARSE, &first) == 0);
+        if (operation == 0) {
+            expect_same(open2(rootfd, "cached-relative", O_PATH, 0), file,
+                        operations[operation]);
+        } else if (operation == 1) {
+            expect_same(open_at(rootfd, "cached-relative", O_PATH), file,
+                        operations[operation]);
+        } else {
+            ssize_t count;
+            if (operation == 2)
+                count = syscall(SYS_readlinkat, rootfd, "cached-relative", text, sizeof(text));
+            else if (operation == 3)
+                count = syscall(SYS_readlinkat, link, "", text, sizeof(text));
+#ifdef SYS_readlink
+            else
+                count = syscall(SYS_readlink, "mount/cached-relative", text, sizeof(text));
+#else
+            else
+                count = -1;
+#endif
+            CHECK(count == 4 && memcmp(text, "file", 4) == 0,
+                  "%s returns the original text count=%zd errno=%d",
+                  operations[operation], count, errno);
+        }
+        REQUIRE(syscall(SYS_clock_gettime, CLOCK_REALTIME, &last) == 0);
+        REQUIRE(fstat(link, &after) == 0);
+        CHECK(time_between(after.st_atim, first, last),
+              "%s updates atime to the current clock", operations[operation]);
+        CHECK(same_link_metadata(&before, &after),
+              "%s preserves mtime, ctime and inode metadata", operations[operation]);
+    }
+
+    REQUIRE(syscall(SYS_utimensat, rootfd, "cached-relative", times,
+                    AT_SYMLINK_NOFOLLOW) == 0);
+    REQUIRE(fstat(link, &before) == 0);
+    expect_same(open2(rootfd, "cached-relative", O_PATH | O_NOFOLLOW, 0), link,
+                "ordinary final nofollow keeps the link without accessing its target");
+    REQUIRE(fstat(link, &after) == 0);
+    CHECK(after.st_atim.tv_sec == before.st_atim.tv_sec
+              && after.st_atim.tv_nsec == before.st_atim.tv_nsec
+              && same_link_metadata(&before, &after),
+          "ordinary final nofollow leaves all link timestamps unchanged");
+    REQUIRE(syscall(SYS_mount, NULL, "mount", NULL,
+                    MS_REMOUNT | MS_NOATIME, NULL) == 0);
+    expect_same(open2(rootfd, "cached-relative", O_PATH, 0), file,
+                "ordinary noatime follows the target");
+    CHECK(syscall(SYS_readlinkat, rootfd, "cached-relative", text, sizeof(text)) == 4
+              && memcmp(text, "file", 4) == 0,
+          "ordinary noatime displays the target");
+    REQUIRE(fstat(link, &after) == 0);
+    CHECK(after.st_atim.tv_sec == before.st_atim.tv_sec
+              && after.st_atim.tv_nsec == before.st_atim.tv_nsec
+              && same_link_metadata(&before, &after),
+          "ordinary noatime leaves link timestamps unchanged");
+out:
+    return;
+}
+
+static void readonly_link_times(int rootfd)
+{
+    int source = -1, alias = -1, file = -1, link = -1;
+    int mounted = 0, bound = 0, readonly = 0;
+    struct timespec now, times[2] = {{0, 0}, {0, UTIME_OMIT}};
+    struct stat before, after;
+    char text[16];
+
+    REQUIRE(mkdirat(rootfd, "time-source", 0700) == 0);
+    REQUIRE(mkdirat(rootfd, "time-alias", 0700) == 0);
+    REQUIRE(syscall(SYS_mount, "none", "mount/time-source", "tmpfs",
+                    MS_STRICTATIME, NULL) == 0);
+    mounted = 1;
+    source = open_at(rootfd, "time-source", O_RDONLY | O_DIRECTORY);
+    REQUIRE(source >= 0);
+    /* No writable description or dirty file data is involved in this fixture. */
+    REQUIRE(syscall(SYS_mknodat, source, "file", S_IFREG | 0600, 0) == 0);
+    REQUIRE(syscall(SYS_symlinkat, "file", source, "link") == 0);
+    file = open_at(source, "file", O_PATH);
+    link = open_at(source, "link", O_PATH | O_NOFOLLOW);
+    REQUIRE(file >= 0 && link >= 0);
+    REQUIRE(syscall(SYS_clock_gettime, CLOCK_REALTIME, &now) == 0);
+    times[0] = now;
+    times[0].tv_sec += 3600;
+    REQUIRE(syscall(SYS_utimensat, source, "link", times, AT_SYMLINK_NOFOLLOW) == 0);
+    REQUIRE(fstat(link, &before) == 0);
+
+    REQUIRE(syscall(SYS_mount, "mount/time-source", "mount/time-alias", NULL,
+                    MS_BIND, NULL) == 0);
+    bound = 1;
+    REQUIRE(syscall(SYS_mount, NULL, "mount/time-alias", NULL,
+                    MS_REMOUNT | MS_BIND | MS_RDONLY | MS_STRICTATIME, NULL) == 0);
+    alias = open_at(rootfd, "time-alias", O_RDONLY | O_DIRECTORY);
+    REQUIRE(alias >= 0);
+    expect_open(open2(alias, "link", O_PATH, RESOLVE_CACHED), EAGAIN,
+                "mount-local readonly does not suppress cached link timestamp work");
+    CHECK(syscall(SYS_readlinkat, alias, "link", text, sizeof(text)) == 4
+              && memcmp(text, "file", 4) == 0,
+          "mount-local readonly permits ordinary readlink despite timestamp failure");
+    REQUIRE(fstat(link, &after) == 0);
+    CHECK(after.st_atim.tv_sec == before.st_atim.tv_sec
+              && after.st_atim.tv_nsec == before.st_atim.tv_nsec
+              && same_link_metadata(&before, &after),
+          "mount-local readonly leaves link timestamps unchanged");
+
+    REQUIRE(syscall(SYS_mount, NULL, "mount/time-source", NULL,
+                    MS_REMOUNT | MS_RDONLY | MS_STRICTATIME, NULL) == 0);
+    readonly = 1;
+    expect_same(cached_open(source, "link", O_PATH, 0), file,
+                "shared filesystem readonly suppresses cached link timestamp work");
+    CHECK(syscall(SYS_readlinkat, source, "link", text, sizeof(text)) == 4
+              && memcmp(text, "file", 4) == 0,
+          "shared filesystem readonly permits ordinary readlink");
+    REQUIRE(fstat(link, &after) == 0);
+    CHECK(after.st_atim.tv_sec == before.st_atim.tv_sec
+              && after.st_atim.tv_nsec == before.st_atim.tv_nsec
+              && same_link_metadata(&before, &after),
+          "shared filesystem readonly leaves link timestamps unchanged");
+out:
+    if (readonly)
+        CHECK(syscall(SYS_mount, NULL, "mount/time-source", NULL,
+                      MS_REMOUNT | MS_STRICTATIME, NULL) == 0,
+              "restore private source writability errno=%d", errno);
+    close_fd(alias);
+    close_fd(source);
+    close_fd(file);
+    close_fd(link);
+    if (bound)
+        CHECK(syscall(SYS_umount2, "mount/time-alias", 0) == 0,
+              "unmount private timestamp alias errno=%d", errno);
+    if (mounted)
+        CHECK(syscall(SYS_umount2, "mount/time-source", 0) == 0,
+              "unmount private timestamp source errno=%d", errno);
+}
+
 static void cached_link_times(int rootfd, int file)
 {
     int link = -1, changed = 0;
@@ -355,6 +533,13 @@ static void cached_link_times(int rootfd, int file)
               && after.st_ctim.tv_sec == before.st_ctim.tv_sec
               && after.st_ctim.tv_nsec == before.st_ctim.tv_nsec,
           "CACHED successful link traversal leaves timestamps unchanged");
+    expect_same(open2(rootfd, "cached-relative", O_PATH, 0), file,
+                "ordinary relatime follows a link requiring no timestamp work");
+    REQUIRE(fstat(link, &after) == 0);
+    CHECK(after.st_atim.tv_sec == before.st_atim.tv_sec
+              && after.st_atim.tv_nsec == before.st_atim.tv_nsec
+              && same_link_metadata(&before, &after),
+          "ordinary relatime leaves already current link metadata unchanged");
 
     REQUIRE(syscall(SYS_mount, NULL, "mount", NULL,
                     MS_REMOUNT | MS_STRICTATIME, NULL) == 0);
@@ -367,6 +552,7 @@ static void cached_link_times(int rootfd, int file)
                     MS_REMOUNT | MS_STRICTATIME | MS_NOATIME, NULL) == 0);
     expect_open(open2(rootfd, "cached-relative", O_PATH, RESOLVE_CACHED),
                 EAGAIN, "explicit strictatime overrides a noatime request");
+    ordinary_link_times(rootfd, file, link);
 out:
     if (changed) {
         CHECK(syscall(SYS_mount, NULL, "mount", NULL,
@@ -458,6 +644,7 @@ static void cached_links(int rootfd, int file)
     expect_open(cached_open(rootfd, "cached-chain-41", O_PATH, 0), ELOOP,
                 "CACHED rejects a path exceeding the shared link budget");
     cached_link_times(rootfd, file);
+    readonly_link_times(rootfd);
 out:
     close_fd(fd);
 }
