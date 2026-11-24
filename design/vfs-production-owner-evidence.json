@@ -12110,5 +12110,273 @@
     },
     "equivalence": "CACHED final C and all four production files plus ax-block test are byte-identical to current source 2cef6047db.",
     "scope": "Proves the published cached-writer and component-test input on the full matrix. It does not include the later 2cef6047db program-header implementation or its 366-assertion C. Older board1 prompt timeout and earlier LoongArch stalls remain unexplained."
+  },
+  "native_elf_class_policy_and_mainline_20261124": {
+    "recorded_at": "2026-11-24T05:45:36.905300+00:00",
+    "validation_source": "29887eb7769737d732d26488819832d98675c896",
+    "implementation_source": "eaf131390b8673ad26f887e74ad4622b9b8d4c15",
+    "baseline_source": "778c8d9d8ffab79cec657967a70386387feced47",
+    "integrated_mainline": "3bfe4a027e340f8ea8071aed7872ef9109a8ea79",
+    "environment": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merged-native-class-environment.json",
+      "bytes": 1791,
+      "sha256": "8ce2c0a2cc5bae8c52cf9b86e3ac2a9c5a5f92c0247ef017c84ecdaf5063bf3e"
+    },
+    "frozen_c": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-final.c",
+      "bytes": 35406,
+      "sha256": "d5b97beac82c5d50ae28434f5ec48e41df32c3625c9ad0b0ba83b499293140a1"
+    },
+    "linux": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-linux.log",
+        "bytes": 63182,
+        "sha256": "e51adc47ecafd8182036bccc55c5827468d9d03074d673979f11cf3360620a9b"
+      },
+      "exit": 0,
+      "assertions": "473/473",
+      "limit": "Host Linux 6.8 oracle; fixed v7.1 source decides cross-architecture admission."
+    },
+    "before": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-before.log",
+        "bytes": 121158,
+        "sha256": "69d4011bd05ff18ad9c08c5ea3133d40644fde95b57fa084dc602a32302db49f"
+      },
+      "exit": 1,
+      "passed": 461,
+      "failed": 12
+    },
+    "published_pre_fix_ci": {
+      "evidence": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-ci-baseline.json",
+        "bytes": 1184,
+        "sha256": "b358f36d16586b561d2490093e29af463b64ae78f8c8076d41de9eb035ab65a6"
+      },
+      "targets": [
+        "x86_64",
+        "aarch64"
+      ],
+      "passed_per_target": 461,
+      "failed_per_target": 12,
+      "scope": "Only the same-input pre-fix regression; not a full-head CI success."
+    },
+    "targets": {
+      "x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-x86_64.log",
+          "bytes": 136737,
+          "sha256": "40226ff1f067a5d2e24e77eaab35311eb8a880752fcd3b1c9d051d40bdbf2a7b"
+        },
+        "exit": 0,
+        "summary": "1/1",
+        "visible_assertion_summaries": [
+          [
+            "473",
+            "0"
+          ]
+        ],
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-29887eb776.elf",
+          "bytes": 218928296,
+          "sha256": "86c7eedbd0d8355bd4bbdf7bdcc1907804098a8978541bf6c7f2a2ac17cebbf1"
+        }
+      },
+      "riscv64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-riscv64.log",
+          "bytes": 125497,
+          "sha256": "5320d437ea906a533f822581fe326238c80c425100dac51588a3557e63eb6f55"
+        },
+        "exit": 0,
+        "summary": "1/1",
+        "visible_assertion_summaries": [
+          [
+            "461",
+            "0"
+          ]
+        ],
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/riscv64-29887eb776.elf",
+          "bytes": 285457712,
+          "sha256": "c813e0ed28a022265e72c16c7f0e6446458a755fa9a4159de43ca568af33cc43"
+        }
+      },
+      "loongarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-loongarch64.log",
+          "bytes": 29392,
+          "sha256": "754b8e37914b0e77148b296320ec97feedd4246042ccfbc16ca4d594bd09bbf0"
+        },
+        "exit": 0,
+        "summary": "1/1",
+        "visible_assertion_summaries": [],
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/loongarch64-29887eb776.elf",
+          "bytes": 260410456,
+          "sha256": "94affb873cad754c77f3d68fa54576c69258539112397ba0fa48549910babceb"
+        }
+      },
+      "aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-aarch64.log",
+          "bytes": 125117,
+          "sha256": "cea30b63685f6c471b86daf6561d27f6ac1f18e986c4f0b3f5fc78cecbabcda2"
+        },
+        "exit": 0,
+        "summary": "1/1",
+        "visible_assertion_summaries": [
+          [
+            "473",
+            "0"
+          ]
+        ],
+        "elf": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/aarch64-29887eb776.elf",
+          "bytes": 230869424,
+          "sha256": "4a883d3ed453c6378597db89a9dcf4cfecc10385e3a1ee6dc34380663bac107c"
+        }
+      }
+    },
+    "clippy": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-clippy.log",
+        "bytes": 198244,
+        "sha256": "8372f168da82c387ee24b957c065b0fa8e3b1d93a637558e197903456a6c774d"
+      },
+      "packages": 4,
+      "checks": 112,
+      "failed": 0,
+      "skipped": 0
+    },
+    "std": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/elf-native-class-std.log",
+        "bytes": 570277,
+        "sha256": "29e32955d4daece14023932d18e66eedaeb465c4f974e1a46f8fb4ebcac6658d"
+      },
+      "packages": 51,
+      "exit": 0
+    },
+    "format": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-mainline-20261124-format.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "exit": 0
+    },
+    "merged_test_routes": {
+      "test-path-lookup-ownership": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-test-path-lookup-ownership-x86_64.log",
+          "bytes": 51467,
+          "sha256": "e2e51a5a98afea1011a4e39ef9f73e933226798261955fec2bd95cafa7fc79e6"
+        },
+        "summary": "1/1",
+        "path": "test-suit/starryos/qemu/standard/system/fs/test-path-lookup-ownership"
+      },
+      "test-proc-link-access": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-test-proc-link-access-x86_64.log",
+          "bytes": 29489,
+          "sha256": "41c22a8954a563396f6766e3f5f5ce7cea3acbc7681f770fe1d6ef43ba4362aa"
+        },
+        "summary": "1/1",
+        "path": "test-suit/starryos/qemu/standard/system/fs/test-proc-link-access"
+      }
+    },
+    "runtime_stack_diagnostic": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-runtime-stack-guard-x86_64.log",
+        "bytes": 35045,
+        "sha256": "bd40c435c0b520757a6283c182b6498aaaaefb09b24c1552860cff8934cd8373"
+      },
+      "summary": "1/1",
+      "ownership": "Retain mainline owned diagnostic; RAII disables local IRQs for the pinned borrow and restores them before caller formatting."
+    },
+    "merge_resolution": {
+      "plan": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-mainline-20261124-plan.json",
+        "bytes": 879,
+        "sha256": "cc83acce8e5f1b50bf2bbca8aa2014cfa61b8b26698600c1c171afa0ba6f23f4"
+      },
+      "ci_shell": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-mainline-loongarch-command.sh",
+        "bytes": 1546,
+        "sha256": "9a3d131770e98f63b31f6cbdc1ae9383ace13cefa8ccdcf674a8b0b57a4f0480"
+      },
+      "lock_refresh": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-mainline-20261124-lock-refresh.log",
+        "bytes": 126,
+        "sha256": "aacb8475a931809888316d9423e0672b1deb2c7321822453713ae5a2c36948d9"
+      },
+      "irq_guard_static_audit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-irq-guard-static-audit.json",
+        "bytes": 802,
+        "sha256": "88c475f9ebe0b25a6e328c5964d73f3dc1f4c5bffa8b7780ed8cc08b5224bfd8"
+      },
+      "scope": "Twelve conflicts resolved; current mainline timer/IOCSR gates and QMP diagnostics retained. Two branch-only tests migrated into mainline discovery, without changing their C input. Cargo regenerated no lockfile changes."
+    },
+    "earlier_published_ci": {
+      "head": "64ff1089c88f41926fc84b7d1dec0971a349204b",
+      "snapshot": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-64ff1089c8-checkruns-resumed.json",
+        "bytes": 173667,
+        "sha256": "d3b264a843573c85d1839fe2bd5dac35a10a86e4d8450cadc51e37de084860be"
+      },
+      "failed_job_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-64ff1089c8-starry-aarch64.log",
+        "bytes": 1994216,
+        "sha256": "8d4a6e862af3d35d81517911694fab6f460f7a53d7b50e99c4e979bbd4b796f4"
+      },
+      "result": "One AArch64 performance-suite failure; other historical check results are preserved. It does not establish a failure or success for the new merged head."
+    },
+    "merged_source_ci_at_checkpoint": {
+      "head": "29887eb7769737d732d26488819832d98675c896",
+      "snapshot": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-29887eb776-native-class-evidence-snapshot.json",
+        "bytes": 247798,
+        "sha256": "d5a0465db6e6269a5454fbac1e49f36c1119ee33da9abb30ea13fb1a41af3329"
+      },
+      "failed_names": [
+        "AxVisor / QEMU aarch64 · HTTP control-plane + browser console + IVC",
+        "Starry / QEMU aarch64 · Suites"
+      ],
+      "axvisor_timeout_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-29887eb776-axvisor-aarch64-control.log",
+        "bytes": 386087,
+        "sha256": "74b18eab256309167d21c89d23578bfbbbf9acf49615f721eda99b29c8e77146"
+      },
+      "starry_aarch64_failure_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-29887eb776-starry-aarch64.log",
+        "bytes": 2117036,
+        "sha256": "28b32a41d8f2e0c1f617d2eae5b3de303f19c3331b9a8be976323a1bc485fc87"
+      },
+      "scope": "An Axvisor runtime check timed out, and the AArch64 performance stop regression failed again. Compilation and targeted class regressions do not resolve these failures or establish complete CI acceptance."
+    },
+    "counts": {
+      "system_programs_added": 0,
+      "std_tests_added": 0,
+      "default_boots_added": 0,
+      "migrated_branch_only_programs": 2,
+      "manual_validation_boots": 7,
+      "prior_baseline_boots": 1,
+      "additional_diagnostic_boots": 1
+    },
+    "remaining": "Final merged-head CI, the merged-source Axvisor runtime timeout, original performance failure diagnosis, the rest of the VFS implementation plan, independent domain review and comparable performance/resource validation remain.",
+    "additional_performance_diagnostic": {
+      "source": "29887eb7769737d732d26488819832d98675c896",
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-perf-hw-stat-aarch64-29887eb776.log",
+        "bytes": 17840,
+        "sha256": "d1e5a700ee2ef926f46b2780d93db8e12ec9ed30b67f4d30b2bf627715e37307"
+      },
+      "selected_project": "qemu/system/perf-hw-stat",
+      "programs_passed": 3,
+      "outer_summary": "1/1",
+      "manual_boots": 1,
+      "limit": "The existing project passes when selected alone; the same stop regression still fails in the full CI batch. This does not prove the root cause fixed."
+    }
   }
 }
