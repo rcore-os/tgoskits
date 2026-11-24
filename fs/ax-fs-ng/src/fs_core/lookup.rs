@@ -285,7 +285,7 @@ impl<'a> LookupSession<'a> {
             return Err(VfsError::FilesystemLoop);
         }
         self.budget.charge()?;
-        match link.location().entry().link_target(self.caller)? {
+        match link.location().link_target(self.caller)? {
             LinkTarget::Text(target) => {
                 if target.is_empty() {
                     return Err(VfsError::NotFound);

@@ -93,6 +93,12 @@ pub trait NodeOps: Send + Sync + 'static {
         Err(VfsError::WouldBlock)
     }
 
+    /// Returns audited automatic access-time work without waiting, allocation,
+    /// I/O or write preparation. An absent capability leaves the inode alone.
+    fn access_time_ops(&self) -> Option<&dyn crate::AccessTimeOps> {
+        None
+    }
+
     /// Updates the metadata of the node.
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
@@ -390,6 +396,10 @@ impl DirEntry {
             return Err(VfsError::InvalidData);
         }
         self.0.node.cached_link_target(atime)
+    }
+
+    pub(crate) fn access_time_ops(&self) -> Option<&dyn crate::AccessTimeOps> {
+        self.0.node.access_time_ops()
     }
 
     pub fn downcast<T: NodeOps>(&self) -> VfsResult<Arc<T>> {

@@ -65,6 +65,7 @@ impl AuthorizedMetadataChange<'_> {
             return Err(VfsError::BadState);
         }
         let intent = match &request.intent {
+            MetadataIntent::Accessed(_) => return Err(VfsError::OperationNotSupported),
             MetadataIntent::Initialization(update) => {
                 MetadataIntent::Initialization(update.clone())
             }

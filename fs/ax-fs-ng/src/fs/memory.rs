@@ -597,6 +597,10 @@ impl MemoryNode {
 }
 
 impl NodeOps for MemoryNode {
+    fn access_time_ops(&self) -> Option<&dyn axfs_ng_vfs::AccessTimeOps> {
+        Some(self)
+    }
+
     fn change_metadata(
         &self,
         request: &axfs_ng_vfs::MetadataRequest<'_>,

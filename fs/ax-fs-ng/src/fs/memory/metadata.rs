@@ -1,8 +1,8 @@
 //! Metadata attempts share namespace exclusion and the real inode metadata.
 
 use axfs_ng_vfs::{
-    AuthorizedMetadataChange, LockedMetadataAttempt, MetadataRequest, NamespaceCompletion,
-    NamespaceOutcome,
+    AccessTimeOps, AuthorizedMetadataChange, LockedMetadataAttempt, MetadataRequest,
+    NamespaceCompletion, NamespaceOutcome,
 };
 
 use super::*;
@@ -11,6 +11,12 @@ struct MemoryMetadataAttempt<'a> {
     node: &'a MemoryNode,
     metadata: &'a mut Metadata,
     directory_size: Option<u64>,
+}
+
+impl AccessTimeOps for MemoryNode {
+    fn touch(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
+        self.run_metadata(request)
+    }
 }
 
 impl MemoryNode {

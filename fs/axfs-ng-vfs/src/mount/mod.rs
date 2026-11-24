@@ -20,9 +20,9 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     DeviceId, DirEntry, DirEntryId, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor,
     DirectoryReadState, Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps,
-    LinkCaller, LookupStep, Metadata, MetadataUpdate, MountRoot, MountWriteState, NodeFlags,
-    NodeOps, NodePermission, NodeType, OpenOptions, RawSpinLock, RawSpinLockGuard, Reference,
-    RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
+    LookupStep, Metadata, MetadataUpdate, MountRoot, MountWriteState, NodeFlags, NodeOps,
+    NodePermission, NodeType, OpenOptions, RawSpinLock, RawSpinLockGuard, Reference, RenameOptions,
+    TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -891,7 +891,7 @@ impl Mountpoint {
         self.mount_flags.store(flags, Ordering::Release);
     }
 
-    pub(crate) fn cached_link_time_policy(&self) -> VfsResult<crate::AccessTimePolicy> {
+    pub(crate) fn link_time_policy(&self) -> crate::AccessTimePolicy {
         use crate::AccessTimePolicy;
 
         // These are the existing Linux MS_* options, not internal MNT_* bits.
@@ -900,13 +900,22 @@ impl Mountpoint {
         const MS_NOATIME: u32 = 1 << 10;
         const MS_STRICTATIME: u32 = 1 << 24;
         let flags = self.mount_flags();
-        let policy = if flags & MS_STRICTATIME != 0 {
+        if flags & MS_STRICTATIME != 0 {
             AccessTimePolicy::Strict
         } else if flags & MS_NOATIME != 0 {
-            return Ok(AccessTimePolicy::NoAtime);
+            AccessTimePolicy::NoAtime
         } else {
             AccessTimePolicy::Relative
-        };
+        }
+    }
+
+    pub(crate) fn cached_link_time_policy(&self) -> VfsResult<crate::AccessTimePolicy> {
+        use crate::AccessTimePolicy;
+
+        let policy = self.link_time_policy();
+        if policy == AccessTimePolicy::NoAtime {
+            return Ok(policy);
+        }
         // Linux IS_NOATIME includes the superblock's read-only restriction.
         // A mount-local read-only bit alone does not suppress pick_link work.
         let shared = self
@@ -1024,8 +1033,6 @@ impl Location {
     pub fn is_dir(&self) -> bool;
 
     pub fn node_type(&self) -> NodeType;
-
-    pub fn read_link(&self, caller: &dyn LinkCaller) -> VfsResult<String>;
 
     pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize>;
 

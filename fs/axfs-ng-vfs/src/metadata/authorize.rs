@@ -34,6 +34,13 @@ impl MetadataRequest<'_> {
             removal: SetidRemoval::default(),
         };
         let change = match &self.intent {
+            MetadataIntent::Accessed(policy) => {
+                let now = attempt.wall_time();
+                if policy.needs_update(current, now) {
+                    authorized.atime = Some(now);
+                }
+                return Ok(authorized);
+            }
             MetadataIntent::StagingRestoration(update) => {
                 // These fields come from the private newly-created stage
                 // factory. Unlike boot initialization, saved mounter DAC and

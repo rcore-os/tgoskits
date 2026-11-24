@@ -5389,7 +5389,8 @@ remount 保留，以及缓存成功或拒绝均不改时间。相同 C 先在 Li
 无需更新。固定 Linux 的 `pick_link` 与 `do_readlinkat` 都在取得目标前调用
 `touch_atime`；更新失败不覆盖链接操作的结果。该动作只改变 atime，不具有
 用户主动修改时间时的 owner 检查，也不修改 mtime、ctime、模式或所有者。
-本节先定义普通访问的实现边界，证据随后按实际源码补齐。
+本节对应 `metadata/access_time.rs` 的普通访问入口，MemoryFs 在原有元数据
+提交协议内实现该动作；运行证据按实际源码补齐。
 
 可选 `AccessTimeOps` 由实际 `NodeOps` producer 声明，在准备写操作前发现。
 私有的自动访问意图沿原 `PreparedWrite`、`NamespaceCommandScope` 和
