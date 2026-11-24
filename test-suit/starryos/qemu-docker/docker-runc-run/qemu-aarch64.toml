@@ -16,14 +16,7 @@ args = [
 uefi = false
 to_bin = true
 shell_check_steps = [
-  {
-    shell_prefix = "root@starry:",
-    shell_cmd = "/usr/bin/docker-runc-run-smoke.sh",
-    success_regex = [
-      "(?m)^DOCKER_RUNC_RUN_PASSED\\s*$",
-      "(?m)^DOCKER_RUNC_RUN_STAGE_A_ONLY_PASSED\\s*$",
-    ],
-  },
+  { shell_prefix = "root@starry:", shell_cmd = "/usr/bin/docker-runc-run-smoke.sh", success_regex = ["(?m)^DOCKER_RUNC_RUN_PASSED\\s*$", "(?m)^DOCKER_RUNC_RUN_STAGE_A_ONLY_PASSED\\s*$"] },
 ]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",

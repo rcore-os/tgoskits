@@ -16,11 +16,7 @@ args = [
 uefi = false
 to_bin = true
 shell_check_steps = [
-  {
-    shell_prefix = "root@starry:",
-    shell_cmd = "/usr/bin/docker-guest-env-smoke.sh",
-    success_regex = ["(?m)^DOCKER_GUEST_ENV_PASSED\\s*$"],
-  },
+  { shell_prefix = "root@starry:", shell_cmd = "/usr/bin/docker-guest-env-smoke.sh", success_regex = ["(?m)^DOCKER_GUEST_ENV_PASSED\\s*$"] },
 ]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
