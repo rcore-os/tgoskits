@@ -16,6 +16,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Linux UAPI bits: 64-bit libc may define O_LARGEFILE as zero. */
@@ -310,6 +311,71 @@ out:
     close_fd(file);
 }
 
+static void cached_link_times(int rootfd, int file)
+{
+    int link = -1, changed = 0;
+    struct stat before, after;
+    struct timespec now;
+    struct timespec times[2] = {{0, 0}, {0, UTIME_OMIT}};
+
+    link = open_at(rootfd, "cached-relative", O_PATH | O_NOFOLLOW);
+    REQUIRE(link >= 0);
+    REQUIRE(syscall(SYS_mount, NULL, "mount", NULL,
+                    MS_REMOUNT | MS_RELATIME, NULL) == 0);
+    changed = 1;
+    REQUIRE(syscall(SYS_utimensat, rootfd, "cached-relative", times,
+                    AT_SYMLINK_NOFOLLOW) == 0);
+    REQUIRE(fstat(link, &before) == 0);
+    expect_open(open2(rootfd, "cached-relative", O_PATH, RESOLVE_CACHED),
+                EAGAIN, "CACHED refuses a link requiring an atime update");
+    REQUIRE(fstat(link, &after) == 0);
+    CHECK(after.st_atim.tv_sec == before.st_atim.tv_sec
+              && after.st_atim.tv_nsec == before.st_atim.tv_nsec,
+          "CACHED rejection leaves link atime unchanged");
+    expect_same(cached_open(rootfd, "cached-relative", O_PATH | O_NOFOLLOW,
+                            RESOLVE_NO_SYMLINKS), link,
+                "CACHED final nofollow does not require a link atime update");
+    expect_open(open2(rootfd, "cached-relative", O_PATH,
+                      RESOLVE_CACHED | RESOLVE_NO_SYMLINKS), ELOOP,
+                "CACHED link prohibition precedes an atime retry");
+
+    REQUIRE(syscall(SYS_clock_gettime, CLOCK_REALTIME, &now) == 0);
+    times[0] = now;
+    times[0].tv_sec += 3600;
+    REQUIRE(syscall(SYS_utimensat, rootfd, "cached-relative", times,
+                    AT_SYMLINK_NOFOLLOW) == 0);
+    REQUIRE(fstat(link, &before) == 0);
+    REQUIRE(before.st_atim.tv_sec > before.st_mtim.tv_sec
+                && before.st_atim.tv_sec > before.st_ctim.tv_sec);
+    expect_same(cached_open(rootfd, "cached-relative", O_PATH, 0), file,
+                "CACHED relatime follows a link with no timestamp work");
+    REQUIRE(fstat(link, &after) == 0);
+    CHECK(after.st_atim.tv_sec == before.st_atim.tv_sec
+              && after.st_atim.tv_nsec == before.st_atim.tv_nsec
+              && after.st_ctim.tv_sec == before.st_ctim.tv_sec
+              && after.st_ctim.tv_nsec == before.st_ctim.tv_nsec,
+          "CACHED successful link traversal leaves timestamps unchanged");
+
+    REQUIRE(syscall(SYS_mount, NULL, "mount", NULL,
+                    MS_REMOUNT | MS_STRICTATIME, NULL) == 0);
+    expect_open(open2(rootfd, "cached-relative", O_PATH, RESOLVE_CACHED),
+                EAGAIN, "CACHED strictatime requires an ordinary traversal");
+    REQUIRE(syscall(SYS_mount, NULL, "mount", NULL, MS_REMOUNT, NULL) == 0);
+    expect_open(open2(rootfd, "cached-relative", O_PATH, RESOLVE_CACHED),
+                EAGAIN, "remount without an atime mode preserves strictatime");
+    REQUIRE(syscall(SYS_mount, NULL, "mount", NULL,
+                    MS_REMOUNT | MS_STRICTATIME | MS_NOATIME, NULL) == 0);
+    expect_open(open2(rootfd, "cached-relative", O_PATH, RESOLVE_CACHED),
+                EAGAIN, "explicit strictatime overrides a noatime request");
+out:
+    if (changed) {
+        CHECK(syscall(SYS_mount, NULL, "mount", NULL,
+                      MS_REMOUNT | MS_NOATIME, NULL) == 0,
+              "restore the private noatime mount errno=%d", errno);
+    }
+    close_fd(link);
+}
+
 static void cached_links(int rootfd, int file)
 {
     int fd = -1;
@@ -391,6 +457,7 @@ static void cached_links(int rootfd, int file)
                 "CACHED permits the complete 40-link budget");
     expect_open(cached_open(rootfd, "cached-chain-41", O_PATH, 0), ELOOP,
                 "CACHED rejects a path exceeding the shared link budget");
+    cached_link_times(rootfd, file);
 out:
     close_fd(fd);
 }
