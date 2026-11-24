@@ -51,6 +51,34 @@ fn host_spcr_serial_becomes_owned_guest_snapshot() {
     );
 }
 
+#[test]
+fn host_spcr_16550_uses_byte_registers_for_the_emulated_device() {
+    let serial = AcpiSerialConsole {
+        interface: AcpiSerialInterface::Uart16550,
+        address_space: AcpiSerialAddressSpace::Memory,
+        registers: AcpiResourceRange {
+            base: 0x1000,
+            size: 32,
+        },
+        access_size: 3,
+        irq: Some(4),
+        baud_rate: None,
+        clock_hz: None,
+        namespace_path: None,
+    };
+    let snapshot = host_serial_from_acpi(serial, fallback()).unwrap();
+
+    assert_eq!(
+        snapshot.profile.transport,
+        GuestSerialTransport::Mmio {
+            base: 0x1000,
+            length: 32,
+            register_shift: 0,
+            register_width: AccessWidth::Byte,
+        }
+    );
+}
+
 const fn fallback() -> GuestSerialProfile {
     GuestSerialProfile {
         model: GuestSerialModel::Uart16550,

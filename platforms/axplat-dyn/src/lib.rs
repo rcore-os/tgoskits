@@ -25,8 +25,15 @@ pub use boot::{
     Initramfs, InitramfsRange, InitramfsReclaim, boot_entropy, boot_stack_bounds, bootargs,
     initramfs_range, take_initramfs_range,
 };
+pub use console::console_device_id_with_serial_index;
 pub use generic_timer::try_init_epoch_offset;
-pub use somehal::{ExecutionSnapshot, HandoffError, PhysicalRange};
+pub use somehal::{
+    ExecutionSnapshot, HandoffError, PhysicalRange,
+    console::{
+        early_console_has_unknown_mmio, early_console_reserves_io_port,
+        early_console_reserves_mmio, early_console_uses_io_port, early_console_uses_mmio,
+    },
+};
 pub fn ipi_irq() -> ax_plat::irq::IrqId {
     somehal::irq::ipi_irq()
 }

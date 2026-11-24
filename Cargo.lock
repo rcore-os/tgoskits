@@ -4866,6 +4866,7 @@ dependencies = [
 name = "kernutil"
 version = "0.3.1"
 dependencies = [
+ "acpi",
  "heapless",
  "num-align",
  "ranges-ext",
@@ -6876,6 +6877,7 @@ dependencies = [
  "ax-sync",
  "fdt-edit",
  "fdt-raw",
+ "kernutil",
  "log",
  "mmio-api",
  "paste",

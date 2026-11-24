@@ -323,37 +323,37 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>, Arc<PtyLink>
     let terminal = Arc::new(Terminal::default());
     let link = Arc::new(PtyLink::new(master_closed.clone(), slave_closed.clone()));
 
-    let master = Tty::new(
+    let slave = Tty::new(
         terminal.clone(),
         TtyConfig {
-            reader: PtyReader::new(slave_to_master_consumer.clone(), slave_closed.clone()),
-            writer: PtyWriter::new(
-                master_to_slave.clone(),
-                master_to_slave_consumer.clone(),
-                poll_rx_slave.clone(),
-                link.clone(),
-                true,
-            ),
-            process_mode: ProcessMode::Passive(poll_rx_master.clone()),
-        },
-    );
-
-    let slave = Tty::new(
-        terminal,
-        TtyConfig {
-            reader: PtyReader::new(master_to_slave_consumer, master_closed),
+            reader: PtyReader::new(master_to_slave_consumer.clone(), master_closed),
             writer: PtyWriter::new(
                 slave_to_master,
-                slave_to_master_consumer,
-                poll_rx_master,
+                slave_to_master_consumer.clone(),
+                poll_rx_master.clone(),
                 link.clone(),
                 false,
             ),
             process_mode: ProcessMode::InterruptDriven {
-                input: poll_rx_slave,
+                input: poll_rx_slave.clone(),
                 output: None,
             },
         },
+    );
+    let master = Tty::new_with_termios_target(
+        terminal,
+        TtyConfig {
+            reader: PtyReader::new(slave_to_master_consumer, slave_closed),
+            writer: PtyWriter::new(
+                master_to_slave,
+                master_to_slave_consumer,
+                poll_rx_slave,
+                link.clone(),
+                true,
+            ),
+            process_mode: ProcessMode::Passive(poll_rx_master),
+        },
+        Some(slave.clone()),
     );
 
     (master, slave, link)

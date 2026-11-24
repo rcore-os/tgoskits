@@ -71,6 +71,57 @@ pub mod console {
         device_id, fail_runtime_handoff_closed, handle_irq, irq_num, read_bytes,
         rollback_runtime_handoff, set_input_irq_enabled, write_bytes, write_text_bytes,
     };
+
+    /// Whether an unspecified console may hand off to a runtime-selected UART.
+    ///
+    /// Dynamic platforms can distinguish the early UART from another port and
+    /// initialize the latter. Static platforms require an explicit device id
+    /// before adopting a UART's existing configuration.
+    pub const fn can_handoff_unspecified_console() -> bool {
+        cfg!(all(axplat_dynamic, not(any(test, feature = "host-test"))))
+    }
+
+    cfg_if::cfg_if! {
+        if #[cfg(all(axplat_dynamic, not(any(test, feature = "host-test"))))] {
+            pub use axplat_dyn::{
+                console_device_id_with_serial_index as device_id_with_serial_index,
+                early_console_has_unknown_mmio, early_console_reserves_io_port, early_console_reserves_mmio,
+                early_console_uses_io_port, early_console_uses_mmio,
+            };
+        } else {
+            /// Resolves the console using the selected platform's device selector.
+            pub fn device_id_with_serial_index(
+                _serial_device_id: impl Fn(usize) -> Option<ConsoleDeviceId>,
+            ) -> ConsoleDeviceIdResult {
+                device_id()
+            }
+
+            /// Static platforms retain their existing console ownership behavior.
+            pub const fn early_console_reserves_mmio(_paddr: usize) -> bool {
+                false
+            }
+
+            /// Static platforms retain their existing console ownership behavior.
+            pub const fn early_console_has_unknown_mmio() -> bool {
+                false
+            }
+
+            /// Static platforms retain their existing console ownership behavior.
+            pub const fn early_console_reserves_io_port(_port: u16) -> bool {
+                false
+            }
+
+            /// Static handoff requires an explicitly selected console device.
+            pub const fn early_console_uses_mmio(_paddr: usize) -> bool {
+                true
+            }
+
+            /// Static handoff requires an explicitly selected console device.
+            pub const fn early_console_uses_io_port(_port: u16) -> bool {
+                true
+            }
+        }
+    }
 }
 
 /// CPU power management.

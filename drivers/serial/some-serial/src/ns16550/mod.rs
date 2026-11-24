@@ -9,9 +9,9 @@ mod registers;
 
 use bitflags::Flags;
 use rdif_serial::{
-    Config, ConfigError, DataBits, IRQ_RX_BATCH_CAPACITY, IrqRxBatch, Parity, RxErrorFlags, RxFlag,
-    RxSample, SerialEventSet, SerialIrqEvent, SerialIrqReport, SerialParts, SplitUart, StopBits,
-    UartEmergencyTx, UartInfo, UartIrq, UartPort,
+    Config, ConfigError, DataBits, Framing, IRQ_RX_BATCH_CAPACITY, IrqRxBatch, Parity,
+    RxErrorFlags, RxFlag, RxSample, SerialEventSet, SerialIrqEvent, SerialIrqReport, SerialParts,
+    SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq, UartPort,
 };
 use registers::*;
 
@@ -30,14 +30,24 @@ pub use mmio::*;
 pub use pio::*;
 pub use rockchip_fiq::*;
 
+const TX_IDLE_POLL_BUDGET: usize = 1 << 20;
+
 pub trait Kind: Clone + Send + Sync + 'static {
     /// Whether LSR.THRE grants a whole empty FIFO. Backends synthesizing THRE
     /// from a not-full bit must instead recheck readiness after every byte.
     const TX_READY_IS_FIFO_EMPTY: bool = true;
 
+    /// Whether programming the divisor keeps the FIFO mode and queued bytes.
+    const BAUDRATE_PRESERVES_FIFOS: bool = true;
+
     fn read_reg(&self, reg: u8) -> u8;
     fn write_reg(&self, reg: u8, val: u8);
     fn get_base(&self) -> usize;
+
+    /// Restores a saved IER image, including any backend-specific control bits.
+    fn restore_ier(&self, value: u8) {
+        self.write_reg(UART_IER, value);
+    }
 
     fn ack_busy_detect(&self) {}
 
@@ -48,7 +58,7 @@ pub trait Kind: Clone + Send + Sync + 'static {
             return Err(ConfigError::InvalidBaudrate);
         }
 
-        let divisor = clock_freq / (16 * baudrate);
+        let divisor = u64::from(clock_freq) / (16 * u64::from(baudrate));
         if divisor == 0 || divisor > 0xFFFF {
             return Err(ConfigError::InvalidBaudrate);
         }
@@ -265,27 +275,37 @@ impl<T: Kind> UartIrq for Ns16550Irq<T> {
 }
 
 impl<T: Kind> UartPort for Ns16550<T> {
-    fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
-        let original_ier: InterruptEnableFlags = self.read_flags(UART_IER);
-        self.write_flags(UART_IER, InterruptEnableFlags::empty());
-        if let Err(error) = self.set_config(config) {
-            // Every current `Kind::set_baudrate` validates before its first
-            // register write, while the remaining typed settings are
-            // infallible. Restore the only register changed before config.
-            self.write_flags(UART_IER, original_ier);
-            return Err(error);
-        }
-        self.enable_fifo(true);
-
-        let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
-        mcr.insert(
-            ModemControlFlags::DATA_TERMINAL_READY
-                | ModemControlFlags::REQUEST_TO_SEND
-                | ModemControlFlags::OUT_2,
+    fn framing(&self) -> Option<Framing> {
+        let lcr: LineControlFlags = self.read_flags(UART_LCR);
+        let data_bits = match lcr & LineControlFlags::WORD_LENGTH_MASK {
+            LineControlFlags::WORD_LENGTH_5 => DataBits::Five,
+            LineControlFlags::WORD_LENGTH_6 => DataBits::Six,
+            LineControlFlags::WORD_LENGTH_7 => DataBits::Seven,
+            _ => DataBits::Eight,
+        };
+        let stop_bits = if lcr.contains(LineControlFlags::STOP_BITS) {
+            StopBits::Two
+        } else {
+            StopBits::One
+        };
+        let parity = crate::line_parity(
+            lcr.contains(LineControlFlags::PARITY_ENABLE),
+            lcr.contains(LineControlFlags::EVEN_PARITY),
+            lcr.contains(LineControlFlags::STICK_PARITY),
         );
-        self.write_flags(UART_MCR, mcr);
-        self.saved_lsr = LineStatusFlags::empty();
-        Ok(())
+        Some(Framing {
+            data_bits,
+            stop_bits,
+            parity,
+        })
+    }
+
+    fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
+        self.startup_with_fifo_reset(config, true)
+    }
+
+    fn startup_preserving_fifos(&mut self, config: &Config) -> Result<(), ConfigError> {
+        self.startup_with_fifo_reset(config, false)
     }
 
     fn shutdown(&mut self) {
@@ -293,9 +313,9 @@ impl<T: Kind> UartPort for Ns16550<T> {
     }
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        // 配置波特率
+        self.validate_baudrate_request(config.baudrate)?;
         if let Some(baudrate) = config.baudrate {
-            self.set_baudrate_internal(baudrate)?;
+            self.base.set_baudrate(self.clock_freq, baudrate)?;
         }
 
         // 配置数据位
@@ -312,6 +332,13 @@ impl<T: Kind> UartPort for Ns16550<T> {
         if let Some(parity) = config.parity {
             self.set_parity_internal(parity)?;
         }
+
+        if let Some(outputs) = config.modem_outputs {
+            let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
+            mcr.set(ModemControlFlags::DATA_TERMINAL_READY, outputs.dtr);
+            mcr.set(ModemControlFlags::REQUEST_TO_SEND, outputs.rts);
+            self.write_flags(UART_MCR, mcr);
+        }
         Ok(())
     }
 
@@ -321,6 +348,14 @@ impl<T: Kind> UartPort for Ns16550<T> {
 
     fn discard_rx(&mut self) {
         self.saved_lsr = LineStatusFlags::empty();
+        if self.tx_load_size == 1 {
+            // In non-FIFO mode only the receive holding register needs draining.
+            let lsr: LineStatusFlags = self.read_flags(UART_LSR);
+            if lsr.contains(LineStatusFlags::DATA_READY) {
+                let _ = self.base.read_reg(UART_RBR);
+            }
+            return;
+        }
         self.write_flags(
             UART_FCR,
             FifoControlFlags::ENABLE_FIFO
@@ -334,6 +369,10 @@ impl<T: Kind> UartPort for Ns16550<T> {
     }
 
     fn discard_tx(&mut self) -> bool {
+        if self.tx_load_size == 1 {
+            // Enabling FIFO mode would also clear the receive holding register.
+            return false;
+        }
         self.write_flags(
             UART_FCR,
             FifoControlFlags::ENABLE_FIFO
@@ -344,7 +383,7 @@ impl<T: Kind> UartPort for Ns16550<T> {
     }
 
     fn tx_idle(&mut self) -> bool {
-        let lsr: LineStatusFlags = self.read_flags(UART_LSR);
+        let lsr = self.read_lsr_preserving();
         lsr.contains(
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY | LineStatusFlags::TRANSMITTER_EMPTY,
         )
@@ -408,7 +447,11 @@ impl<T: Kind> SplitUart for Ns16550<T> {
         UartInfo {
             name: "NS16550 UART",
             register_base: self.base.get_base(),
-            initial_baudrate: self.base.baudrate(self.clock_freq),
+            initial_baudrate: if self.clock_freq == 0 {
+                0
+            } else {
+                self.base.baudrate(self.clock_freq)
+            },
         }
     }
 
@@ -441,6 +484,61 @@ impl<T: Kind> PollingUart for Ns16550<T> {
 }
 
 impl<T: Kind> Ns16550<T> {
+    fn startup_with_fifo_reset(
+        &mut self,
+        config: &Config,
+        reset_fifos: bool,
+    ) -> Result<(), ConfigError> {
+        if !reset_fifos && config.baudrate.is_some() && !T::BAUDRATE_PRESERVES_FIFOS {
+            return Err(ConfigError::FifoPreservationUnavailable);
+        }
+        self.validate_baudrate_request(config.baudrate)?;
+        if !reset_fifos
+            && (config.baudrate.is_some()
+                || config.data_bits.is_some()
+                || config.stop_bits.is_some()
+                || config.parity.is_some())
+        {
+            self.wait_for_tx_idle()?;
+        }
+        let original_ier: InterruptEnableFlags = self.read_flags(UART_IER);
+        self.write_flags(UART_IER, InterruptEnableFlags::empty());
+        if let Err(error) = self.set_config(config) {
+            // Every current `Kind::set_baudrate` validates before its first
+            // register write, while the remaining typed settings are
+            // infallible. Restore the only register changed before config.
+            self.base.restore_ier(original_ier.bits());
+            return Err(error);
+        }
+        if reset_fifos {
+            self.enable_fifo(true);
+            self.saved_lsr = LineStatusFlags::empty();
+        } else {
+            // Changing FIFO enable can discard data even without reset bits.
+            self.refresh_tx_load_size();
+        }
+
+        let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
+        if config.modem_outputs.is_none() {
+            mcr.insert(ModemControlFlags::DATA_TERMINAL_READY | ModemControlFlags::REQUEST_TO_SEND);
+        }
+        mcr.insert(ModemControlFlags::OUT_2);
+        self.write_flags(UART_MCR, mcr);
+        Ok(())
+    }
+
+    fn wait_for_tx_idle(&mut self) -> Result<(), ConfigError> {
+        // Wait before changing any registers so a stuck transmitter cannot
+        // leave the handoff with a partially applied configuration.
+        for _ in 0..TX_IDLE_POLL_BUDGET {
+            if self.tx_idle() {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+        Err(ConfigError::Timeout)
+    }
+
     // 类型安全的 bitflags 寄存器访问
     fn read_flags<F: Flags<Bits = u8>>(&self, reg: u8) -> F {
         F::from_bits_retain(self.base.read_reg(reg))
@@ -603,9 +701,12 @@ impl<T: Kind> Ns16550<T> {
         fifo.contains(InterruptIdentificationFlags::FIFO_ENABLE_MASK)
     }
 
-    /// 设置波特率
-    fn set_baudrate_internal(&mut self, baudrate: u32) -> Result<(), ConfigError> {
-        self.base.set_baudrate(self.clock_freq, baudrate)
+    fn validate_baudrate_request(&self, baudrate: Option<u32>) -> Result<(), ConfigError> {
+        match baudrate {
+            Some(0) => Err(ConfigError::InvalidBaudrate),
+            Some(_) if self.clock_freq == 0 => Err(ConfigError::BaudrateUnavailable),
+            _ => Ok(()),
+        }
     }
 
     /// 设置数据位
@@ -1171,6 +1272,50 @@ mod tests {
     }
 
     #[test]
+    fn modem_outputs_preserve_the_divisor_and_irq_gate() {
+        use rdif_serial::ModemOutputs;
+
+        let (_guard, mut uart) = serial();
+        uart.clock_freq = 0;
+        uart.startup(&Config::new()).unwrap();
+        DLL_REG.store(37, Ordering::SeqCst);
+        DLH_REG.store(2, Ordering::SeqCst);
+        let gate = ModemControlFlags::OUT_2;
+        let raised =
+            gate | ModemControlFlags::DATA_TERMINAL_READY | ModemControlFlags::REQUEST_TO_SEND;
+        let mut config = Config {
+            modem_outputs: Some(ModemOutputs {
+                dtr: false,
+                rts: false,
+            }),
+            ..Config::new()
+        };
+
+        uart.set_config(&config).unwrap();
+        assert_eq!(REGS[UART_MCR as usize].load(Ordering::SeqCst), gate.bits());
+
+        config.modem_outputs = Some(ModemOutputs {
+            dtr: true,
+            rts: true,
+        });
+        config.baudrate = Some(57_600);
+        assert_eq!(
+            uart.set_config(&config),
+            Err(ConfigError::BaudrateUnavailable)
+        );
+        assert_eq!(REGS[UART_MCR as usize].load(Ordering::SeqCst), gate.bits());
+
+        config.baudrate = None;
+        uart.set_config(&config).unwrap();
+        assert_eq!(
+            REGS[UART_MCR as usize].load(Ordering::SeqCst),
+            raised.bits()
+        );
+        assert_eq!(DLL_REG.load(Ordering::SeqCst), 37);
+        assert_eq!(DLH_REG.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn startup_enables_fifo_before_checking_fifo_status() {
         let (_guard, mut uart) = serial();
 
@@ -1189,10 +1334,39 @@ mod tests {
         let early_mask = UART_IER_RDI | UART_IER_RLSI;
         REGS[UART_IER as usize].store(early_mask, Ordering::SeqCst);
 
-        let result = uart.startup(&Config::new().baudrate(0));
+        let result = uart.startup(&Config::new().baudrate(230_400));
 
         assert_eq!(result, Err(ConfigError::InvalidBaudrate));
         assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), early_mask);
+
+        uart.clock_freq = 0;
+        DLL_REG.store(37, Ordering::SeqCst);
+        DLH_REG.store(2, Ordering::SeqCst);
+        let original_framing = LineControlFlags::WORD_LENGTH_7
+            | LineControlFlags::PARITY_ENABLE
+            | LineControlFlags::EVEN_PARITY;
+        REGS[UART_LCR as usize].store(original_framing.bits(), Ordering::SeqCst);
+        let requested_config = Config::new().baudrate(115_200).data_bits(DataBits::Eight);
+        let expected_error = Err(ConfigError::BaudrateUnavailable);
+        assert_eq!(uart.startup(&requested_config), expected_error);
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), early_mask);
+
+        uart.startup(&Config::new()).unwrap();
+        assert_eq!(uart.set_config(&requested_config), expected_error);
+        assert_eq!(
+            uart.framing(),
+            Some(Framing {
+                data_bits: DataBits::Seven,
+                stop_bits: StopBits::One,
+                parity: Parity::Even,
+            })
+        );
+        assert_eq!(
+            REGS[UART_LCR as usize].load(Ordering::SeqCst),
+            original_framing.bits()
+        );
+        assert_eq!(DLL_REG.load(Ordering::SeqCst), 37);
+        assert_eq!(DLH_REG.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -1212,6 +1386,7 @@ mod tests {
     #[test]
     fn discard_tx_clears_only_the_transmitter_fifo() {
         let (_guard, mut uart) = serial();
+        uart.startup(&Config::new()).unwrap();
 
         assert!(UartPort::discard_tx(&mut uart));
 
@@ -1228,6 +1403,7 @@ mod tests {
     #[test]
     fn discard_rx_clears_only_the_receiver_fifo_and_saved_status() {
         let (_guard, mut uart) = serial();
+        uart.startup(&Config::new()).unwrap();
         uart.saved_lsr = LineStatusFlags::PARITY_ERROR;
         REGS[UART_RBR as usize].store(b'x', Ordering::SeqCst);
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
@@ -1245,6 +1421,60 @@ mod tests {
         assert!(uart.saved_lsr.is_empty());
         assert!(uart.read_rx().is_none());
         assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn preserving_startup_defers_line_changes_until_the_transmitter_is_empty() {
+        let (_guard, mut uart) = serial();
+        let original_lcr = LineControlFlags::WORD_LENGTH_7.bits();
+        REGS[UART_LCR as usize].store(original_lcr, Ordering::SeqCst);
+        let config = Config::new().baudrate(115_200).data_bits(DataBits::Eight);
+        // The holding register is empty, but a byte is still on the wire.
+        let holding_empty = LineStatusFlags::TRANSMITTER_HOLDING_EMPTY;
+        REGS[UART_LSR as usize].store(holding_empty.bits(), Ordering::SeqCst);
+
+        assert_eq!(
+            uart.startup_preserving_fifos(&config),
+            Err(ConfigError::Timeout)
+        );
+        assert_eq!(REGS[UART_LCR as usize].load(Ordering::SeqCst), original_lcr);
+        assert_eq!(DLL_REG.load(Ordering::SeqCst), 0);
+
+        REGS[UART_LSR as usize].store(
+            (holding_empty | LineStatusFlags::TRANSMITTER_EMPTY).bits(),
+            Ordering::SeqCst,
+        );
+        uart.startup_preserving_fifos(&config).unwrap();
+        assert_eq!(uart.framing().unwrap().data_bits, DataBits::Eight);
+        assert_eq!(DLL_REG.load(Ordering::SeqCst), 1);
+        assert_eq!(LAST_FCR_WRITE.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn discard_tx_without_fifo_preserves_pending_input() {
+        let (_guard, mut uart) = serial();
+        uart.startup_preserving_fifos(&Config::new()).unwrap();
+        REGS[UART_RBR as usize].store(b'x', Ordering::SeqCst);
+        REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
+
+        assert!(!UartPort::discard_tx(&mut uart));
+        assert_eq!(LAST_FCR_WRITE.load(Ordering::SeqCst), 0);
+        assert_eq!(uart.read_rx().and_then(|sample| sample.byte), Some(b'x'));
+    }
+
+    #[test]
+    fn discard_rx_without_fifo_consumes_only_the_pending_input() {
+        let (_guard, mut uart) = serial();
+        uart.startup_preserving_fifos(&Config::new()).unwrap();
+        uart.saved_lsr = LineStatusFlags::PARITY_ERROR;
+        REGS[UART_RBR as usize].store(b'x', Ordering::SeqCst);
+        REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
+
+        UartPort::discard_rx(&mut uart);
+
+        assert_eq!(LAST_FCR_WRITE.load(Ordering::SeqCst), 0);
+        assert_eq!(RBR_READS.load(Ordering::SeqCst), 1);
+        assert!(uart.read_rx().is_none());
     }
 
     #[test]

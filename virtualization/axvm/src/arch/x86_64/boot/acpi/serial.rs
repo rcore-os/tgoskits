@@ -24,6 +24,7 @@ pub(super) struct X86SerialPlan {
     pub(super) hid: String,
     pub(super) interface_type: u8,
     pub(super) registers: X86SerialRegisters,
+    pub(super) spcr_gas_layout: Option<(u8, u8)>,
     pub(super) irq: u32,
     pub(super) clock_hz: u32,
 }
@@ -72,12 +73,31 @@ fn serial_plan(
             }
         }
     };
-    let (generated_name, hid, interface_type) = match profile.model {
-        crate::machine::GuestSerialModel::Uart16550 => {
-            (format!("COM{}", index + 1), "PNP0501".into(), 0)
-        }
-        crate::machine::GuestSerialModel::Pl011 => (format!("URT{index}"), "ARMH0011".into(), 3),
-    };
+    let (generated_name, hid, interface_type, spcr_gas_layout) =
+        match (profile.model, profile.transport) {
+            (
+                crate::machine::GuestSerialModel::Uart16550,
+                crate::machine::GuestSerialTransport::Mmio {
+                    register_shift,
+                    register_width,
+                    ..
+                },
+            ) => (
+                format!("COM{}", index + 1),
+                "PNP0501".into(),
+                0x12,
+                crate::machine::spcr_16550_mmio_fields(register_shift, register_width),
+            ),
+            (crate::machine::GuestSerialModel::Uart16550, _) => (
+                format!("COM{}", index + 1),
+                "PNP0501".into(),
+                0,
+                Some((8, 1)),
+            ),
+            (crate::machine::GuestSerialModel::Pl011, _) => {
+                (format!("URT{index}"), "ARMH0011".into(), 3, Some((32, 3)))
+            }
+        };
     let namespace_path = match serial.firmware_binding() {
         DeviceFirmwareBinding::AcpiDevice(path) => Some(path.clone()),
         _ => None,
@@ -94,6 +114,7 @@ fn serial_plan(
         hid,
         interface_type,
         registers,
+        spcr_gas_layout,
         irq: u32::try_from(profile.irq)
             .map_err(|_| invalid_serial_value("serial IRQ", profile.irq))?,
         clock_hz: profile.clock_hz,

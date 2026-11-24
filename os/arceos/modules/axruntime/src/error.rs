@@ -42,8 +42,8 @@ pub enum RuntimeError {
     /// A platform console ownership transition was requested out of order.
     #[error(transparent)]
     ConsoleHandoff(#[from] ax_hal::console::ConsoleHandoffError),
-    /// Another serial runtime already owns console log routing.
-    #[error("another serial runtime already owns console routing")]
+    /// The early console owns this port or another runtime owns console routing.
+    #[error("serial console is already owned")]
     SerialConsoleBusy,
     /// The runtime console handoff failed after early ownership was revoked.
     #[error("runtime console failed closed")]
@@ -124,6 +124,9 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
             | ConfigError::UnsupportedDataBits
             | ConfigError::UnsupportedStopBits
             | ConfigError::UnsupportedParity => KlibError::InvalidInput,
+            ConfigError::BaudrateUnavailable | ConfigError::FifoPreservationUnavailable => {
+                KlibError::Unsupported
+            }
             ConfigError::Timeout => KlibError::TimedOut,
             ConfigError::RegisterError => KlibError::Io,
         },

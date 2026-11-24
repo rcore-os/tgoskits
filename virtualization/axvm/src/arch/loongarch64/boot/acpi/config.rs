@@ -10,6 +10,7 @@ pub(in crate::arch::loongarch64::boot) struct LoongArchFwCfgSerialConfig {
     pub(in crate::arch::loongarch64::boot) irq: u8,
     pub(in crate::arch::loongarch64::boot) clock_hz: u32,
     pub(in crate::arch::loongarch64::boot) baud: u32,
+    pub(in crate::arch::loongarch64::boot) spcr_gas_layout: Option<(u8, u8)>,
 }
 
 impl Default for LoongArchFwCfgSerialConfig {
@@ -20,6 +21,7 @@ impl Default for LoongArchFwCfgSerialConfig {
             irq: 66,
             clock_hz: 100_000_000,
             baud: 115_200,
+            spcr_gas_layout: Some((8, 1)),
         }
     }
 }
@@ -85,6 +87,10 @@ pub(in crate::arch::loongarch64::boot) fn serial_config(
         irq: (platform.interrupt.acpi_gsi_base + platform.serial.irq) as u8,
         clock_hz: platform.serial.clock_hz,
         baud: platform.serial.baud,
+        spcr_gas_layout: crate::machine::spcr_16550_mmio_fields(
+            platform.serial.register_shift,
+            platform.serial.register_width,
+        ),
     }
 }
 

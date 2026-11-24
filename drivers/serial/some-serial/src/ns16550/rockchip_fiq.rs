@@ -4,7 +4,8 @@ use core::ptr::NonNull;
 
 use heapless::{String, Vec};
 use rdif_serial::{
-    Config, ConfigError, RxSample, SerialEventSet, SerialParts, SplitUart, UartInfo, UartPort,
+    Config, ConfigError, Framing, RxSample, SerialEventSet, SerialParts, SplitUart, UartInfo,
+    UartPort,
 };
 
 use super::{
@@ -447,7 +448,7 @@ impl RockchipFiqPort {
         unsafe { (self.reg_addr(reg) as *mut u32).write_volatile(value) }
     }
 
-    fn init_debug_port(&self, baudrate: u32) {
+    fn reset_and_set_baudrate(&self, baudrate: u32, lcr: u8, ier: u8, mcr: u8) {
         if self.read_reg(UART_LSR) & UART_LSR_DR != 0 {
             let _ = self.read_reg(UART_RBR);
         }
@@ -465,15 +466,16 @@ impl RockchipFiqPort {
         self.write_reg(UART_LCR, UART_LCR_DLAB | UART_LCR_WLEN8);
         self.write_reg(UART_DLL, dll);
         self.write_reg(UART_DLH, 0);
-        self.write_reg(UART_LCR, UART_LCR_WLEN8);
-        self.write_reg(UART_IER, UART_IER_RDI);
+        self.write_reg(UART_LCR, lcr);
         self.write_reg(UART_FCR, 0x01);
-        self.write_reg(UART_MCR, 0);
+        self.write_reg(UART_MCR, mcr);
+        self.write_reg(UART_IER, ier);
     }
 }
 
 impl Kind for RockchipFiqPort {
     const TX_READY_IS_FIFO_EMPTY: bool = false;
+    const BAUDRATE_PRESERVES_FIFOS: bool = false;
 
     fn read_reg(&self, reg: u8) -> u8 {
         let mut value = (self.read_u32(reg) & 0xff) as u8;
@@ -495,7 +497,14 @@ impl Kind for RockchipFiqPort {
         if !matches!(baudrate, 115_200 | 1_500_000) {
             return Err(ConfigError::InvalidBaudrate);
         }
-        self.init_debug_port(baudrate);
+        // RK3588 restricts DLAB and divisor writes while the UART is busy.
+        // The established reset and loopback sequence clears the FIFOs and
+        // isolates external RX while changing the divisor. Restore the line
+        // and modem registers before the interrupt mask.
+        let lcr = self.read_reg(UART_LCR) & !UART_LCR_DLAB;
+        let ier = self.read_reg(UART_IER);
+        let mcr = self.read_reg(UART_MCR);
+        self.reset_and_set_baudrate(baudrate, lcr, ier, mcr);
         Ok(())
     }
 
@@ -536,7 +545,7 @@ impl RockchipFiqSerial {
     pub fn new(base: NonNull<u8>, config: RockchipFiqConfig) -> Self {
         let config = config.normalised();
         let port = RockchipFiqPort::new(base.as_ptr() as usize);
-        port.init_debug_port(config.baudrate);
+        port.reset_and_set_baudrate(config.baudrate, UART_LCR_WLEN8, UART_IER_RDI, 0);
         let serial = Ns16550::new_rockchip_fiq(base, config.clock_hz);
         Self {
             serial,
@@ -563,8 +572,16 @@ impl RockchipFiqSerial {
 }
 
 impl UartPort for RockchipFiqSerial {
+    fn framing(&self) -> Option<Framing> {
+        self.serial.framing()
+    }
+
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
         self.serial.startup(config)
+    }
+
+    fn startup_preserving_fifos(&mut self, config: &Config) -> Result<(), ConfigError> {
+        self.serial.startup_preserving_fifos(config)
     }
 
     fn shutdown(&mut self) {
@@ -677,7 +694,38 @@ fn normalise_baudrate(baudrate: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use rdif_serial::{DataBits, Parity};
+
     use super::*;
+
+    #[test]
+    fn baudrate_only_update_preserves_running_port() {
+        let mut registers = [0_u32; UART_SRR as usize + 1];
+        let base = NonNull::new(registers.as_mut_ptr().cast()).unwrap();
+        let mut uart = RockchipFiqSerial::new(base, RockchipFiqConfig::default());
+        let port = uart.serial.base;
+        uart.set_config(
+            &Config::new()
+                .data_bits(DataBits::Seven)
+                .parity(Parity::Even),
+        )
+        .unwrap();
+        port.write_reg(UART_IER, 0x0d);
+        port.write_reg(UART_MCR, 0x0b);
+        let framing = uart.framing().unwrap();
+        assert_eq!(framing.data_bits, DataBits::Seven);
+        assert_eq!(framing.parity, Parity::Even);
+
+        uart.set_config(&Config::new().baudrate(115_200)).unwrap();
+
+        assert_eq!(uart.framing(), Some(framing));
+        // The fixture stores DLL at offset zero. The real UART restores the
+        // IER bank at offset four when DLAB is cleared.
+        assert_eq!(port.read_reg(UART_DLL), 0x0d);
+        assert_eq!(port.read_reg(UART_IER), 0x0d);
+        assert_eq!(port.read_reg(UART_MCR), 0x0b);
+        assert_eq!(port.read_reg(UART_LCR) & UART_LCR_DLAB, 0);
+    }
 
     fn feed(debugger: &mut FiqDebugger, bytes: &[u8]) -> heapless::Vec<FiqDebuggerEvent, 64> {
         let mut out = heapless::Vec::new();
@@ -687,6 +735,34 @@ mod tests {
             });
         }
         out
+    }
+
+    #[test]
+    fn preserving_startup_rejects_a_reset_based_baud_change_without_consuming_rx() {
+        let mut registers = [0_u32; UART_SRR as usize + 1];
+        let base = NonNull::new(registers.as_mut_ptr().cast()).unwrap();
+        let mut uart = RockchipFiqSerial::new(base, RockchipFiqConfig::default());
+        let port = uart.serial.base;
+        port.write_reg(UART_SRR, 0);
+        port.write_reg(UART_RBR, b'x');
+        port.write_reg(
+            UART_LSR,
+            (LineStatusFlags::DATA_READY
+                | LineStatusFlags::TRANSMITTER_HOLDING_EMPTY
+                | LineStatusFlags::TRANSMITTER_EMPTY)
+                .bits(),
+        );
+        port.write_reg(UART_IER, UART_IER_RDI);
+
+        assert_eq!(
+            uart.startup_preserving_fifos(&Config::new().baudrate(115_200)),
+            Err(ConfigError::FifoPreservationUnavailable)
+        );
+        assert_eq!(port.read_reg(UART_SRR), 0);
+        assert_eq!(port.read_reg(UART_IER), UART_IER_RDI);
+
+        uart.startup_preserving_fifos(&Config::new()).unwrap();
+        assert_eq!(uart.read_rx().and_then(|sample| sample.byte), Some(b'x'));
     }
 
     #[test]

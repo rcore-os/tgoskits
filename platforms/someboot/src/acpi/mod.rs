@@ -53,6 +53,27 @@ pub fn tables() -> Result<AcpiTables<AcpiHandle>, acpi::AcpiError> {
     }
 }
 
+pub(crate) fn spcr_memory_contains(address: usize, length: usize) -> bool {
+    if crate::mem::memory_map().iter().any(|region| {
+        region.memory_type == crate::mem::MemoryType::Reserved
+            && region
+                .physical_start
+                .checked_add(region.size_in_bytes)
+                .is_some()
+            && address
+                .checked_sub(region.physical_start)
+                .and_then(|offset| offset.checked_add(length))
+                .is_some_and(|end| end <= region.size_in_bytes)
+    }) {
+        return true;
+    }
+    // The first console discovery precedes the final boot memory map.
+    #[cfg(efi)]
+    return crate::efi_stub::spcr_memory_contains(address, length);
+    #[cfg(not(efi))]
+    false
+}
+
 /// 获取 CPU ID 列表
 ///
 /// 根据目标架构使用不同的解析方式：

@@ -42,6 +42,9 @@ pub(crate) enum ConsoleActivation {
     /// No compatible runtime UART was discovered; the HAL console remains the
     /// sole owner.
     RawHal(ConsoleUnavailable),
+    /// Raw access was disabled for an explicit virtual selection or to release
+    /// an unidentified firmware UART before ordinary ports become available.
+    Disabled,
     /// No runtime may use the former early console after this point.
     FailedClosed(ConsoleUnavailable),
 }
@@ -52,9 +55,10 @@ pub(crate) enum ConsoleUnavailable {
     NoSerialDevice,
     NoHardwareSelected,
     SelectedDeviceNotFound,
-    NoTtyS0Fallback,
+    UnspecifiedHardwareConsole,
+    NoNumberedSerial,
     HandoffFailed,
-    RuntimeAdoptFailed,
+    RuntimeStartFailed,
     LogRoutingBusy,
 }
 
@@ -66,18 +70,24 @@ pub(crate) fn activate_before_smp() -> ConsoleActivation {
 
     let runtimes = serial::runtimes();
     let tty_numbers = initialize_tty_numbers(runtimes);
-    let selection = select_runtime(runtimes, tty_numbers, ax_hal::console::device_id());
+    let selected = ax_hal::console::device_id_with_serial_index(|number| {
+        tty_numbers
+            .iter()
+            .position(|assigned| *assigned == Some(number))
+            .map(|index| runtimes[index].info().device_id)
+    });
+    let selection = select_runtime(runtimes, tty_numbers, selected);
     let (runtime_index, tty_number) = match selection {
         Ok(selection) => selection,
-        Err(unavailable) => return use_raw_hal(unavailable),
+        Err(unavailable) => return activate_fallback(unavailable),
     };
 
     let runtime = &runtimes[runtime_index];
     if runtime.begin_console_handoff().is_err() {
         return fail_closed(runtime, ConsoleUnavailable::HandoffFailed);
     }
-    if runtime.adopt_prepared_console().is_err() {
-        return fail_closed(runtime, ConsoleUnavailable::RuntimeAdoptFailed);
+    if runtime.start_handoff_console().is_err() {
+        return fail_closed(runtime, ConsoleUnavailable::RuntimeStartFailed);
     }
     if let Err(error) = runtime.commit_console_handoff() {
         let reason = if error == RuntimeError::SerialConsoleBusy {
@@ -96,14 +106,40 @@ pub(crate) fn activate_before_smp() -> ConsoleActivation {
     activation
 }
 
-fn use_raw_hal(reason: ConsoleUnavailable) -> ConsoleActivation {
-    let activation = raw_hal_activation(reason);
+fn activate_fallback(reason: ConsoleUnavailable) -> ConsoleActivation {
+    let unknown_mmio = serial::runtimes().iter().any(|runtime| {
+        matches!(
+            runtime.info().address,
+            ax_driver::serial::SerialRegisterAddress::Mmio(_)
+        )
+    }) && ax_hal::console::early_console_has_unknown_mmio();
+    let activation = unavailable_activation(reason, unknown_mmio, || {
+        // No task has acquired a raw-HAL input or output capability yet. Stop
+        // opaque firmware access before exposing ordinary ports; otherwise no
+        // MMIO UART could safely start. Keep a known early UART as the fallback.
+        let handoff = ax_hal::console::begin_runtime_handoff()
+            .and_then(|()| ax_hal::console::commit_runtime_handoff());
+        if handoff.is_err() {
+            ax_hal::console::fail_runtime_handoff_closed();
+        }
+        handoff
+    });
     ACTIVATION.call_once(|| activation);
     activation
 }
 
-const fn raw_hal_activation(reason: ConsoleUnavailable) -> ConsoleActivation {
-    ConsoleActivation::RawHal(reason)
+fn unavailable_activation(
+    reason: ConsoleUnavailable,
+    unknown_mmio: bool,
+    release_early_console: impl FnOnce() -> ax_hal::console::ConsoleHandoffResult,
+) -> ConsoleActivation {
+    if reason != ConsoleUnavailable::NoHardwareSelected && !unknown_mmio {
+        return ConsoleActivation::RawHal(reason);
+    }
+    match release_early_console() {
+        Ok(()) => ConsoleActivation::Disabled,
+        Err(_) => ConsoleActivation::FailedClosed(ConsoleUnavailable::HandoffFailed),
+    }
 }
 
 fn fail_closed(
@@ -127,12 +163,17 @@ fn select_runtime(
         .zip(tty_numbers.iter().copied())
         .map(|(runtime, tty_number)| (runtime.info().device_id, tty_number))
         .collect::<alloc::vec::Vec<_>>();
-    select_candidate(&candidates, selected)
+    select_candidate(
+        &candidates,
+        selected,
+        ax_hal::console::can_handoff_unspecified_console(),
+    )
 }
 
 fn select_candidate(
     candidates: &[(ax_hal::console::ConsoleDeviceId, Option<usize>)],
     selected: ax_hal::console::ConsoleDeviceIdResult,
+    allow_unspecified_handoff: bool,
 ) -> Result<(usize, usize), ConsoleUnavailable> {
     if candidates.is_empty() {
         return Err(ConsoleUnavailable::NoSerialDevice);
@@ -143,11 +184,15 @@ fn select_candidate(
             .position(|(candidate, _)| *candidate == device_id)
             .and_then(|index| Some((index, candidates[index].1?)))
             .ok_or(ConsoleUnavailable::SelectedDeviceNotFound),
+        Err(ax_hal::console::ConsoleDeviceIdError::NotSpecified) if !allow_unspecified_handoff => {
+            Err(ConsoleUnavailable::UnspecifiedHardwareConsole)
+        }
         Err(ax_hal::console::ConsoleDeviceIdError::NotSpecified) => candidates
             .iter()
-            .position(|(_, number)| *number == Some(0))
-            .map(|index| (index, 0))
-            .ok_or(ConsoleUnavailable::NoTtyS0Fallback),
+            .enumerate()
+            .filter_map(|(index, (_, number))| Some((index, (*number)?)))
+            .min_by_key(|&(_, number)| number)
+            .ok_or(ConsoleUnavailable::NoNumberedSerial),
         Err(ax_hal::console::ConsoleDeviceIdError::NoHardwareDevice) => {
             Err(ConsoleUnavailable::NoHardwareSelected)
         }
@@ -192,6 +237,7 @@ fn inactive_console_error(activation: Option<ConsoleActivation>) -> RuntimeError
         Some(ConsoleActivation::FailedClosed(_)) | Some(ConsoleActivation::Active { .. }) => {
             RuntimeError::ConsoleFailedClosed
         }
+        Some(ConsoleActivation::Disabled) => RuntimeError::OperationNotSupported,
         Some(ConsoleActivation::RawHal(_)) | None => RuntimeError::SerialNotStarted,
     }
 }
@@ -256,9 +302,9 @@ pub(crate) fn try_publish_without_runtime(
             // sleepable mutex is therefore never a valid record arbiter.
             Some(publish_raw_record(meta, context, args, &mut RawHalWriter))
         }
-        ConsoleActivation::Active { .. } | ConsoleActivation::FailedClosed(_) => {
-            Some(ax_log::PublishStatus::Dropped)
-        }
+        ConsoleActivation::Active { .. }
+        | ConsoleActivation::Disabled
+        | ConsoleActivation::FailedClosed(_) => Some(ax_log::PublishStatus::Dropped),
     }
 }
 
@@ -649,7 +695,7 @@ mod tests {
 
     use super::{
         ACTIVATION, ConsoleActivation, ConsoleUnavailable, assign_tty_numbers,
-        inactive_console_error, output, raw_hal_activation, select_candidate, take_input,
+        inactive_console_error, output, select_candidate, take_input, unavailable_activation,
     };
     use crate::RuntimeError;
 
@@ -670,56 +716,107 @@ mod tests {
         let tty_s0 = rdrive::DeviceId::from(10);
         let tty_s1 = rdrive::DeviceId::from(11);
         assert_eq!(
-            select_candidate(&[(tty_s0, Some(0)), (tty_s1, Some(1))], Ok(tty_s1)),
+            select_candidate(&[(tty_s0, Some(0)), (tty_s1, Some(1))], Ok(tty_s1), false),
             Ok((1, 1))
         );
     }
 
     #[test]
-    fn only_not_specified_falls_back_to_ttys0() {
+    fn only_not_specified_allows_runtime_fallback() {
         let tty_s0 = rdrive::DeviceId::from(10);
         let candidates = [(tty_s0, Some(0))];
         assert_eq!(
-            select_candidate(&candidates, Err(ConsoleDeviceIdError::NotSpecified)),
+            select_candidate(&candidates, Err(ConsoleDeviceIdError::NotSpecified), true),
             Ok((0, 0))
         );
         assert_eq!(
-            select_candidate(&candidates, Err(ConsoleDeviceIdError::NoHardwareDevice)),
+            select_candidate(
+                &candidates,
+                Err(ConsoleDeviceIdError::NoHardwareDevice),
+                true
+            ),
             Err(ConsoleUnavailable::NoHardwareSelected)
         );
         assert_eq!(
-            select_candidate(&candidates, Err(ConsoleDeviceIdError::DeviceNotFound)),
+            select_candidate(&candidates, Err(ConsoleDeviceIdError::DeviceNotFound), true),
             Err(ConsoleUnavailable::SelectedDeviceNotFound)
         );
     }
 
     #[test]
-    fn missing_hardware_and_ttys0_are_unavailable_for_runtime_selection() {
-        let tty_s1 = rdrive::DeviceId::from(11);
+    fn unspecified_console_can_use_a_nonzero_serial_number() {
+        let tty_s3 = rdrive::DeviceId::from(13);
+        let tty_s2 = rdrive::DeviceId::from(12);
         assert_eq!(
             select_candidate(
-                &[(tty_s1, Some(1))],
-                Err(ConsoleDeviceIdError::NotSpecified)
+                &[(tty_s3, Some(3)), (tty_s2, Some(2))],
+                Err(ConsoleDeviceIdError::NotSpecified),
+                true
             ),
-            Err(ConsoleUnavailable::NoTtyS0Fallback)
+            Ok((1, 2))
         );
-        assert_eq!(
-            select_candidate(&[], Err(ConsoleDeviceIdError::NotSpecified)),
-            Err(ConsoleUnavailable::NoSerialDevice)
-        );
+        for selected in [
+            ConsoleDeviceIdError::NotSpecified,
+            ConsoleDeviceIdError::NoHardwareDevice,
+        ] {
+            assert_eq!(
+                select_candidate(&[], Err(selected), true),
+                Err(ConsoleUnavailable::NoSerialDevice)
+            );
+        }
+    }
+
+    #[test]
+    fn unspecified_console_without_platform_support_keeps_the_raw_hal_owner() {
+        let device = rdrive::DeviceId::from(12);
+        for number in [0, 2] {
+            let reason = select_candidate(
+                &[(device, Some(number))],
+                Err(ConsoleDeviceIdError::NotSpecified),
+                ax_hal::console::can_handoff_unspecified_console(),
+            )
+            .expect_err("a serial number does not identify the early console");
+            assert_eq!(reason, ConsoleUnavailable::UnspecifiedHardwareConsole);
+            assert_eq!(
+                unavailable_activation(reason, false, || panic!("must not begin console handoff")),
+                ConsoleActivation::RawHal(reason)
+            );
+        }
     }
 
     #[test]
     fn unavailable_runtime_selection_keeps_the_raw_hal_owner() {
         for reason in [
             ConsoleUnavailable::NoSerialDevice,
-            ConsoleUnavailable::NoHardwareSelected,
             ConsoleUnavailable::SelectedDeviceNotFound,
-            ConsoleUnavailable::NoTtyS0Fallback,
+            ConsoleUnavailable::NoNumberedSerial,
         ] {
             assert_eq!(
-                raw_hal_activation(reason),
+                unavailable_activation(reason, false, || panic!("fallback must retain raw access")),
                 ConsoleActivation::RawHal(reason)
+            );
+        }
+    }
+
+    #[test]
+    fn fallback_releases_raw_access_before_exposing_ports_with_unknown_ownership() {
+        for (reason, unknown_mmio) in [
+            (ConsoleUnavailable::NoHardwareSelected, false),
+            (ConsoleUnavailable::SelectedDeviceNotFound, true),
+            (ConsoleUnavailable::NoNumberedSerial, true),
+        ] {
+            let released = core::cell::Cell::new(false);
+            let activation = unavailable_activation(reason, unknown_mmio, || {
+                released.set(true);
+                Ok(())
+            });
+            assert!(released.get());
+            assert_eq!(activation, ConsoleActivation::Disabled);
+            assert_eq!(
+                unavailable_activation(reason, unknown_mmio, || {
+                    Err(ax_hal::console::ConsoleHandoffError::InvalidState)
+                }),
+                ConsoleActivation::FailedClosed(ConsoleUnavailable::HandoffFailed)
             );
         }
     }

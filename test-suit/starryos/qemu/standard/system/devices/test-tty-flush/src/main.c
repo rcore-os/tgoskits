@@ -233,22 +233,18 @@ out:
     close_pty(&pty);
 }
 
-static void check_serial_output_flush(void)
+static void check_serial_flush(void)
 {
     int fd = open("/dev/ttyS0", O_RDWR | O_NOCTTY | O_NONBLOCK);
-    int rc;
 
     if (fd < 0) {
-        fail("open serial TTY for output flush");
+        fail("open serial TTY for flush");
         return;
     }
-    rc = ioctl(fd, TCFLSH, TCOFLUSH);
-    if (rc != 0) {
-        if (errno == EOPNOTSUPP)
-            puts("SKIP: serial hardware has no TX-only discard");
-        else
-            fail("TCOFLUSH discards serial output");
-    }
+    if (ioctl(fd, TCFLSH, TCOFLUSH) != 0)
+        fail("TCOFLUSH succeeds on the serial TTY");
+    if (ioctl(fd, TCFLSH, TCIOFLUSH) != 0)
+        fail("TCIOFLUSH succeeds on the serial TTY");
     close(fd);
 }
 
@@ -337,7 +333,7 @@ int main(void)
     }
     close_pty(&pty);
     check_deferred_echo_flush();
-    check_serial_output_flush();
+    check_serial_flush();
 
     if (failures != 0) {
         fprintf(stderr, "test-tty-flush: %d failure(s)\n", failures);

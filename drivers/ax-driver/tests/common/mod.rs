@@ -6,14 +6,39 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
+extern crate alloc;
 
-use ax_sync::interface::{AcquireResult, ContextState, LOCK_MODE_READ, LockMetadata};
+use ax_sync::{
+    RawSpinLock,
+    interface::{AcquireResult, ContextState, LOCK_MODE_READ, LockMetadata},
+};
 use axklib::{
     BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, KlibError,
     KlibResult, PhysAddr, VirtAddr, klib::impl_trait,
 };
 
+use self::alloc::vec::Vec;
+
 struct HostLocks;
+
+#[ax_crate_interface::impl_interface]
+impl ax_sync::interface::ContextOps for HostLocks {
+    fn enter(_context: u8) -> ContextState {
+        ContextState::new(0, 0)
+    }
+
+    fn exit(_context: u8, _state: ContextState) {}
+
+    fn irq_return_preempt_enter() -> usize {
+        0
+    }
+
+    fn irq_return_preempt_exit(_state: usize) {}
+
+    fn hardirq_enter() {}
+
+    fn hardirq_exit() {}
+}
 
 #[ax_crate_interface::impl_interface]
 impl ax_sync::interface::SpinOps for HostLocks {
@@ -117,15 +142,19 @@ impl ax_sync::interface::RwLockOps for HostLocks {
     }
 }
 
-static MMIO_PADDR: AtomicUsize = AtomicUsize::new(0);
-static MMIO_SIZE: AtomicUsize = AtomicUsize::new(0);
-static MMIO_VADDR: AtomicUsize = AtomicUsize::new(0);
+pub static MMIO_MAPPINGS: RawSpinLock<Vec<MmioMapping>> = RawSpinLock::new(Vec::new());
+
+pub struct MmioMapping {
+    pub paddr: usize,
+    pub size: usize,
+    pub vaddr: usize,
+}
 
 #[cfg(feature = "starfive-soc")]
 pub fn register_mmio_mapping(paddr: usize, size: usize, vaddr: usize) {
-    MMIO_PADDR.store(paddr, Ordering::SeqCst);
-    MMIO_SIZE.store(size, Ordering::SeqCst);
-    MMIO_VADDR.store(vaddr, Ordering::SeqCst);
+    MMIO_MAPPINGS
+        .lock_irqsave()
+        .push(MmioMapping { paddr, size, vaddr });
 }
 
 struct KlibImpl;
@@ -133,14 +162,10 @@ struct KlibImpl;
 impl_trait! {
     impl Klib for KlibImpl {
         fn mem_iomap(addr: PhysAddr, size: usize) -> KlibResult<VirtAddr> {
-            let matches = addr.as_usize() == MMIO_PADDR.load(Ordering::SeqCst)
-                && size == MMIO_SIZE.load(Ordering::SeqCst);
-            let ptr = MMIO_VADDR.load(Ordering::SeqCst);
-            if matches && ptr != 0 {
-                Ok(VirtAddr::from_usize(ptr))
-            } else {
-                Err(KlibError::Unsupported)
-            }
+            MMIO_MAPPINGS.lock_irqsave().iter().find_map(|mapping| {
+                (mapping.paddr == addr.as_usize() && mapping.size == size && mapping.vaddr != 0)
+                    .then_some(VirtAddr::from_usize(mapping.vaddr))
+            }).ok_or(KlibError::Unsupported)
         }
 
         fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {

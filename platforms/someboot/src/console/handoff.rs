@@ -84,6 +84,14 @@ pub(super) fn try_enter_early() -> Option<EarlyAccessGuard> {
     }
 }
 
+pub(super) fn reserves_early_registers() -> bool {
+    !synchronization_available()
+        || matches!(
+            OwnershipState::from_raw(OWNERSHIP.load(Ordering::Acquire)),
+            OwnershipState::Early | OwnershipState::Preparing | OwnershipState::FailedClosed
+        )
+}
+
 /// Stops new early-console accesses and waits for in-flight accesses to leave.
 pub fn begin() -> Result<(), ConsoleHandoffError> {
     if !synchronization_available() {

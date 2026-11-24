@@ -11,7 +11,7 @@ use kernutil::memory::{MemoryDescriptor, MemoryType};
 use some_serial::ns16550::Port;
 use some_serial::{
     ConfigError, PollingUart, SerialEvent, TransferError,
-    ns16550::{self, Mmio, Ns16550},
+    ns16550::{self, Mmio, MmioLayout, Ns16550},
     pl011,
 };
 
@@ -22,9 +22,8 @@ use crate::{
 
 mod handoff;
 pub use handoff::ConsoleHandoffError;
-
-pub(crate) static mut DEBUG_BASE: usize = 0;
-pub(crate) static mut DEBUG_IS_MMIO: bool = false;
+#[cfg(test)]
+pub(crate) use tests::TEST_LOCK as CONSOLE_TEST_LOCK;
 
 pub trait ArchConsoleOps {
     fn init() -> bool {
@@ -33,6 +32,16 @@ pub trait ArchConsoleOps {
 
     fn read_byte() -> Option<u8> {
         None
+    }
+
+    /// Whether the architecture console may access an unidentified MMIO UART.
+    fn firmware_console_may_use_mmio() -> bool {
+        false
+    }
+
+    /// Reports an I/O port used by architecture-specific console hooks.
+    fn reserves_io_port(_port: u16) -> bool {
+        false
     }
 
     fn irq_num() -> Option<usize> {
@@ -51,17 +60,18 @@ pub const CONSOLE_IRQ_RX_ERROR: u32 = 1 << 1;
 pub const CONSOLE_IRQ_OVERRUN: u32 = 1 << 2;
 
 pub(crate) fn debug_to_memory_desc() -> Option<MemoryDescriptor> {
-    let debug_base = unsafe { DEBUG_BASE };
-    let debug_is_mmio = unsafe { DEBUG_IS_MMIO };
-    if debug_base == 0 || !debug_is_mmio {
-        return None;
-    }
+    EARLYCON
+        .0
+        .with_lock(|earlycon| earlycon.mmio.as_ref().map(|mmio| mmio.region.clone()))
+}
 
-    Some(MemoryDescriptor::new_aligned(
-        debug_base,
-        100,
+fn early_mmio_region(paddr: usize, len: usize) -> Option<MemoryDescriptor> {
+    let align = page_size();
+    let start = paddr & !(align - 1);
+    let end = paddr.checked_add(len)?.checked_next_multiple_of(align)?;
+    Some(MemoryDescriptor::new_with_range(
+        start..end,
         MemoryType::Mmio,
-        page_size(),
     ))
 }
 
@@ -197,6 +207,50 @@ pub fn begin_runtime_handoff() -> Result<(), ConsoleHandoffError> {
     handoff::begin()
 }
 
+/// Reports whether the bound early console initialized this MMIO UART.
+pub fn early_console_uses_mmio(paddr: usize) -> bool {
+    let paddr = <crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(paddr);
+    EARLYCON
+        .0
+        .with_lock(|state| state.mmio.as_ref().is_some_and(|mmio| mmio.paddr == paddr))
+}
+
+/// Reports whether the bound early console initialized this port-mapped UART.
+pub fn early_console_uses_io_port(port: u16) -> bool {
+    EARLYCON.0.with_lock(|state| state.uses_io_port(port))
+}
+
+/// Reports whether the early console still reserves this known MMIO UART.
+///
+/// A false result does not exclude an opaque firmware backend. Callers must
+/// also check [`early_console_has_unknown_mmio`] before starting another UART.
+pub fn early_console_reserves_mmio(paddr: usize) -> bool {
+    if !handoff::reserves_early_registers() {
+        return false;
+    }
+    early_console_uses_mmio(paddr)
+}
+
+/// Reports an early firmware UART whose MMIO address cannot be identified.
+///
+/// The console coordinator must quiesce this backend before any ordinary MMIO
+/// port starts. A directly selected UART with exclusive input does not use it.
+pub fn early_console_has_unknown_mmio() -> bool {
+    handoff::reserves_early_registers()
+        && <<crate::arch::Arch as crate::ArchTrait>::Console as ArchConsoleOps>::firmware_console_may_use_mmio()
+        && EARLYCON.0.with_lock(|state| {
+            !state.mmio.as_ref().is_some_and(|mmio| mmio.input == EarlyconInput::UartOnly)
+        })
+}
+
+/// Reports whether the early console still uses this port-mapped UART.
+pub fn early_console_reserves_io_port(port: u16) -> bool {
+    handoff::reserves_early_registers()
+        && (<<crate::arch::Arch as crate::ArchTrait>::Console as ArchConsoleOps>::reserves_io_port(
+            port,
+        ) || EARLYCON.0.with_lock(|state| state.uses_io_port(port)))
+}
+
 /// Publishes runtime ownership after runtime configuration and routing succeed.
 pub fn commit_runtime_handoff() -> Result<(), ConsoleHandoffError> {
     handoff::commit()
@@ -327,6 +381,8 @@ impl From<ConfigError> for Pl011BindError {
         match error {
             ConfigError::Timeout => Self::Busy,
             ConfigError::InvalidBaudrate
+            | ConfigError::BaudrateUnavailable
+            | ConfigError::FifoPreservationUnavailable
             | ConfigError::UnsupportedDataBits
             | ConfigError::UnsupportedStopBits
             | ConfigError::UnsupportedParity
@@ -352,27 +408,136 @@ impl Pl011BindError {
 /// propagates failure. Selecting the same device again after an MMU or
 /// relocation change only moves the software register window: the UART keeps
 /// running, so pending TX bytes are neither drained nor discarded.
-pub(crate) fn bind_earlycon_pl011(paddr: usize, clock: u32) -> Result<(), Pl011BindError> {
+pub(crate) fn bind_earlycon_pl011(
+    paddr: usize,
+    clock: u32,
+    input: EarlyconInput,
+) -> Result<(), Pl011BindError> {
     let registers = NonNull::new(_fixmap_io(paddr)).ok_or(Pl011BindError::InvalidAddress)?;
+    let region = early_mmio_region(paddr, 100).ok_or(Pl011BindError::InvalidAddress)?;
     let Some(_access) = handoff::try_enter_early() else {
         // A console that handed ownership to the runtime owner ignores new
         // bindings, matching `set_earlycon_serial`.
         return Ok(());
     };
-    EARLYCON.bind_pl011(paddr, registers, clock)?;
+    EARLYCON.bind_pl011(paddr, registers, clock, region, input)?;
     // SAFETY: `EARLYCON` has a `'static` lifetime and owns the serial that backs
     // this early console, so the published `Con` reference outlives it.
     unsafe { set_out(&EARLYCON) };
     Ok(())
 }
 
+/// Initializes a physical MMIO UART once; relocation only replaces its window.
+///
+/// # Safety
+/// The boot source must identify a UART whose registers are mapped at `paddr`
+/// in the current boot stage, with the specified stride and access width.
+pub(crate) unsafe fn bind_earlycon_ns16550(
+    paddr: usize,
+    resource_len: Option<usize>,
+    clock: u32,
+    layout: MmioLayout,
+    variant: ns16550::UartVariant,
+    input: EarlyconInput,
+) -> Result<(), &'static str> {
+    let len = layout.required_len();
+    if let Some(resource_len) = resource_len
+        && (resource_len < len || paddr.checked_add(resource_len).is_none())
+    {
+        return Err("Invalid ns16550 MMIO resource range");
+    }
+    let region = early_mmio_region(paddr, len).ok_or("Invalid ns16550 MMIO address range")?;
+    let registers =
+        NonNull::new(_fixmap_io(paddr)).ok_or("Invalid base address for ns16550 earlycon")?;
+    let Some(_access) = handoff::try_enter_early() else {
+        return Ok(());
+    };
+    // SAFETY: the boot source describes this UART. The platform retains the
+    // register window across translation changes using `region`, and the
+    // early console lock serializes access to the UART.
+    let serial = unsafe { Ns16550::new_mmio(registers, len, clock, layout, variant) }
+        .map_err(|_| "Invalid ns16550 MMIO register layout")?;
+    EARLYCON.0.with_lock(|earlycon| {
+        earlycon.bind_ns16550(paddr, serial);
+        earlycon.mmio = Some(MmioConsole {
+            paddr,
+            region,
+            input,
+            kind: MmioConsoleKind::Ns16550 {
+                layout,
+                clock,
+                variant,
+            },
+        });
+    });
+    // SAFETY: the static early console owns the newly bound serial, and the
+    // handoff guard prevents publishing it after runtime ownership begins.
+    unsafe { set_out(&EARLYCON) };
+    Ok(())
+}
+
+/// Rebinds the MMIO console selected before paging was enabled.
+///
+/// Only the selected MMIO window is present in the boot page table. Firmware
+/// discovery here could briefly publish a different, unmapped console.
+pub(crate) fn rebind_earlycon_mmio() -> bool {
+    let Some(mmio) = EARLYCON.0.with_lock(|earlycon| earlycon.mmio.clone()) else {
+        return false;
+    };
+    let result = match mmio.kind {
+        MmioConsoleKind::Pl011 { clock } => {
+            bind_earlycon_pl011(mmio.paddr, clock, mmio.input).map_err(Pl011BindError::message)
+        }
+        MmioConsoleKind::Ns16550 {
+            layout,
+            clock,
+            variant,
+        } => {
+            // SAFETY: the initial binding validated this layout and the boot
+            // page table mapped its entire span at the relocated I/O address.
+            unsafe {
+                bind_earlycon_ns16550(
+                    mmio.paddr,
+                    Some(layout.required_len()),
+                    clock,
+                    layout,
+                    variant,
+                    mmio.input,
+                )
+            }
+        }
+    };
+    if result.is_err() {
+        // A failed rebind leaves no safe window for early reads or writes.
+        EARLYCON.0.with_lock(|earlycon| {
+            earlycon.serial = None;
+            earlycon.mmio = None;
+        });
+        // SAFETY: the primary boot CPU still owns the console at relocation.
+        unsafe { set_out(&NoCon) };
+    }
+    true
+}
+
 pub fn read_byte() -> Option<u8> {
     let _access = handoff::try_enter_early()?;
-    if let Some(byte) = <crate::arch::Arch as crate::ArchTrait>::Console::read_byte() {
-        return Some(byte);
-    }
+    #[cfg(target_arch = "riscv64")]
+    let selected_uart = EARLYCON.0.with_lock(EarlyconState::read_selected_uart);
+    #[cfg(not(target_arch = "riscv64"))]
+    let selected_uart = None;
+    read_with_firmware(
+        selected_uart,
+        <crate::arch::Arch as crate::ArchTrait>::Console::read_byte,
+        || EARLYCON.0.with_lock(EarlyconState::read_byte),
+    )
+}
 
-    EARLYCON.read_byte()
+fn read_with_firmware(
+    selected_uart: Option<Option<u8>>,
+    read_firmware: impl FnOnce() -> Option<u8>,
+    read_uart: impl FnOnce() -> Option<u8>,
+) -> Option<u8> {
+    selected_uart.unwrap_or_else(|| read_firmware().or_else(read_uart))
 }
 
 pub fn irq_num() -> Option<usize> {
@@ -422,12 +587,14 @@ impl<T> EarlyconMutex<T> {
         // single-core early-output phase and can access the serial object
         // directly; after MMU setup, the custom atomic lock below provides real
         // exclusion for later console users.
-        if !crate::mem::mmu::is_mmu_enabled() {
+        if cfg!(not(test)) && !crate::mem::mmu::is_mmu_enabled() {
             return unsafe { f(&mut *self.inner.get()) };
         }
 
-        let irq_enabled = ax_cpu::interrupt::irqs_enabled();
-        ax_cpu::interrupt::disable_irqs();
+        let irq_enabled = cfg!(not(test)) && ax_cpu::interrupt::irqs_enabled();
+        if cfg!(not(test)) {
+            ax_cpu::interrupt::disable_irqs();
+        }
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -446,22 +613,87 @@ impl<T> EarlyconMutex<T> {
     }
 }
 
+#[derive(Clone)]
+struct MmioConsole {
+    paddr: usize,
+    region: MemoryDescriptor,
+    input: EarlyconInput,
+    kind: MmioConsoleKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EarlyconInput {
+    ArchFirst,
+    UartOnly,
+}
+
+const EXPLICIT_MMIO_INPUT: EarlyconInput = if cfg!(target_arch = "riscv64") {
+    EarlyconInput::UartOnly
+} else {
+    EarlyconInput::ArchFirst
+};
+
+#[derive(Clone, Copy)]
+enum MmioConsoleKind {
+    Pl011 {
+        clock: u32,
+    },
+    Ns16550 {
+        layout: MmioLayout,
+        clock: u32,
+        variant: ns16550::UartVariant,
+    },
+}
+
 /// Early console state owned by this boot owner.
 struct EarlyconState {
     serial: Option<EarlySerial>,
+    mmio: Option<MmioConsole>,
     /// Physical base of the PL011 whose hardware initialization succeeded.
     ///
     /// Only this device may be rebound without initializing it again. A device
     /// whose initialization failed has no entry here, so a later selection of
     /// the same device still initializes the UART.
     initialized_pl011_paddr: Option<usize>,
+    /// Physical MMIO UART whose initialization must survive address rebinding.
+    initialized_ns16550_mmio_paddr: Option<usize>,
 }
 
 impl EarlyconState {
     const fn new() -> Self {
         Self {
             serial: None,
+            mmio: None,
             initialized_pl011_paddr: None,
+            initialized_ns16550_mmio_paddr: None,
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn read_selected_uart(&mut self) -> Option<Option<u8>> {
+        let mmio = self.mmio.as_ref()?;
+        // An empty UART still owns input when it was selected in place of SBI.
+        (mmio.input == EarlyconInput::UartOnly).then(|| self.read_byte())
+    }
+
+    fn uses_io_port(&self, _port: u16) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(EarlySerial {
+            raw: EarlySerialRaw::Ns16550Port(serial),
+            ..
+        }) = &self.serial
+        {
+            return serial.io_port() == _port;
+        }
+        false
+    }
+
+    fn read_byte(&mut self) -> Option<u8> {
+        let mut byte = [0];
+        match self.serial.as_mut()?.try_read(&mut byte) {
+            Ok(1) => Some(byte[0]),
+            Err(err) if err.bytes_transferred == 1 => Some(byte[0]),
+            _ => None,
         }
     }
 
@@ -487,13 +719,26 @@ impl EarlyconState {
         self.serial = Some(EarlySerial::new(EarlySerialRaw::Pl011(serial)));
         Ok(())
     }
+
+    fn bind_ns16550(&mut self, paddr: usize, mut serial: Ns16550<Mmio>) {
+        if self.initialized_ns16550_mmio_paddr != Some(paddr) {
+            serial.open();
+            self.initialized_ns16550_mmio_paddr = Some(paddr);
+        }
+        // Construction only sets software state. Reopening the same UART
+        // would clear pending TX/RX bytes and rewrite IER/MCR across the MMU.
+        self.serial = Some(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(serial)));
+    }
 }
 
 struct EarlyconCell(EarlyconMutex<EarlyconState>);
 
 impl EarlyconCell {
     fn set_serial(&self, serial: EarlySerial) {
-        self.0.with_lock(|earlycon| earlycon.serial = Some(serial));
+        self.0.with_lock(|earlycon| {
+            earlycon.serial = Some(serial);
+            earlycon.mmio = None;
+        });
     }
 
     /// Initializes or rebinds the PL011 and publishes the result.
@@ -506,21 +751,18 @@ impl EarlyconCell {
         paddr: usize,
         registers: NonNull<u8>,
         clock: u32,
+        region: MemoryDescriptor,
+        input: EarlyconInput,
     ) -> Result<(), Pl011BindError> {
-        self.0
-            .with_lock(|earlycon| earlycon.bind_pl011(paddr, registers, clock))
-    }
-
-    fn read_byte(&self) -> Option<u8> {
         self.0.with_lock(|earlycon| {
-            let serial = earlycon.serial.as_mut()?;
-
-            let mut byte = [0];
-            match serial.try_read(&mut byte) {
-                Ok(1) => Some(byte[0]),
-                Err(err) if err.bytes_transferred == 1 => Some(byte[0]),
-                _ => None,
-            }
+            earlycon.bind_pl011(paddr, registers, clock)?;
+            earlycon.mmio = Some(MmioConsole {
+                paddr,
+                region,
+                input,
+                kind: MmioConsoleKind::Pl011 { clock },
+            });
+            Ok(())
         })
     }
 
@@ -574,7 +816,7 @@ mod tests {
     struct CountingCon;
 
     static WRITE_CALLS: AtomicUsize = AtomicUsize::new(0);
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     impl Con for CountingCon {
         fn write_bytes(&self, bytes: &[u8]) -> usize {
@@ -604,11 +846,154 @@ mod tests {
     static BLOCKING_CON: BlockingCon = BlockingCon;
 
     fn reset_handoff() {
+        // SAFETY: the shared test lock excludes other users of this console,
+        // and the test has joined any threads it started.
+        unsafe { set_out(&NoCon) };
         handoff::reset();
         WRITE_CALLS.store(0, Ordering::Relaxed);
         BLOCKING_ENTERED.store(false, Ordering::Release);
         BLOCKING_RELEASED.store(false, Ordering::Release);
         BEGIN_FINISHED.store(false, Ordering::Release);
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    #[test]
+    fn sbi_stdout_uart_is_reserved_until_runtime_takes_ownership() {
+        use fdt_edit::{Fdt, Node, Property};
+
+        let _test = TEST_LOCK.lock().unwrap();
+        reset_handoff();
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let chosen = fdt.add_node(root, Node::new("chosen"));
+        fdt.node_mut(chosen)
+            .unwrap()
+            .set_property(Property::new("stdout-path", b"serial0:115200n8\0".to_vec()));
+        let aliases = fdt.add_node(root, Node::new("aliases"));
+        fdt.node_mut(aliases)
+            .unwrap()
+            .set_property(Property::new("serial0", b"/serial@10000000\0".to_vec()));
+        let serial = fdt.add_node(root, Node::new("serial@10000000"));
+        let node = fdt.node_mut(serial).unwrap();
+        node.set_property(Property::new("compatible", b"ns16550a\0".to_vec()));
+        let reg: std::vec::Vec<_> = [0_u32, 0x1000_0000, 0x100]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect();
+        node.set_property(Property::new("reg", reg));
+        let data = fdt.encode();
+        fdt.node_mut(serial)
+            .unwrap()
+            .set_property(Property::new("status", b"disabled\0".to_vec()));
+        let stdout_disabled = fdt.encode();
+        fdt.node_mut(chosen).unwrap().remove_property("stdout-path");
+        let stdout_unspecified = fdt.encode();
+        assert!(crate::fdt::set_fdt_addr_phys_if_valid(
+            stdout_unspecified.as_ref().as_ptr() as usize
+        ));
+        let console = <<crate::arch::Arch as crate::ArchTrait>::Console as ArchConsoleOps>::init();
+        let sbi_fallback_reserved = early_console_reserves_mmio(0x1000_0000);
+        let sbi_fallback_unknown = early_console_has_unknown_mmio();
+        assert!(crate::fdt::set_fdt_addr_phys_if_valid(
+            stdout_disabled.as_ref().as_ptr() as usize
+        ));
+        let sbi_disabled_stdout_reserved = early_console_reserves_mmio(0x1000_1000);
+        let sbi_disabled_stdout_unknown = early_console_has_unknown_mmio();
+        assert!(crate::fdt::set_fdt_addr_phys_if_valid(
+            data.as_ref().as_ptr() as usize
+        ));
+        let early = early_console_reserves_mmio(0x1000_0000);
+        let unrelated = early_console_reserves_mmio(0x1000_1000);
+        let stdout_unknown = early_console_has_unknown_mmio();
+        EARLYCON.0.with_lock(|state| {
+            state.mmio = Some(MmioConsole {
+                paddr: 0x1000_1000,
+                region: MemoryDescriptor::new_with_range(
+                    0x1000_1000..0x1000_2000,
+                    MemoryType::Mmio,
+                ),
+                input: EarlyconInput::ArchFirst,
+                kind: MmioConsoleKind::Ns16550 {
+                    layout: MmioLayout::new(1, 1).unwrap(),
+                    clock: 0,
+                    variant: ns16550::UartVariant::Standard,
+                },
+            });
+        });
+        let known_reserved =
+            !early_console_reserves_mmio(0x1000_0000) && early_console_reserves_mmio(0x1000_1000);
+        let firmware_first_unknown = early_console_has_unknown_mmio();
+        EARLYCON.0.with_lock(|state| {
+            state.mmio.as_mut().unwrap().input = EarlyconInput::UartOnly;
+        });
+        let direct_only =
+            !early_console_reserves_mmio(0x1000_0000) && early_console_reserves_mmio(0x1000_1000);
+        let direct_backend_known = !early_console_has_unknown_mmio();
+        EARLYCON.0.with_lock(|state| state.mmio = None);
+
+        begin_runtime_handoff().unwrap();
+        let preparing = early_console_has_unknown_mmio();
+        rollback_runtime_handoff().unwrap();
+        let rolled_back = early_console_has_unknown_mmio();
+        begin_runtime_handoff().unwrap();
+        commit_runtime_handoff().unwrap();
+        let runtime = early_console_has_unknown_mmio();
+        // SAFETY: the test lock excludes readers of this temporary FDT.
+        unsafe { crate::fdt::FDT_ADDR = 0 };
+        reset_handoff();
+
+        assert!(
+            !sbi_fallback_reserved && sbi_fallback_unknown,
+            "SBI may use a UART without stdout-path"
+        );
+        assert!(
+            !sbi_disabled_stdout_reserved && sbi_disabled_stdout_unknown,
+            "SBI can skip the disabled stdout UART"
+        );
+        assert!(console && !early && stdout_unknown && preparing && rolled_back);
+        assert!(!unrelated && !runtime);
+        assert!(known_reserved && firmware_first_unknown);
+        assert!(direct_only && direct_backend_known);
+    }
+
+    #[test]
+    fn known_uart_keeps_its_reservation_without_blocking_an_independent_uart() {
+        let _test = TEST_LOCK.lock().unwrap();
+        reset_handoff();
+        EARLYCON.0.with_lock(|state| {
+            state.mmio = Some(MmioConsole {
+                paddr: 0x1000_0000,
+                region: MemoryDescriptor::new_with_range(
+                    0x1000_0000..0x1000_1000,
+                    MemoryType::Mmio,
+                ),
+                input: EarlyconInput::UartOnly,
+                kind: MmioConsoleKind::Ns16550 {
+                    layout: MmioLayout::new(1, 1).unwrap(),
+                    clock: 0,
+                    variant: ns16550::UartVariant::Standard,
+                },
+            });
+        });
+
+        assert!(early_console_reserves_mmio(0x1000_0000));
+        assert!(!early_console_reserves_mmio(0x1000_1000));
+        assert!(!early_console_has_unknown_mmio());
+        begin_runtime_handoff().unwrap();
+        assert!(early_console_reserves_mmio(0x1000_0000));
+        rollback_runtime_handoff().unwrap();
+        assert!(early_console_reserves_mmio(0x1000_0000));
+        begin_runtime_handoff().unwrap();
+        commit_runtime_handoff().unwrap();
+        assert!(!early_console_reserves_mmio(0x1000_0000));
+        assert!(!early_console_has_unknown_mmio());
+        reset_handoff();
+        begin_runtime_handoff().unwrap();
+        fail_runtime_handoff_closed();
+        assert!(early_console_reserves_mmio(0x1000_0000));
+        assert!(!early_console_reserves_mmio(0x1000_1000));
+        EARLYCON.0.with_lock(|state| state.mmio = None);
+        reset_handoff();
     }
 
     #[test]
@@ -621,10 +1006,16 @@ mod tests {
         assert_eq!(_write_bytes(b"before"), 6);
         assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
 
+        #[cfg(target_arch = "x86_64")]
+        assert!(early_console_reserves_io_port(0x3f8));
         begin_runtime_handoff().unwrap();
         assert_eq!(handoff::state(), handoff::PREPARING);
+        #[cfg(target_arch = "x86_64")]
+        assert!(early_console_reserves_io_port(0x3f8));
         commit_runtime_handoff().unwrap();
         assert_eq!(handoff::state(), handoff::RUNTIME);
+        #[cfg(target_arch = "x86_64")]
+        assert!(!early_console_reserves_io_port(0x3f8));
 
         assert_eq!(_write_bytes(b"after"), 5);
         assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
@@ -700,7 +1091,7 @@ mod tests {
 
 pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
     let config = crate::cmdline::earlycon().ok_or("No earlycon parameter found")?;
-    let debug_is_mmio = match config.uart_type {
+    match config.uart_type {
         "ns16550" => match config.io_type {
             "io" => {
                 #[cfg(target_arch = "x86_64")]
@@ -709,57 +1100,57 @@ pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
                     let mut uart = some_serial::ns16550::Ns16550::new_port(base, 1_843_200);
                     uart.open();
                     set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Port(uart)));
-                    false
+                    Ok(())
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
-                    return Err("io type not supported on this architecture");
+                    Err("io type not supported on this architecture")
                 }
             }
-            _ => {
-                set_16550_mmio(&config)?;
-                true
-            }
+            _ => set_16550_mmio(&config, ns16550::UartVariant::Standard),
         },
-        "pl011" => {
-            set_pl011(&config)?;
-            true
-        }
-        _ => {
-            return Err("unsupported earlycon uart type");
-        }
-    };
-    unsafe {
-        DEBUG_BASE = config
-            .base_addr
-            .map(<crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr)
-            .unwrap_or(0);
-        DEBUG_IS_MMIO = debug_is_mmio;
+        "xscale" => set_16550_mmio(&config, ns16550::UartVariant::XScale),
+        "pl011" => set_pl011(&config),
+        _ => Err("unsupported earlycon uart type"),
     }
-    Ok(())
 }
 
 fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
-    let base_addr = earlycon_base_addr(config, "No base address specified for pl011 earlycon")?;
-    bind_earlycon_pl011(base_addr, 0).map_err(Pl011BindError::message)
+    let base_addr = pl011_mmio_base_addr(config)?;
+    bind_earlycon_pl011(base_addr, 0, EXPLICIT_MMIO_INPUT).map_err(Pl011BindError::message)
 }
 
-fn set_16550_mmio(config: &EarlyconConfig) -> Result<(), &'static str> {
+fn pl011_mmio_base_addr(config: &EarlyconConfig) -> Result<usize, &'static str> {
+    if !matches!(config.io_type, "mmio" | "mmio32") {
+        return Err("Invalid io_type for pl011 earlycon");
+    }
+    earlycon_base_addr(config, "No base address specified for pl011 earlycon")
+}
+
+fn set_16550_mmio(
+    config: &EarlyconConfig,
+    variant: ns16550::UartVariant,
+) -> Result<(), &'static str> {
+    let layout = ns16550_cmdline_layout(config.io_type, variant)?;
     let base_addr = earlycon_base_addr(config, "No base address specified for ns16550 earlycon")?;
-    let base_addr =
-        NonNull::new(_fixmap_io(base_addr)).ok_or("Invalid base address for ns16550 earlycon")?;
-    let width = match config.io_type {
+    // SAFETY: the explicit earlycon boot option supplies the platform UART and
+    // declares the hardware access form via its I/O mode.
+    unsafe { bind_earlycon_ns16550(base_addr, None, 0, layout, variant, EXPLICIT_MMIO_INPUT) }
+}
+
+fn ns16550_cmdline_layout(
+    io_type: &str,
+    variant: ns16550::UartVariant,
+) -> Result<MmioLayout, &'static str> {
+    let width = match io_type {
         "mmio" => 1,
         "mmio16" => 2,
         "mmio32" => 4,
         _ => return Err("Invalid io_type for ns16550 earlycon"),
     };
-
-    let mut serial = ns16550::Ns16550::new_mmio(base_addr, 0, width);
-    serial.open();
-    set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(serial)));
-
-    Ok(())
+    variant
+        .mmio_layout(None, Some(width))
+        .map_err(|_| "Invalid ns16550 MMIO register layout")
 }
 
 fn earlycon_base_addr(
@@ -773,7 +1164,7 @@ fn earlycon_base_addr(
 }
 
 #[cfg(test)]
-mod pl011_binding_tests {
+mod binding_tests {
     extern crate std;
 
     use core::{cell::UnsafeCell, ptr};
@@ -816,6 +1207,32 @@ mod pl011_binding_tests {
     const OTHER_PL011_PADDR: usize = 0x0900_1000;
     const RETRY_PL011_PADDR: usize = 0x0900_2000;
     const CLOCK: u32 = 24_000_000;
+
+    #[test]
+    fn ns16550_cmdline_uses_variant_register_spacing() {
+        assert_eq!(
+            ns16550_cmdline_layout("mmio", ns16550::UartVariant::XScale),
+            Ok(MmioLayout::new(4, 1).unwrap())
+        );
+        assert_eq!(
+            ns16550_cmdline_layout("mmio", ns16550::UartVariant::Standard),
+            Ok(MmioLayout::new(1, 1).unwrap())
+        );
+    }
+
+    #[test]
+    fn pl011_cmdline_rejects_pio_before_resolving_address() {
+        let config = EarlyconConfig {
+            uart_type: "pl011",
+            io_type: "io",
+            base_addr: None,
+            options: None,
+        };
+        assert_eq!(
+            pl011_mmio_base_addr(&config),
+            Err("Invalid io_type for pl011 earlycon")
+        );
+    }
 
     #[repr(align(4096))]
     struct Pl011Window {
@@ -868,6 +1285,78 @@ mod pl011_binding_tests {
                 );
             }
         }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    #[test]
+    fn explicit_mmio_console_reads_only_its_selected_uart() {
+        let read = |state: &mut EarlyconState| {
+            read_with_firmware(
+                state.read_selected_uart(),
+                || Some(b'S'),
+                || state.read_byte(),
+            )
+        };
+        let mut state = EarlyconState::new();
+        assert_eq!(read(&mut state), Some(b'S'));
+
+        let device = Pl011Window::new();
+        device.write(FR, FR_TXFE | FR_RXFE);
+        state
+            .bind_pl011(PL011_PADDR, device.registers(), CLOCK)
+            .unwrap();
+        state.mmio = Some(MmioConsole {
+            paddr: PL011_PADDR,
+            region: MemoryDescriptor::new_with_range(
+                PL011_PADDR..PL011_PADDR + WINDOW_SIZE,
+                MemoryType::Mmio,
+            ),
+            input: EarlyconInput::ArchFirst,
+            kind: MmioConsoleKind::Pl011 { clock: CLOCK },
+        });
+        assert_eq!(read(&mut state), Some(b'S'));
+        state.mmio.as_mut().unwrap().input = EXPLICIT_MMIO_INPUT;
+        assert_eq!(read(&mut state), None);
+
+        device.write(DR, u32::from(b'M'));
+        device.write(FR, FR_TXFE);
+        assert_eq!(read(&mut state), Some(b'M'));
+    }
+
+    #[test]
+    fn rebinding_initialized_ns16550_keeps_the_running_device() {
+        const PADDR: usize = 0xd401_7000;
+        const IER: usize = 1;
+        const FCR: usize = 2;
+        let mut boot_registers = [0_u32; 8];
+        let mut relocated_registers = [u32::from(b'R'), 0x45, 1, 3, 0x0b, 1, 0, 0];
+        let running = relocated_registers;
+        let make_uart = |registers: &mut [u32; 8]| {
+            let base = NonNull::new(registers.as_mut_ptr().cast()).unwrap();
+            // SAFETY: both aligned fixtures remain live across the bindings.
+            // Only the selected UART touches each fixture while bound.
+            unsafe {
+                Ns16550::new_mmio(
+                    base,
+                    core::mem::size_of_val(registers),
+                    CLOCK,
+                    MmioLayout::new(4, 4).unwrap(),
+                    ns16550::UartVariant::XScale,
+                )
+            }
+            .unwrap()
+        };
+
+        {
+            let mut state = EarlyconState::new();
+            state.bind_ns16550(PADDR, make_uart(&mut boot_registers));
+            state.bind_ns16550(PADDR, make_uart(&mut relocated_registers));
+            assert_eq!(state.read_byte(), Some(b'R'));
+        }
+
+        assert_eq!(boot_registers[IER], 0x40);
+        assert_eq!(boot_registers[FCR], 0x07);
+        assert_eq!(relocated_registers, running);
     }
 
     #[test]

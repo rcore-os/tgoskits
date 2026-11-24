@@ -1,12 +1,13 @@
 use alloc::{format, string::String, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use ax_lazyinit::LazyLock;
 use ax_runtime::{
+    RuntimeError,
     console::{self, TaskConsoleInput},
     serial::{
-        Config, DataBits, Parity, RxItem, SerialRuntimeHandle, SerialRxSubscription,
-        SerialTaskOutput, StopBits,
+        Config, ConfigError, ModemOutputs, RxItem, SerialRuntimeHandle, SerialRxSubscription,
+        SerialTaskOutput,
     },
 };
 use axfs_ng_vfs::{VfsError, VfsResult};
@@ -16,7 +17,7 @@ use super::{
     terminal::{
         Terminal,
         ldisc::{ProcessMode, TtyConfig, TtyRead, TtyWrite},
-        termios::{Termios2, TermiosParity},
+        termios::Termios2,
     },
 };
 use crate::{StarryError, StarryResult, pseudofs::DeviceOps, sync::Mutex};
@@ -55,9 +56,13 @@ struct SerialBackend {
     runtime: SerialRuntimeHandle,
     output: SerialTaskOutput,
     input: SerialInput,
+    terminal: Arc<Terminal>,
     is_console: bool,
     lifecycle_lock: Mutex<()>,
     started: AtomicBool,
+    // Keep the physical rate across a software-only B0 transition.
+    // Last accepted nominal rate. The UART may round its hardware divisor.
+    configured_baudrate: AtomicU32,
 }
 
 enum SerialInput {
@@ -208,6 +213,12 @@ fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> StarryResult<S
     let output = runtime.task_output();
     let input_source = input.poll_source();
     let output_source = output.poll_source();
+    let initial_baudrate = runtime.initial_baudrate();
+    let mut termios = initial_serial_termios(initial_baudrate);
+    if let Some(framing) = runtime.initial_framing() {
+        termios.set_framing(framing);
+    }
+    let terminal = Arc::new(Terminal::with_termios(termios));
     let backend = Arc::new(SerialBackend {
         name,
         tty_name: tty_name.clone(),
@@ -215,12 +226,13 @@ fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> StarryResult<S
         runtime,
         output,
         input,
+        terminal: terminal.clone(),
         is_console,
         lifecycle_lock: Mutex::new(()),
         started: AtomicBool::new(is_console),
+        configured_baudrate: AtomicU32::new(initial_baudrate),
     });
 
-    let terminal = Arc::new(Terminal::default());
     let entry_backend = backend.clone();
     let tty = Tty::new(
         terminal,
@@ -237,7 +249,11 @@ fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> StarryResult<S
     );
     info!(
         "{} registered: path={}, alias={:?}, paddr={:#x}, irq={:?}",
-        tty_name, info.firmware_path, info.alias_index, info.paddr, info.irq,
+        tty_name,
+        info.firmware_path,
+        info.alias_index,
+        info.address.base(),
+        info.irq,
     );
     Ok(SerialTtyEntry {
         number,
@@ -255,9 +271,23 @@ impl SerialBackend {
         if self.started.load(Ordering::Acquire) {
             return Ok(());
         }
-        let result = self
-            .runtime
-            .start(Config::new().baudrate(startup_baudrate(self.runtime.info().initial_baudrate)));
+        let initial_baudrate = self.runtime.info().initial_baudrate;
+        let baudrate = startup_baudrate(initial_baudrate);
+        let mut termios = *self.terminal.load_termios();
+        let result = match self.runtime.start(Config::new().baudrate(baudrate)) {
+            Ok(()) => {
+                self.configured_baudrate.store(baudrate, Ordering::Relaxed);
+                if initial_baudrate == 0 {
+                    termios.set_baudrate(baudrate);
+                }
+                Ok(())
+            }
+            Err(RuntimeError::SerialConfig(ConfigError::BaudrateUnavailable)) => {
+                // Firmware owns the input clock. Keep its divisor when opening the TTY.
+                self.runtime.start(Config::new())
+            }
+            result => result,
+        };
         if let Err(err) = result {
             warn!(
                 "{} failed to start serial port {}: {:?}",
@@ -265,6 +295,10 @@ impl SerialBackend {
             );
             return Err(err.into());
         }
+        if let Some(framing) = self.runtime.initial_framing() {
+            termios.set_framing(framing);
+        }
+        *self.terminal.termios.lock_irqsave() = Arc::new(termios);
         self.started.store(true, Ordering::Release);
         Ok(())
     }
@@ -279,6 +313,14 @@ impl SerialBackend {
     }
 }
 
+fn initial_serial_termios(baudrate: u32) -> Termios2 {
+    if baudrate == 0 {
+        Termios2::with_unknown_baudrate()
+    } else {
+        Termios2::with_baudrate(baudrate)
+    }
+}
+
 fn startup_baudrate(current: u32) -> u32 {
     if current == 0 {
         SERIAL_DEFAULT_BAUDRATE
@@ -287,37 +329,29 @@ fn startup_baudrate(current: u32) -> u32 {
     }
 }
 
-fn serial_config_from_termios(termios: &Termios2) -> Config {
-    let mut config = Config::new()
-        .data_bits(match termios.data_bits() {
-            5 => DataBits::Five,
-            6 => DataBits::Six,
-            7 => DataBits::Seven,
-            _ => DataBits::Eight,
-        })
-        .stop_bits(if termios.stop_bits() == 2 {
-            StopBits::Two
-        } else {
-            StopBits::One
-        })
-        .parity(match termios.parity() {
-            TermiosParity::None => Parity::None,
-            TermiosParity::Odd => Parity::Odd,
-            TermiosParity::Even => Parity::Even,
-            TermiosParity::Mark => Parity::Mark,
-            TermiosParity::Space => Parity::Space,
-        });
-    if let Some(baudrate) = termios.baudrate() {
-        config = config.baudrate(baudrate);
-    }
-    config
-}
-
-fn termios_requires_reconfigure(old: &Termios2, new: &Termios2) -> bool {
-    old.baudrate() != new.baudrate()
-        || old.data_bits() != new.data_bits()
-        || old.stop_bits() != new.stop_bits()
-        || old.parity() != new.parity()
+fn serial_config_update(
+    old: &Termios2,
+    new: &Termios2,
+    configured_baudrate: u32,
+) -> Option<Config> {
+    // An omitted baudrate preserves the current divisor, including when only
+    // firmware knows the input clock.
+    let baudrate = new
+        .baudrate()
+        .filter(|rate| Some(*rate) != old.baudrate() && *rate != configured_baudrate);
+    let framing = new.framing();
+    let framing_changed = old.framing() != framing;
+    let modem_outputs = (old.is_hangup() != new.is_hangup()).then_some(ModemOutputs {
+        dtr: !new.is_hangup(),
+        rts: !new.is_hangup(),
+    });
+    (framing_changed || baudrate.is_some() || modem_outputs.is_some()).then_some(Config {
+        baudrate,
+        data_bits: framing_changed.then_some(framing.data_bits),
+        stop_bits: framing_changed.then_some(framing.stop_bits),
+        parity: framing_changed.then_some(framing.parity),
+        modem_outputs,
+    })
 }
 
 impl TtyRead for SerialReader {
@@ -396,29 +430,98 @@ impl TtyWrite for SerialWriter {
         Ok(self.backend.output.discard_pending()?)
     }
 
-    fn termios_changed(&self, old: &Termios2, new: &Termios2) -> StarryResult<()> {
-        if !termios_requires_reconfigure(old, new) {
-            return Ok(());
-        }
-        self.backend.ensure_started()?;
-        Ok(self
-            .backend
-            .output
-            .reconfigure(Some(serial_config_from_termios(new)), false, || {})?)
-    }
-
     fn update_termios(
         &self,
         old: &Termios2,
         new: &Termios2,
         drain: bool,
-        publish: &mut dyn FnMut(),
+        before_configure: &mut dyn FnMut() -> StarryResult<()>,
+        publish: &mut dyn FnMut(&Termios2),
     ) -> StarryResult<()> {
         self.backend.ensure_started()?;
-        let config =
-            termios_requires_reconfigure(old, new).then(|| serial_config_from_termios(new));
-        Ok(self.backend.output.reconfigure(config, drain, publish)?)
+        let configured_baudrate = self.backend.configured_baudrate.load(Ordering::Relaxed);
+        let config = serial_config_update(old, new, configured_baudrate);
+        let requested_baudrate = config.as_ref().and_then(|config| config.baudrate);
+        self.backend
+            .output
+            .reconfigure_with(config, drain, before_configure, || {
+                if let Some(rate) = requested_baudrate {
+                    self.backend
+                        .configured_baudrate
+                        .store(rate, Ordering::Relaxed);
+                }
+                let mut termios = *new;
+                termios.use_output_baudrate_for_input();
+                publish(&termios);
+            })
     }
+}
+
+#[cfg(all(test, axtest))]
+#[axtest::axtest]
+fn first_serial_termios_preserves_unchanged_framing() -> axtest::AxTestResult {
+    use ax_runtime::serial::{DataBits, Framing, Parity, StopBits};
+    use axtest::{ax_assert, ax_assert_eq};
+
+    let configured_baudrate = 115_200;
+    let defaults = Termios2::with_baudrate(configured_baudrate);
+    let unknown = initial_serial_termios(0);
+    ax_assert_eq!(unknown.baudrate(), None);
+    ax_assert_eq!(
+        serial_config_update(&unknown, &Termios2::default(), 0).and_then(|config| config.baudrate),
+        Some(38_400)
+    );
+    let mut current = defaults;
+    let firmware = Framing {
+        data_bits: DataBits::Seven,
+        stop_bits: StopBits::One,
+        parity: Parity::Even,
+    };
+    current.set_framing(firmware);
+    ax_assert_eq!(current.framing(), firmware);
+    ax_assert_eq!(current.baudrate(), Some(115_200));
+    ax_assert!(serial_config_update(&current, &current, configured_baudrate).is_none());
+
+    let mut hung_up = current;
+    hung_up.set_baudrate(0);
+    ax_assert_eq!(hung_up.baudrate(), None);
+    for (old, new, asserted) in [(&current, &hung_up, false), (&hung_up, &current, true)] {
+        let config = serial_config_update(old, new, configured_baudrate);
+        ax_assert_eq!(
+            config.map(|config| (config.baudrate, config.modem_outputs)),
+            Some((
+                None,
+                Some(ModemOutputs {
+                    dtr: asserted,
+                    rts: asserted
+                })
+            ))
+        );
+    }
+    let mut changed_rate = current;
+    changed_rate.set_baudrate(57_600);
+    ax_assert_eq!(
+        serial_config_update(&hung_up, &changed_rate, configured_baudrate)
+            .and_then(|config| config.baudrate),
+        Some(57_600)
+    );
+
+    let config = serial_config_update(&current, &defaults, configured_baudrate);
+    ax_assert_eq!(
+        config.map(|config| (
+            config.baudrate,
+            config.data_bits,
+            config.stop_bits,
+            config.parity
+        )),
+        Some((
+            None,
+            Some(DataBits::Eight),
+            Some(StopBits::One),
+            Some(Parity::None)
+        ))
+    );
+    axtest::AxTestResult::Ok
 }
 
 #[cfg(all(test, not(axtest)))]

@@ -51,13 +51,7 @@ impl ConsoleIf for ConsoleIfImpl {
     }
 
     fn device_id() -> ConsoleDeviceIdResult {
-        somehal::console_device_id().map_err(|err| match err {
-            somehal::ConsoleDeviceIdError::NotSpecified => ConsoleDeviceIdError::NotSpecified,
-            somehal::ConsoleDeviceIdError::NoHardwareDevice => {
-                ConsoleDeviceIdError::NoHardwareDevice
-            }
-            somehal::ConsoleDeviceIdError::DeviceNotFound => ConsoleDeviceIdError::DeviceNotFound,
-        })
+        somehal::console_device_id().map_err(console_device_error)
     }
 
     fn begin_runtime_handoff() -> ConsoleHandoffResult {
@@ -110,5 +104,20 @@ mod tests {
         let raw = rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + 4;
 
         assert!(super::console_irq(raw).is_none());
+    }
+}
+
+/// Resolves a console after the runtime has assigned serial numbers.
+pub fn console_device_id_with_serial_index(
+    serial_device_id: impl Fn(usize) -> Option<ax_plat::console::ConsoleDeviceId>,
+) -> ConsoleDeviceIdResult {
+    somehal::console_device_id_with_serial_index(serial_device_id).map_err(console_device_error)
+}
+
+fn console_device_error(err: somehal::ConsoleDeviceIdError) -> ConsoleDeviceIdError {
+    match err {
+        somehal::ConsoleDeviceIdError::NotSpecified => ConsoleDeviceIdError::NotSpecified,
+        somehal::ConsoleDeviceIdError::NoHardwareDevice => ConsoleDeviceIdError::NoHardwareDevice,
+        somehal::ConsoleDeviceIdError::DeviceNotFound => ConsoleDeviceIdError::DeviceNotFound,
     }
 }

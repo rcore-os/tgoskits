@@ -153,6 +153,15 @@ fn configured_profile(
                     }
                 })?;
         }
+        // Guest 8250 drivers support byte, word, and dword MMIO accesses.
+        // Validate the final width, including layouts inherited from firmware.
+        if profile.model == GuestSerialModel::Uart16550 && *register_width == AccessWidth::Qword {
+            return Err(ConfiguredDeviceError::InvalidOptions {
+                device: request.id.clone(),
+                model: request.model.clone(),
+                detail: "16550 register_width must be one of 1, 2 or 4 bytes".into(),
+            });
+        }
     }
     Ok(profile)
 }

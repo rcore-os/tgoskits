@@ -222,6 +222,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         crate::console::ConsoleActivation::RawHal(reason) => {
             info!("no runtime console selected; keeping the HAL console: {reason:?}")
         }
+        crate::console::ConsoleActivation::Disabled => {}
         crate::console::ConsoleActivation::FailedClosed(reason) => {
             warn!("runtime console unavailable; early console failed closed: {reason:?}")
         }

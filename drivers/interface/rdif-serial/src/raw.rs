@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicU8, Ordering},
 };
 
-use crate::{Config, ConfigError, RxSample, SerialEventSet, SerialIrqReport};
+use crate::{Config, ConfigError, Framing, RxSample, SerialEventSet, SerialIrqReport};
 
 /// Non-blocking exclusion for aliases of one UART register block.
 ///
@@ -184,9 +184,22 @@ pub trait UartPort: Send + 'static {
     /// state cannot be proven restored and the caller must fail closed.
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError>;
 
+    /// Initializes the UART and masks its interrupt sources while retaining
+    /// FIFO mode and any queued bytes. Error recovery follows `startup`.
+    fn startup_preserving_fifos(&mut self, _config: &Config) -> Result<(), ConfigError> {
+        Err(ConfigError::FifoPreservationUnavailable)
+    }
+
     fn shutdown(&mut self);
 
+    /// Applies the requested settings as one transaction. On failure the
+    /// previous configuration, including modem outputs, must remain in effect.
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError>;
+
+    /// Reads the configured framing without modifying device state, if supported.
+    fn framing(&self) -> Option<Framing> {
+        None
+    }
 
     /// Reads one normalized hardware sample without consulting IRQ state.
     fn read_rx(&mut self) -> Option<RxSample>;

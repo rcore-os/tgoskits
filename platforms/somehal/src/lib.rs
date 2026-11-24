@@ -25,7 +25,10 @@ pub mod platform;
 pub mod rtc;
 pub mod setup;
 
-pub use boot_console::{ConsoleDeviceIdError, device_id as console_device_id};
+pub use boot_console::{
+    ConsoleDeviceIdError, device_id as console_device_id,
+    device_id_with_serial_index as console_device_id_with_serial_index,
+};
 pub use page_table_generic::{PagingError, PagingResult};
 pub use platform::platform_name;
 pub use setup::KernelOp;

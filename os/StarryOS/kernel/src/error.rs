@@ -410,11 +410,14 @@ fn runtime_errno(error: &RuntimeError) -> Errno {
             | ConfigError::UnsupportedDataBits
             | ConfigError::UnsupportedStopBits
             | ConfigError::UnsupportedParity => Errno::EINVAL,
+            ConfigError::BaudrateUnavailable | ConfigError::FifoPreservationUnavailable => {
+                Errno::EOPNOTSUPP
+            }
             ConfigError::Timeout => Errno::ETIMEDOUT,
             ConfigError::RegisterError => Errno::EIO,
         },
         RuntimeError::SerialNotStarted => Errno::EFAULT,
-        RuntimeError::SerialControlBusy => Errno::EBUSY,
+        RuntimeError::SerialConsoleBusy | RuntimeError::SerialControlBusy => Errno::EBUSY,
         RuntimeError::Task(error) => task_errno(*error),
         RuntimeError::WouldBlock => Errno::EAGAIN,
         RuntimeError::OperationNotSupported => Errno::EOPNOTSUPP,
@@ -811,6 +814,10 @@ fn leaf_errno_mappings_hold() -> bool {
             Errno::EFAULT,
         ),
         (
+            StarryError::Runtime(RuntimeError::SerialConsoleBusy),
+            Errno::EBUSY,
+        ),
+        (
             StarryError::Runtime(RuntimeError::SerialControlBusy),
             Errno::EBUSY,
         ),
@@ -821,6 +828,10 @@ fn leaf_errno_mappings_hold() -> bool {
         (
             StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::InvalidBaudrate)),
             Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::BaudrateUnavailable)),
+            Errno::EOPNOTSUPP,
         ),
         (
             StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedDataBits)),

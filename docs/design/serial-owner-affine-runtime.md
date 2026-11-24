@@ -109,9 +109,13 @@ worker 和 IRQ endpoint 都无法重新取得寄存器，不依赖 watchdog 或�
 
 IRQ 与多任务是 runtime 基础能力。公共层在 scheduler、IRQ、设备探测和 serial
 worker 就绪后、但在第一个 AP 启动前尝试接管，不再要求 OS 配置 `serial` 或
-`runtime-console` feature。firmware 给出硬件 `DeviceId` 时只接受精确匹配；只有
-`NotSpecified` 才按统一 `ttyS` 编号回退到 `ttyS0`。若没有探测到匹配的 runtime UART，
-保持原始 HAL 为唯一 owner；已经进入 `Preparing` 后 adopt、IRQ 启用或提交失败则进入
+`runtime-console` feature。firmware 给出硬件 `DeviceId` 时只接受精确匹配。
+选择结果为 `NotSpecified` 时，仅在
+`ax_hal::console::can_handoff_unspecified_console()` 确认平台支持识别和配置回退端口后，
+`select_candidate()` 才回退到已分配编号最小的 `ttyS`。静态平台必须给出明确的
+`DeviceId`；身份不明时保留 HAL 控制台，即使已发现 `ttyS0` 也不猜测其身份。
+若没有探测到匹配的 runtime UART，保持原始 HAL 为唯一 owner。
+已经进入 `Preparing` 后 adopt、IRQ 启用或提交失败则进入
 `FailedClosed`。成功提交后禁止 SMP 阶段重新落回 early UART。
 
 panic/FIQ 不反向调用 platform/runtime callback，也不借用 control endpoint。首次接管使用
@@ -132,6 +136,62 @@ panic/FIQ 不反向调用 platform/runtime callback，也不借用 control endpo
 返回拥有地址值的 `StackGuardPageFault`，再由运行时页故障处理器触发包含该诊断的
 panic。不能先单独写出栈范围、忽略返回 0，再只输出不含这些范围的通用 panic；
 普通 UART 事务短暂占用 gate 时会因此丢失唯一的栈保护判定信息。
+
+## K3 与 ACPI 串口接管
+
+K3 的 XScale UART 使用 4 字节寄存器间距和 32 位 MMIO 访问。沿用单一的
+访问宽度参数无法表达普通 NS16550 中步长和访问宽度不同的设备。单设 K3
+驱动则会重复寄存器操作、FIFO 和接管逻辑。本方案保留 NS16550 的公共端点，
+用 `MmioLayout` 表达两项参数，由 `UartVariant::XScale` 处理 IER 的 UUE
+和 RTOIE。普通 UART 缺少 `reg-shift` 时继续以访问宽度作为步长。XScale
+缺少该属性时使用 4 字节步长。FDT 提供 `reg-offset` 时，启动和运行时均以
+偏移后的物理地址确定设备身份。
+
+`bind_earlycon_ns16550()` 要求寄存器区间来自固件或平台提供的真实设备，
+访问地址满足宽度对齐，映射覆盖最后一个寄存器的完整访问。启动页表保留这一
+窗口，`rebind_earlycon_mmio()` 在重定位后替换访问地址。同一物理 UART
+保留分频、帧格式和 FIFO。运行时驱动保留自己的映射，由 `UartRegisterGate`
+仲裁 control、IRQ 和 emergency 端点。进入 `Preparing` 之前由早期控制台
+持有访问权，交接开始后先等待旧访问退出，再由运行时端口接管。
+
+`SerialWorker::start_handoff_console()` 分别检查 UART 身份和早期后端的保留状态。
+x86 的早期输入仍可能来自 COM1，即使 SPCR 已把早期输出切到其他 PIO 串口。
+接管这种被保留的输入端口时调用 `startup_preserving_fifos()`，避免普通初始化
+清除待收字节；只有未被早期后端保留的独立端口才走普通启动。
+
+`kernutil::acpi::spcr_mappings()` 只信任目录中已有的表头，整表映射前必须由
+内存所有者确认声明区间位于实际保留的固件内存内；声明长度及映射描述符中的
+长度本身不能证明 backing 有效。支持的最大范围是两个 16 位命名空间字段
+可引用的总长度。启动期由 `someboot::acpi::spcr_memory_contains()` 检查
+UEFI 内存描述符，LoongArch 已退出启动服务时检查继承的保留区；运行时通过
+`AcpiRoot::with_firmware_memory()` 使用平台保留的内存图。固件字节在映射期间
+必须保持可读且不可变。越界或无法确认的条目保留为解析失败，禁止按异常长度
+创建切片。`Spcr::from_bytes()` 再按版本和已经验证的长度限制字段读取。
+启用的 SPCR 若提供命名空间路径，`rdrive` 要求路径与 UART 节点匹配，
+且 GAS 基址落在该节点的 `_CRS` 区间内。固件选择的布局或资源无法校验时，
+保留选择失败并继续使用已启用的早期控制台，拥有独立资源的 UART 仍可注册。
+显式 `console=uart8250,mmio,...` 通过 AML 资源确定设备和地址范围。该地址与
+有效 SPCR 匹配时，仍使用 SPCR 声明的寄存器布局。交接进入 `Preparing` 后，
+若启动或路由提交失败则进入 `FailedClosed`，避免双方访问状态不明的寄存器。
+XScale 启动拒绝无效分频时原样恢复保存的 IER 位。
+
+旧版 SPCR 使用其已有字段，修订版 4 才读取精确波特率和命名空间。物理 16550 在
+映射前通过 `MmioLayout::new()` 校验寄存器间距和访问宽度。AxVM 从宿主 ACPI
+派生的 16550 是模拟设备，经宿主控制台后端收发；保留地址、窗口、IRQ 和固件身份，
+将客体寄存器规范化为连续字节，使设备译码、SPCR 和 DSDT 的 `PNP0501` 默认布局一致。
+PL011 保留其标准的 32 位访问。AxVM 的 `configured_profile()` 将客体 16550 MMIO
+访问宽度限制为 1、2、4 字节，并在应用显式配置后校验最终布局。8 字节间距可搭配
+4 字节访问，要求 Qword 访问的物理布局返回不支持。
+K3 板测检查页表切换、轮询控制台接管和无换行单字节读取。
+B0 挂断与无效设置回滚由串口配置用例覆盖。APLIC 投递由
+#2796 跟踪。部署回退时使用上一版完整内核镜像，使启动层、驱动和运行时恢复
+到同一套寄存器与交接契约。
+
+`TCSETSF` 和 `TCSETSF2` 通过 `SerialTaskOutput::reconfigure_with()`
+先等待软件发送队列排空，再清空旧输入，然后等 UART 发送完成。此期间到达
+的新字节留给读端。宿主 `ax-runtime` 测试验证两个排空阶段的完成条件。Starry
+QEMU 的 `axtest_kernel` 复用忙 UART 夹具，通过实际控制请求验证旧输入丢弃、
+新输入保留。另有用例检查排空期间读端可进入，以及清空失败时不发布新设置。
 
 ## IRQ 与 worker 协议
 
@@ -244,23 +304,34 @@ termios hardware update。termios 修改固定顺序为：
 termios-update -> output -> terminal-termios
 ```
 
-获取 line-discipline lock 前必须释放 output lock，避免与既有
-`ldisc -> echo/output` 路径形成反向嵌套。
+`SerialTaskOutput::reconfigure_with()` 在整个事务中持有 output lock。
+`Tty::set_termios()` 只在清输入或发布退出 canonical 模式的设置时短暂取得
+line-discipline lock；需要同时取得 terminal-termios lock 时，先取得 line-discipline lock。
+等待软件或硬件发送排空期间不持有 line-discipline lock，读端仍可处理输入。
+输入处理中的 `SerialWriter::try_write()` 通过 `SerialTaskOutput::try_write()`
+非阻塞尝试 output lock，锁忙时把未发送的 echo 留在队列中，避免持有输入锁等待输出锁。
+`TCFLSH` 的 `flush_queues()` 则先释放 line-discipline lock，再调用会等待 output lock
+的 `discard_output()`。
 
 - `TCSETS`：在 output lock 内配置硬件，成功后发布新 termios；
-- `TCSETSW`：在同一次 output lock 持有期间 drain、配置、发布；
-- `TCSETSF`：完成 `TCSETSW` 事务并释放 output lock，然后获取 line discipline 并清输入。
+- `TCSETSW`：在同一次 output lock 持有期间等待软件队列和 UART 发送完成，再配置、发布；
+- `TCSETSF`：在同一次 output lock 持有期间先等待软件发送队列排空，再取得
+  line-discipline lock 清输入并释放它，然后等待 UART 发送完成，最后配置、发布。
+  清输入之后、硬件排空期间到达的新输入保留。对应的 `TCSETS2`、`TCSETSW2` 和
+  `TCSETSF2` 使用相同事务顺序。
 
 硬件配置失败时不发布新 termios。无效参数返回 `EINVAL`，驱动配置阶段的有界硬件等待
 超时返回 `ETIMEDOUT`，其他寄存器/设备错误返回 `EIO`。用户内存复制必须在上述锁外完成。
 
-owner worker 在普通状态下有界交替服务 TTY frame 与日志 record。drain 或 termios barrier
-进入后提交一个由 worker 唯一持有的 `DrainTx` 控制事务。worker 先完成已经取得的 pending
-record，随后暂停取得新日志；只有 TTY ingress 为空、pending TTY frame 为空且 UART
-FIFO/shift register 报告 idle 后，才完成事务。普通状态不查询或保存 hardware-idle 状态；
-若 UART 没有 shift-register completion IRQ，drain 事务让出调度器后重新检查，而不创建
-定时任务或依赖超时兜底。因此持续日志流不能饿死 `TCSETSW`/`TCSETSF`，barrier 也不会
-丢弃已经接受的 TTY 输出。配置发布或失败回滚完成后，worker 恢复日志 round-robin。
+owner worker 在普通状态下有界交替服务 TTY frame 与日志 record。drain 和 termios 更新
+通过 barrier 暂停取得新日志，需要排空时提交一个由 worker 唯一持有的 `DrainTx`
+控制事务。worker 先完成已经取得的 pending record。`wait_queued()` 提交不等待硬件的
+事务，TTY ingress、pending TTY frame 和 pending record 都为空即可完成；`wait_idle()`
+还要求 UART FIFO/shift register 报告 idle。`TCSETSF` 的输入刷新由 `reconfigure_with()`
+在这两个阶段之间调用，普通状态不查询或保存 hardware-idle 状态。若 UART 没有
+shift-register completion IRQ，硬件排空事务让出调度器后重新检查，而不创建定时任务或
+依赖超时兜底。因此持续日志流不能饿死 `TCSETSW`/`TCSETSF`，barrier 也不会丢弃已经接受的
+TTY 输出。配置发布或失败回滚完成后，worker 恢复日志 round-robin。
 
 ## 公共任务态控制台与日志仲裁
 

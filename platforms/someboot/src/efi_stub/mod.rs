@@ -284,6 +284,85 @@ pub(crate) fn init_boot_memory_map() {
     platform::init_boot_memory_map();
 }
 
+/// Checks SPCR backing before the final map exists. Only the boot CPU calls
+/// this during early console discovery, before SMP or ExitBootServices.
+pub(crate) fn spcr_memory_contains(address: usize, length: usize) -> bool {
+    #[cfg(target_arch = "loongarch64")]
+    if platform::inherited_handoff() {
+        use crate::handoff::protocol::memory_kind;
+        let Some(payload) = crate::handoff::received::loongarch64::inherited_payload() else {
+            return false;
+        };
+        return payload.memory_map[..payload.memory_map_len as usize]
+            .iter()
+            .any(|region| {
+                region.kind == memory_kind::RESERVED
+                    && region.range.end().is_some()
+                    && (address as u64)
+                        .checked_sub(region.range.start)
+                        .and_then(|offset| offset.checked_add(length as u64))
+                        .is_some_and(|end| end <= region.range.len)
+            });
+    }
+    if UEFI_SERVICE_EXIT.load(Ordering::Relaxed) {
+        return false;
+    }
+    let Some(system) = table::system_table_raw() else {
+        return false;
+    };
+    // SAFETY: EFI owns the installed table and its live Boot Services.
+    let Some(services) = (unsafe { system.as_ref().boot_services.as_ref() }) else {
+        return false;
+    };
+    let mut map_size = EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE;
+    let mut map_key = 0;
+    let mut desc_size = 0;
+    let mut desc_version = 0;
+    // SAFETY: early console discovery is serialized on the boot CPU. The EBS
+    // path has not started and can reuse this buffer after the scan returns.
+    let map = unsafe { addr_of_mut!(EXIT_BOOT_MEMORY_MAP_BUFFER.0).cast::<u8>() };
+    // SAFETY: the aligned static buffer has map_size writable bytes; EFI writes
+    // the descriptor metadata through these local out-parameters.
+    let status = unsafe {
+        (services.get_memory_map)(
+            &mut map_size,
+            map.cast(),
+            &mut map_key,
+            &mut desc_size,
+            &mut desc_version,
+        )
+    };
+    if status != Status::SUCCESS
+        || desc_size < size_of::<MemoryDescriptor>()
+        || map_size > EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE
+        || !map_size.is_multiple_of(desc_size)
+    {
+        return false;
+    }
+    (0..map_size / desc_size).any(|index| {
+        // SAFETY: each descriptor's fixed prefix is initialized by GetMemoryMap
+        // and lies inside the checked byte count, regardless of descriptor stride.
+        let region = unsafe {
+            map.add(index * desc_size)
+                .cast::<MemoryDescriptor>()
+                .read_unaligned()
+        };
+        matches!(
+            region.ty,
+            MemoryType::ACPI_RECLAIM | MemoryType::ACPI_NON_VOLATILE | MemoryType::RESERVED
+        ) && region
+            .page_count
+            .checked_mul(4096)
+            .and_then(|size| region.phys_start.checked_add(size).map(|_| size))
+            .is_some_and(|size| {
+                (address as u64)
+                    .checked_sub(region.phys_start)
+                    .and_then(|offset| offset.checked_add(length as u64))
+                    .is_some_and(|end| end <= size)
+            })
+    })
+}
+
 fn load_efi_payload() {
     let archive_staged = load_linux_initrd();
     if crate::cmdline::has_handoff_cmdline() && archive_staged {

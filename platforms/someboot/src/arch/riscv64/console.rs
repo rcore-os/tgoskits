@@ -24,6 +24,12 @@ impl crate::console::ArchConsoleOps for Console {
         true
     }
 
+    fn firmware_console_may_use_mmio() -> bool {
+        // SBI does not expose its backend address. OpenSBI may use another
+        // UART when the chosen node is disabled or its driver is unavailable.
+        true
+    }
+
     fn read_byte() -> Option<u8> {
         #[allow(deprecated)]
         let ch = sbi_rt::legacy::console_getchar();

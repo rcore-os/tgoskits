@@ -288,6 +288,107 @@ StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直
 11. 启动参数与页表对其他处理器可见后才释放次处理器。
 12. 体系结构钩子只负责唤醒传输。someboot 公共所有者在调用前发布逐处理器 `KICKED`，等待次处理器在公共入口报告 `ALIVE`，再把该处理器释放为 `SHOULD_ONLINE`。握手不进入不可变跳板元数据，并与稍后的调度器、中断和定时器在线发布分离。详见 `docs/design/someboot-secondary-cpu-startup.md`。
 
+### NS16550 的重定位地址重绑
+
+`bind_earlycon_ns16550()` 统一命令行、FDT stdout 和 ACPI SPCR 的 MMIO 绑定。
+`EarlyconState::initialized_ns16550_mmio_paddr` 只记录已初始化的物理设备；
+同一设备在 `primary_init_early()` 与 `prime_entry()` 之间重新绑定时，不再
+`open()`、清收发 FIFO 或改写 IER/MCR。更换物理设备仍执行首次初始化。
+绑定在早期所有权守卫与现有寄存器锁内完成，运行时接管后不再触碰硬件。
+只选择虚拟控制台（例如 `console=tty0`）且发现运行时串口时，启动阶段先关闭早期访问，再允许打开普通 `/dev/ttyS*`。未发现运行时串口时仍保留早期输出。
+RISC-V 的 SBI 接口不报告实际使用的 UART。OpenSBI 找不到可用的 `stdout-path` 时可以扫描设备树上的其他 UART。`early_console_reserves_mmio()` 只报告已确认的 UART 地址，未知后端由 `early_console_has_unknown_mmio()` 单独报告，普通端口在任一条件成立时都不能启动。显式 MMIO 控制台独占收发时只保留它自己使用的 UART，其他地址可作为普通端口使用。
+
+控制台选择失败、但已发现运行时串口且早期 MMIO 后端未知时，`activate_before_smp()` 的现有协调器先完成 `begin_runtime_handoff()` 和 `commit_runtime_handoff()`，静默 SBI，再开放普通端口。此时不再保留 SBI 输出，也不把其他串口改选为 `/dev/console`。交接失败则失败封闭。没有运行时串口，或早期 UART 身份已知且仍未匹配运行时驱动时，保留 HAL 所有权；后者只阻止打开同一地址的 UART。
+
+K3 的 `spacemit,k3-uart` 使用 `UartVariant::XScale` 保留 `IER.UUE`。驱动启用接收中断时同时设置 `IER.RTOIE`，关闭接收中断时清除该位。设备树的 `reg-shift` 决定寄存器步长，`reg-io-width` 决定事务宽度。需要显式选择早期串口时，使用 `earlycon=xscale,mmio32,0xd4017000`。
+
+在 K3 上分别启动 ArceOS 和 StarryOS，确认同一串口记录了页表切换前的 `MMU Entry point at physical address:` 和切换后的 `Trap vector at`。运行时接管后，核对 `irq=None, polling=true`，并在 StarryOS 上确认 `/dev/console` 绑定到 `ttyS0`。
+
+在 StarryOS 上用 `TCGETS2` 保存 `/dev/ttyS0` 的配置，用 `TCSETS2` 进入 B0 并读回零波特率。提交无效的恢复请求后再次读回，确认 B0 保留，随后还原并核对原配置。将终端设为 `-icanon -echo min 1 time 0`，发起单字节阻塞读取，只发送一个无换行字符并核对读回值。`mmio_xscale_keeps_unit_enabled_and_masks_timeout_with_rx` 覆盖 `IER` 寄存器行为。APLIC 投递和阻塞读取唤醒随 [K3 AIA 支持](https://github.com/rcore-os/tgoskits/pull/2796) 集成验证。
+
+早期控制台与运行时串口各自读取 FDT，再用 `UartVariant::mmio_layout()` 返回已校验的 `MmioLayout`。
+缺少 `reg-shift` 时，普通 NS16550 沿用访问宽度作为步长，XScale 使用 4 字节步长。
+布局属性必须各为一个 32 位值，只有缺失时才使用默认值。命令行 `earlycon=xscale`
+也使用 4 字节步长，由 `mmio`、`mmio16` 或 `mmio32` 选择事务宽度。
+
+FDT `reg` 必须覆盖驱动访问的全部寄存器，包括最后一次访问的宽度。普通
+NS16550 和 XScale 在启动和运行时都将 `reg-offset` 加到 `reg` 的基址，用偏移后的
+物理地址识别串口，并校验剩余区间能否涵盖寄存器。SPCR 和显式命令行没有提供
+区间长度，启动层使用 `MmioLayout::required_len()` 确定最小映射长度。
+显式的 `console=uart8250,io,...` 或 `console=uart8250,mmio,...` 优先于 SPCR。探测时先尝试 AML 资源覆盖该地址的设备。找不到或无法绑定该设备时，仍允许注册具有独立资源的串口。运行时控制台继续按显式地址查找，找不到时保留 HAL 控制台。
+普通 `console=ttyS<N>` 使用运行时实际分配的编号。没有别名的串口可以通过分配到的编号接管。
+进入 `Preparing` 并等早期访问退出后，已确认是同一 UART 时沿用其硬件设置和 FIFO。
+SBI 不报告后端地址时，仍被早期控制台保留的 MMIO UART 可能存有在途输入。
+运行时调用 `startup_preserving_fifos()` 初始化选中的 UART，保留 FIFO 模式及已入队的字节。
+PIO 交接也必须检查 `early_console_reserves_io_port()`，不能只匹配早期输出地址。
+x86 的 COM1 输入后端可能在 SPCR 将输出切到另一串口后继续保留 COM1；接管它时
+仍须保留 FIFO，不能因 `early_console_uses_io_port()` 返回假而清除待收输入。
+NS16550 在修改波特率或帧格式前有界等待发送 FIFO 和移位寄存器都为空。等待超时，或
+Rockchip FIQ 收到必须复位才能完成的波特率设置时，驱动在写寄存器前返回错误。
+无法保留 FIFO 的驱动返回错误，交接进入失败封闭状态。能确认是另一台 UART 时走普通
+驱动启动路径。没有探测到波特率时尝试 115200、8N1。输入时钟不可用时保留原分频，
+SBI 后端地址未知时同时保留原帧格式。
+未指定控制台且固件也没有给出选择时，仅支持区分早期 UART 与其他端口的动态平台
+可以接管编号最小的串口；由 `ax_hal::console::can_handoff_unspecified_console()`
+声明这一能力。静态平台必须返回明确的控制台 `DeviceId`，否则在开始交接前保留 HAL，
+不能根据 `ttyS0` 或其他运行时编号推断早期 UART 身份。
+没有显式地址时，ACPI 运行时串口使用 SPCR GAS。
+SPCR 缺失或 GAS 地址为零时允许继续固件选择。表存在但长度无效时保留选择错误。
+MMIO 和 x86 I/O 端口均从 GAS 指定的地址绑定寄存器，并以该地址登记交接。
+16550 I/O 端口布局在早期控制台、运行时探测和 AxVM 共用解析。只接受 8 个连续的字节端口，且完整窗口必须位于 16 位端口空间内。
+早期控制台、运行时探测和 AxVM 共用 SPCR MMIO 布局解析。Full 16550 和 Full 16450
+使用相同规则，寄存器步长等于访问宽度。Generic 16550 的 GAS Register Bit Width
+决定步长，Access Size 决定事务宽度。对 MMIO 串口，SPCR 未提供输入时钟时保留固件
+分频，并采用 SPCR 声明的波特率作为初始值。AxVM 从同一 SPCR 解析结果获取地址和窗口范围，
+但从宿主 ACPI 派生的 16550 是通过宿主控制台后端收发的模拟设备，客体使用连续字节寄存器，
+使设备译码、SPCR 和 DSDT 的 `PNP0501` 默认布局一致；不继承物理 UART 的步长和访问宽度。
+PL011 仍使用标准的 32 位访问。面向 Linux 的 x86_64 和 LoongArch 客户机 SPCR
+只发布 1、2、4 字节访问且步长等于访问宽度的 NS16550 MMIO 布局，因为 Linux earlycon
+由 Access Size 推导步长，不使用 GAS Register Bit Width 还原独立步长。
+显式客体配置的其他布局仍保留在设备图和 DSDT 中，SPCR 将基地址置零以关闭重定向。
+
+NS16550 在时钟提供者注册后、控制台接管前探测。有效的非零 `clock-frequency` 优先，
+该属性缺失或为零时才通过功能时钟获取实际工作频率，SpacemiT 优先选择名为 `core` 的时钟。
+时钟提供者不可用时保留固件分频，并用 `current-speed` 作为初始波特率。
+不得仅凭 K1/K3 compatible 忽略显式频率；已确认错误的固件属性应在设备树或有明确固件识别条件的修正中处理。
+早期控制台和运行时共用 SPCR 读取逻辑。旧版 SPCR 使用旧版波特率和 GAS 地址。
+第 4 版起，先检查表长和字段范围，再读取精确波特率和命名空间路径。
+运行时规范化 ACPI 路径后匹配设备，确保 `_SB` 和 `_SB_` 识别为同一命名段。
+SPCR 未指定命名空间设备时按 GAS 查找已登记资源。显式路径无效或设备未登记时，
+`somehal` 返回 `DeviceNotFound`，避免回退到 FDT 或 `ttyS0`。对 16550
+串口，显式路径只允许对应 AML 设备使用 GAS 指定的寄存器。该设备的 `_CRS` 必须覆盖 GAS，且寄存器布局
+须通过校验。Full16450 的端口 I/O 在两个阶段均采用 GAS 基址，即使 AML 资源区间从更早的端口开始。
+`spcr_mappings()` 在整表映射前必须向内存所有者校验实际 backing，不能把
+表头的声明长度或 `RawPhysicalMapping::region_length()` 当作范围证明。
+早期启动查 UEFI 内存图或已退出启动服务的继承保留区；rdrive 的
+`AcpiRoot::with_firmware_memory()` 接入平台保留内存图。缺少范围证明、
+跨出保留区或超过支持的命名空间最大范围时，保留无效条目并返回解析失败。
+其他 AML 设备仍可使用独立的串口资源。x86 仅在 AML 没有启用的匹配串口且 COM1 端口未登记时考虑固定 COM1。
+固件已声明启用的串口但资源无效时禁止回退。显式地址选择只在请求 COM1 时允许回退。
+没有显式地址时，只有 SPCR 缺省或 SPCR 选中无命名空间路径的 COM1 才允许回退。
+早期控制台保留的 MMIO 地址和端口 I/O 地址分别匹配。
+普通 TTY 启动前检查对应地址空间的所有权。
+RISC-V 的 `earlycon=ns16550,<addr>` 省略 I/O 模式时使用 `mmio`，寄存器访问宽度
+和步长均为 1 字节。硬件需要更宽的访问时，在命令行显式指定 `mmio16` 或 `mmio32`。
+RISC-V 成功绑定显式 `earlycon` 后继续使用指定的串口和寄存器布局。
+AArch64 和 RISC-V 的启动页表使用绑定记录的范围，覆盖物理恒等窗口和重定位后
+的 `__io()` 窗口。AArch64 EL1 启动时，`setup_page_table()` 向 `TTBR0_EL1`
+和 `TTBR1_EL1` 安装同一页表根。两侧均使用 48 位虚拟地址和 4 KiB 页，UART 的
+低地址窗口和 `__io()` 别名使用相同的低 48 位，访问同一组设备页表项。
+`prime_entry()` 直接重绑页表切换前生效的 MMIO UART。FDT 和 SPCR 指向不同
+设备时，重定位后沿用已映射的设备。
+RISC-V 的启动内存图中，一个固件 `Reserved` 条目完整覆盖已选 UART 的页对齐窗口时，
+只把 UART 窗口登记为 `Mmio`，供运行时继续使用 Device 映射。两侧区间保留
+`Reserved`，部分重叠以及内核映像或启动数据重叠仍按冲突处理。
+
+验证 AArch64 的 `rebind_earlycon_mmio()` 时，在同一个 NS16550 后端检查
+切换前的 `MMU Entry point at physical address:` 和切换后的 `Trap vector at`。
+
+诊断 MMU 切换日志截断时，用 QEMU `serial_write` 跟踪检查第一次初始化
+确实写入 FCR，而 `MMU enabled, jumping to ...` 到 `Trap vector at ...`
+之间没有控制寄存器写入。仅匹配后续 Shell 或应用成功不足以证明 FIFO 被保留。
+QEMU 写入跟踪只覆盖模拟器中的寄存器访问；K3 物理 FIFO 的行为需实板核验。
+
 ### PL011 的重定位地址重绑
 
 `primary_init_early()` 与重定位后的 `prime_entry()` 都会建立 early console 绑定。
@@ -967,6 +1068,8 @@ U-Boot 回显命令在中途缺字、尾部丢失或重试内容交错时，先�
 缩短有效 cmdline 或恢复服务端持锁 `tcdrain` 掩盖输入流控制问题。该修复不
 改变固件自身的命令行容量，YMODEM 二进制传输也不走命令回显路径。
 
+K3 的部分 U-Boot 固件会在首个命令字符前插入 `[   2.109]` 形式的时间戳。逐字节校验在偏移 0 收到 `0x5b` 时，先在原始串口核对回显。如果板卡的 TFTP 不可用，可用 `loady` 将 FIT 镜像传到内存。核对传输字节数后执行 `bootm`，检查 FIT 哈希校验和内核实际收到的启动参数。
+
 宿主归档的构建、交接、预留、解包、根选择与回收顺序见
 [`docs/design/host-initramfs.md`](../../../../docs/design/host-initramfs.md)。
 诊断 QEMU `-initrd`、FIT ramdisk 或 UEFI/HTTP Boot 时，先区分宿主归档与
@@ -996,8 +1099,8 @@ LoongArch 在 `Trap vector at` 之后、第二次内存图打印前停住时，�
 会在 Reserved/Mmio 类型冲突时 panic。LoongArch UART 使用固定 DMW I/O
 映射、串口参数来自 earlycon 时，完整覆盖该页的 Reserved 已能保证物理预留；
 不要为重复登记改写整片保留区。只接受完整 Reserved 覆盖，不可笼统忽略
-BootData/KImage 或部分覆盖冲突。需要独立页表 MMIO 映射的其他架构必须
-保留其原有登记语义。
+BootData/KImage 或部分覆盖冲突。RISC-V 需要独立页表 MMIO 映射，按前文的
+NS16550 重绑规则登记串口窗口。
 LoongArch 的 AML 初始化失败时，保留原始错误并离线提取 DSDT/SSDT，
 通过真实解释器入口复现；不要把 tables-only 模式当成无损替代，也不要永久保留
 全表转储框架。解释器缺陷应在上游 ACPI 仓库修复，项目只保留平台适配。

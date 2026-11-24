@@ -25,7 +25,9 @@ use ax_lazyinit::OnceLock;
 use axpoll::IoEvents;
 use axpoll_set::PollSet;
 use rdif_serial::UartRegisterGate;
-pub use rdif_serial::{Config, ConfigError, DataBits, Parity, RxFlag, StopBits};
+pub use rdif_serial::{
+    Config, ConfigError, DataBits, Framing, ModemOutputs, Parity, RxFlag, StopBits,
+};
 
 pub(crate) use self::log_mailbox::{LogRecord, LogRecordKind};
 use self::{
@@ -224,9 +226,15 @@ fn try_enter_irq_registers<'a, E: ?Sized>(
     guard
 }
 
+struct InitialLineSettings {
+    baudrate: u32,
+    framing: Option<Framing>,
+}
+
 struct RuntimeShared {
     index: usize,
     info: SerialDeviceInfo,
+    initial_line: OnceLock<InitialLineSettings>,
     owner_cpu: usize,
     #[cfg(feature = "fault-injection")]
     deferred_test_consumed: AtomicU8,
@@ -403,6 +411,20 @@ impl SerialRuntimeHandle {
         &self.shared.info
     }
 
+    /// Returns the framing read during the first successful port start, when available.
+    pub fn initial_framing(&self) -> Option<Framing> {
+        self.shared.initial_line.get()?.framing
+    }
+
+    /// Returns the nominal startup rate, or the probed rate before the port starts.
+    /// A zero rate means the hardware rate was unavailable.
+    pub fn initial_baudrate(&self) -> u32 {
+        self.shared
+            .initial_line
+            .get()
+            .map_or(self.shared.info.initial_baudrate, |line| line.baudrate)
+    }
+
     /// Injects a diagnostic only after the real worker is blocked with an
     /// attached IRQ waiter. No normal log/doorbell wake is generated.
     #[cfg(feature = "fault-injection")]
@@ -530,17 +552,11 @@ impl SerialRuntimeHandle {
         Ok(())
     }
 
-    /// Adopts the already-running firmware console while the platform path is
-    /// in `Preparing`.
-    ///
-    /// The worker preserves the firmware line/FIFO configuration and only
-    /// masks device-local sources before enabling its registered IRQ action.
-    /// The console coordinator owns the surrounding handoff transaction and
-    /// closes the early path if this operation fails.
-    pub(crate) fn adopt_prepared_console(&self) -> RuntimeResult {
+    /// Starts the selected port after the platform has quiesced early access.
+    pub(crate) fn start_handoff_console(&self) -> RuntimeResult {
         self.shared
             .control
-            .submit(ControlOp::AdoptFirmwareConsole, || {
+            .submit(ControlOp::StartHandoffConsole, || {
                 self.shared.bridge.notify()
             })
     }
@@ -685,7 +701,16 @@ impl SerialOutputBarrier {
         self.shared.ensure_started()?;
         self.shared
             .control
-            .submit_drain(|| self.shared.bridge.notify())
+            .submit_drain(true, || self.shared.bridge.notify())
+    }
+
+    /// Waits for software output to reach the UART without waiting for its
+    /// FIFO or shift register to finish transmitting.
+    fn wait_queued(&self) -> RuntimeResult {
+        self.shared.ensure_started()?;
+        self.shared
+            .control
+            .submit_drain(false, || self.shared.bridge.notify())
     }
 
     /// Applies configuration before allowing worker log extraction to resume.
@@ -843,6 +868,8 @@ impl SerialTaskOutput {
         SerialOutputBarrier::new(self.shared.clone()).wait_idle()
     }
 
+    /// Discards software-queued output and clears the hardware TX queue when
+    /// the port can do so independently of RX.
     pub fn discard_pending(&self) -> RuntimeResult {
         let _output = self.shared.tty_output_lock.lock();
         self.shared.ensure_started()?;
@@ -857,8 +884,28 @@ impl SerialTaskOutput {
         drain: bool,
         publish: impl FnOnce(),
     ) -> RuntimeResult {
+        self.reconfigure_with(config, drain, || Ok(()), publish)
+    }
+
+    /// Runs preparation after the optional software output drain, then waits
+    /// for hardware TX idle before applying the configuration when draining.
+    /// The output lock covers the whole sequence.
+    ///
+    /// Callbacks must not reenter operations that acquire the output lock.
+    /// A failed preparation or configuration skips publication.
+    pub fn reconfigure_with<E: From<RuntimeError>>(
+        &self,
+        config: Option<Config>,
+        drain: bool,
+        before_configure: impl FnOnce() -> Result<(), E>,
+        publish: impl FnOnce(),
+    ) -> Result<(), E> {
         let _output = self.shared.tty_output_lock.lock();
         let barrier = SerialOutputBarrier::new(self.shared.clone());
+        if drain {
+            barrier.wait_queued()?;
+        }
+        before_configure()?;
         if drain {
             barrier.wait_idle()?;
         }
@@ -872,6 +919,12 @@ impl SerialTaskOutput {
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.tx_source.clone()
     }
+}
+
+/// Verifies that a byte received during UART transmit drain survives the input flush.
+#[cfg(axtest)]
+pub fn input_arriving_during_uart_drain_survives_flush_for_test() -> bool {
+    worker::handoff_tests::input_arriving_during_uart_drain_survives_flush()
 }
 
 impl SerialRxSubscription {
@@ -1044,6 +1097,7 @@ fn build_runtime(
     let shared = Arc::new(RuntimeShared {
         index,
         info,
+        initial_line: OnceLock::new(),
         owner_cpu: primary_cpu,
         #[cfg(feature = "fault-injection")]
         deferred_test_consumed: AtomicU8::new(0),

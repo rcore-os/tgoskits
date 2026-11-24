@@ -535,15 +535,17 @@ impl TtyWrite for UsbSerialWriter {
         old: &Termios2,
         new: &Termios2,
         drain: bool,
-        publish: &mut dyn FnMut(),
+        before_configure: &mut dyn FnMut() -> StarryResult<()>,
+        publish: &mut dyn FnMut(&Termios2),
     ) -> StarryResult<()> {
         self.backend.ensure_started()?;
         let _guard = self.backend.output_lock.lock();
         if drain {
             self.backend.drain_tx_queue_locked()?;
         }
+        before_configure()?;
         self.termios_changed(old, new)?;
-        publish();
+        publish(new);
         Ok(())
     }
 }

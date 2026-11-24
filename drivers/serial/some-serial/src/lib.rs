@@ -30,14 +30,29 @@
 //! ```rust,no_run
 //! use core::ptr::NonNull;
 //!
-//! use some_serial::{Config, PollingUart as _, UartPort as _, ns16550::Ns16550, pl011::Pl011};
+//! use some_serial::{
+//!     Config, PollingUart as _, UartPort as _,
+//!     ns16550::{MmioLayout, Ns16550, UartVariant},
+//!     pl011::Pl011,
+//! };
 //!
 //! // 选择合适的驱动
 //! #[cfg(target_arch = "aarch64")]
 //! let mut uart = Pl011::new(NonNull::new(0x9000000 as *mut u8).unwrap(), 24_000_000);
 //!
 //! #[cfg(not(target_arch = "aarch64"))]
-//! let mut uart = Ns16550::new_mmio(NonNull::new(0x9000000 as *mut u8).unwrap(), 1_843_200, 1);
+//! // SAFETY: this example assumes the platform provides and retains this
+//! // eight-byte NS16550 mapping, with no concurrent register access.
+//! let mut uart = unsafe {
+//!     Ns16550::new_mmio(
+//!         NonNull::new(0x9000000 as *mut u8).unwrap(),
+//!         8,
+//!         1_843_200,
+//!         MmioLayout::new(1, 1).unwrap(),
+//!         UartVariant::Standard,
+//!     )
+//! }
+//! .unwrap();
 //!
 //! // 配置串口
 //! let config = Config::new()
@@ -129,6 +144,16 @@ pub struct TransBytesError {
 
 // Runtime capability types are re-exported for concrete driver consumers.
 pub use rdif_serial::*;
+
+fn line_parity(enabled: bool, even: bool, stick: bool) -> Parity {
+    match (enabled, even, stick) {
+        (false, ..) => Parity::None,
+        (true, false, false) => Parity::Odd,
+        (true, true, false) => Parity::Even,
+        (true, false, true) => Parity::Mark,
+        (true, true, true) => Parity::Space,
+    }
+}
 
 #[cfg(test)]
 mod tests {

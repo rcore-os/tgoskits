@@ -16,24 +16,39 @@ pub enum ConsoleDeviceIdError {
 }
 
 pub fn device_id() -> Result<DeviceId, ConsoleDeviceIdError> {
-    match device_id_from_bootargs(someboot::cmdline()) {
+    device_id_with_serial_index(device_id_from_serial_index)
+}
+
+/// Resolves a boot console using the caller's assigned serial numbers.
+pub fn device_id_with_serial_index(
+    serial_device_id: impl Fn(usize) -> Option<DeviceId>,
+) -> Result<DeviceId, ConsoleDeviceIdError> {
+    match device_id_from_bootargs_with(
+        someboot::cmdline(),
+        serial_device_id,
+        device_id_from_rockchip_fiq_index,
+        rdrive::acpi_resource_address_to_device_id,
+    ) {
         Ok(device_id) => Ok(device_id),
-        Err(ConsoleDeviceIdError::NotSpecified) => device_id_from_acpi_spcr()
-            .or_else(device_id_from_fdt_stdout)
-            .ok_or(ConsoleDeviceIdError::NotSpecified),
+        Err(ConsoleDeviceIdError::NotSpecified) => {
+            match rdrive::acpi_spcr_console_device_id_result() {
+                Ok(Some(device_id)) => Ok(device_id),
+                Ok(None) => rdrive::with_fdt(stdout_device_id)
+                    .unwrap_or(Err(ConsoleDeviceIdError::NotSpecified)),
+                Err(_) => Err(ConsoleDeviceIdError::DeviceNotFound),
+            }
+        }
         Err(
             err @ (ConsoleDeviceIdError::NoHardwareDevice | ConsoleDeviceIdError::DeviceNotFound),
         ) => Err(err),
     }
 }
 
-fn device_id_from_bootargs(cmdline: Option<&str>) -> Result<DeviceId, ConsoleDeviceIdError> {
-    device_id_from_bootargs_with(
-        cmdline,
-        device_id_from_serial_index,
-        device_id_from_rockchip_fiq_index,
-        rdrive::acpi_resource_address_to_device_id,
-    )
+pub(crate) fn explicit_acpi_serial_address(cmdline: Option<&str>) -> Option<AcpiResourceAddress> {
+    match console_selection(cmdline).ok()? {
+        ConsoleSpec::AcpiSerial(address) => address,
+        _ => None,
+    }
 }
 
 fn device_id_from_bootargs_with(
@@ -42,32 +57,24 @@ fn device_id_from_bootargs_with(
     rockchip_fiq_device_id: impl Fn(usize) -> Option<DeviceId>,
     acpi_address_device_id: impl Fn(AcpiResourceAddress) -> Option<DeviceId>,
 ) -> Result<DeviceId, ConsoleDeviceIdError> {
-    let cmdline = cmdline.ok_or(ConsoleDeviceIdError::NotSpecified)?;
-    let mut has_console_spec = false;
-    let mut last_hardware_device = None;
+    match console_selection(cmdline)? {
+        ConsoleSpec::HardwareSerial(index) => serial_device_id(index),
+        ConsoleSpec::RockchipFiq(index) => rockchip_fiq_device_id(index),
+        ConsoleSpec::AcpiSerial(address) => address.and_then(acpi_address_device_id),
+        ConsoleSpec::VirtualTty => return Err(ConsoleDeviceIdError::NoHardwareDevice),
+    }
+    .ok_or(ConsoleDeviceIdError::DeviceNotFound)
+}
 
+fn console_selection(cmdline: Option<&str>) -> Result<ConsoleSpec, ConsoleDeviceIdError> {
+    let cmdline = cmdline.ok_or(ConsoleDeviceIdError::NotSpecified)?;
+    let mut selected = None;
     for spec in console_specs(cmdline) {
-        has_console_spec = true;
-        match spec {
-            ConsoleSpec::HardwareSerial(index) => {
-                last_hardware_device = Some(serial_device_id(index));
-            }
-            ConsoleSpec::RockchipFiq(index) => {
-                last_hardware_device = Some(rockchip_fiq_device_id(index));
-            }
-            ConsoleSpec::AcpiSerial(address) => {
-                last_hardware_device = Some(address.and_then(&acpi_address_device_id));
-            }
-            ConsoleSpec::VirtualTty => {}
+        if selected.is_none() || spec != ConsoleSpec::VirtualTty {
+            selected = Some(spec);
         }
     }
-
-    match last_hardware_device {
-        Some(Some(device_id)) => Ok(device_id),
-        Some(None) => Err(ConsoleDeviceIdError::DeviceNotFound),
-        None if has_console_spec => Err(ConsoleDeviceIdError::NoHardwareDevice),
-        None => Err(ConsoleDeviceIdError::NotSpecified),
-    }
+    selected.ok_or(ConsoleDeviceIdError::NotSpecified)
 }
 
 fn console_specs(cmdline: &str) -> impl Iterator<Item = ConsoleSpec> + '_ {
@@ -131,7 +138,9 @@ fn parse_number_suffix(name: &str, prefix: &str) -> Option<usize> {
 }
 
 fn device_id_from_serial_index(index: usize) -> Option<DeviceId> {
-    device_id_from_serial_index_with(index, fdt_serial_alias_device_id, device_id_from_acpi_spcr)
+    device_id_from_serial_index_with(index, fdt_serial_alias_device_id, || {
+        rdrive::acpi_spcr_console_device_id_result().ok().flatten()
+    })
 }
 
 fn device_id_from_serial_index_with(
@@ -161,29 +170,25 @@ fn device_id_from_rockchip_fiq_index(index: usize) -> Option<DeviceId> {
     .flatten()
 }
 
-fn device_id_from_acpi_spcr() -> Option<DeviceId> {
-    rdrive::acpi_spcr_console_device_id()
-}
-
-fn device_id_from_fdt_stdout() -> Option<DeviceId> {
-    rdrive::with_fdt(stdout_device_id).flatten()
-}
-
-fn stdout_device_id(fdt: &Fdt) -> Option<DeviceId> {
-    let chosen = fdt.get_by_path("/chosen")?;
-    ["stdout-path", "linux,stdout-path"]
+fn stdout_device_id(fdt: &Fdt) -> Result<DeviceId, ConsoleDeviceIdError> {
+    let chosen = fdt
+        .get_by_path("/chosen")
+        .ok_or(ConsoleDeviceIdError::NotSpecified)?;
+    let stdout = ["stdout-path", "linux,stdout-path"]
         .into_iter()
-        .find_map(|key| {
-            let raw = chosen.as_node().get_property(key)?.as_str()?;
-            let path = split_stdout_options(raw);
-            if path.is_empty() {
-                return None;
-            }
-            if path.starts_with('/') {
-                return rdrive::fdt_path_to_device_id(path);
-            }
-            alias_path(fdt, path).and_then(rdrive::fdt_path_to_device_id)
-        })
+        .find_map(|key| chosen.as_node().get_property(key))
+        .ok_or(ConsoleDeviceIdError::NotSpecified)?;
+    let path = split_stdout_options(
+        stdout
+            .as_str()
+            .ok_or(ConsoleDeviceIdError::DeviceNotFound)?,
+    );
+    let device = if path.starts_with('/') {
+        rdrive::fdt_path_to_device_id(path)
+    } else {
+        alias_path(fdt, path).and_then(rdrive::fdt_path_to_device_id)
+    };
+    device.ok_or(ConsoleDeviceIdError::DeviceNotFound)
 }
 
 fn split_stdout_options(stdout: &str) -> &str {
@@ -242,16 +247,58 @@ mod tests {
     #[test]
     fn bootargs_console_spec_suppresses_firmware_fallback() {
         assert_eq!(
-            device_id_from_bootargs(Some("root=/dev/vda")),
+            device_id_from_bootargs_with(Some("root=/dev/vda"), |_| None, |_| None, |_| None),
             Err(ConsoleDeviceIdError::NotSpecified)
         );
         assert_eq!(
-            device_id_from_bootargs(Some("console=tty1")),
+            device_id_from_bootargs_with(Some("console=tty1"), |_| None, |_| None, |_| None),
             Err(ConsoleDeviceIdError::NoHardwareDevice)
         );
         assert_eq!(
-            device_id_from_bootargs(Some("console=ttyS2 console=tty1")),
+            device_id_from_bootargs_with(
+                Some("console=ttyS2 console=tty1"),
+                |_| None,
+                |_| None,
+                |_| None
+            ),
             Err(ConsoleDeviceIdError::DeviceNotFound)
+        );
+    }
+
+    #[test]
+    fn numbered_console_can_use_the_runtime_assignment_without_firmware_aliases() {
+        let device_id = DeviceId::from(42);
+        let runtime_serial_id = |index| (index == 0).then_some(device_id);
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some("console=ttyS0,115200"),
+                runtime_serial_id,
+                |_| None,
+                |_| None
+            ),
+            Ok(device_id)
+        );
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some("console=ttyS1"),
+                runtime_serial_id,
+                |_| None,
+                |_| None
+            ),
+            Err(ConsoleDeviceIdError::DeviceNotFound)
+        );
+    }
+
+    #[test]
+    fn only_final_hardware_selection_overrides_acpi_discovery() {
+        let port = Some(AcpiResourceAddress::io(0x2f8));
+        assert_eq!(
+            explicit_acpi_serial_address(Some("console=uart8250,io,0x2f8 console=tty0")),
+            port
+        );
+        assert_eq!(
+            explicit_acpi_serial_address(Some("console=uart8250,io,0x2f8 console=ttyS1")),
+            None
         );
     }
 

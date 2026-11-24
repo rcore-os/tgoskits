@@ -926,10 +926,7 @@ fn active_serial_parameters() -> Option<SerialParameters> {
     let runtime = std::os::arceos::modules::ax_runtime::serial::runtimes()
         .iter()
         .find(|runtime| std::os::arceos::modules::ax_runtime::console::is_active(runtime))?;
-    let baud_rate = u64::from(runtime.info().initial_baudrate);
-    // The runtime keeps the firmware's adopted line settings; only the
-    // baud-rate field is exposed by SerialDeviceInfo. The remaining fields
-    // use the protocol's documented 8N1/no-flow-control default.
+    let baud_rate = u64::from(runtime.initial_baudrate());
     (baud_rate != 0).then(|| SerialParameters {
         baud_rate,
         ..SerialParameters::default()
