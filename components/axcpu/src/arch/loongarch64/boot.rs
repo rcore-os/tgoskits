@@ -37,7 +37,8 @@ pub unsafe fn install_boot_vectors(vector: usize, refill: PhysAddr) {
             "csrrd {ecfg}, 0x4", "bstrins.d {ecfg}, {spacing}, 18, 16",
             "csrwr {ecfg}, 0x4", "csrwr {vector}, 0xc", "csrwr {refill}, 0x88",
             ecfg = out(reg) _, spacing = in(reg) 7usize,
-            vector = in(reg) vector, refill = in(reg) refill.as_usize(), options(nostack),
+            vector = inout(reg) vector => _,
+            refill = inout(reg) refill.as_usize() => _, options(nostack),
         );
     }
 }
@@ -50,15 +51,20 @@ pub unsafe fn install_boot_vectors(vector: usize, refill: PhysAddr) {
 /// This does not enable paged translation or provide cross-CPU invalidation.
 #[inline(always)]
 pub unsafe fn install_boot_page_table(root: PhysAddr) {
+    // CSRWR replaces its operand with the previous CSR value. Retain a second
+    // copy before installing either root and declare every exchanged operand.
     // SAFETY: this assembly-only setup is valid before final image relocation.
     unsafe {
         core::arch::asm!(
             "csrrd {stlbps}, 0x1e", "bstrins.d {stlbps}, {ps}, 5, 0",
-            "csrwr {root}, 0x1a", "csrwr {root}, 0x19", "dbar 0",
+            "move {lower_root}, {root}",
+            "csrwr {root}, 0x1a", "csrwr {lower_root}, 0x19", "dbar 0",
             "csrwr {stlbps}, 0x1e", "csrwr {pwcl}, 0x1c", "csrwr {pwch}, 0x1d",
             "invtlb 0x0, $r0, $r0",
-            stlbps = out(reg) _, ps = in(reg) 12usize, root = in(reg) root.as_usize(),
-            pwcl = in(reg) PWCL_VALUE as usize, pwch = in(reg) PWCH_VALUE as usize,
+            stlbps = out(reg) _, ps = in(reg) 12usize,
+            root = inout(reg) root.as_usize() => _, lower_root = out(reg) _,
+            pwcl = inout(reg) PWCL_VALUE as usize => _,
+            pwch = inout(reg) PWCH_VALUE as usize => _,
             options(nostack),
         );
     }
@@ -76,7 +82,7 @@ pub unsafe fn enable_paged_translation() {
     unsafe {
         core::arch::asm!("csrrd {}, 0", out(reg) crmd, options(nostack));
         crmd = (crmd & !((1 << 3) | (3 << 5) | (3 << 7))) | (1 << 4) | (1 << 5) | (1 << 7);
-        core::arch::asm!("csrwr {}, 0", in(reg) crmd, options(nostack));
+        core::arch::asm!("csrwr {}, 0", inout(reg) crmd => _, options(nostack));
     }
 }
 
