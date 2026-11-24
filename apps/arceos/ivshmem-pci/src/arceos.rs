@@ -121,8 +121,8 @@ impl fmt::Display for IvshmemIdentity {
 /// One discovered ivshmem function and the mappings owned by it.
 ///
 /// Construction maps ECAM and BAR0 as Device memory and BAR2 as Normal
-/// write-back memory through `ax_mm::iomap_cached`. The object owns the local
-/// mapping handles. Section and output borrows cannot outlive it.
+/// non-cacheable memory through `ax_mm::iomap_uncached`. The object owns the
+/// local mapping handles. Section and output borrows cannot outlive it.
 ///
 /// ArceOS does not currently expose an owner-aware `iounmap` for mappings that
 /// may overlap a platform direct map. Dropping this object therefore revokes
@@ -201,9 +201,10 @@ impl IvshmemDevice {
             });
         }
 
-        // BAR2 is CPU-owned Normal memory, not a Device aperture. This mapping
-        // is the cache-coherent backing used by aligned atomics in Message V1.
-        let shared = Mapping::cached(bar2_address, layout.bar2_size, "ivshmem BAR2")?;
+        // BAR2 is CPU-owned Normal memory, not a Device aperture. Linux maps
+        // the prefetchable BAR through resource2_wc, which is Normal
+        // non-cacheable on AArch64; use the corresponding ArceOS mapping.
+        let shared = Mapping::uncached(bar2_address, layout.bar2_size, "ivshmem BAR2")?;
         Ok(Self {
             _ecam: ecam,
             registers,
@@ -583,9 +584,9 @@ impl Mapping {
         Self::from_virt(ax_mm::iomap(PhysAddr::from_usize(base), size), size, region)
     }
 
-    fn cached(base: usize, size: usize, region: &'static str) -> Result<Self, IvshmemError> {
+    fn uncached(base: usize, size: usize, region: &'static str) -> Result<Self, IvshmemError> {
         Self::from_virt(
-            ax_mm::iomap_cached(PhysAddr::from_usize(base), size),
+            ax_mm::iomap_uncached(PhysAddr::from_usize(base), size),
             size,
             region,
         )
@@ -766,7 +767,8 @@ fn probe_memory_bar_size(
     let command_offset = function_offset + PCI_COMMAND_OFFSET;
     let register_offset = function_offset + bar_offset;
     let original_command = ecam.read_u16(command_offset)?;
-    let original_bar = checked_memory_bar(ecam.read_u32(register_offset)?, bar)?;
+    let original_value = ecam.read_u32(register_offset)?;
+    let original_address = checked_memory_bar(original_value, bar)?;
 
     ecam.write_u16(
         command_offset,
@@ -775,7 +777,9 @@ fn probe_memory_bar_size(
     let probe = ecam
         .write_u32(register_offset, u32::MAX)
         .and_then(|()| ecam.read_u32(register_offset));
-    let restore_bar = ecam.write_u32(register_offset, original_bar);
+    // Restore the complete BAR dword so probing does not clear attributes
+    // such as the prefetchable bit advertised by BAR2.
+    let restore_bar = ecam.write_u32(register_offset, original_value);
     let restore_command = ecam.write_u16(command_offset, original_command);
     restore_bar?;
     restore_command?;
@@ -783,7 +787,7 @@ fn probe_memory_bar_size(
     let size_mask = probe?;
     let address_mask = size_mask & PCI_BAR_ADDRESS_MASK;
     let size = u64::from((!address_mask).wrapping_add(1));
-    Ok((original_bar, size))
+    Ok((original_address, size))
 }
 
 fn expect_bar_size(bar: u8, expected: u64, actual: u64) -> Result<(), IvshmemError> {

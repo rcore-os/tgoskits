@@ -25,8 +25,11 @@ fail_regex = [
     "(?i)permission denied",
     "(?m)^(?:echo|cat|rm): (?:can't (?:open|remove) |cannot remove |/tmp/axvisor-nvme-rw:)",
     "(?i)unhandled page fault",
-    "ivc publish failed",
-    "ivc subscribe failed",
+    "ivc session failed",
+    "ivc validation failed",
+    "ivc recv error",
+    "ivc send error",
+    "VM\\[\\d+\\] boot failed",
     "(?i)kernel panic",
 ]
 timeout = 2400

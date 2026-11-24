@@ -22,9 +22,9 @@ fail_regex = [
     "(?i)kernel panic",
     "(?i)unhandled page fault",
     "(?i)page fault",
-    "ivc publish failed",
+    "ivc session failed",
     "VM\\[\\d+\\] boot failed",
-    "(?m)^linux ivc demo failed\\s*$",
+    "linux ivc demo failed",
 ]
 to_bin = true
 uefi = false

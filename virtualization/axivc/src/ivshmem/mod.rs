@@ -162,11 +162,17 @@ impl<'a> IvshmemMessagePort<'a> {
     ///
     /// The caller must guarantee all of the following:
     ///
-    /// - `local_output..local_output + local_output_len` is a valid, writable,
-    ///   coherent Normal-cache mapping for `'a`, and the caller has exclusive
-    ///   protocol ownership of that output section.
+    /// - `local_output..local_output + local_output_len` is a valid, writable
+    ///   Normal shared-memory mapping for `'a` that supports 32-bit atomic
+    ///   loads and stores, and the caller has exclusive protocol ownership of
+    ///   that output section.
     /// - `peer_output..peer_output + peer_output_len` is a valid read-only
-    ///   coherent mapping of the peer's distinct output section for `'a`.
+    ///   Normal shared-memory mapping of the peer's distinct output section
+    ///   for `'a` that supports 32-bit atomic loads.
+    /// - Both mappings have compatible cacheability and shareability
+    ///   attributes and remain coherent for this protocol's atomic accesses
+    ///   and fences. Matching Normal non-cacheable mappings are supported;
+    ///   Device mappings are not permitted.
     /// - Both pointers are 256-byte aligned and their ranges do not overlap.
     /// - The peer uses the same layout and the mapping remains alive until the
     ///   port and every endpoint returned from it are dropped.
@@ -180,8 +186,10 @@ impl<'a> IvshmemMessagePort<'a> {
     /// no store or read-modify-write operation. Supported targets must provide
     /// 32-bit atomics and the Rust guaranteed small-atomic load behavior on
     /// read-only memory; Acquire reads use a Relaxed load followed by an
-    /// Acquire fence. This protocol supports cache-coherent memory only and
-    /// does not provide cache maintenance for non-coherent physical boards.
+    /// Acquire fence. If a host alias participates, the device layer is
+    /// responsible for its coherency with these mappings and for keeping it
+    /// alive for `'a`. This protocol performs no cache maintenance for
+    /// incoherent aliases.
     pub unsafe fn attach(
         local_output: *mut u8,
         local_output_len: usize,

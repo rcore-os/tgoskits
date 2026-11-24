@@ -11,9 +11,9 @@
 | AArch64 | `memory-web` | `memory-root` → `dashboard` | 全组，无盘Memory根 |
 | AArch64 | `pci-memory-test` | ECAM发现、BAR2边界、memory decode与写入读回 | 上游新增专项 |
 | AArch64 | `ivshmem-pci` | 三客户机轮询、ArceOS交换、UIO与MSI-X doorbell | 全组，一项 |
-| AArch64 | `ivc-local` | 源码 publisher → 镜像内 Linux subscriber，显式使用旧 IVC 承载 | 全组，一项 |
+| AArch64 | `ivc-local` | 源码 publisher → ramdisk 内 Rust Linux subscriber，经 ivshmem Message V1 和 UIO 中断交换 | 全组，一项 |
 | AArch64 | `ivc-arceos` | 双 ArceOS 客户机经 ivshmem 运行 Message V1，验证晚启动、长消息与双向交换 | 全组，一项 |
-| AArch64 | `ivc` | Linux/ArceOS 混合 IVC | 未登记；原客户机协议不匹配问题保留 |
+| AArch64 | `ivc` | Axvisor 自动启动 ArceOS 和 Linux 客户机，经 ivshmem 交换 Message V1 | 手动运行 |
 | RISC-V64 | `smoke` | `shell-and-block` → `smp-ipi` | 只选择 `shell-and-block` |
 | LoongArch64 | `smoke` | `shell-and-block` | 全组 |
 | Intel VMX | `smoke` | `shell-and-block` | 全组 |
@@ -22,7 +22,7 @@
 | AMD SVM | `smoke` | `shell-and-block` | 全组 |
 | AMD SVM | `functional` | `direct-acpi` → `ovmf-acpi` → `pci-enumeration` → `pci-block-rw` → `pci-block-ro` | 全组 |
 
-普通测试共15个启动组，31项功能检查。主 CI 在原25项功能、10次宿主启动基础上，保留新主线加入的 PCI memory 专项、两组源码构建 IVC 用例和 ivshmem 三客户机用例，共29项功能、14次宿主启动。夜间 GICv2/GICv3 在 `apps/axvisor`，仍分别启动，不计入此表。SVM 执行需要 AMD KVM；VMX 通过不能替代 SVM 实跑。
+普通测试共 15 个启动组、31 项功能检查。主 CI 覆盖 29 项功能、14 次宿主启动，包括 PCI memory、`ivc-local`、`ivc-arceos` 和 `ivshmem-pci`。夜间 GICv2/GICv3 检查在 `apps/axvisor` 分别启动。SVM 执行需要 AMD KVM。
 
 ## 执行与单项选择
 
@@ -35,7 +35,7 @@ cargo xtask axvisor test qemu --arch aarch64 \
 cargo xtask axvisor test qemu --arch aarch64 \
   --test-case qemu/aarch64/general
 
-# 两组源码构建 IVC 各自使用一次完整宿主启动。
+# 分别验证 ArceOS 与 Linux、双 ArceOS 的晚启动对端。
 cargo xtask axvisor test qemu --arch aarch64 \
   --test-case qemu/aarch64/ivc-local
 cargo xtask axvisor test qemu --arch aarch64 \
@@ -58,7 +58,7 @@ CI 作业在 `.github/ci/checks/axvisor.toml` 登记。`command` 与 `check.suit
 
 - AArch64 `general` 统一4核、8GiB、NVMe和Web UI。块设备客户机VM3/VM4在各自首次退出前sync/umount。
 - CLI pool、IVC、HTTP pool及dashboard前按显式requires用API回收运行中的客户机；builtin候选不删除。单项选择只执行所需准备，不执行未选功能。
-- builtin VM1/VM2为IVC发布者/订阅者，VM3/VM4为块设备客户机，VM6为dashboard。CLI pool仍使用动态VM5；HTTP pool使用动态VM12/13/14，保留原3客户机和8终端槽耗尽/释放检查。
+- builtin VM1/VM2 是 `guest-builds.toml` 从源码构建的 ivshmem 发布者和订阅者，VM3/VM4 是块设备客户机，VM6 用于 dashboard。CLI pool 的动态 VM5 和 HTTP pool 的动态 VM12/13/14 使用 Linux 内核和只读 Alpine 根盘。HTTP pool 保留三客户机和八个终端槽的耗尽、释放检查。
 - 两类pool统一目录`/pool`。HTTP pool先核对已知builtin ID集合，再明确断言动态客户机ID不在builtin中，保证实际从动态池启动。HTTP阶段前清理CLI pool的临时配置并复制原HTTP夹具。
 - guest配置直接放general根目录的`guest-*.toml`。`tests/`登记功能与必要准备；`probes/`实现API检查；`sh/`承载安装到客户机文件系统的夹具。
 - RISC-V SMP/IPI 前退出块设备客户机、回收 VM1/VM2，再启动具有原3个 vCPU 和亲和性的 VM3。单选 SMP/IPI 时仍使用组的宿主启动配置，自动启动的 VM1/VM2 会先被回收，不执行它们的块设备检查。
@@ -70,6 +70,7 @@ CI 作业在 `.github/ci/checks/axvisor.toml` 登记。`command` 与 `check.suit
 - x86 NVMe 基础组不能与 passthrough functional 顺序合批：直通客户机启动会按内核契约释放宿主磁盘文件系统，后续成员无法再从 builtin 读取资产。functional 保持无盘宿主。
 - `pci-memory-test` 保留上游4核、4GiB、无盘宿主及专用ECAM客户机环境；本次变基只迁移路径，不把它并入8GiB磁盘根general或SMP1的memory-web。
 - `ivshmem-pci` 保留4个vCPU、8GiB和三个并发客户机，并从专用Alpine镜像提取BusyBox、UIO模块与套例二进制；轮询、MSI-X、ArceOS交换和拒写隔离必须处于同一次宿主启动。
+- `ivc-local` 的 Linux 客机从测试 initramfs 启动。`host-initramfs.toml` 通过 `linux_ivshmem_subscriber` 选项启用源码构建。构建使用仓库固定工具链的 `aarch64-unknown-linux-musl` 目标和 `aarch64-linux-musl-gcc`，并从匹配的 Linux 客机镜像提取 `axvisor.ko` 以提供 `uio_ivshmem`。
 - 最小 `web` 的 browser-console 明确要求完整 UI 不存在，不能与 `web-ui` 构建合并。
 - `memory-web` 验证 Memory 根，磁盘场景验证 NVMe 根，保留两种启动条件。
 - 夜间 GICv2/GICv3 使用不同中断控制器；LoongArch 当前只有一个 normal 组。

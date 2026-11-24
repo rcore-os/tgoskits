@@ -399,6 +399,15 @@ load_ivshmem_uio() {
   return 1
 }
 
+run_linux_ivshmem_subscriber() {
+  if [ ! -x /bin/linux-ivshmem-subscriber ]; then
+    echo "linux ivshmem subscriber binary is missing"
+    return 1
+  fi
+  load_ivshmem_uio || return 1
+  /bin/linux-ivshmem-subscriber
+}
+
 run_ivshmem_suite() {
   role=$1
   case "$role" in
@@ -439,6 +448,11 @@ case "$cmdline" in
       /bin/ivshmem-bar2-smoke --backend interrupt || echo "IVSHMEM_INTERRUPT_FAILED"
     else
       echo "IVSHMEM_INTERRUPT_FAILED"
+    fi
+    exec /bin/busybox sh -i ;;
+  *axvisor.ivc_case=linux-message-subscriber*)
+    if ! run_linux_ivshmem_subscriber; then
+      echo "linux ivc demo failed backend=ivshmem-pci"
     fi
     exec /bin/busybox sh -i ;;
   *axvisor.acpi_case=direct*) run_x86_acpi_check AXVISOR_X86_DIRECT_ACPI_PASSED; exec /bin/busybox sh -i ;;
@@ -787,9 +801,14 @@ pub(crate) async fn prepare_configured_busybox_initramfs(
     target_dir: &Path,
 ) -> anyhow::Result<()> {
     let ivshmem_smoke = inputs.ivshmem_smoke;
+    let linux_ivshmem_subscriber = inputs.linux_ivshmem_subscriber;
     ensure!(
-        !ivshmem_smoke || inputs.busybox_initramfs.is_some(),
-        "ivshmem_smoke requires busybox_initramfs in host-initramfs.toml"
+        !(ivshmem_smoke && linux_ivshmem_subscriber),
+        "ivshmem_smoke and linux_ivshmem_subscriber are mutually exclusive in host-initramfs.toml"
+    );
+    ensure!(
+        !(ivshmem_smoke || linux_ivshmem_subscriber) || inputs.busybox_initramfs.is_some(),
+        "selected ivshmem guest binaries require busybox_initramfs in host-initramfs.toml"
     );
     if let Some(configured_output) = inputs.busybox_initramfs.as_deref() {
         let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
@@ -804,16 +823,26 @@ pub(crate) async fn prepare_configured_busybox_initramfs(
                     rootfs::qemu_rootfs_path(request, workspace_root, target_dir, None)?
                 }
             };
-        let smoke = ivshmem_smoke
-            .then(|| {
+        let guest_binaries = if ivshmem_smoke {
+            Some(super::ivshmem_smoke::GuestBinaries::Smoke(
                 super::ivshmem_smoke::build_smoke_binaries(
                     workspace_root,
                     target_dir,
                     &request.arch,
-                )
-            })
-            .transpose()?;
-        let module = smoke
+                )?,
+            ))
+        } else if linux_ivshmem_subscriber {
+            Some(super::ivshmem_smoke::GuestBinaries::LinuxSubscriber(
+                super::ivshmem_smoke::build_linux_subscriber(
+                    workspace_root,
+                    target_dir,
+                    &request.arch,
+                )?,
+            ))
+        } else {
+            None
+        };
+        let module = guest_binaries
             .as_ref()
             .map(|_| required_rootfs_file(&rootfs_path, super::ivshmem_smoke::MODULE_ROOTFS_PATH))
             .transpose()?;
@@ -821,7 +850,7 @@ pub(crate) async fn prepare_configured_busybox_initramfs(
             &rootfs_path,
             &output_path,
             &request.arch,
-            smoke.as_ref(),
+            guest_binaries.as_ref(),
             module.as_deref(),
         ) {
             // A managed image may have been left partially extracted by an
@@ -843,7 +872,7 @@ pub(crate) async fn prepare_configured_busybox_initramfs(
                 &rootfs_path,
                 &output_path,
                 &request.arch,
-                smoke.as_ref(),
+                guest_binaries.as_ref(),
                 module.as_deref(),
             )
             .with_context(|| {
@@ -891,13 +920,13 @@ fn prepare_busybox_initramfs(
     rootfs_path: &Path,
     output_path: &Path,
     arch: &str,
-    smoke: Option<&super::ivshmem_smoke::SmokeBinaries>,
+    guest_binaries: Option<&super::ivshmem_smoke::GuestBinaries>,
     module: Option<&[u8]>,
 ) -> anyhow::Result<()> {
     let busybox = required_rootfs_file(rootfs_path, BUSYBOX_PATH)?;
     let loader_path = musl_loader_path(arch)?;
     let loader = required_rootfs_file(rootfs_path, loader_path)?;
-    let archive = build_busybox_initramfs(&busybox, loader_path, &loader, smoke, module)?;
+    let archive = build_busybox_initramfs(&busybox, loader_path, &loader, guest_binaries, module)?;
     let output_parent = output_path.parent().with_context(|| {
         format!(
             "initramfs output path has no parent: {}",
@@ -951,7 +980,7 @@ fn build_busybox_initramfs(
     busybox: &[u8],
     loader_path: &str,
     loader: &[u8],
-    smoke: Option<&super::ivshmem_smoke::SmokeBinaries>,
+    guest_binaries: Option<&super::ivshmem_smoke::GuestBinaries>,
     module: Option<&[u8]>,
 ) -> anyhow::Result<Vec<u8>> {
     let init_script = init_script();
@@ -977,20 +1006,31 @@ fn build_busybox_initramfs(
     }
     archive.add_file("bin/busybox", busybox, 0o755)?;
     archive.add_file(loader_archive_path, loader, 0o755)?;
-    if let Some(smoke) = smoke {
-        archive.add_directory("lib/modules", 0o755)?;
-        archive.add_file(
-            super::ivshmem_smoke::SMOKE_ARCHIVE_PATH,
-            &smoke.smoke,
-            0o755,
-        )?;
-        archive.add_file(
-            super::ivshmem_smoke::SUITE_ARCHIVE_PATH,
-            &smoke.suite,
-            0o755,
-        )?;
+    if let Some(guest_binaries) = guest_binaries {
+        match guest_binaries {
+            super::ivshmem_smoke::GuestBinaries::Smoke(smoke) => {
+                archive.add_file(
+                    super::ivshmem_smoke::SMOKE_ARCHIVE_PATH,
+                    &smoke.smoke,
+                    0o755,
+                )?;
+                archive.add_file(
+                    super::ivshmem_smoke::SUITE_ARCHIVE_PATH,
+                    &smoke.suite,
+                    0o755,
+                )?;
+            }
+            super::ivshmem_smoke::GuestBinaries::LinuxSubscriber(peer) => {
+                archive.add_file(
+                    super::ivshmem_smoke::LINUX_SUBSCRIBER_ARCHIVE_PATH,
+                    &peer.binary,
+                    0o755,
+                )?;
+            }
+        }
     }
     if let Some(module) = module {
+        archive.add_directory("lib/modules", 0o755)?;
         archive.add_file(super::ivshmem_smoke::MODULE_ARCHIVE_PATH, module, 0o644)?;
     }
     archive.add_file("init", &init_script, 0o755)?;
@@ -1045,10 +1085,12 @@ mod tests {
         assert_eq!(entries.get("bin/sh").unwrap(), b"busybox");
         assert!(!entries.contains_key(super::super::ivshmem_smoke::MODULE_ARCHIVE_PATH));
 
-        let smoke = super::super::ivshmem_smoke::SmokeBinaries {
-            smoke: b"polling".to_vec(),
-            suite: b"suite".to_vec(),
-        };
+        let smoke = super::super::ivshmem_smoke::GuestBinaries::Smoke(
+            super::super::ivshmem_smoke::SmokeBinaries {
+                smoke: b"polling".to_vec(),
+                suite: b"suite".to_vec(),
+            },
+        );
         let compressed = build_busybox_initramfs(
             b"busybox",
             "/lib/ld-musl-test.so.1",
@@ -1083,6 +1125,43 @@ mod tests {
         assert!(
             String::from_utf8_lossy(entries.get("init").unwrap())
                 .contains("insmod /lib/modules/axvisor.ko")
+        );
+
+        let subscriber = super::super::ivshmem_smoke::GuestBinaries::LinuxSubscriber(
+            super::super::ivshmem_smoke::LinuxSubscriberBinary {
+                binary: b"linux-peer".to_vec(),
+            },
+        );
+        let compressed = build_busybox_initramfs(
+            b"busybox",
+            "/lib/ld-musl-test.so.1",
+            b"loader",
+            Some(&subscriber),
+            Some(b"axvisor-module"),
+        )
+        .unwrap();
+        let mut archive = Vec::new();
+        GzDecoder::new(compressed.as_slice())
+            .read_to_end(&mut archive)
+            .unwrap();
+        let entries = parse_newc_entries(&archive);
+        assert_eq!(
+            entries
+                .get(super::super::ivshmem_smoke::LINUX_SUBSCRIBER_ARCHIVE_PATH)
+                .unwrap(),
+            b"linux-peer"
+        );
+        assert!(!entries.contains_key(super::super::ivshmem_smoke::SMOKE_ARCHIVE_PATH));
+        assert!(!entries.contains_key(super::super::ivshmem_smoke::SUITE_ARCHIVE_PATH));
+        assert_eq!(
+            entries
+                .get(super::super::ivshmem_smoke::MODULE_ARCHIVE_PATH)
+                .unwrap(),
+            b"axvisor-module"
+        );
+        assert!(
+            String::from_utf8_lossy(entries.get("init").unwrap())
+                .contains("/bin/linux-ivshmem-subscriber")
         );
     }
 

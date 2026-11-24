@@ -407,9 +407,7 @@ name = "arceos-ivc-publisher"
 version = "0.1.0"
 dependencies = [
  "arceos-ivshmem-pci",
- "ax-mm",
  "ax-std",
- "axhvc",
  "axivc",
 ]
 
@@ -5075,6 +5073,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e752191d037c44ad111a8caa762921926658402f01cc1253f7bef2020ece4f5e"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "linux-ivshmem-subscriber"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arceos-ivc-subscriber",
+ "axivc",
+ "cc",
+ "libc",
 ]
 
 [[package]]

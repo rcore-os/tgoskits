@@ -18,7 +18,7 @@ success_regex = ["(?m)^✗ VM\\[7\\](?: failed to start: .*VM\\[7\\])? is neithe
 shell_cmd = "mkdir -p /pool"
 
 [[shell_check_steps]]
-shell_cmd = "cp /guest/arceos/arceos-ivc-publisher.bin /k"
+shell_cmd = "cp /guest/arceos/arceos-qemu /k"
 
 [[shell_check_steps]]
 shell_cmd = "ls -l /k"

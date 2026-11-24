@@ -11,8 +11,13 @@ shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 success_regex = ["Attached VM\\[1\\] console"]
 
+# The subscriber starts only after the publisher has published its Message V1
+# session. Its later start must complete the same incarnation handshake rather
+# than bypassing it through an already-created legacy channel. The attach step
+# above must succeed before this step can observe the unique phase marker and
+# send Ctrl+X, so the late-start evidence is not skipped.
 [[shell_check_steps]]
-shell_prefix = "ivc notify irq enabled"
+shell_prefix = "phase=before-peer"
 shell_cmd = "\u0018h"
 success_regex = ["detached VM\\[1\\] console"]
 
@@ -23,19 +28,36 @@ success_regex = ["VM\\[2\\] started successfully"]
 
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
-shell_cmd = "vm console 1"
-success_regex = ["Attached VM\\[1\\] console", "ivc ack seq=5 msg=ack from arceos subscriber"]
+shell_cmd = "vm console 2"
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?ivc session marker=ready backend=ivshmem-pci role=subscriber peer=1 .*\\s*$",
+]
 
 [[shell_check_steps]]
-shell_prefix = "ivc ack seq=5 msg=ack from arceos subscriber"
-shell_cmd = "\u0018h"
-success_regex = ["detached VM\\[1\\] console", "VM\\[1\\] stopped; returning to the management shell"]
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?ivc subscriber full-duplex demo complete backend=ivshmem-pci\\s*$",
+]
 
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
-shell_cmd = "vm console 2"
-success_regex = ["Attached VM\\[2\\] console", "(?:ivc demo pass|ivc subscriber full-duplex demo complete)"]
+shell_cmd = "vm console 1"
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ivc ack seq=5 msg=ack from arceos subscriber\\s*$",
+]
 
+[[shell_check_steps]]
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ivc session marker=complete backend=ivshmem-pci role=publisher peer=0\\s*$",
+]
+
+[[shell_check_steps]]
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ivc full-duplex demo complete backend=ivshmem-pci\\s*$",
+]
+
+# The next host prompt directly carries VM deletion. Both the live and replay
+# paths must have delivered the business markers above before this prompt can
+# lead to successful deletion.
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm delete 1"

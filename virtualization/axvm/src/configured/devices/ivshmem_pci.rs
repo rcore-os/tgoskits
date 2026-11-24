@@ -29,7 +29,7 @@ const IVSHMEM_DEVICE_ID: u16 = 0x1110;
 /// MSI-X-capable face shared by QEMU ivshmem and Jailhouse.
 const IVSHMEM_REVISION: u8 = 1;
 /// BAR0 is the ivshmem register page. BAR1 carries the MSI-X table/PBA
-/// window, and BAR2 is the shared memory of one link.
+/// window, and BAR2 is the prefetchable shared memory of one link.
 const REGISTER_BAR_INDEX: u8 = 0;
 const SHARED_MEMORY_BAR_INDEX: u8 = 2;
 const MSI_RESOURCE_SLOT: &str = "ivshmem-msix";
@@ -150,7 +150,8 @@ impl DeviceModel for IvshmemPciModel {
         let shared_memory_bar = PciMemoryBar::new(
             PciBarIndex::new(SHARED_MEMORY_BAR_INDEX)?,
             self.reservation.link().bar2_size(),
-        )?;
+        )?
+        .prefetchable();
         let function = PciFunctionRequirement::new(
             host_key(),
             PciEndpointIdentity::new(
@@ -947,7 +948,8 @@ mod tests {
                 PciBarIndex::new(SHARED_MEMORY_BAR_INDEX).unwrap(),
                 SHARED_MEMORY_SIZE,
             )
-            .unwrap(),
+            .unwrap()
+            .prefetchable(),
         )
         .unwrap()
         .with_capability(msix_capability_spec(1, MSIX_MESSAGE_CONTROL_EFFECT).unwrap());
@@ -1469,6 +1471,7 @@ mod tests {
         // Relocating BAR2 keeps the shared backing reachable through the new
         // route, while the peer keeps its own route to the same bytes.
         const RELOCATED_BAR2: u64 = 0x0ffe_0000;
+        const PREFETCHABLE_BAR_FLAG: u64 = 1 << 3;
         peer0
             .binding
             .write_config(
@@ -1487,7 +1490,7 @@ mod tests {
                     AccessWidth::Dword
                 )
                 .unwrap(),
-            RELOCATED_BAR2
+            RELOCATED_BAR2 | PREFETCHABLE_BAR_FLAG
         );
         peer0
             .binding

@@ -131,7 +131,6 @@ cases = [
   "qemu/aarch64/ivc-local",
   "qemu/aarch64/ivc-arceos",
   "qemu/aarch64/ivshmem-pci",
-  # "qemu/aarch64/ivc", # Prebuilt guest images must match the publisher protocol.
 ]
 
 [[check]]

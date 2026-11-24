@@ -127,13 +127,14 @@ static void write_resource(const char *dir, const unsigned long bars[6][3])
     fclose(file);
 }
 
-/* Creates resourceN backing files large enough to mmap at the BAR size. */
-static void make_resource_file(const char *dir, int bar, unsigned long size)
+/* Creates one resource backing file large enough to mmap at the BAR size. */
+static void make_resource_file(const char *dir, const char *name,
+                               unsigned long size)
 {
     char path[512];
     FILE *file;
 
-    snprintf(path, sizeof(path), "%s/resource%d", dir, bar);
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
     file = fopen(path, "w");
     if (file == NULL) {
         perror(path);
@@ -157,14 +158,14 @@ static void make_full_ivshmem(const char *root, const char *bdf)
     const unsigned long bars[6][3] = {
         { 0x0c000000, 0x0c000fff, 0x200 }, /* BAR0: 4 KiB register page */
         { 0, 0, 0 },
-        { 0x0c100000, 0x0c10ffff, 0x200 }, /* BAR2: 64 KiB shared memory */
+        { 0x0c100000, 0x0c10ffff, 0x2200 }, /* BAR2: prefetchable shared RAM */
         { 0, 0, 0 },
         { 0, 0, 0 },
         { 0, 0, 0 },
     };
     write_resource(dir, bars);
-    make_resource_file(dir, 0, 0x1000);
-    make_resource_file(dir, 2, 0x10000);
+    make_resource_file(dir, "resource0", 0x1000);
+    make_resource_file(dir, "resource2_wc", 0x10000);
 }
 
 static void make_root(const char *name, char *out, size_t out_size)
@@ -350,11 +351,32 @@ static void test_bar_mapping_and_register_access(char *root)
     CHECK_EQ(ivshmem_read_reg32(dev, IVSHMEM_REG_STATE), 0x12345678);
     CHECK_EQ(ivshmem_read_reg32(NULL, IVSHMEM_REG_STATE), 0);
 
-    /* The shared-memory helper returns the cached mapping. */
+    /* The shared-memory helper returns the write-combining mapping. */
     CHECK(ivshmem_shared_memory(dev, &shared_size) == shared);
     CHECK_EQ(shared_size, 0x10000);
     CHECK(ivshmem_shared_memory(NULL, &shared_size) == NULL);
 
+    ivshmem_device_close(dev);
+}
+
+static void test_shared_mapping_requires_write_combining_file(char *root)
+{
+    struct ivshmem_device *dev = NULL;
+    void *shared = NULL;
+    size_t shared_size = 0;
+    char device_dir[256];
+    char path[512];
+
+    make_full_ivshmem(root, "0000:00:01.0");
+    snprintf(device_dir, sizeof(device_dir), "%s/0000:00:01.0", root);
+    make_resource_file(device_dir, "resource2", 0x10000);
+    snprintf(path, sizeof(path), "%s/resource2_wc", device_dir);
+    CHECK_EQ(unlink(path), 0);
+
+    CHECK_EQ(ivshmem_find_at(root, "0000:00:01.0", &dev), IVSHMEM_OK);
+    CHECK_EQ(ivshmem_map_bar(dev, IVSHMEM_BAR_SHARED, &shared, &shared_size),
+             IVSHMEM_ERR_MMAP);
+    CHECK(shared == NULL);
     ivshmem_device_close(dev);
 }
 
@@ -506,6 +528,9 @@ int main(void)
 
     make_root("mapping", root, sizeof(root));
     test_bar_mapping_and_register_access(root);
+
+    make_root("mapping-wc", root, sizeof(root));
+    test_shared_mapping_requires_write_combining_file(root);
 
     make_root("backend", root, sizeof(root));
     test_backends_are_explicit(root);

@@ -1,0 +1,1 @@
+arceos_build_configs = ["../ivc-local/guest-build.toml"]

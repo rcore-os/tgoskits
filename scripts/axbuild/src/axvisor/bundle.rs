@@ -29,6 +29,10 @@ pub(crate) struct ResourceInputs {
     pub(crate) ovmf_firmware: Option<String>,
     #[serde(default)]
     pub(crate) ivshmem_smoke: bool,
+    /// Selects the workspace Rust Linux ivshmem subscriber instead of the C
+    /// smoke binaries for the generated guest initramfs.
+    #[serde(default)]
+    pub(crate) linux_ivshmem_subscriber: bool,
 }
 /// ostool-server rejects session-file uploads above 64 MiB, and board FIT
 /// images also carry the host kernel. Once the payload approaches that

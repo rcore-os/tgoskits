@@ -10,8 +10,10 @@
  * DOORBELL writes encode target peer in bits 31:16 and vector in bits 15:0;
  * STATE publishes this peer's value into BAR2's read-only state table;
  * EVENT_STATUS bit 0 is write-one-to-clear. BAR1 is kernel-owned MSI-X;
- * BAR2 is 64 KiB with a 4 KiB read-only state table, followed by one
- * page-aligned output section per peer (writable only by its owner).
+ * BAR2 is a prefetchable 64 KiB window with a 4 KiB read-only state table,
+ * followed by one page-aligned output section per peer (writable only by its
+ * owner). BAR2 is mapped through sysfs resource2_wc so Linux uses its
+ * write-combining path, which is Normal non-cacheable on AArch64.
  * The revision byte is checked before any of these semantics are used.
  */
 #ifndef IVSHMEM_H
@@ -97,8 +99,11 @@ int ivshmem_enable_device(struct ivshmem_device *dev);
  * Maps one memory BAR of the device.
  *
  * @param bar   One of IVSHMEM_BAR_REGISTERS / IVSHMEM_BAR_SHARED.
- *              IVSHMEM_BAR_MSIX remains kernel-owned and returns
- *              IVSHMEM_ERR_BACKEND.
+ *              BAR0 maps resource0 as Device memory. BAR2 maps
+ *              resource2_wc as Normal non-cacheable memory on AArch64 and
+ *              fails with IVSHMEM_ERR_MMAP when that file is unavailable;
+ *              it never falls back to resource2. IVSHMEM_BAR_MSIX remains
+ *              kernel-owned and returns IVSHMEM_ERR_BACKEND.
  * @param map   Receives the mapping base pointer.
  * @param size  Receives the mapping size in bytes.
  * @return IVSHMEM_OK or a negative error; the mapping stays valid until

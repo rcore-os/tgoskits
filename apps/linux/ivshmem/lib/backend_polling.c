@@ -85,7 +85,11 @@ static const char *bar_resource_name(uint8_t bar)
 {
     static __thread char name[32];
 
-    snprintf(name, sizeof(name), "resource%u", (unsigned)bar);
+    /* BAR2 is advertised as prefetchable. Linux exposes its write-combining
+     * mapping as resource2_wc, which is Normal non-cacheable on AArch64. Do
+     * not silently fall back to the Device-mapped resource2 file. */
+    snprintf(name, sizeof(name), "resource%u%s", (unsigned)bar,
+             bar == IVSHMEM_BAR_SHARED ? "_wc" : "");
     return name;
 }
 

@@ -74,7 +74,9 @@ cargo xtask axvisor app qemu --app-root apps/suite/axvisor --group qemu --arch a
 
 AArch64 `memory-web`以一次SMP1无盘启动承接原`qemu-host-initramfs`及`web-ui-diskless`两项检查；原90秒日志期限和180秒probe预算保留，整组270秒。`--test-case qemu/aarch64/memory-web`执行整组；追加`/memory-root`或`/dashboard`可单独选择其中一项，同时选择两项仍只启动一次。具体分组、单项命令和不能合并的边界见[qemu/README.md](qemu/README.md)。
 
-AArch64 `ivc-arceos` 在一次启动中验证双 ArceOS 客户机通过 ivshmem 交换 Message V1 消息，覆盖对端晚启动、长消息和双向校验。当前 `ivc-local` 显式选用旧承载，与镜像内的 Linux subscriber 互通。两个启动组各包含一项主 CI 检查。`ivshmem-pci`在一次8GiB、四vCPU启动中运行Linux主客机、源码ArceOS客机与Linux便携后端客机，保留轮询、UIO、MSI-X和BAR2隔离，并从专用rootfs提取BusyBox、UIO模块与测试二进制。当前31项普通功能检查，其中29项主CI检查由14个启动组承接。未进入主CI的QEMU检查仍是AArch64 `ivc`和RISC-V的`smoke/smp-ipi`；IVC混合客机仍保留原协议不匹配停用边界。manual的两个三ArceOS控制台变体保持手动。
+AArch64 `ivc-arceos` 和 `general/ivc` 验证双 ArceOS 客户机通过 ivshmem 交换 Message V1，覆盖对端晚启动、长消息和双向校验。`ivc-local` 从源码构建 ArceOS publisher 和 initramfs 内的 Linux subscriber，要求 5 个请求、3 个数据消息、5 个确认以及实际 UIO/MSI-X 中断。手动 `ivc` 复用这两个客户机，覆盖 Axvisor 通过 `axvisor.vm_start` 自动启动它们的路径。
+
+`ivshmem-pci` 在一次 8 GiB、四 vCPU 启动中运行两个 Linux 客户机与一个源码构建的 ArceOS 客户机，覆盖轮询、UIO、MSI-X 和 BAR2 隔离。当前 31 项普通功能检查中，29 项主 CI 检查由 14 个启动组承接。AArch64 `ivc` 和 RISC-V `smoke/smp-ipi` 手动运行，`manual` 下的两个三 ArceOS 控制台变体也保持手动。
 
 板卡保留13个normal入口，其中8个进入主CI：OrangePi的三客机、两个单客机机器人、两个UART6双客机，以及ASUS、ROC、Phytium各一项。其余普通Linux/Starry启动、24客机网络、Rock4D、RDK-S100保持原未登记状态。两个perf30变体与virtcpufreq模板已整合到`apps/suite/axvisor/board/orangepi-5-plus/robot-linux-perf30`，不再由本目录发现，也未新增自动登记。`board --list`另兼容展示3个性能目录入口，不应将它们重复计入本目录CI。
 
