@@ -373,29 +373,112 @@ run_x86_pci_block_check() {
   fi
 }
 
+validate_ivshmem_capability() {
+  config_path=$1
+  status_low=$(read_config_byte "$config_path" 6) || return 1
+  [ $((0x$status_low & 0x10)) -ne 0 ] || return 1
+  pointer_hex=$(read_config_byte "$config_path" 52) || return 1
+  pointer=$((0x$pointer_hex))
+  count=0
+  seen=:
+  while [ "$pointer" -ne 0 ] && [ "$count" -lt 8 ]; do
+    case ":$seen:" in
+      *":$pointer:"*) return 1 ;;
+    esac
+    seen="$seen:$pointer"
+    if [ "$pointer" -lt 64 ] || [ "$pointer" -gt 252 ] || [ $((pointer % 4)) -ne 0 ]; then
+      return 1
+    fi
+    id=$(read_config_byte "$config_path" "$pointer") || return 1
+    if [ "$((0x$id))" -eq 9 ]; then
+      cap_len=$(read_config_byte "$config_path" "$((pointer + 2))") || return 1
+      cap_version=$(read_config_byte "$config_path" "$((pointer + 3))") || return 1
+      magic=$(read_config_le32 "$config_path" "$((pointer + 4))") || return 1
+      protocol=$(read_config_le16 "$config_path" "$((pointer + 8))") || return 1
+      features=$(read_config_le32 "$config_path" "$((pointer + 12))") || return 1
+      epoch_offset=$(read_config_le32 "$config_path" "$((pointer + 16))") || return 1
+      epoch_stride=$(read_config_le32 "$config_path" "$((pointer + 20))") || return 1
+      [ "$((0x$cap_len))" -eq 36 ] &&
+        [ "$((0x$cap_version))" -eq 1 ] &&
+        [ "$magic" = "0x56495841" ] &&
+        [ "$protocol" = "0x4000" ] &&
+        [ $((features & 1)) -eq 1 ] &&
+        [ "$epoch_offset" = "0x00000100" ] &&
+        [ "$epoch_stride" = "0x00000008" ]
+      return
+    fi
+    next_hex=$(read_config_byte "$config_path" "$((pointer + 1))") || return 1
+    pointer=$((0x$next_hex & 0xfc))
+    count=$((count + 1))
+  done
+  return 1
+}
+
+find_ivshmem_endpoint() {
+  ivshmem_bdf=
+  ivshmem_alias_count=0
+  ivshmem_profile_count=0
+  for candidate in /sys/bus/pci/devices/*; do
+    [ -d "$candidate" ] || continue
+    [ "$(/bin/busybox cat "$candidate/vendor")" = "0x1af4" ] || continue
+    [ "$(/bin/busybox cat "$candidate/device")" = "0x1110" ] || continue
+    ivshmem_alias_count=$((ivshmem_alias_count + 1))
+    class=$(read_config_le24 "$candidate/config" 9 2>/dev/null) || continue
+    revision=$(read_config_byte "$candidate/config" 8 2>/dev/null) || continue
+    [ "$class" = "0xff0000" ] && [ "$((0x$revision))" -eq 1 ] || continue
+    validate_ivshmem_capability "$candidate/config" || continue
+    ivshmem_profile_count=$((ivshmem_profile_count + 1))
+    ivshmem_bdf=${candidate##*/}
+  done
+  if [ "$ivshmem_alias_count" -ne 1 ]; then
+    echo "expected exactly one 1af4:1110 alias, found $ivshmem_alias_count"
+    return 1
+  fi
+  if [ "$ivshmem_profile_count" -ne 1 ]; then
+    echo "expected exactly one AxVisor class/version/capability profile, found $ivshmem_profile_count"
+    return 1
+  fi
+  return 0
+}
+
 load_ivshmem_uio() {
+  find_ivshmem_endpoint || return 1
   if ! /bin/busybox insmod /lib/modules/axvisor.ko; then
     echo "ivshmem module load failed: axvisor.ko"
     return 1
   fi
-  for endpoint in /sys/bus/pci/devices/*; do
-    [ -d "$endpoint" ] || continue
-    [ "$(/bin/busybox cat "$endpoint/vendor")" = "0x1af4" ] || continue
-    [ "$(/bin/busybox cat "$endpoint/device")" = "0x1110" ] || continue
-    case "$(/bin/busybox readlink "$endpoint/driver" 2>/dev/null)" in
-      */uio_ivshmem) ;;
-      *) echo "ivshmem PCI function did not bind uio_ivshmem"; return 1 ;;
-    esac
-    for uio in "$endpoint"/uio/uio*; do
-      [ -d "$uio" ] || continue
-      if [ "$(/bin/busybox cat "$uio/name")" = "uio_ivshmem" ] && [ -c "/dev/${uio##*/}" ]; then
-        return 0
-      fi
-    done
-    echo "ivshmem UIO character device is missing"
+  driver_root=/sys/bus/pci/drivers/uio_ivshmem
+  if [ ! -d "$driver_root" ]; then
+    echo "uio_ivshmem driver is missing after module load"
     return 1
+  fi
+  endpoint=/sys/bus/pci/devices/$ivshmem_bdf
+  driver_link=$(/bin/busybox readlink "$endpoint/driver" 2>/dev/null)
+  driver_name=${driver_link##*/}
+  if [ -n "$driver_link" ] && [ "$driver_name" != "uio_ivshmem" ]; then
+    if ! printf '%s\n' "$ivshmem_bdf" > "/sys/bus/pci/drivers/$driver_name/unbind"; then
+      echo "cannot unbind $ivshmem_bdf from $driver_name"
+      return 1
+    fi
+    driver_link=
+  fi
+  if [ -z "$driver_link" ]; then
+    if ! printf '%s\n' "$ivshmem_bdf" > "$driver_root/bind"; then
+      echo "cannot bind $ivshmem_bdf to uio_ivshmem"
+      return 1
+    fi
+  fi
+  case "$(/bin/busybox readlink "$endpoint/driver" 2>/dev/null)" in
+    */uio_ivshmem) ;;
+    *) echo "ivshmem PCI function did not bind uio_ivshmem"; return 1 ;;
+  esac
+  for uio in "$endpoint"/uio/uio*; do
+    [ -d "$uio" ] || continue
+    if [ "$(/bin/busybox cat "$uio/name")" = "uio_ivshmem" ] && [ -c "/dev/${uio##*/}" ]; then
+      return 0
+    fi
   done
-  echo "ivshmem PCI function is missing"
+  echo "ivshmem UIO character device is missing"
   return 1
 }
 

@@ -11,10 +11,23 @@ use super::{
             allocate_mapping_id,
         },
     },
-    MappingExecution, MappingOperation, PreparedPteOwner, ProviderPublication, PteMaterialization,
-    MappingMutationContext, occupied_leaf_ranges, pages_in, rollback_live_mapped_pages,
+    MappingExecution, MappingMutationContext, MappingOperation, PreparedPteOwner,
+    ProviderPublication, PteMaterialization, occupied_leaf_ranges, pages_in,
+    rollback_live_mapped_pages,
 };
 use crate::{StarryError, StarryResult, sync::Mutex};
+
+/// Persistent permission ceiling carried by a linear mapping fragment.
+///
+/// Ordinary linear mappings are unrestricted. Device payload mappings use a
+/// data-only policy so a later `mprotect` cannot recreate an executable or
+/// writable alias that the device did not approve.
+#[cfg(feature = "axivc-ivshmem")]
+#[derive(Clone, Copy)]
+enum LinearAccessPolicy {
+    ReadOnly,
+    ReadWrite,
+}
 
 /// Linear mapping backend.
 ///
@@ -48,6 +61,8 @@ pub struct LinearBackend {
     /// process address space, preventing use-after-free when the fd is closed
     /// before `munmap`.
     anchor: Option<Arc<dyn core::any::Any + Send + Sync>>,
+    #[cfg(feature = "axivc-ivshmem")]
+    access_policy: Option<LinearAccessPolicy>,
 }
 
 impl LinearBackend {
@@ -88,6 +103,56 @@ impl LinearBackend {
             None,
             ProviderPublication::Complete,
         ))
+    }
+
+    pub(crate) fn maximum_mapping_flags(&self, current: MappingFlags) -> MappingFlags {
+        #[cfg(feature = "axivc-ivshmem")]
+        {
+            let Some(access_policy) = self.access_policy else {
+                return current;
+            };
+            let permission_bits = MappingFlags::READ
+                | MappingFlags::WRITE
+                | MappingFlags::EXECUTE
+                | MappingFlags::USER;
+            let attributes = current - permission_bits;
+            let permissions = match access_policy {
+                LinearAccessPolicy::ReadOnly => MappingFlags::READ | MappingFlags::USER,
+                LinearAccessPolicy::ReadWrite => {
+                    MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER
+                }
+            };
+            attributes | permissions
+        }
+        #[cfg(not(feature = "axivc-ivshmem"))]
+        {
+            current
+        }
+    }
+
+    pub(crate) fn check_mprotect_flags(&self, flags: MappingFlags) -> StarryResult {
+        #[cfg(feature = "axivc-ivshmem")]
+        {
+            if self.access_policy.is_none() {
+                return Ok(());
+            }
+            let permission_bits = MappingFlags::READ
+                | MappingFlags::WRITE
+                | MappingFlags::EXECUTE
+                | MappingFlags::USER;
+            let requested = flags & permission_bits;
+            let maximum = self.maximum_mapping_flags(MappingFlags::empty());
+            if maximum.contains(requested) {
+                Ok(())
+            } else {
+                Err(StarryError::PermissionDenied)
+            }
+        }
+        #[cfg(not(feature = "axivc-ivshmem"))]
+        {
+            let _ = flags;
+            Ok(())
+        }
     }
 }
 
@@ -204,6 +269,8 @@ impl MappingExecution for LinearBackend {
             shared: self.shared,
             page_objects: self.page_objects.clone(),
             anchor: self.anchor.clone(),
+            #[cfg(feature = "axivc-ivshmem")]
+            access_policy: self.access_policy,
         }))
     }
 
@@ -237,6 +304,8 @@ impl MappingOperation {
             shared,
             page_objects: Arc::new(Mutex::new(BTreeMap::new())),
             anchor: None,
+            #[cfg(feature = "axivc-ivshmem")]
+            access_policy: None,
         })
     }
 
@@ -253,6 +322,44 @@ impl MappingOperation {
             shared,
             page_objects: Arc::new(Mutex::new(BTreeMap::new())),
             anchor: Some(anchor),
+            #[cfg(feature = "axivc-ivshmem")]
+            access_policy: None,
+        })
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    pub(crate) fn new_linear_anchored_device_read_only(
+        start: VirtAddr,
+        start_paddr: PhysAddr,
+        shared: bool,
+        anchor: Arc<dyn core::any::Any + Send + Sync>,
+    ) -> Self {
+        Self::from_linear(LinearBackend {
+            start,
+            start_paddr,
+            mapping_id: allocate_mapping_id(),
+            shared,
+            page_objects: Arc::new(Mutex::new(BTreeMap::new())),
+            anchor: Some(anchor),
+            access_policy: Some(LinearAccessPolicy::ReadOnly),
+        })
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    pub(crate) fn new_linear_anchored_device_read_write(
+        start: VirtAddr,
+        start_paddr: PhysAddr,
+        shared: bool,
+        anchor: Arc<dyn core::any::Any + Send + Sync>,
+    ) -> Self {
+        Self::from_linear(LinearBackend {
+            start,
+            start_paddr,
+            mapping_id: allocate_mapping_id(),
+            shared,
+            page_objects: Arc::new(Mutex::new(BTreeMap::new())),
+            anchor: Some(anchor),
+            access_policy: Some(LinearAccessPolicy::ReadWrite),
         })
     }
 }

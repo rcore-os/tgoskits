@@ -1,0 +1,5 @@
+preset = "orangepi-5-plus"
+features_add = [
+  "starry-kernel/axivc-ivshmem",
+]
+log = "Error"

@@ -1,0 +1,13 @@
+# Axvisor host build for the two-Starry AXIVC ivshmem test.
+#
+# The guest kernel is produced from this checkout by guest-builds.toml before
+# this host build starts. No NVMe driver is required: Axvisor runs from its
+# memory root while the two guest images are carried in the generated host
+# initramfs bundle.
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+    "test-suit/axvisor/qemu/aarch64/ivc-starry/configs/publisher.toml",
+    "test-suit/axvisor/qemu/aarch64/ivc-starry/configs/subscriber.toml",
+]

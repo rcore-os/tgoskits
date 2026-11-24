@@ -10,7 +10,7 @@ use axfs_ng_vfs::{
 use crate::{file::cache::CachedFile, io_error_to_vfs_error, vfs_error_to_io_error};
 
 /// Bounds the kernel copy of one write to a packet node.
-const MAX_PACKET_RECORD: usize = 1 << 17;
+pub const MAX_PACKET_RECORD: usize = 1 << 17;
 
 /// Low-level interface for file operations.
 #[derive(Clone)]

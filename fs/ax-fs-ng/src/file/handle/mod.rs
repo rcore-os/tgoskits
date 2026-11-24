@@ -17,7 +17,7 @@ use super::{
 use crate::{fs_core::FsContext, os::sync::Mutex, vfs_error_to_io_error};
 
 mod backend;
-pub use backend::FileBackend;
+pub use backend::{FileBackend, MAX_PACKET_RECORD};
 
 /// Provides `std::fs::File`-like interface.
 pub struct File {

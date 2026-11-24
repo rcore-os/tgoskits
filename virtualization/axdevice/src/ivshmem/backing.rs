@@ -7,7 +7,13 @@
 //! the [`SharedBackingAllocator`] port injected at registry creation.
 
 use alloc::sync::Arc;
-use core::ops::Range;
+#[cfg(test)]
+use core::sync::atomic::AtomicBool;
+use core::{
+    mem::{align_of, size_of},
+    ops::Range,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use ax_sync::RawSpinLock;
 
@@ -137,12 +143,23 @@ impl SharedBarBacking {
     /// Clears every byte of the backing through the permanent virtual view.
     ///
     /// Called when a link lifecycle ends so a later reactivation cannot
-    /// observe state from the previous lifecycle.
+    /// observe state from the previous lifecycle. The caller must have
+    /// retired this allocation first and must not hold the link lifecycle
+    /// lock. Pages are serialized against every previously issued `Arc` one
+    /// at a time, keeping each IRQ-off critical section bounded to 4 KiB.
     pub fn zero(&self) {
-        // SAFETY: the virtual view is valid for `size` bytes; the exclusive
-        // ownership contract keeps other components from writing it.
-        unsafe {
-            core::ptr::write_bytes(self.allocation.virtual_base(), 0, self.size as usize);
+        const PAGE_SIZE: usize = 0x1000;
+        debug_assert!(self.size.is_multiple_of(PAGE_SIZE as u64));
+        let base = self.allocation.virtual_base();
+        for offset in (0..self.size as usize).step_by(PAGE_SIZE) {
+            let _lock = self.lock.lock_irqsave();
+            // SAFETY: `try_new` validated that `size` is page aligned, and the
+            // loop advances in whole pages without leaving the allocation.
+            // The backing lock serializes this page with all host reads and
+            // writes, including those through previously cloned `Arc`s.
+            unsafe {
+                core::ptr::write_bytes(base.add(offset), 0, PAGE_SIZE);
+            }
         }
     }
 
@@ -195,6 +212,60 @@ impl SharedBarBacking {
         };
         view[range].copy_from_slice(bytes);
         Ok(())
+    }
+
+    /// Publishes one aligned, little-endian host-owned epoch with release
+    /// ordering.
+    ///
+    /// Guests observe the same word through an acquire load. The value is
+    /// encoded explicitly to remain little-endian on every supported host.
+    pub(crate) fn write_u64_release(&self, offset: u64, value: u64) -> Result<(), IvshmemError> {
+        let range = self.byte_range(offset, size_of::<u64>() as u64)?;
+        if !offset.is_multiple_of(align_of::<u64>() as u64) {
+            return Err(IvshmemError::UnalignedSharedMemoryAccess {
+                offset,
+                width: size_of::<u64>(),
+            });
+        }
+        let _lock = self.lock.lock_irqsave();
+        // SAFETY: `byte_range` proved the byte extent, `offset` was checked
+        // for u64 alignment, and allocation bases are page aligned. The
+        // backing lock excludes every host-side non-atomic access to this
+        // word while the release store executes.
+        let epoch = unsafe {
+            AtomicU64::from_ptr(
+                self.allocation
+                    .virtual_base()
+                    .add(range.start)
+                    .cast::<u64>(),
+            )
+        };
+        epoch.store(value.to_le(), Ordering::Release);
+        Ok(())
+    }
+
+    /// Acquires one aligned host-owned epoch word.
+    #[cfg(test)]
+    pub(crate) fn read_u64_acquire(&self, offset: u64) -> Result<u64, IvshmemError> {
+        let range = self.byte_range(offset, size_of::<u64>() as u64)?;
+        if !offset.is_multiple_of(align_of::<u64>() as u64) {
+            return Err(IvshmemError::UnalignedSharedMemoryAccess {
+                offset,
+                width: size_of::<u64>(),
+            });
+        }
+        let _lock = self.lock.lock_irqsave();
+        // SAFETY: the same alignment, extent, base, and lock proof as the
+        // release store applies; this path only observes the atomic word.
+        let epoch = unsafe {
+            AtomicU64::from_ptr(
+                self.allocation
+                    .virtual_base()
+                    .add(range.start)
+                    .cast::<u64>(),
+            )
+        };
+        Ok(u64::from_le(epoch.load(Ordering::Acquire)))
     }
 
     /// Copies one validated range into or out of the allocation.
@@ -260,11 +331,29 @@ impl Drop for SharedBarBacking {
 #[derive(Default)]
 pub(crate) struct TestAllocator {
     live: RawSpinLock<alloc::vec::Vec<usize>>,
+    requested_sizes: RawSpinLock<alloc::vec::Vec<u64>>,
+    fail_next: AtomicBool,
+}
+
+#[cfg(test)]
+impl TestAllocator {
+    pub(crate) fn allocated_sizes(&self) -> alloc::vec::Vec<u64> {
+        self.requested_sizes.lock_irqsave().clone()
+    }
+
+    pub(crate) fn fail_next_allocation(&self) {
+        self.fail_next.store(true, Ordering::Release);
+    }
 }
 
 #[cfg(test)]
 impl SharedBackingAllocator for TestAllocator {
     fn allocate(&self, size: u64) -> Result<BackingAllocation, IvshmemError> {
+        if self.fail_next.swap(false, Ordering::AcqRel) {
+            return Err(IvshmemError::AllocationFailed {
+                operation: "test allocator forced failure",
+            });
+        }
         let layout = core::alloc::Layout::from_size_align(size as usize, 0x1000).map_err(|_| {
             IvshmemError::AllocationFailed {
                 operation: "test allocator layout",
@@ -277,6 +366,7 @@ impl SharedBackingAllocator for TestAllocator {
             });
         }
         self.live.lock_irqsave().push(pointer as usize);
+        self.requested_sizes.lock_irqsave().push(size);
         Ok(BackingAllocation::from_parts(
             pointer as usize as u64,
             size,
@@ -404,6 +494,25 @@ mod tests {
         // Out-of-range privileged writes fail without corrupting memory.
         assert!(backing.write_bytes(0xffd, &[0xaa; 4]).is_err());
         assert_eq!(backing.read(0, 4).unwrap(), 0x1234_5678);
+    }
+
+    #[test]
+    fn release_epoch_store_requires_alignment_and_publishes_le() {
+        let backing = backing();
+        backing
+            .write_u64_release(0x100, 0x1122_3344_5566_7788)
+            .unwrap();
+        assert_eq!(
+            backing.read_u64_acquire(0x100).unwrap(),
+            0x1122_3344_5566_7788
+        );
+        assert_eq!(
+            backing.write_u64_release(0x104, 1),
+            Err(IvshmemError::UnalignedSharedMemoryAccess {
+                offset: 0x104,
+                width: 8,
+            })
+        );
     }
 
     #[test]

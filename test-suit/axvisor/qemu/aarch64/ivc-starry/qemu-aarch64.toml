@@ -1,0 +1,27 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-m",
+    "8g",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)unhandled page fault",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM \\d+\\] )?AXIVC_STARRY FAIL role=[^\\r\\n ]+ stage=[^\\r\\n ]+ errno=[0-9]+\\n",
+    "VM\\[\\d+\\] boot failed",
+    "(?i)vCPU.*exited with a fault",
+]
+timeout = 300
+to_bin = true
+uefi = false
+
+[axbuild]
+checks = [
+    "tests/ivc-starry.toml",
+]

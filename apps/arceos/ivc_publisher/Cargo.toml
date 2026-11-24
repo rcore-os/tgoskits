@@ -9,7 +9,6 @@ publish = false
 default = []
 arceos = [
   "dep:ax-std",
-  "dep:axivc",
   "dep:arceos-ivshmem-pci",
   "ax-std/arceos",
   "ax-std/paging",
@@ -18,7 +17,6 @@ arceos = [
 
 [dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
-axivc = { workspace = true, optional = true }
 arceos-ivshmem-pci = { path = "../ivshmem-pci", optional = true }
 
 [package.metadata.axstd]

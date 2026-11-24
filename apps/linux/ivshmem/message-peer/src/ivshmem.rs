@@ -14,24 +14,27 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use axivc::{IvcEndpoints, IvshmemMessagePort, IvshmemSessionState};
 
+use crate::record::PendingEndpoint;
+
 const BAR_REGISTERS: u8 = 0;
 const BAR_SHARED: u8 = 2;
 const REGISTER_ID: usize = 0x00;
 const REGISTER_MAX_PEERS: usize = 0x04;
 const REGISTER_DOORBELL: usize = 0x0c;
 const REGISTER_PAGE_SIZE: usize = 0x1000;
+const REGISTER_COMMON_SIZE: usize = 0x18;
+const REGISTER_OUTPUT_SIZE: usize = 0x1c;
 
 const EXPECTED_PEER_ID: u32 = 1;
 const EXPECTED_MAX_PEERS: u32 = 2;
-const REMOTE_PEER_ID: u32 = 0;
+const REMOTE_PEER_ID: u16 = 0;
 const DOORBELL_VECTOR: u16 = 0;
 
 const PAGE_SIZE: usize = 0x1000;
 const STATE_TABLE_SIZE: usize = PAGE_SIZE;
-const OUTPUT_SECTION_SIZE: usize = 0x7000;
+const EXPECTED_COMMON_SIZE: usize = 0;
+const EXPECTED_OUTPUT_SIZE: usize = 0x7000;
 const EXPECTED_BAR2_SIZE: usize = 0x1_0000;
-const REQUIRED_BAR2_SIZE: usize =
-    STATE_TABLE_SIZE + EXPECTED_MAX_PEERS as usize * OUTPUT_SECTION_SIZE;
 
 // This advisory lock coordinates only cooperating demo processes. The guest
 // initramfs fixes /tmp, and those writers must share this exact path and mount
@@ -64,6 +67,7 @@ unsafe extern "C" {
         map: *mut *mut c_void,
         size: *mut usize,
     ) -> c_int;
+    fn ivshmem_observe_peer_epoch(device: *const FfiDevice, peer: u16, epoch: *mut u64) -> c_int;
     fn ivshmem_read_reg32(device: *const FfiDevice, offset: u32) -> u32;
     fn ivshmem_write_reg32(device: *const FfiDevice, offset: u32, value: u32);
     fn ivshmem_backend_open(
@@ -78,15 +82,17 @@ unsafe extern "C" {
 
 /// One verified ivshmem device with exclusive process-level writer ownership.
 ///
-/// The fixed profile is the two-peer IVC layout: this Linux guest is peer 1,
-/// peer 0 belongs to ArceOS, and BAR2 is the one-page state table followed by
-/// two 0x7000-byte output sections.
+/// The demo profile remains a two-peer IVC link with this guest as peer 1.
+/// Section boundaries use the geometry advertised by BAR0 and are checked
+/// against the explicit demo layout before the mapping is exposed.
 pub struct ExclusiveDevice {
     device: Device,
     registers: Mapping,
     shared: Mapping,
     peer_id: u32,
     max_peers: u32,
+    common_size: usize,
+    output_size: usize,
     session_taken: bool,
     _writer_lock: WriterLock,
 }
@@ -104,6 +110,44 @@ impl ExclusiveDevice {
                 registers.len
             );
         }
+
+        let peer_id = device.read_reg32(REGISTER_ID);
+        let max_peers = device.read_reg32(REGISTER_MAX_PEERS);
+        let common_size = usize::try_from(device.read_reg32(REGISTER_COMMON_SIZE))
+            .context("ivshmem common size does not fit usize")?;
+        let output_size = usize::try_from(device.read_reg32(REGISTER_OUTPUT_SIZE))
+            .context("ivshmem output size does not fit usize")?;
+        if peer_id != EXPECTED_PEER_ID || max_peers != EXPECTED_MAX_PEERS {
+            bail!(
+                "ivshmem profile mismatch: peer={peer_id} max_peers={max_peers}, expected \
+                 peer={EXPECTED_PEER_ID} max_peers={EXPECTED_MAX_PEERS}"
+            );
+        }
+        if output_size == 0 {
+            bail!("ivshmem section geometry is unavailable (output_size=0)");
+        }
+        if !common_size.is_multiple_of(PAGE_SIZE) || !output_size.is_multiple_of(PAGE_SIZE) {
+            bail!(
+                "ivshmem section geometry is not page aligned: common={common_size:#x} \
+                 output={output_size:#x}"
+            );
+        }
+        if common_size != EXPECTED_COMMON_SIZE || output_size != EXPECTED_OUTPUT_SIZE {
+            bail!(
+                "ivshmem geometry mismatch: common={common_size:#x} output={output_size:#x}, \
+                 expected common={EXPECTED_COMMON_SIZE:#x} output={EXPECTED_OUTPUT_SIZE:#x}"
+            );
+        }
+        let required_bar2_size = STATE_TABLE_SIZE
+            .checked_add(common_size)
+            .and_then(|size| {
+                usize::try_from(max_peers)
+                    .ok()
+                    .and_then(|peers| peers.checked_mul(output_size))
+                    .and_then(|outputs| size.checked_add(outputs))
+            })
+            .ok_or_else(|| anyhow!("ivshmem section geometry overflows BAR2"))?;
+
         let shared = device.map_bar(BAR_SHARED)?;
         if shared.len != EXPECTED_BAR2_SIZE {
             bail!(
@@ -111,19 +155,10 @@ impl ExclusiveDevice {
                 shared.len
             );
         }
-        if shared.len < REQUIRED_BAR2_SIZE {
+        if required_bar2_size > shared.len {
             bail!(
-                "BAR2 is too small for the two-peer layout: {:#x} < {REQUIRED_BAR2_SIZE:#x}",
+                "BAR2 is too small for the advertised geometry: {:#x} < {required_bar2_size:#x}",
                 shared.len
-            );
-        }
-
-        let peer_id = device.read_reg32(REGISTER_ID);
-        let max_peers = device.read_reg32(REGISTER_MAX_PEERS);
-        if peer_id != EXPECTED_PEER_ID || max_peers != EXPECTED_MAX_PEERS {
-            bail!(
-                "ivshmem profile mismatch: peer={peer_id} max_peers={max_peers}, expected \
-                 peer={EXPECTED_PEER_ID} max_peers={EXPECTED_MAX_PEERS}"
             );
         }
 
@@ -133,6 +168,8 @@ impl ExclusiveDevice {
             shared,
             peer_id,
             max_peers,
+            common_size,
+            output_size,
             session_taken: false,
             _writer_lock: writer_lock,
         })
@@ -144,6 +181,18 @@ impl ExclusiveDevice {
 
     pub const fn max_peers(&self) -> u32 {
         self.max_peers
+    }
+
+    pub const fn common_size(&self) -> usize {
+        self.common_size
+    }
+
+    pub const fn output_size(&self) -> usize {
+        self.output_size
+    }
+
+    pub const fn bar2_size(&self) -> usize {
+        self.shared.len
     }
 
     /// Creates the process's only event backend and Message V1 port.
@@ -159,21 +208,35 @@ impl ExclusiveDevice {
             max_peers: self.max_peers,
             _device: PhantomData,
         };
+        let mut remote_epoch = PeerEpoch::default();
+        remote_epoch.observe(&registers)?;
         let shared = SharedBar {
             base: self.shared.pointer,
             len: self.shared.len,
             peer_id: self.peer_id,
             max_peers: self.max_peers,
+            common_size: self.common_size,
+            output_size: self.output_size,
             _device: PhantomData,
         };
         let backend = EventBackend::open(self)?;
-        let port = shared.attach_message_port(REMOTE_PEER_ID)?;
+        let port = shared.attach_message_port(u32::from(REMOTE_PEER_ID))?;
         Ok(MessageSession {
             port,
             backend,
             registers,
+            remote_epoch,
             started: false,
         })
+    }
+
+    /// Creates the process's single logical endpoint and publishes the Linux
+    /// subscriber incarnation before waiting for its asymmetric peer.
+    pub fn take_endpoint(&mut self) -> Result<PendingEndpoint<'_>> {
+        let mut session = self.take_session()?;
+        let local_incarnation = session.begin_session()?;
+        session.ring_peer()?;
+        Ok(PendingEndpoint::new(session, local_incarnation))
     }
 }
 
@@ -185,6 +248,7 @@ pub struct MessageSession<'a> {
     port: IvshmemMessagePort<'a>,
     backend: EventBackend<'a>,
     registers: Registers<'a>,
+    remote_epoch: PeerEpoch,
     started: bool,
 }
 
@@ -212,6 +276,14 @@ impl<'a> MessageSession<'a> {
             .context("failed to inspect the ivshmem Message V1 state")
     }
 
+    pub(crate) fn observe_peer_epoch(&mut self) -> Result<()> {
+        self.remote_epoch.observe(&self.registers)
+    }
+
+    pub(crate) fn peer_epoch_is_current(&self) -> Result<bool> {
+        self.remote_epoch.is_current(&self.registers)
+    }
+
     pub fn try_connect(&mut self) -> Result<IvcEndpoints<'a>> {
         self.port
             .try_connect()
@@ -227,6 +299,39 @@ impl<'a> MessageSession<'a> {
     }
 }
 
+#[derive(Default)]
+struct PeerEpoch {
+    baseline: Option<u64>,
+}
+
+impl PeerEpoch {
+    fn observe(&mut self, registers: &Registers<'_>) -> Result<()> {
+        let observed = registers.observe_peer_epoch()?;
+        // Zero means the peer has not attached and published its host epoch yet.
+        if observed == 0 {
+            return Ok(());
+        }
+        match self.baseline {
+            Some(expected) if observed != expected => {
+                bail!("ivshmem peer epoch changed from {expected:#x} to {observed:#x}")
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.baseline = Some(observed);
+                Ok(())
+            }
+        }
+    }
+
+    fn is_current(&self, registers: &Registers<'_>) -> Result<bool> {
+        let observed = registers.observe_peer_epoch()?;
+        Ok(match self.baseline {
+            Some(expected) => observed == 0 || observed == expected,
+            None => true,
+        })
+    }
+}
+
 struct Registers<'a> {
     device: NonNull<FfiDevice>,
     len: usize,
@@ -235,9 +340,19 @@ struct Registers<'a> {
 }
 
 impl Registers<'_> {
+    fn observe_peer_epoch(&self) -> Result<u64> {
+        let mut epoch = 0;
+        // SAFETY: the device handle is live for this borrow and `epoch` is a
+        // valid initialized output slot for exactly one u64 value.
+        let result =
+            unsafe { ivshmem_observe_peer_epoch(self.device.as_ptr(), REMOTE_PEER_ID, &mut epoch) };
+        check_adapter("observe ivshmem peer epoch", result)?;
+        Ok(epoch)
+    }
+
     /// Publishes all prior shared-memory stores before ringing peer 0 vector 0.
     pub fn ring_peer(&self) -> Result<()> {
-        let target = REMOTE_PEER_ID;
+        let target = u32::from(REMOTE_PEER_ID);
         if target >= self.max_peers || target > u32::from(u16::MAX) {
             bail!(
                 "cannot ring ivshmem peer {target} with max_peers={}",
@@ -273,6 +388,8 @@ struct SharedBar<'a> {
     len: usize,
     peer_id: u32,
     max_peers: u32,
+    common_size: usize,
+    output_size: usize,
     _device: PhantomData<&'a ExclusiveDevice>,
 }
 
@@ -325,18 +442,20 @@ impl<'a> SharedBar<'a> {
         if peer >= self.max_peers {
             bail!("ivshmem peer {peer} is outside 0..{}", self.max_peers);
         }
-        if !OUTPUT_SECTION_SIZE.is_multiple_of(PAGE_SIZE) {
+        if !self.output_size.is_multiple_of(PAGE_SIZE) {
             bail!("ivshmem output section size is not page aligned");
         }
         let peer_index = usize::try_from(peer).context("ivshmem peer does not fit usize")?;
         let relative = peer_index
-            .checked_mul(OUTPUT_SECTION_SIZE)
+            .checked_mul(self.output_size)
             .ok_or_else(|| anyhow!("ivshmem output offset overflow"))?;
         let offset = STATE_TABLE_SIZE
+            .checked_add(self.common_size)
+            .ok_or_else(|| anyhow!("ivshmem output offset overflow"))?
             .checked_add(relative)
             .ok_or_else(|| anyhow!("ivshmem output offset overflow"))?;
         let end = offset
-            .checked_add(OUTPUT_SECTION_SIZE)
+            .checked_add(self.output_size)
             .ok_or_else(|| anyhow!("ivshmem output range overflow"))?;
         if !offset.is_multiple_of(PAGE_SIZE) || end > self.len {
             bail!(
@@ -359,7 +478,7 @@ impl<'a> SharedBar<'a> {
         let pointer = unsafe { NonNull::new_unchecked(self.base.as_ptr().add(offset)) };
         Ok(OutputSection {
             pointer,
-            len: OUTPUT_SECTION_SIZE,
+            len: self.output_size,
             _bar: PhantomData,
         })
     }

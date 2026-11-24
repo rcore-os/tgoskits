@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true, features = ["std"] }
 arceos-ivc-subscriber = { path = "../../../arceos/ivc_subscriber", default-features = false }
+arceos-ivshmem-pci = { path = "../../../arceos/ivshmem-pci", default-features = false }
 axivc.workspace = true
 libc.workspace = true
 

@@ -67,13 +67,48 @@ static void write_file(const char *path, const char *contents)
     fclose(file);
 }
 
+static void put_le16(uint8_t *bytes, size_t offset, uint16_t value)
+{
+    bytes[offset] = (uint8_t)value;
+    bytes[offset + 1] = (uint8_t)(value >> 8);
+}
+
+static void put_le32(uint8_t *bytes, size_t offset, uint32_t value)
+{
+    bytes[offset] = (uint8_t)value;
+    bytes[offset + 1] = (uint8_t)(value >> 8);
+    bytes[offset + 2] = (uint8_t)(value >> 16);
+    bytes[offset + 3] = (uint8_t)(value >> 24);
+}
+
+/* Builds a Type-0 config image with MSI-X first and the AxVisor transport
+ * capability second. The VID:DID is intentionally the QEMU alias, so these
+ * fixtures also prove that discovery requires the full AxVisor signature. */
 static void write_config(const char *dir, uint8_t revision)
 {
     char path[512];
     FILE *file;
-    uint8_t config[16] = { 0 };
+    uint8_t config[256] = { 0 };
+    const size_t transport = 0x4c;
+    const size_t body = transport + IVSHMEM_CAPABILITY_HEADER_SIZE;
 
     config[8] = revision;
+    config[IVSHMEM_CONFIG_STATUS_OFFSET] |=
+        (uint8_t)IVSHMEM_CONFIG_STATUS_CAPABILITY_LIST;
+    config[IVSHMEM_CONFIG_CAPABILITY_POINTER_OFFSET] = 0x40;
+    config[0x40] = 0x11;
+    config[0x41] = (uint8_t)transport;
+    config[transport] = IVSHMEM_CAP_ID_VENDOR;
+    config[body] = IVSHMEM_TRANSPORT_CAP_LENGTH;
+    config[body + 1] = IVSHMEM_TRANSPORT_CAP_VERSION;
+    put_le32(config, body + 2, IVSHMEM_TRANSPORT_CAP_MAGIC);
+    put_le16(config, body + 6, IVSHMEM_TRANSPORT_PROTOCOL);
+    put_le32(config, body + 10, IVSHMEM_TRANSPORT_FEATURE_PEER_EPOCH);
+    put_le32(config, body + 14, IVSHMEM_STATE_EPOCH_OFFSET);
+    put_le32(config, body + 18, IVSHMEM_STATE_EPOCH_STRIDE);
+    put_le32(config, body + 22, 0);
+    put_le32(config, body + 26, 0x7000);
+    put_le32(config, body + 30, 2);
     snprintf(path, sizeof(path), "%s/config", dir);
     file = fopen(path, "wb");
     if (file == NULL) {
@@ -246,6 +281,35 @@ static void test_revision_mismatch_fails_the_profile(char *root)
     CHECK(dev == NULL);
 }
 
+static void test_missing_axvisor_capability_fails_the_profile(char *root)
+{
+    struct ivshmem_device *dev = NULL;
+    char path[512];
+    FILE *file;
+    uint8_t next = 0;
+
+    make_full_ivshmem(root, "0000:00:03.0");
+    snprintf(path, sizeof(path), "%s/0000:00:03.0/config", root);
+    file = fopen(path, "r+b");
+    if (file == NULL) {
+        perror(path);
+        exit(2);
+    }
+    /* Unlink the second capability while leaving VID:DID, class, revision,
+     * and the first capability intact. */
+    if (fseek(file, 0x41, SEEK_SET) != 0 ||
+        fwrite(&next, 1, sizeof(next), file) != sizeof(next)) {
+        fprintf(stderr, "cannot edit %s\n", path);
+        exit(2);
+    }
+    fclose(file);
+
+    CHECK_EQ(ivshmem_find_at(root, NULL, &dev), IVSHMEM_ERR_PROFILE);
+    CHECK_EQ(ivshmem_find_at(root, "0000:00:03.0", &dev),
+             IVSHMEM_ERR_PROFILE);
+    CHECK(dev == NULL);
+}
+
 static void test_wrong_identity_is_not_a_match(char *root)
 {
     struct ivshmem_device *dev = NULL;
@@ -316,9 +380,13 @@ static void test_bar_mapping_and_register_access(char *root)
     void *again = NULL;
     size_t register_size = 0;
     size_t shared_size = 0;
+    uint64_t epoch = 0;
+    const uint64_t guest_epoch = 7;
 
     make_full_ivshmem(root, "0000:00:01.0");
     CHECK_EQ(ivshmem_find_at(root, "0000:00:01.0", &dev), IVSHMEM_OK);
+    CHECK_EQ(ivshmem_observe_peer_epoch(dev, 0, &epoch),
+             IVSHMEM_ERR_BACKEND);
 
     /* Linux owns the MSI-X table and PBA; userspace must not map BAR1. */
     CHECK_EQ(ivshmem_map_bar(dev, IVSHMEM_BAR_MSIX, &registers,
@@ -355,6 +423,14 @@ static void test_bar_mapping_and_register_access(char *root)
     CHECK(ivshmem_shared_memory(dev, &shared_size) == shared);
     CHECK_EQ(shared_size, 0x10000);
     CHECK(ivshmem_shared_memory(NULL, &shared_size) == NULL);
+    memcpy((char *)shared + IVSHMEM_STATE_EPOCH_OFFSET, &guest_epoch,
+           sizeof(guest_epoch));
+    CHECK_EQ(ivshmem_observe_peer_epoch(dev, 0, &epoch), IVSHMEM_OK);
+    CHECK_EQ(epoch, guest_epoch);
+    CHECK_EQ(ivshmem_observe_peer_epoch(dev, IVSHMEM_MAX_PROFILE_PEERS,
+                                        &epoch),
+             IVSHMEM_ERR_ARGS);
+    CHECK_EQ(ivshmem_observe_peer_epoch(dev, 0, NULL), IVSHMEM_ERR_ARGS);
 
     ivshmem_device_close(dev);
 }
@@ -514,6 +590,9 @@ int main(void)
 
     make_root("revision", root, sizeof(root));
     test_revision_mismatch_fails_the_profile(root);
+
+    make_root("capability", root, sizeof(root));
+    test_missing_axvisor_capability_fails_the_profile(root);
 
     make_root("identity", root, sizeof(root));
     test_wrong_identity_is_not_a_match(root);

@@ -6,6 +6,8 @@ use super::{ConfigOffset, PciError, PciResult, config_layout};
 
 const CAPABILITY_HEADER_SIZE: usize = 2;
 const CAPABILITY_BODY_MAX_SIZE: usize = u8::MAX as usize - CAPABILITY_HEADER_SIZE;
+const EFFECT_WORD_SIZE: usize = 2;
+const EFFECT_WORD_SHIFT: u8 = 16;
 
 /// Identifies one conventional PCI capability type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,9 +102,54 @@ impl PciCapabilityEffectAccess {
     }
 }
 
-/// An aligned config read may straddle an endpoint effect and immutable bytes.
+/// An aligned config access may straddle an endpoint effect and immutable bytes.
 pub(crate) const PARTIAL_EFFECT_ACCESS: &str =
     "config access partially covers or uses an unsupported capability effect";
+
+/// One endpoint effect matched to the width and value lanes it can consume.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PciCapabilityEffectMatch {
+    effect: PciCapabilityEffectRegion,
+    offset: u8,
+    width: crate::AccessWidth,
+    value_shift: u8,
+}
+
+impl PciCapabilityEffectMatch {
+    const fn new(
+        effect: PciCapabilityEffectRegion,
+        offset: u8,
+        width: crate::AccessWidth,
+        value_shift: u8,
+    ) -> Self {
+        Self {
+            effect,
+            offset,
+            width,
+            value_shift,
+        }
+    }
+
+    pub(crate) const fn effect_id(self) -> PciConfigEffectId {
+        self.effect.effect()
+    }
+
+    pub(crate) const fn offset(self) -> u8 {
+        self.offset
+    }
+
+    pub(crate) const fn width(self) -> crate::AccessWidth {
+        self.width
+    }
+
+    pub(crate) fn translate_write_value(self, value: u64) -> u64 {
+        if self.value_shift == 0 {
+            value
+        } else {
+            (value >> self.value_shift) & u64::from(u16::MAX)
+        }
+    }
+}
 
 /// One endpoint-owned effect region within a serialized capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -316,7 +363,7 @@ impl PciCapabilityLayout {
         size: usize,
         write: bool,
         width: crate::AccessWidth,
-    ) -> PciResult<Option<PciCapabilityEffectRegion>> {
+    ) -> PciResult<Option<PciCapabilityEffectMatch>> {
         let capability_start = usize::from(self.offset.value());
         let capability_end = capability_start + usize::from(self.length());
         let access_end = config_offset
@@ -327,17 +374,29 @@ impl PciCapabilityLayout {
                 detail: "capability access range overflows",
             })?;
         let mut matched = None;
+        let mut capability_header_word = false;
         for effect in &self.spec.effects {
             let start = capability_start + usize::from(effect.offset());
             let end = start + usize::from(effect.length());
             if config_offset < end && start < access_end {
                 let contained = start <= config_offset && access_end <= end;
+                // The first conventional capability dword contains two
+                // immutable header bytes followed by a word-sized first
+                // register. Accept only that exact shape and translate it to
+                // the register's native word access; other partial effects
+                // remain unsupported.
+                let header_word = write
+                    && width == crate::AccessWidth::Dword
+                    && config_offset == capability_start
+                    && size == config_layout::CONFIG_DWORD_SIZE
+                    && usize::from(effect.offset()) == CAPABILITY_HEADER_SIZE
+                    && usize::from(effect.length()) == EFFECT_WORD_SIZE;
                 let allowed = if write {
                     effect.access().allows_write()
                 } else {
                     effect.access().allows_read()
                 };
-                if !contained || !allowed {
+                if (!contained && !header_word) || !allowed {
                     return Err(PciError::InvalidConfigAccess {
                         offset: config_offset as u16,
                         width,
@@ -351,6 +410,7 @@ impl PciCapabilityLayout {
                         detail: "config access covers multiple capability effects",
                     });
                 }
+                capability_header_word = header_word;
             }
         }
         if config_offset < capability_end
@@ -364,7 +424,33 @@ impl PciCapabilityLayout {
                 detail: "config access crosses a capability boundary",
             });
         }
-        Ok(matched)
+        let Some(effect) = matched else {
+            return Ok(None);
+        };
+        if capability_header_word {
+            return Ok(Some(PciCapabilityEffectMatch::new(
+                effect,
+                effect.offset(),
+                crate::AccessWidth::Word,
+                EFFECT_WORD_SHIFT,
+            )));
+        }
+        let relative =
+            config_offset
+                .checked_sub(capability_start)
+                .ok_or(PciError::InvalidConfigAccess {
+                    offset: config_offset as u16,
+                    width,
+                    detail: "capability effect offset underflows",
+                })?;
+        let relative = u8::try_from(relative).map_err(|_| PciError::InvalidConfigAccess {
+            offset: config_offset as u16,
+            width,
+            detail: "capability effect offset exceeds u8",
+        })?;
+        Ok(Some(PciCapabilityEffectMatch::new(
+            effect, relative, width, 0,
+        )))
     }
 
     #[cfg(target_arch = "x86_64")]

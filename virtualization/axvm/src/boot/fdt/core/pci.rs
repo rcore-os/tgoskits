@@ -220,7 +220,10 @@ fn add_host_node(tree: &mut FdtTree, host: GuestPciHost) -> AxVmResult {
     tree.set_property(node_id, cell_property("ranges", &ranges))?;
     tree.set_property(node_id, Property::new("dma-coherent", Vec::new()))?;
     if let Some(phandle) = host.msi_parent {
-        // Bus zero contains 256 requester IDs (32 slots x 8 functions).
+        // Bus zero contains 256 requester IDs (32 slots x 8 functions). The
+        // ECAM host has no requester-ID translation, so this preserves the
+        // identity map. Runtime PCI routing resolves the actual requester
+        // before an endpoint, including the ivshmem doorbell, can signal MSI.
         tree.set_property(node_id, cell_property("msi-map", &[0, phandle, 0, 256]))?;
     }
     Ok(())

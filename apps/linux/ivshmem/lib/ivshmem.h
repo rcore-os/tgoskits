@@ -4,17 +4,29 @@
  * The adapter is the only device-access layer for Linux guests: discovery,
  * BAR mapping, register access, and event waiting all go through this API so
  * applications never hard-code a BDF, a BAR address, or a sysfs path
- * convention. Revision 1 identifies PCI function 1af4:1110, class 0x050000.
+ * convention. The legacy QEMU VID:DID 1af4:1110 is retained only as a
+ * compatibility alias. The AxVisor transport is identified by class
+ * 0xff0000, revision 1, and its vendor-specific 0x09 capability carrying the
+ * AXIV signature and protocol 0x4000. Revision 1 is compatible with the fixed
+ * upstream uio_ivshmem probe; class and capability exclude classic QEMU. A
+ * VID:DID-only match is never enough.
  * BAR0 is a 4 KiB page of aligned little-endian 32-bit registers: ID and
- * MAX_PEERS are read-only; INTERRUPT_CTRL enables notifications (bit 0);
- * DOORBELL writes encode target peer in bits 31:16 and vector in bits 15:0;
- * STATE publishes this peer's value into BAR2's read-only state table;
- * EVENT_STATUS bit 0 is write-one-to-clear. BAR1 is kernel-owned MSI-X;
- * BAR2 is a prefetchable 64 KiB window with a 4 KiB read-only state table,
- * followed by one page-aligned output section per peer (writable only by its
- * owner). BAR2 is mapped through sysfs resource2_wc so Linux uses its
+ * MAX_PEERS and the common/output section sizes are read-only; INTERRUPT_CTRL
+ * enables notifications (bit 0); DOORBELL writes encode target peer in bits
+ * 31:16 and vector in bits 15:0; STATE publishes this peer's value into
+ * BAR2's read-only state table; EVENT_STATUS bit 0 is write-one-to-clear.
+ * BAR1 is kernel-owned MSI-X; BAR2 is a prefetchable power-of-two window with a
+ * 4 KiB read-only state table, an optional common section, and one page-aligned
+ * output section per peer (writable only by its owner). The two size registers
+ * are expressed in bytes. A zero output size means the layout is unavailable,
+ * including legacy revision-1 devices, so callers must not infer it from
+ * MAX_PEERS. BAR2 is mapped through sysfs resource2_wc so Linux uses its
  * write-combining path, which is Normal non-cacheable on AArch64.
- * The revision byte is checked before any of these semantics are used.
+ * The revision byte and AxVisor capability are checked before any of these
+ * semantics are used. The reserved tail of the state-table page contains one
+ * host-owned 64-bit reset/detach epoch per peer at 0x100 + peer * 8. Guests
+ * only read these epochs and must use an acquire observation before accepting
+ * Message V1 headers or queued payload after a peer restart.
  */
 #ifndef IVSHMEM_H
 #define IVSHMEM_H
@@ -22,11 +34,27 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* AxVisor ivshmem profile identity; callers must re-verify revision. */
+/* AxVisor ivshmem identity; VID:DID alone remains a legacy QEMU alias. */
 #define IVSHMEM_VENDOR_ID 0x1af4
 #define IVSHMEM_DEVICE_ID 0x1110
-#define IVSHMEM_CLASS 0x050000
+#define IVSHMEM_CLASS 0xff0000
 #define IVSHMEM_REVISION 0x01
+
+/*
+ * Conventional PCI capability list entries used by the transport.
+ * The 0x09 capability is 36 bytes including the generic id/next header:
+ *   0 id, 1 next, 2 length=36, 3 version=1, 4..8 "AXIV",
+ *   8..10 protocol 0x4000, 10..12 reserved,
+ *   then the 34-byte body's remaining fields:
+ *   12..16 feature bits, 16..20 epoch base, 20..24 epoch stride,
+ *   24..28 common size, 28..32 output size, 32..36 max peers.
+ */
+#define IVSHMEM_CAP_ID_VENDOR 0x09
+#define IVSHMEM_TRANSPORT_CAP_LENGTH 0x24
+#define IVSHMEM_TRANSPORT_CAP_VERSION 0x01
+#define IVSHMEM_TRANSPORT_CAP_MAGIC 0x56495841u /* "AXIV" */
+#define IVSHMEM_TRANSPORT_PROTOCOL 0x4000u
+#define IVSHMEM_TRANSPORT_FEATURE_PEER_EPOCH 0x00000001u
 
 /* BAR-relative register offsets (BAR0, little-endian, 32-bit only). */
 #define IVSHMEM_REG_ID 0x00
@@ -35,7 +63,14 @@
 #define IVSHMEM_REG_DOORBELL 0x0c
 #define IVSHMEM_REG_STATE 0x10
 #define IVSHMEM_REG_EVENT_STATUS 0x14
+#define IVSHMEM_REG_COMMON_SIZE 0x18
+#define IVSHMEM_REG_OUTPUT_SIZE 0x1c
 #define IVSHMEM_REG_PAGE_SIZE 0x1000
+
+/* BAR2-relative host-owned peer reset/detach epochs. */
+#define IVSHMEM_STATE_EPOCH_OFFSET 0x100u
+#define IVSHMEM_STATE_EPOCH_STRIDE 8u
+#define IVSHMEM_MAX_PROFILE_PEERS 15u
 
 #define IVSHMEM_BAR_REGISTERS 0
 #define IVSHMEM_BAR_MSIX 1
@@ -45,7 +80,7 @@ enum ivshmem_err {
     IVSHMEM_OK = 0,
     IVSHMEM_ERR_NOT_FOUND = -1, /* no matching device on the bus */
     IVSHMEM_ERR_AMBIGUOUS = -2, /* several matches; explicit BDF required */
-    IVSHMEM_ERR_PROFILE = -3,   /* identity or revision mismatch */
+    IVSHMEM_ERR_PROFILE = -3,   /* full AxVisor transport profile mismatch */
     IVSHMEM_ERR_IO = -4,        /* sysfs/procfs/devtmpfs access failed */
     IVSHMEM_ERR_MMAP = -5,      /* resource mmap failed */
     IVSHMEM_ERR_BACKEND = -6,   /* requested backend is unavailable */
@@ -70,10 +105,10 @@ struct ivshmem_backend;
  * Auto-detect requires exactly one match: several matches return
  * IVSHMEM_ERR_AMBIGUOUS, no match returns IVSHMEM_ERR_NOT_FOUND. Both
  * explicit and auto-detected devices are verified against vendor, device,
- * class and revision before the handle is returned. A device that matches
- * the ivshmem identity but not the profile revision fails with
- * IVSHMEM_ERR_PROFILE instead of being skipped, so callers can never bind
- * to a device they have not been adapted for.
+ * class, revision, and the AxVisor 0x09 capability before the handle is
+ * returned. A device that matches the legacy VID:DID but not the full profile
+ * fails with IVSHMEM_ERR_PROFILE instead of being skipped, so callers can
+ * never bind to a device they have not been adapted for.
  */
 int ivshmem_find_device(const char *bdf, struct ivshmem_device **out);
 
@@ -122,6 +157,21 @@ void ivshmem_write_reg32(const struct ivshmem_device *dev, uint32_t offset,
 
 /** Returns the shared-memory mapping and its size; NULL on error. */
 void *ivshmem_shared_memory(const struct ivshmem_device *dev, size_t *size);
+
+/**
+ * Observes one peer's host-owned reset/detach epoch.
+ *
+ * BAR2 must already be mapped. The epoch is read from the read-only state
+ * page with acquire ordering, so a changed nonzero value orders the
+ * observation after the host's epoch publication. Callers retain the previous
+ * value and discard stale Message V1 headers or queued data whenever the
+ * observed epoch changes. Peer IDs outside the fixed 15-slot profile fail.
+ *
+ * @return IVSHMEM_OK, IVSHMEM_ERR_BACKEND when BAR2 is not mapped, or
+ *         IVSHMEM_ERR_ARGS for an invalid peer/output pointer.
+ */
+int ivshmem_observe_peer_epoch(const struct ivshmem_device *dev,
+                               uint16_t peer, uint64_t *epoch);
 
 enum ivshmem_backend_kind {
     IVSHMEM_BACKEND_POLLING = 0,

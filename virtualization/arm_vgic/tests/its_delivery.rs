@@ -4,12 +4,15 @@ use std::sync::{
 };
 
 use arm_vgic::{
-    CpuInterfaceState, EventId, GicAffinity, GicV3Backend, GicV3BackendError, GicV3Config,
-    GicV3Controller, GicV3MmioRegion, GicV3SpiOwnership, GicV3VcpuBinding, GicV3VcpuWake,
-    GicVcpuId, GuestMemory, GuestMemoryError, IntId, InterruptState, ItsDeviceId,
-    SoftwareGicV3Backend, VgicError, VgicResult,
+    ArmVgicConfig, CpuInterfaceState, EventId, GicAffinity, GicV3Backend, GicV3BackendError,
+    GicV3Config, GicV3Controller, GicV3MmioRegion, GicV3SpiOwnership, GicV3VcpuBinding,
+    GicV3VcpuWake, GicVcpuId, GuestMemory, GuestMemoryError, IntId, InterruptState, ItsConfig,
+    ItsDeviceId, SoftwareGicV3Backend, VgicCore, VgicError, VgicResult, VgicV3Config,
 };
-use axdevice_base::ItsId;
+use axdevice_base::{
+    InterruptControllerId, IrqError, ItsId, LpiId as EndpointLpiId, MessageInterruptController,
+    MsiDeviceId, MsiEventId,
+};
 use axvm_types::AccessWidth;
 
 const GITS_CTLR: u64 = 0x0000;
@@ -136,6 +139,115 @@ fn two_its_instances_keep_device_event_namespaces_isolated() {
         .collect::<Vec<_>>();
     loaded.sort_unstable();
     assert_eq!(loaded, vec![8192, 8193]);
+}
+
+#[test]
+fn msi_table_encoding_uses_the_messages_nonzero_its_frame() {
+    const ITS0_BASE: u64 = 0x0810_0000;
+    const ITS1_BASE: u64 = 0x0812_0000;
+    const GITS_TRANSLATER_OFFSET: u64 = 0x1_0040;
+    const QUEUE_SIZE_U64: u64 = QUEUE_SIZE as u64;
+
+    let memory = Arc::new(TestGuestMemory::new(0x4100_0000, QUEUE_SIZE * 2));
+    let config = VgicV3Config::new(
+        InterruptControllerId::new(0),
+        GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
+        vec![GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap()],
+        0x2_0000,
+        vec![GicAffinity::new(0, 0, 0, 0)],
+    )
+    .unwrap()
+    .with_spi_count(32)
+    .unwrap()
+    .with_its(vec![
+        ItsConfig::new(
+            ItsId::new(0),
+            GicV3MmioRegion::new(ITS0_BASE, 0x2_0000).unwrap(),
+        ),
+        ItsConfig::new(
+            ItsId::new(1),
+            GicV3MmioRegion::new(ITS1_BASE, 0x2_0000).unwrap(),
+        ),
+    ])
+    .unwrap();
+    let core = Arc::new(
+        VgicCore::new_with_guest_memory(
+            ArmVgicConfig::V3(config),
+            Arc::new(SoftwareGicV3Backend),
+            Some(memory.clone()),
+        )
+        .unwrap(),
+    );
+    let controller = core.controller();
+    let vcpu = GicVcpuId::new(0);
+    let _binding = controller
+        .attach_vcpu(vcpu, GicAffinity::new(0, 0, 0, 0), Arc::new(NoopWake))
+        .unwrap();
+    enable_lpis(controller, 0);
+
+    for (its, queue_offset, lpi) in [
+        (ItsId::new(0), 0, 8192),
+        (ItsId::new(1), QUEUE_SIZE_U64, 8193),
+    ] {
+        controller
+            .write_its_for(
+                its,
+                GITS_CBASER,
+                AccessWidth::Qword,
+                memory.base() + queue_offset,
+            )
+            .unwrap();
+        controller
+            .write_its_for(its, GITS_CTLR, AccessWidth::Dword, 1)
+            .unwrap();
+        memory.write_command(queue_offset, mapd(7, 8));
+        memory.write_command(queue_offset + 0x20, mapc(3, 0));
+        memory.write_command(queue_offset + 0x40, mapti(7, 5, lpi, 3));
+        controller
+            .write_its_for(its, GITS_CWRITER, AccessWidth::Qword, 0x60)
+            .unwrap();
+    }
+
+    let message: Arc<dyn MessageInterruptController> = core.clone();
+    let endpoint = message
+        .msi_endpoint(
+            ItsId::new(1),
+            MsiDeviceId::new(7),
+            MsiEventId::new(5),
+            EndpointLpiId::new(8193),
+        )
+        .unwrap();
+    let expected_address = ITS1_BASE + GITS_TRANSLATER_OFFSET;
+
+    assert!(matches!(
+        endpoint.signal_table(ITS0_BASE + GITS_TRANSLATER_OFFSET, 5),
+        Err(IrqError::MessageEncodingMismatch {
+            expected_address: mismatch_expected,
+            actual_address: mismatch_actual,
+            ..
+        }) if mismatch_expected == expected_address
+            && mismatch_actual == ITS0_BASE + GITS_TRANSLATER_OFFSET
+    ));
+    assert_eq!(
+        controller
+            .interrupt_state(Some(vcpu), IntId::new(8193).unwrap())
+            .unwrap(),
+        InterruptState::Inactive
+    );
+
+    endpoint.signal_table(expected_address, 5).unwrap();
+    assert_eq!(
+        controller
+            .interrupt_state(Some(vcpu), IntId::new(8193).unwrap())
+            .unwrap(),
+        InterruptState::Pending
+    );
+    assert_eq!(
+        controller
+            .interrupt_state(Some(vcpu), IntId::new(8192).unwrap())
+            .unwrap(),
+        InterruptState::Inactive
+    );
 }
 
 #[test]

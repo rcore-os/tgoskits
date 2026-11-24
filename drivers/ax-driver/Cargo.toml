@@ -15,6 +15,7 @@ default = []
 host-test = ["ax-sync?/host-test"]
 
 pci = ["dep:ax-sync", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
+ivshmem-pci = ["pci"]
 arm-smmu-v3 = ["pci", "dep:arm-smmu-v3", "dep:rdif-iommu", "dep:ax-memory-addr"]
 iommu-dma-test = ["arm-smmu-v3"]
 

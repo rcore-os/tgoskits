@@ -1,0 +1,43 @@
+[base]
+id = 1
+name = "starry-ivc-publisher"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x8020_0000
+kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "${workspace}/target/axbuild/axvisor/qemu/aarch64/ivc-starry/initramfs-aarch64.cpio.gz"
+ramdisk_load_addr = 0x8400_0000
+# /dev/axivc0 discovers the unique ivshmem function and derives the role from
+# its PCI peer ID. Everything after `--` is the userspace init argv.
+cmdline = "loglevel=7 rdinit=/init -- publisher"
+memory_regions = [
+    [0x8000_0000, 0x1000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = [
+    { path = "/virtio_mmio@a003000" },
+    { path = "/virtio_mmio@a003200" },
+    { path = "/virtio_mmio@a003400" },
+    { path = "/virtio_mmio@a003600" },
+    { path = "/virtio_mmio@a003800" },
+    { path = "/virtio_mmio@a003a00" },
+    { path = "/virtio_mmio@a003c00" },
+    { path = "/virtio_mmio@a003e00" },
+    { path = "/pcie@10000000" },
+]
+
+[[devices.virtual]]
+id = "ivshmem0"
+model = "ivshmem-pci"
+link_id = 6
+peer_id = 0
+max_peers = 2
+common_size = 0
+output_size = 0xc00000

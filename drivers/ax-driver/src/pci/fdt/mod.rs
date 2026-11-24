@@ -213,22 +213,24 @@ pub fn fdt_irq_for_endpoint(info: PciInfo) -> Result<Option<BindingIrq>, OnProbe
     result.map(Some)
 }
 
-fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<BindingIrq, OnProbeError> {
-    let route = info.intx_route.ok_or_else(|| {
-        OnProbeError::other(format!("PCI endpoint {} has no INTx route", info.address))
-    })?;
-
-    let bus = info.address.bus();
+pub(super) fn pci_host_for_endpoint(
+    fdt: &Fdt,
+    info: PciInfo,
+) -> Result<fdt_edit::PciNodeView<'_>, OnProbeError> {
+    let bus = u32::from(info.address.bus());
     let mut candidates = Vec::new();
-    let mut exact_range_matches = Vec::new();
+    let mut range_matches = Vec::new();
+
     for node in fdt.all_nodes() {
         let NodeType::Pci(pci) = node else {
             continue;
         };
-
         match pci.bus_range() {
-            Some(range) if range.contains(&(bus as u32)) => {
-                exact_range_matches.push(pci);
+            // fdt-edit preserves the two firmware cells as `start..end`, but
+            // the DT bus-range upper cell is inclusive. Do not use
+            // `Range::contains` or add one to `end`, which can overflow.
+            Some(range) if range.start <= bus && bus <= range.end => {
+                range_matches.push(pci);
                 candidates.push(pci);
             }
             Some(_) => {}
@@ -236,26 +238,34 @@ fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<BindingIrq, OnPr
         }
     }
 
-    let pci_host = if exact_range_matches.len() == 1 {
-        exact_range_matches[0]
-    } else if exact_range_matches.len() > 1 {
-        return Err(OnProbeError::other(format!(
+    if range_matches.len() == 1 {
+        Ok(range_matches[0])
+    } else if range_matches.len() > 1 {
+        Err(OnProbeError::other(format!(
             "multiple PCI host nodes in FDT match endpoint {} with the same bus-range",
             info.address
-        )));
+        )))
     } else if candidates.len() == 1 {
-        candidates[0]
+        Ok(candidates[0])
     } else if candidates.is_empty() {
-        return Err(OnProbeError::other(format!(
+        Err(OnProbeError::other(format!(
             "no PCI host node in FDT matches endpoint {}",
             info.address
-        )));
+        )))
     } else {
-        return Err(OnProbeError::other(format!(
+        Err(OnProbeError::other(format!(
             "multiple PCI host nodes in FDT match endpoint {} without a unique bus-range match",
             info.address
-        )));
-    };
+        )))
+    }
+}
+
+fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<BindingIrq, OnProbeError> {
+    let route = info.intx_route.ok_or_else(|| {
+        OnProbeError::other(format!("PCI endpoint {} has no INTx route", info.address))
+    })?;
+
+    let pci_host = pci_host_for_endpoint(fdt, info)?;
 
     let bus = pci_host
         .bus_range()

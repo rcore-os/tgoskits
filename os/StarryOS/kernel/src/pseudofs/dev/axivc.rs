@@ -1,14 +1,10 @@
-use alloc::{
-    boxed::Box,
-    format,
-    string::String,
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+#[cfg(feature = "axivc-ivshmem")]
+use alloc::sync::Weak;
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use core::{
     any::Any,
     cell::UnsafeCell,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -24,9 +20,16 @@ use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use bytemuck::{AnyBitPattern, NoUninit};
 
-use super::ivc_legacy::{
-    self as legacy_ivc, IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion,
+#[cfg(feature = "axivc-ivshmem")]
+use super::axivc_ivshmem::LEGACY_PUBLISH_SIZE;
+#[cfg(feature = "axivc-ivshmem")]
+use super::axivc_ivshmem::{IvshmemAttachment, IvshmemChannelState, PAYLOAD_PEER_MMAP_OFFSET};
+use super::{
+    axivc_ivshmem::{APP_PAYLOAD_LIMIT, AxivcLinkSelection, IvshmemLink},
+    ivc_legacy::{self as legacy_ivc, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion},
 };
+#[cfg(feature = "axivc-ivshmem")]
+use crate::pseudofs::DeviceMmapAccess;
 use crate::{
     mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceMmap, DeviceOps, DirMapping, SimpleFs},
@@ -48,6 +51,20 @@ const IVC_SUBSCRIBE_CHANNEL: u32 = 0x4050_0002;
 const IVC_UNSUBSCRIBE_CHANNEL: u32 = 0x4050_0003;
 const IVC_CACHE_FLUSH: u32 = 0x4010_0004;
 const IVC_CACHE_INVALIDATE: u32 = 0x4010_0005;
+#[cfg(feature = "axivc-ivshmem")]
+// _IOR('I', 6, struct IvcPayloadInfo), whose stable payload is five u64 fields.
+const IVC_PAYLOAD_INFO: u32 = 0x8028_4906;
+#[cfg(feature = "axivc-ivshmem")]
+const PAYLOAD_INFO_VERSION: u64 = 1;
+
+#[cfg(feature = "axivc-ivshmem")]
+const AXIVC_AUTO_MINOR: u32 = 239;
+// Private registry keys for the single automatic endpoint. They are not part
+// of the userspace ABI or matched against `axivc.link`; peer ID selects role.
+#[cfg(feature = "axivc-ivshmem")]
+const AUTO_CHANNEL_KEY: u64 = 1;
+#[cfg(feature = "axivc-ivshmem")]
+const AUTO_PUBLISHER_ID: usize = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy, AnyBitPattern, NoUninit)]
@@ -72,28 +89,128 @@ struct IvcCacheOpArg {
     size: u64,
 }
 
+#[cfg(feature = "axivc-ivshmem")]
+#[repr(C)]
+#[derive(Clone, Copy, AnyBitPattern, NoUninit)]
+struct IvcPayloadInfo {
+    version: u64,
+    generation: u64,
+    local_offset: u64,
+    peer_offset: u64,
+    payload_size: u64,
+}
+#[cfg(feature = "axivc-ivshmem")]
+const _: () = assert!(core::mem::size_of::<IvcPayloadInfo>() == 0x28);
+
 struct AxivcRegistry {
+    transport: AxivcLinkSelection,
+    #[cfg(feature = "axivc-ivshmem")]
+    session_transition: Mutex<()>,
     inner: Mutex<RegistryInner>,
     publisher_poll_sets: Vec<Arc<PollSet>>,
     subscriber_poll_sets: Vec<Arc<PollSet>>,
     notify_irq: Option<IrqId>,
     irq_handle: OnceLock<IrqHandle>,
+    #[cfg(feature = "axivc-ivshmem")]
+    ivshmem_irq_handle: OnceLock<IrqHandle>,
     deferred_notify: Arc<IrqNotify>,
+    notify_service_started: AtomicBool,
+    #[cfg(feature = "axivc-ivshmem")]
+    ivshmem_event_logged: AtomicBool,
+    #[cfg(feature = "axivc-ivshmem")]
+    ivshmem_attachment: Mutex<IvshmemAttachmentState>,
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+enum IvshmemAttachmentState {
+    Unattempted,
+    Ready(Arc<IvshmemAttachment>),
+    Failed,
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+struct AutoPayloadLease {
+    attachment: Arc<IvshmemAttachment>,
+    generation: u64,
+    peer_epoch: u64,
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+impl AutoPayloadLease {
+    fn map(self: &Arc<Self>, peer: bool) -> VfsResult<DeviceMmap> {
+        if self.attachment.peer_epoch()? != self.peer_epoch {
+            return Err(VfsError::Io);
+        }
+        let range = self.attachment.payload_range(peer)?;
+        let capacity = self.attachment.payload_capacity();
+        let start = PhysAddr::from_usize(range.start);
+        let range = PhysAddrRange::from_start_size(start, capacity);
+        let retain: Arc<dyn Any + Send + Sync> = self.clone();
+        if peer {
+            Ok(DeviceMmap::PhysicalResolvedRestricted(
+                range,
+                retain,
+                DeviceMmapAccess::ReadOnly,
+            ))
+        } else {
+            Ok(DeviceMmap::PhysicalResolvedRestricted(
+                range,
+                retain,
+                DeviceMmapAccess::ReadWrite,
+            ))
+        }
+    }
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+#[derive(Clone)]
+struct AutoChannel {
+    role: ChannelRole,
+    index: usize,
+    lease: Arc<AutoPayloadLease>,
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+struct AutoEndpointState {
+    channel: Option<AutoChannel>,
+    retired: Vec<Weak<AutoPayloadLease>>,
+    next_generation: u64,
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+struct AxivcAutoEndpoint {
+    registry: Arc<AxivcRegistry>,
+    state: Mutex<AutoEndpointState>,
 }
 
 impl AxivcRegistry {
-    fn new(channel_count: usize) -> Self {
-        Self::new_with_notify_irq(channel_count, probe_notify_irq())
+    fn new(channel_count: usize, transport: AxivcLinkSelection) -> Self {
+        let notify_irq = transport.is_legacy().then(probe_notify_irq).flatten();
+        Self::new_with_notify_irq(channel_count, transport, notify_irq)
     }
 
-    fn new_with_notify_irq(channel_count: usize, notify_irq: Option<IrqId>) -> Self {
+    fn new_with_notify_irq(
+        channel_count: usize,
+        transport: AxivcLinkSelection,
+        notify_irq: Option<IrqId>,
+    ) -> Self {
         Self {
+            transport,
+            #[cfg(feature = "axivc-ivshmem")]
+            session_transition: Mutex::new(()),
             inner: Mutex::new(RegistryInner::new(channel_count)),
             publisher_poll_sets: new_poll_sets(channel_count),
             subscriber_poll_sets: new_poll_sets(channel_count),
             notify_irq,
             irq_handle: OnceLock::new(),
+            #[cfg(feature = "axivc-ivshmem")]
+            ivshmem_irq_handle: OnceLock::new(),
             deferred_notify: Arc::new(IrqNotify::new()),
+            notify_service_started: AtomicBool::new(false),
+            #[cfg(feature = "axivc-ivshmem")]
+            ivshmem_event_logged: AtomicBool::new(false),
+            #[cfg(feature = "axivc-ivshmem")]
+            ivshmem_attachment: Mutex::new(IvshmemAttachmentState::Unattempted),
         }
     }
 
@@ -106,10 +223,13 @@ impl AxivcRegistry {
             return;
         };
 
-        let registry = Arc::downgrade(self);
-        let request = IrqRequest::new(move |_| notify_irq_handler(&registry))
-            .share_mode(ShareMode::Shared)
-            .auto_enable(AutoEnable::No);
+        let notify = Arc::clone(&self.deferred_notify);
+        let request = IrqRequest::new(move |_| {
+            notify.notify_irq();
+            IrqReturn::Wake
+        })
+        .share_mode(ShareMode::Shared)
+        .auto_enable(AutoEnable::No);
         match ax_runtime::hal::irq::request_irq(irq, request) {
             Ok(handle) => {
                 if !self.start_notify_service() {
@@ -130,6 +250,13 @@ impl AxivcRegistry {
     }
 
     fn start_notify_service(self: &Arc<Self>) -> bool {
+        if self
+            .notify_service_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return true;
+        }
         let registry = Arc::downgrade(self);
         let notify = Arc::clone(&self.deferred_notify);
         match crate::task::kernel_thread_builder("axivc-notify-service".into()).spawn(move || {
@@ -138,23 +265,148 @@ impl AxivcRegistry {
                 let Some(registry) = registry.upgrade() else {
                     break;
                 };
+                #[cfg(feature = "axivc-ivshmem")]
+                let ivshmem_active = registry.transport.uses_ivshmem()
+                    || matches!(
+                        &*registry.ivshmem_attachment.lock(),
+                        IvshmemAttachmentState::Ready(_)
+                    );
+                #[cfg(feature = "axivc-ivshmem")]
+                if ivshmem_active {
+                    if !registry.ivshmem_event_logged.swap(true, Ordering::AcqRel) {
+                        info!("axivc ivshmem MSI-X event");
+                    }
+                    if registry.advance_ivshmem_sessions() {
+                        continue;
+                    }
+                }
                 registry.wake_channel_pollers();
             }
         }) {
             Ok(_service) => true,
             Err(error) => {
+                self.notify_service_started.store(false, Ordering::Release);
                 warn!("axivc: failed to start notify service: {error}");
                 false
             }
         }
     }
 
+    #[cfg(all(test, not(axtest)))]
     fn handle_notify_irq(&self) -> IrqReturn {
         // The notify IRQ reports peer progress but does not carry a channel id.
         // Hard IRQ only publishes a coalesced event. The fixed service thread
         // performs PollSet fan-out in task context, where wakers may run.
         self.deferred_notify.notify_irq();
         IrqReturn::Wake
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn ivshmem_attachment(self: &Arc<Self>) -> VfsResult<Arc<IvshmemAttachment>> {
+        let mut slot = self.ivshmem_attachment.lock();
+        match &*slot {
+            IvshmemAttachmentState::Ready(attachment) => return Ok(Arc::clone(attachment)),
+            IvshmemAttachmentState::Failed => return Err(VfsError::NoSuchDevice),
+            IvshmemAttachmentState::Unattempted => {}
+        }
+
+        let attachment = match IvshmemAttachment::probe() {
+            Ok(attachment) => Arc::new(attachment),
+            Err(error) => {
+                *slot = IvshmemAttachmentState::Failed;
+                return Err(error);
+            }
+        };
+        if !self.start_notify_service() {
+            *slot = IvshmemAttachmentState::Failed;
+            return Err(VfsError::NoMemory);
+        }
+        let irq = match attachment.irq_binding().and_then(|binding| {
+            ax_runtime::irq::resolve_binding_irq(binding).map_err(|error| {
+                warn!("axivc: failed to resolve ivshmem MSI-X IRQ: {error:?}");
+                VfsError::NoSuchDevice
+            })
+        }) {
+            Ok(irq) => irq,
+            Err(error) => {
+                *slot = IvshmemAttachmentState::Failed;
+                return Err(error);
+            }
+        };
+
+        let irq_registers = attachment.irq_registers();
+        let notify = Arc::clone(&self.deferred_notify);
+        let request = IrqRequest::new(move |_| {
+            match irq_registers.take_events() {
+                Ok(0) | Err(_) => return IrqReturn::Unhandled,
+                Ok(_) => {}
+            }
+            notify.notify_irq();
+            IrqReturn::Wake
+        })
+        .share_mode(ShareMode::Shared)
+        .auto_enable(AutoEnable::No);
+        let handle = match ax_runtime::hal::irq::request_irq(irq, request) {
+            Ok(handle) => handle,
+            Err(error) => {
+                warn!("axivc: failed to register ivshmem MSI-X IRQ {irq:?}: {error:?}");
+                *slot = IvshmemAttachmentState::Failed;
+                return Err(VfsError::NoSuchDevice);
+            }
+        };
+        if let Err(error) = ax_runtime::hal::irq::enable_irq(handle) {
+            warn!("axivc: failed to enable ivshmem MSI-X IRQ {irq:?}: {error:?}");
+            let _ = ax_runtime::hal::irq::free_irq(handle);
+            *slot = IvshmemAttachmentState::Failed;
+            return Err(VfsError::NoSuchDevice);
+        }
+
+        // The lease stays masked until the hard handler and its deferred
+        // service are active. Only then may the endpoint inject MSI-X.
+        attachment.enable_irq();
+        if let Err(error) = attachment.enable_interrupts() {
+            attachment.disable_irq();
+            let _ = ax_runtime::hal::irq::disable_irq(handle);
+            let _ = ax_runtime::hal::irq::free_irq(handle);
+            *slot = IvshmemAttachmentState::Failed;
+            return Err(error);
+        }
+
+        self.ivshmem_irq_handle.call_once(|| handle);
+        *slot = IvshmemAttachmentState::Ready(Arc::clone(&attachment));
+        Ok(attachment)
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn advance_ivshmem_sessions(&self) -> bool {
+        let mut inner = self.inner.lock();
+        let mut terminal = false;
+        let mut terminal_poll_set = None;
+        let RegistryInner {
+            publishers,
+            subscribers,
+        } = &mut *inner;
+        for state in publishers
+            .iter_mut()
+            .chain(subscribers.iter_mut())
+            .flatten()
+        {
+            if let ChannelBackend::Ivshmem(session) = &mut state.backend {
+                let advance = session.advance();
+                terminal |= advance.lost;
+                if advance.lost {
+                    terminal_poll_set.get_or_insert_with(|| state.poll_set.clone());
+                }
+            }
+        }
+        drop(inner);
+        if let Some(poll_set) = terminal_poll_set {
+            // SAFETY: the terminal state was published before the registry lock
+            // was released, and this runs in the deferred task-context service.
+            // `wake_all` is required for unconditional POLLERR/POLLHUP delivery.
+            unsafe { poll_set.wake_all(IoEvents::ERR | IoEvents::HUP) };
+        }
+        terminal
     }
 
     fn wake_channel_pollers(&self) -> usize {
@@ -173,7 +425,112 @@ impl AxivcRegistry {
         .cloned()
     }
 
-    fn publish(&self, arg: &mut IvcPublishArg) -> VfsResult<()> {
+    #[cfg(feature = "axivc-ivshmem")]
+    fn provision_auto(self: &Arc<Self>, generation: u64) -> VfsResult<AutoChannel> {
+        let _transition = self.session_transition.lock();
+        let attachment = self.ivshmem_attachment()?;
+        let role = if attachment.role_matches(true) {
+            ChannelRole::Publisher
+        } else if attachment.role_matches(false) {
+            ChannelRole::Subscriber
+        } else {
+            return Err(VfsError::PermissionDenied);
+        };
+        let mut inner = self.inner.lock();
+        let (index, poll_set) = match role {
+            ChannelRole::Publisher => {
+                if inner.publisher_has_ivshmem() || inner.publisher_exists(AUTO_CHANNEL_KEY) {
+                    return Err(VfsError::ResourceBusy);
+                }
+                let index = inner.free_publisher_index().ok_or(VfsError::NoMemory)?;
+                let poll_set = self.poll_set(role, index).ok_or(VfsError::NoMemory)?;
+                (index, poll_set)
+            }
+            ChannelRole::Subscriber => {
+                if inner.subscriber_has_ivshmem()
+                    || inner.subscriber_exists(AUTO_PUBLISHER_ID, AUTO_CHANNEL_KEY)
+                {
+                    return Err(VfsError::ResourceBusy);
+                }
+                let index = inner.free_subscriber_index().ok_or(VfsError::NoMemory)?;
+                let poll_set = self.poll_set(role, index).ok_or(VfsError::NoMemory)?;
+                (index, poll_set)
+            }
+        };
+        let peer_epoch = attachment.peer_epoch()?;
+        let session = IvshmemChannelState::attach_with_epoch(
+            Arc::clone(&attachment),
+            role == ChannelRole::Publisher,
+            peer_epoch,
+        )?;
+        let lease = Arc::new(AutoPayloadLease {
+            attachment,
+            generation,
+            peer_epoch,
+        });
+        let state = ChannelState {
+            publisher_id: AUTO_PUBLISHER_ID,
+            key: AUTO_CHANNEL_KEY,
+            fd_refs: 0,
+            poll_set,
+            closing: false,
+            visible: true,
+            backend: ChannelBackend::Ivshmem(session),
+        };
+        match role {
+            ChannelRole::Publisher => inner.insert_publisher_at(index, state),
+            ChannelRole::Subscriber => inner.insert_subscriber_at(index, state),
+        }
+        Ok(AutoChannel { role, index, lease })
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn release_auto(&self, channel: &AutoChannel) -> VfsResult<()> {
+        let _transition = self.session_transition.lock();
+        let mut inner = self.inner.lock();
+        let state = match channel.role {
+            ChannelRole::Publisher => inner.remove_publisher(AUTO_CHANNEL_KEY),
+            ChannelRole::Subscriber => inner.remove_subscriber(AUTO_PUBLISHER_ID, AUTO_CHANNEL_KEY),
+        }
+        .ok_or(VfsError::NoSuchDevice)?;
+        let poll_set = state.poll_set.clone();
+        drop(inner);
+        wake_pollers(&poll_set, IoEvents::ERR | IoEvents::HUP);
+        let mut state = state;
+        state.invalidate_ivshmem()
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn auto_channel_epoch_valid(&self, channel: &AutoChannel) -> bool {
+        let (valid, poll_set) = {
+            let mut inner = self.inner.lock();
+            let Some(state) = inner.channel_mut(channel.role, channel.index) else {
+                return false;
+            };
+            let poll_set = state.poll_set.clone();
+            let valid = match &mut state.backend {
+                ChannelBackend::Ivshmem(session) => session.epoch_valid(),
+                ChannelBackend::Legacy(_) => false,
+            };
+            (valid, poll_set)
+        };
+        if !valid {
+            // SAFETY: the terminal session state is published while the
+            // registry lock is held; wake outside the lock.
+            unsafe { poll_set.wake_all(IoEvents::ERR | IoEvents::HUP) };
+        }
+        valid
+    }
+
+    fn publish(self: &Arc<Self>, arg: &mut IvcPublishArg) -> VfsResult<()> {
+        match self.transport {
+            AxivcLinkSelection::Legacy => self.publish_legacy(arg),
+            AxivcLinkSelection::Ivshmem(link) => self.publish_ivshmem(arg, link),
+            AxivcLinkSelection::Invalid => Err(VfsError::InvalidInput),
+        }
+    }
+
+    fn publish_legacy(&self, arg: &mut IvcPublishArg) -> VfsResult<()> {
         let shm_base_gpa = HyperCallOutputSlot::new(0)?;
         let shm_size = HyperCallOutputSlot::new(arg.channel_size as usize)?;
 
@@ -220,17 +577,20 @@ impl AxivcRegistry {
             index,
             ChannelState {
                 publisher_id,
-                notify_target_vm_id: Some(ivc::IVC_NOTIFY_PEER),
                 key: arg.channel_key,
-                shm_base_gpa,
-                shm_size,
-                mmap_anchor: Arc::new(()),
                 fd_refs: 0,
                 poll_set,
-                producer,
-                consumer,
-                sequence: AtomicU64::new(1),
                 closing: false,
+                visible: false,
+                backend: ChannelBackend::Legacy(LegacyChannelState {
+                    notify_target_vm_id: Some(ivc::IVC_NOTIFY_PEER),
+                    shm_base_gpa,
+                    shm_size,
+                    mmap_anchor: Arc::new(()),
+                    producer,
+                    consumer,
+                    sequence: AtomicU64::new(1),
+                }),
             },
         );
         write_device_name(
@@ -245,14 +605,33 @@ impl AxivcRegistry {
     }
 
     fn unpublish(&self, arg: &IvcPublishArg) -> VfsResult<()> {
+        match self.transport {
+            AxivcLinkSelection::Legacy => self.unpublish_legacy(arg, false),
+            AxivcLinkSelection::Ivshmem(_) => self.unpublish_ivshmem(arg, false),
+            AxivcLinkSelection::Invalid => Err(VfsError::InvalidInput),
+        }
+    }
+
+    fn rollback_publish(&self, arg: &IvcPublishArg) -> VfsResult<()> {
+        match self.transport {
+            AxivcLinkSelection::Legacy => self.unpublish_legacy(arg, true),
+            AxivcLinkSelection::Ivshmem(_) => self.unpublish_ivshmem(arg, true),
+            AxivcLinkSelection::Invalid => Err(VfsError::InvalidInput),
+        }
+    }
+
+    fn unpublish_legacy(&self, arg: &IvcPublishArg, rollback: bool) -> VfsResult<()> {
         let mut inner = self.inner.lock();
         let Some(state) = inner.publisher_mut(arg.channel_key) else {
             return Err(VfsError::NoSuchDevice);
         };
+        if !rollback && !state.visible {
+            return Err(VfsError::WouldBlock);
+        }
         if state.closing {
             return Err(VfsError::WouldBlock);
         }
-        if Arc::strong_count(&state.mmap_anchor) > 1 {
+        if state.has_mmap_refs() {
             return Err(VfsError::WouldBlock);
         }
         if state.fd_refs != 0 {
@@ -278,7 +657,15 @@ impl AxivcRegistry {
         }
     }
 
-    fn subscribe(&self, arg: &mut IvcSubscribeArg) -> VfsResult<()> {
+    fn subscribe(self: &Arc<Self>, arg: &mut IvcSubscribeArg) -> VfsResult<()> {
+        match self.transport {
+            AxivcLinkSelection::Legacy => self.subscribe_legacy(arg),
+            AxivcLinkSelection::Ivshmem(link) => self.subscribe_ivshmem(arg, link),
+            AxivcLinkSelection::Invalid => Err(VfsError::InvalidInput),
+        }
+    }
+
+    fn subscribe_legacy(&self, arg: &mut IvcSubscribeArg) -> VfsResult<()> {
         let shm_base_gpa = HyperCallOutputSlot::new(0)?;
         let shm_size = HyperCallOutputSlot::new(0)?;
         ivc::subscribe_channel(
@@ -330,17 +717,20 @@ impl AxivcRegistry {
             index,
             ChannelState {
                 publisher_id: arg.target_publisher_id as usize,
-                notify_target_vm_id: Some(arg.target_publisher_id as usize),
                 key: arg.channel_key,
-                shm_base_gpa,
-                shm_size,
-                mmap_anchor: Arc::new(()),
                 fd_refs: 0,
                 poll_set,
-                producer,
-                consumer,
-                sequence: AtomicU64::new(1),
                 closing: false,
+                visible: false,
+                backend: ChannelBackend::Legacy(LegacyChannelState {
+                    notify_target_vm_id: Some(arg.target_publisher_id as usize),
+                    shm_base_gpa,
+                    shm_size,
+                    mmap_anchor: Arc::new(()),
+                    producer,
+                    consumer,
+                    sequence: AtomicU64::new(1),
+                }),
             },
         );
         write_device_name(
@@ -355,15 +745,34 @@ impl AxivcRegistry {
     }
 
     fn unsubscribe(&self, arg: &IvcSubscribeArg) -> VfsResult<()> {
+        match self.transport {
+            AxivcLinkSelection::Legacy => self.unsubscribe_legacy(arg, false),
+            AxivcLinkSelection::Ivshmem(_) => self.unsubscribe_ivshmem(arg, false),
+            AxivcLinkSelection::Invalid => Err(VfsError::InvalidInput),
+        }
+    }
+
+    fn rollback_subscribe(&self, arg: &IvcSubscribeArg) -> VfsResult<()> {
+        match self.transport {
+            AxivcLinkSelection::Legacy => self.unsubscribe_legacy(arg, true),
+            AxivcLinkSelection::Ivshmem(_) => self.unsubscribe_ivshmem(arg, true),
+            AxivcLinkSelection::Invalid => Err(VfsError::InvalidInput),
+        }
+    }
+
+    fn unsubscribe_legacy(&self, arg: &IvcSubscribeArg, rollback: bool) -> VfsResult<()> {
         let mut inner = self.inner.lock();
         let Some(state) = inner.subscriber_mut(arg.target_publisher_id as usize, arg.channel_key)
         else {
             return Err(VfsError::NoSuchDevice);
         };
+        if !rollback && !state.visible {
+            return Err(VfsError::WouldBlock);
+        }
         if state.closing {
             return Err(VfsError::WouldBlock);
         }
-        if Arc::strong_count(&state.mmap_anchor) > 1 {
+        if state.has_mmap_refs() {
             return Err(VfsError::WouldBlock);
         }
         if state.fd_refs != 0 {
@@ -396,11 +805,240 @@ impl AxivcRegistry {
             }
         }
     }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn publish_ivshmem(
+        self: &Arc<Self>,
+        arg: &mut IvcPublishArg,
+        link: IvshmemLink,
+    ) -> VfsResult<()> {
+        if arg.channel_key != link.key() || arg.channel_size != LEGACY_PUBLISH_SIZE {
+            return Err(VfsError::InvalidInput);
+        }
+        let publisher_id =
+            usize::try_from(link.publisher_vm_id()).map_err(|_| VfsError::InvalidInput)?;
+        let _transition = self.session_transition.lock();
+        let attachment = self.ivshmem_attachment()?;
+        if !attachment.role_matches(true) {
+            return Err(VfsError::PermissionDenied);
+        }
+
+        let (index, poll_set) = {
+            let inner = self.inner.lock();
+            if inner.publisher_has_ivshmem() || inner.publisher_exists(arg.channel_key) {
+                return Err(VfsError::ResourceBusy);
+            }
+            let index = inner.free_publisher_index().ok_or(VfsError::NoMemory)?;
+            let poll_set = self
+                .poll_set(ChannelRole::Publisher, index)
+                .ok_or(VfsError::NoMemory)?;
+            (index, poll_set)
+        };
+        let session = IvshmemChannelState::attach(attachment, true)?;
+
+        self.inner.lock().insert_publisher_at(
+            index,
+            ChannelState {
+                publisher_id,
+                key: arg.channel_key,
+                fd_refs: 0,
+                poll_set,
+                closing: false,
+                visible: false,
+                backend: ChannelBackend::Ivshmem(session),
+            },
+        );
+        write_device_name(
+            &mut arg.device_name,
+            &channel_device_path(ChannelRole::Publisher, index),
+        );
+        info!(
+            "axivc: ivshmem published key={:#x} publisher={} slot={}",
+            arg.channel_key, publisher_id, index
+        );
+        Ok(())
+    }
+
+    #[cfg(not(feature = "axivc-ivshmem"))]
+    fn publish_ivshmem(
+        self: &Arc<Self>,
+        _arg: &mut IvcPublishArg,
+        _link: IvshmemLink,
+    ) -> VfsResult<()> {
+        Err(VfsError::NoSuchDevice)
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn subscribe_ivshmem(
+        self: &Arc<Self>,
+        arg: &mut IvcSubscribeArg,
+        link: IvshmemLink,
+    ) -> VfsResult<()> {
+        if arg.target_publisher_id != link.publisher_vm_id() || arg.channel_key != link.key() {
+            return Err(VfsError::InvalidInput);
+        }
+        let publisher_id =
+            usize::try_from(link.publisher_vm_id()).map_err(|_| VfsError::InvalidInput)?;
+        let _transition = self.session_transition.lock();
+        let attachment = self.ivshmem_attachment()?;
+        if !attachment.role_matches(false) {
+            return Err(VfsError::PermissionDenied);
+        }
+
+        let (index, poll_set) = {
+            let inner = self.inner.lock();
+            if inner.subscriber_has_ivshmem()
+                || inner.subscriber_exists(publisher_id, arg.channel_key)
+            {
+                return Err(VfsError::ResourceBusy);
+            }
+            let index = inner.free_subscriber_index().ok_or(VfsError::NoMemory)?;
+            let poll_set = self
+                .poll_set(ChannelRole::Subscriber, index)
+                .ok_or(VfsError::NoMemory)?;
+            (index, poll_set)
+        };
+        let session = IvshmemChannelState::attach(attachment, false)?;
+        self.inner.lock().insert_subscriber_at(
+            index,
+            ChannelState {
+                publisher_id,
+                key: arg.channel_key,
+                fd_refs: 0,
+                poll_set,
+                closing: false,
+                visible: false,
+                backend: ChannelBackend::Ivshmem(session),
+            },
+        );
+        write_device_name(
+            &mut arg.device_name,
+            &channel_device_path(ChannelRole::Subscriber, index),
+        );
+        info!(
+            "axivc: ivshmem subscribed key={:#x} publisher={} slot={}",
+            arg.channel_key, publisher_id, index
+        );
+        Ok(())
+    }
+
+    #[cfg(not(feature = "axivc-ivshmem"))]
+    fn subscribe_ivshmem(
+        self: &Arc<Self>,
+        _arg: &mut IvcSubscribeArg,
+        _link: IvshmemLink,
+    ) -> VfsResult<()> {
+        Err(VfsError::NoSuchDevice)
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn unpublish_ivshmem(&self, arg: &IvcPublishArg, rollback: bool) -> VfsResult<()> {
+        let _transition = self.session_transition.lock();
+        let mut inner = self.inner.lock();
+        let Some(state) = inner.publisher_mut(arg.channel_key) else {
+            return Err(VfsError::NoSuchDevice);
+        };
+        if !rollback && !state.visible {
+            return Err(VfsError::WouldBlock);
+        }
+        if rollback && state.visible {
+            return Err(VfsError::WouldBlock);
+        }
+        if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
+        if state.has_mmap_refs() || state.fd_refs != 0 {
+            return Err(VfsError::WouldBlock);
+        }
+        state.closing = true;
+        let poll_set = state.poll_set.clone();
+        let mut state = inner
+            .remove_publisher(arg.channel_key)
+            .ok_or(VfsError::NoSuchDevice)?;
+        drop(inner);
+        wake_pollers(&poll_set, IoEvents::ERR | IoEvents::HUP);
+        if let Err(error) = state.invalidate_ivshmem() {
+            warn!("axivc: ivshmem publisher teardown was incomplete: {error:?}");
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn unsubscribe_ivshmem(&self, arg: &IvcSubscribeArg, rollback: bool) -> VfsResult<()> {
+        let publisher_id =
+            usize::try_from(arg.target_publisher_id).map_err(|_| VfsError::InvalidInput)?;
+        let _transition = self.session_transition.lock();
+        let mut inner = self.inner.lock();
+        let Some(state) = inner.subscriber_mut(publisher_id, arg.channel_key) else {
+            return Err(VfsError::NoSuchDevice);
+        };
+        if !rollback && !state.visible {
+            return Err(VfsError::WouldBlock);
+        }
+        if rollback && state.visible {
+            return Err(VfsError::WouldBlock);
+        }
+        if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
+        if state.has_mmap_refs() || state.fd_refs != 0 {
+            return Err(VfsError::WouldBlock);
+        }
+        state.closing = true;
+        let poll_set = state.poll_set.clone();
+        let mut state = inner
+            .remove_subscriber(publisher_id, arg.channel_key)
+            .ok_or(VfsError::NoSuchDevice)?;
+        drop(inner);
+        wake_pollers(&poll_set, IoEvents::ERR | IoEvents::HUP);
+        if let Err(error) = state.invalidate_ivshmem() {
+            warn!("axivc: ivshmem subscriber teardown was incomplete: {error:?}");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "axivc-ivshmem"))]
+    fn unpublish_ivshmem(&self, _arg: &IvcPublishArg, _rollback: bool) -> VfsResult<()> {
+        Err(VfsError::NoSuchDevice)
+    }
+
+    #[cfg(not(feature = "axivc-ivshmem"))]
+    fn unsubscribe_ivshmem(&self, _arg: &IvcSubscribeArg, _rollback: bool) -> VfsResult<()> {
+        Err(VfsError::NoSuchDevice)
+    }
+
+    fn commit_publisher(&self, key: u64) -> VfsResult<()> {
+        let mut inner = self.inner.lock();
+        let state = inner.publisher_mut(key).ok_or(VfsError::NoSuchDevice)?;
+        state.visible = true;
+        Ok(())
+    }
+
+    fn commit_subscriber(&self, publisher_id: usize, key: u64) -> VfsResult<()> {
+        let mut inner = self.inner.lock();
+        let state = inner
+            .subscriber_mut(publisher_id, key)
+            .ok_or(VfsError::NoSuchDevice)?;
+        state.visible = true;
+        Ok(())
+    }
 }
 
 impl Drop for AxivcRegistry {
     fn drop(&mut self) {
+        #[cfg(feature = "axivc-ivshmem")]
+        if let IvshmemAttachmentState::Ready(attachment) = &*self.ivshmem_attachment.lock() {
+            if let Err(error) = attachment.disable_interrupts() {
+                warn!("axivc: failed to disable ivshmem interrupts during teardown: {error:?}");
+            }
+            attachment.disable_irq();
+        }
         if let Some(handle) = self.irq_handle.get().copied() {
+            let _ = ax_runtime::hal::irq::disable_irq(handle);
+            let _ = ax_runtime::hal::irq::free_irq(handle);
+        }
+        #[cfg(feature = "axivc-ivshmem")]
+        if let Some(handle) = self.ivshmem_irq_handle.get().copied() {
             let _ = ax_runtime::hal::irq::disable_irq(handle);
             let _ = ax_runtime::hal::irq::free_irq(handle);
         }
@@ -416,13 +1054,6 @@ fn new_poll_sets(channel_count: usize) -> Vec<Arc<PollSet>> {
         poll_sets.push(Arc::new(PollSet::new()));
     }
     poll_sets
-}
-
-fn notify_irq_handler(registry: &Weak<AxivcRegistry>) -> IrqReturn {
-    let Some(registry) = registry.upgrade() else {
-        return IrqReturn::Unhandled;
-    };
-    registry.handle_notify_irq()
 }
 
 fn probe_notify_irq() -> Option<IrqId> {
@@ -502,6 +1133,22 @@ impl RegistryInner {
             .any(|state| state.publisher_id == publisher_id && state.key == key)
     }
 
+    #[cfg(feature = "axivc-ivshmem")]
+    fn publisher_has_ivshmem(&self) -> bool {
+        self.publishers
+            .iter()
+            .flatten()
+            .any(|state| matches!(&state.backend, ChannelBackend::Ivshmem(_)))
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn subscriber_has_ivshmem(&self) -> bool {
+        self.subscribers
+            .iter()
+            .flatten()
+            .any(|state| matches!(&state.backend, ChannelBackend::Ivshmem(_)))
+    }
+
     fn free_publisher_index(&self) -> Option<usize> {
         self.publishers.iter().position(Option::is_none)
     }
@@ -577,7 +1224,7 @@ impl RegistryInner {
         let state = self
             .channel_mut(role, index)
             .ok_or(VfsError::NoSuchDevice)?;
-        if state.closing {
+        if state.closing || !state.visible {
             return Err(VfsError::WouldBlock);
         }
         state.fd_refs = state.fd_refs.checked_add(1).ok_or(VfsError::NoMemory)?;
@@ -597,22 +1244,66 @@ impl RegistryInner {
 
 struct ChannelState {
     publisher_id: usize,
-    notify_target_vm_id: Option<usize>,
     key: u64,
+    fd_refs: usize,
+    poll_set: Arc<PollSet>,
+    closing: bool,
+    visible: bool,
+    backend: ChannelBackend,
+}
+
+enum ChannelBackend {
+    Legacy(LegacyChannelState),
+    #[cfg(feature = "axivc-ivshmem")]
+    Ivshmem(IvshmemChannelState),
+}
+
+struct LegacyChannelState {
+    notify_target_vm_id: Option<usize>,
     shm_base_gpa: usize,
     shm_size: usize,
     mmap_anchor: Arc<()>,
-    fd_refs: usize,
-    poll_set: Arc<PollSet>,
     producer: IvcProducer<'static>,
     consumer: IvcConsumer<'static>,
     sequence: AtomicU64,
-    closing: bool,
+}
+
+impl ChannelState {
+    fn has_mmap_refs(&self) -> bool {
+        match &self.backend {
+            ChannelBackend::Legacy(legacy) => Arc::strong_count(&legacy.mmap_anchor) > 1,
+            #[cfg(feature = "axivc-ivshmem")]
+            ChannelBackend::Ivshmem(_) => false,
+        }
+    }
+
+    #[cfg(feature = "axivc-ivshmem")]
+    fn invalidate_ivshmem(&mut self) -> VfsResult<()> {
+        if let ChannelBackend::Ivshmem(session) = &mut self.backend {
+            session.invalidate()
+        } else {
+            Ok(())
+        }
+    }
 }
 
 pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
-    let registry = Arc::new(AxivcRegistry::new(MAX_CHANNELS));
-    registry.register_notify_irq();
+    let transport = AxivcLinkSelection::from_bootargs();
+    match transport {
+        AxivcLinkSelection::Legacy => {}
+        AxivcLinkSelection::Ivshmem(link) => info!(
+            "axivc: transport=ivshmem key={} publisher_vm_id={}",
+            link.key(),
+            link.publisher_vm_id()
+        ),
+        AxivcLinkSelection::Invalid => {
+            warn!("axivc: malformed or duplicate axivc.link token; HVC fallback disabled");
+        }
+    }
+    let registry = Arc::new(AxivcRegistry::new(MAX_CHANNELS, transport));
+    if transport.is_legacy() {
+        registry.register_notify_irq();
+    }
     root.add(
         "axivc",
         Device::new(
@@ -621,6 +1312,23 @@ pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
             DeviceId::new(10, AXIVC_MANAGER_MINOR),
             Arc::new(AxivcManager {
                 registry: registry.clone(),
+            }),
+        ),
+    );
+    #[cfg(feature = "axivc-ivshmem")]
+    root.add(
+        "axivc0",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(10, AXIVC_AUTO_MINOR),
+            Arc::new(AxivcAutoEndpoint {
+                registry: registry.clone(),
+                state: Mutex::new(AutoEndpointState {
+                    channel: None,
+                    retired: Vec::new(),
+                    next_generation: 0,
+                }),
             }),
         ),
     );
@@ -679,8 +1387,12 @@ impl DeviceOps for AxivcManager {
                         "axivc: publish ioctl writeback failed key={:#x}",
                         publish_arg.channel_key
                     );
-                    let _ = self.registry.unpublish(&publish_arg);
+                    let _ = self.registry.rollback_publish(&publish_arg);
                     return Err(vm_error(err));
+                }
+                if let Err(error) = self.registry.commit_publisher(publish_arg.channel_key) {
+                    let _ = self.registry.rollback_publish(&publish_arg);
+                    return Err(error);
                 }
                 info!(
                     "axivc: publish ioctl complete key={:#x} device={}",
@@ -705,8 +1417,22 @@ impl DeviceOps for AxivcManager {
                         "axivc: subscribe ioctl writeback failed publisher={} key={:#x}",
                         subscribe_arg.target_publisher_id, subscribe_arg.channel_key
                     );
-                    let _ = self.registry.unsubscribe(&subscribe_arg);
+                    let _ = self.registry.rollback_subscribe(&subscribe_arg);
                     return Err(vm_error(err));
+                }
+                let publisher_id = match usize::try_from(subscribe_arg.target_publisher_id) {
+                    Ok(publisher_id) => publisher_id,
+                    Err(_) => {
+                        let _ = self.registry.rollback_subscribe(&subscribe_arg);
+                        return Err(VfsError::InvalidInput);
+                    }
+                };
+                if let Err(error) = self
+                    .registry
+                    .commit_subscriber(publisher_id, subscribe_arg.channel_key)
+                {
+                    let _ = self.registry.rollback_subscribe(&subscribe_arg);
+                    return Err(error);
                 }
                 info!(
                     "axivc: subscribe ioctl complete publisher={} key={:#x} device={}",
@@ -732,7 +1458,201 @@ impl DeviceOps for AxivcManager {
     }
 }
 
-#[derive(Clone, Copy)]
+#[cfg(feature = "axivc-ivshmem")]
+impl AxivcAutoEndpoint {
+    fn current_channel(&self) -> VfsResult<AutoChannel> {
+        self.state
+            .lock()
+            .channel
+            .clone()
+            .ok_or(VfsError::NoSuchDevice)
+    }
+
+    fn channel_ops(&self, channel: &AutoChannel) -> AxivcChannel {
+        AxivcChannel {
+            registry: Arc::clone(&self.registry),
+            role: channel.role,
+            index: channel.index,
+        }
+    }
+
+    fn payload_info(&self, channel: &AutoChannel) -> IvcPayloadInfo {
+        IvcPayloadInfo {
+            version: PAYLOAD_INFO_VERSION,
+            generation: channel.lease.generation,
+            local_offset: 0,
+            peer_offset: PAYLOAD_PEER_MMAP_OFFSET,
+            payload_size: channel.lease.attachment.payload_capacity() as u64,
+        }
+    }
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+impl DeviceOps for AxivcAutoEndpoint {
+    fn len(&self) -> VfsResult<u64> {
+        let channel = self.current_channel()?;
+        if !self.registry.auto_channel_epoch_valid(&channel) {
+            return Err(VfsError::Io);
+        }
+        Ok(channel.lease.attachment.payload_capacity() as u64)
+    }
+
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        let channel = self.current_channel()?;
+        if !self.registry.auto_channel_epoch_valid(&channel) {
+            return Err(VfsError::Io);
+        }
+        let result = self.channel_ops(&channel).read_at(buf, offset);
+        if matches!(result, Err(VfsError::Io)) {
+            self.registry.auto_channel_epoch_valid(&channel);
+        }
+        result
+    }
+
+    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
+        let channel = self.current_channel()?;
+        if !self.registry.auto_channel_epoch_valid(&channel) {
+            return Err(VfsError::Io);
+        }
+        let result = self.channel_ops(&channel).write_at(buf, offset);
+        if matches!(result, Err(VfsError::Io)) {
+            self.registry.auto_channel_epoch_valid(&channel);
+        }
+        result
+    }
+
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
+        if cmd != IVC_PAYLOAD_INFO {
+            return Err(VfsError::NotATty);
+        }
+        let channel = self.current_channel()?;
+        if !self.registry.auto_channel_epoch_valid(&channel) {
+            return Err(VfsError::Io);
+        }
+        let info = self.payload_info(&channel);
+        (arg as *mut IvcPayloadInfo)
+            .vm_write(current, info)
+            .map_err(vm_error)?;
+        Ok(0)
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM | NodeFlags::PACKET
+    }
+
+    fn as_pollable(&self) -> Option<&dyn Pollable> {
+        Some(self)
+    }
+
+    fn mmap(&self, offset: u64, length: u64) -> DeviceMmap {
+        let Ok(channel) = self.current_channel() else {
+            return DeviceMmap::None;
+        };
+        if !self.registry.auto_channel_epoch_valid(&channel) {
+            return DeviceMmap::None;
+        }
+        let Ok(length) = usize::try_from(length) else {
+            return DeviceMmap::None;
+        };
+        if length == 0 || length > channel.lease.attachment.payload_capacity() {
+            return DeviceMmap::None;
+        }
+        let peer = match offset {
+            0 => false,
+            PAYLOAD_PEER_MMAP_OFFSET => true,
+            _ => return DeviceMmap::None,
+        };
+        match channel.lease.map(peer) {
+            Ok(mapping) => mapping,
+            Err(_) => {
+                self.registry.auto_channel_epoch_valid(&channel);
+                DeviceMmap::None
+            }
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn open(&self, _exclusive: bool) -> VfsResult<()> {
+        let mut state = self.state.lock();
+        state.retired.retain(|lease| lease.strong_count() != 0);
+        if state.channel.is_some() || !state.retired.is_empty() {
+            return Err(VfsError::ResourceBusy);
+        }
+        let generation = state
+            .next_generation
+            .checked_add(1)
+            .ok_or(VfsError::NoMemory)?;
+        let channel = self.registry.provision_auto(generation)?;
+        state.next_generation = generation;
+        state.channel = Some(channel);
+        Ok(())
+    }
+
+    fn close(&self, _exclusive: bool) {
+        let mut state = self.state.lock();
+        let Some(channel) = state.channel.take() else {
+            return;
+        };
+        state.retired.retain(|lease| lease.strong_count() != 0);
+        state.retired.push(Arc::downgrade(&channel.lease));
+        drop(state);
+        if let Err(error) = self.registry.release_auto(&channel) {
+            warn!("axivc0: failed to release automatic ivshmem channel: {error:?}");
+        }
+    }
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+impl AxivcAutoEndpoint {
+    fn ready_events(&self) -> IoEvents {
+        let Ok(channel) = self.current_channel() else {
+            return IoEvents::ERR | IoEvents::HUP;
+        };
+        let events = self.channel_ops(&channel).ready_events();
+        if events.intersects(IoEvents::ERR | IoEvents::HUP) {
+            self.registry.auto_channel_epoch_valid(&channel);
+        }
+        events
+    }
+
+    fn channel_poll_set(&self) -> Option<Arc<PollSet>> {
+        let channel = self.current_channel().ok()?;
+        self.channel_ops(&channel).poll_set()
+    }
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+impl Pollable for AxivcAutoEndpoint {
+    fn poll(&self) -> IoEvents {
+        self.ready_events()
+    }
+
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        if self
+            .ready_events()
+            .intersects(events | IoEvents::ALWAYS_POLL)
+        {
+            sink.waker().wake_by_ref();
+            return;
+        }
+        if let Some(poll_set) = self.channel_poll_set() {
+            unsafe { sink.register_shared(poll_set.as_ref(), events) };
+            if self
+                .ready_events()
+                .intersects(events | IoEvents::ALWAYS_POLL)
+            {
+                sink.waker().wake_by_ref();
+            }
+        } else {
+            sink.waker().wake_by_ref();
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum ChannelRole {
     Publisher,
     Subscriber,
@@ -753,69 +1673,106 @@ impl DeviceOps for AxivcChannel {
         let state = inner
             .channel_mut(self.role, self.index)
             .ok_or(VfsError::NoSuchDevice)?;
-        if state.closing {
+        if state.closing || !state.visible {
             return Err(VfsError::WouldBlock);
         }
-        let message = state.consumer.try_recv(buf).map_err(ring_error)?;
-        let Some(message) = message else {
-            return Err(VfsError::WouldBlock);
-        };
-
-        let len = message.len();
-        let poll_set = state.poll_set.clone();
-        notify_peer(state, self.role_name());
-        info!(
-            "axivc: read role={} key={:#x} seq={} kind={:?} len={}",
-            self.role_name(),
-            state.key,
-            message.sequence(),
-            message.kind(),
-            len
-        );
-        drop(inner);
-        wake_pollers(&poll_set, IoEvents::OUT);
-        Ok(len)
+        match &mut state.backend {
+            ChannelBackend::Legacy(legacy) => {
+                let message = legacy.consumer.try_recv(buf).map_err(ring_error)?;
+                let Some(message) = message else {
+                    return Err(VfsError::WouldBlock);
+                };
+                let len = message.len();
+                let key = state.key;
+                let poll_set = state.poll_set.clone();
+                notify_legacy_peer(
+                    state.publisher_id,
+                    key,
+                    legacy.notify_target_vm_id,
+                    self.role_name(),
+                );
+                info!(
+                    "axivc: read role={} key={key:#x} seq={} kind={:?} len={len}",
+                    self.role_name(),
+                    message.sequence(),
+                    message.kind()
+                );
+                drop(inner);
+                wake_pollers(&poll_set, IoEvents::OUT);
+                Ok(len)
+            }
+            #[cfg(feature = "axivc-ivshmem")]
+            ChannelBackend::Ivshmem(session) => {
+                let poll_set = state.poll_set.clone();
+                let (len, events) = session.read(buf)?;
+                drop(inner);
+                if !events.is_empty() {
+                    wake_pollers(&poll_set, events);
+                }
+                Ok(len)
+            }
+        }
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
-        if buf.len() > IVC_SLOT_PAYLOAD_SIZE {
+        if buf.len() > APP_PAYLOAD_LIMIT {
             return Err(VfsError::InvalidInput);
         }
         let mut inner = self.registry.inner.lock();
         let state = inner
             .channel_mut(self.role, self.index)
             .ok_or(VfsError::NoSuchDevice)?;
-        if state.closing {
+        if state.closing || !state.visible {
             return Err(VfsError::WouldBlock);
         }
-        let sequence = state.sequence.fetch_add(1, Ordering::Relaxed);
-        let kind = match self.role {
-            ChannelRole::Publisher => IvcMessageKind::Request,
-            ChannelRole::Subscriber => IvcMessageKind::Ack,
-        };
-
-        state
-            .producer
-            .send(kind, sequence, buf)
-            .map_err(ring_error)?;
-        let poll_set = state.poll_set.clone();
-        notify_peer(state, self.role_name());
-        info!(
-            "axivc: write role={} key={:#x} seq={} len={}",
-            self.role_name(),
-            state.key,
-            sequence,
-            buf.len()
-        );
-        drop(inner);
-        wake_pollers(&poll_set, IoEvents::IN);
-        Ok(buf.len())
+        match &mut state.backend {
+            ChannelBackend::Legacy(legacy) => {
+                let sequence = legacy.sequence.fetch_add(1, Ordering::Relaxed);
+                let kind = match self.role {
+                    ChannelRole::Publisher => IvcMessageKind::Request,
+                    ChannelRole::Subscriber => IvcMessageKind::Ack,
+                };
+                legacy
+                    .producer
+                    .send(kind, sequence, buf)
+                    .map_err(ring_error)?;
+                let key = state.key;
+                let poll_set = state.poll_set.clone();
+                notify_legacy_peer(
+                    state.publisher_id,
+                    key,
+                    legacy.notify_target_vm_id,
+                    self.role_name(),
+                );
+                info!(
+                    "axivc: write role={} key={key:#x} seq={sequence} len={}",
+                    self.role_name(),
+                    buf.len()
+                );
+                drop(inner);
+                wake_pollers(&poll_set, IoEvents::IN);
+                Ok(buf.len())
+            }
+            #[cfg(feature = "axivc-ivshmem")]
+            ChannelBackend::Ivshmem(session) => {
+                let poll_set = state.poll_set.clone();
+                let (len, events) = session.write(buf)?;
+                drop(inner);
+                if !events.is_empty() {
+                    wake_pollers(&poll_set, events);
+                }
+                Ok(len)
+            }
+        }
     }
 
     fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
+        if !self.registry.transport.is_legacy() {
+            return Err(VfsError::NotATty);
+        }
         let op = match cmd {
             IVC_CACHE_FLUSH => DCacheOp::Clean,
             IVC_CACHE_INVALIDATE => DCacheOp::Invalidate,
@@ -832,7 +1789,11 @@ impl DeviceOps for AxivcChannel {
             if state.closing {
                 return Err(VfsError::WouldBlock);
             }
-            (state.shm_base_gpa, state.shm_size)
+            match &state.backend {
+                ChannelBackend::Legacy(legacy) => (legacy.shm_base_gpa, legacy.shm_size),
+                #[cfg(feature = "axivc-ivshmem")]
+                ChannelBackend::Ivshmem(_) => return Err(VfsError::NotATty),
+            }
         };
         if cache_arg.size == 0 {
             return Ok(0);
@@ -849,7 +1810,12 @@ impl DeviceOps for AxivcChannel {
     }
 
     fn flags(&self) -> NodeFlags {
-        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+        let flags = NodeFlags::NON_CACHEABLE | NodeFlags::STREAM;
+        if self.registry.transport.uses_ivshmem() {
+            flags | NodeFlags::PACKET
+        } else {
+            flags
+        }
     }
 
     fn as_pollable(&self) -> Option<&dyn Pollable> {
@@ -857,6 +1823,9 @@ impl DeviceOps for AxivcChannel {
     }
 
     fn mmap(&self, offset: u64, length: u64) -> DeviceMmap {
+        if !self.registry.transport.is_legacy() {
+            return DeviceMmap::None;
+        }
         let Ok(offset) = usize::try_from(offset) else {
             return DeviceMmap::None;
         };
@@ -871,16 +1840,22 @@ impl DeviceOps for AxivcChannel {
         let Some(state) = inner.channel(self.role, self.index) else {
             return DeviceMmap::None;
         };
-        if state.closing || offset != 0 {
+        if state.closing || !state.visible || offset != 0 {
             return DeviceMmap::None;
         }
-        let retainer: Arc<dyn Any + Send + Sync> = state.mmap_anchor.clone();
-        let retainer = Some(retainer);
-        let range = PhysAddrRange::from_start_size(
-            PhysAddr::from_usize(state.shm_base_gpa),
-            state.shm_size,
-        );
-        DeviceMmap::PhysicalCached(range, retainer)
+        match &state.backend {
+            ChannelBackend::Legacy(legacy) => {
+                let retainer: Arc<dyn Any + Send + Sync> = legacy.mmap_anchor.clone();
+                let retainer = Some(retainer);
+                let range = PhysAddrRange::from_start_size(
+                    PhysAddr::from_usize(legacy.shm_base_gpa),
+                    legacy.shm_size,
+                );
+                DeviceMmap::PhysicalCached(range, retainer)
+            }
+            #[cfg(feature = "axivc-ivshmem")]
+            ChannelBackend::Ivshmem(_) => DeviceMmap::None,
+        }
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -915,22 +1890,28 @@ impl AxivcChannel {
     }
 
     fn ready_events(&self) -> IoEvents {
-        let inner = self.registry.inner.lock();
-        let Some(state) = inner.channel(self.role, self.index) else {
+        let mut inner = self.registry.inner.lock();
+        let Some(state) = inner.channel_mut(self.role, self.index) else {
             return IoEvents::ERR | IoEvents::HUP;
         };
-        if state.closing {
+        if state.closing || !state.visible {
             return IoEvents::ERR | IoEvents::HUP;
         }
 
-        let mut ready = IoEvents::empty();
-        if state.consumer.can_recv() {
-            ready |= IoEvents::IN;
+        match &mut state.backend {
+            ChannelBackend::Legacy(legacy) => {
+                let mut ready = IoEvents::empty();
+                if legacy.consumer.can_recv() {
+                    ready |= IoEvents::IN;
+                }
+                if legacy.producer.can_send() {
+                    ready |= IoEvents::OUT;
+                }
+                ready
+            }
+            #[cfg(feature = "axivc-ivshmem")]
+            ChannelBackend::Ivshmem(session) => session.ready_events(),
         }
-        if state.producer.can_send() {
-            ready |= IoEvents::OUT;
-        }
-        ready
     }
 
     fn poll_set(&self) -> Option<Arc<PollSet>> {
@@ -1052,14 +2033,14 @@ fn unsubscribe_hvc(arg: &IvcSubscribeArg) {
     let _ = ivc::unsubscribe_channel(arg.target_publisher_id as usize, arg.channel_key as usize);
 }
 
-fn notify_peer(state: &ChannelState, role_name: &str) {
-    let Some(target_vm_id) = state.notify_target_vm_id else {
+fn notify_legacy_peer(publisher_id: usize, key: u64, target_vm_id: Option<usize>, role_name: &str) {
+    let Some(target_vm_id) = target_vm_id else {
         return;
     };
-    if let Err(err) = ivc::notify_channel(state.publisher_id, state.key as usize, target_vm_id) {
+    if let Err(err) = ivc::notify_channel(publisher_id, key as usize, target_vm_id) {
         warn!(
             "axivc: notify failed role={} publisher={} key={:#x} target={} err={err}",
-            role_name, state.publisher_id, state.key, target_vm_id
+            role_name, publisher_id, key, target_vm_id
         );
     }
 }
@@ -1180,7 +2161,7 @@ mod tests {
 
     #[test]
     fn deferred_notify_service_wakes_registered_channel_pollers() {
-        let registry = AxivcRegistry::new_with_notify_irq(2, None);
+        let registry = AxivcRegistry::new_with_notify_irq(2, AxivcLinkSelection::Legacy, None);
         let publisher_poll_set = registry.poll_set(ChannelRole::Publisher, 0).unwrap();
         let subscriber_poll_set = registry.poll_set(ChannelRole::Subscriber, 1).unwrap();
 
@@ -1195,7 +2176,7 @@ mod tests {
 
     #[test]
     fn notify_irq_bridge_always_requests_deferred_service() {
-        let registry = AxivcRegistry::new_with_notify_irq(2, None);
+        let registry = AxivcRegistry::new_with_notify_irq(2, AxivcLinkSelection::Legacy, None);
 
         assert_eq!(registry.handle_notify_irq(), IrqReturn::Wake);
     }

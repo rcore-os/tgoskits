@@ -354,6 +354,94 @@ fn binding_dispatches_config_effects_and_command_transitions() {
 }
 
 #[test]
+fn capability_header_dword_write_reaches_the_first_word_effect() {
+    let effect = PciCapabilityEffectRegion::new(
+        PciConfigEffectId::new(7),
+        2,
+        2,
+        PciCapabilityEffectAccess::ReadWrite,
+    )
+    .unwrap();
+    let capability = PciCapabilitySpec::new(
+        PciCapabilityId::new(9),
+        alloc::vec![0x11, 0x22, 0x33, 0x44],
+        alloc::vec![0; 4],
+    )
+    .unwrap()
+    .with_effect(effect)
+    .unwrap();
+    let function_id = DeviceNodeId::new("capability-header-effect-endpoint").unwrap();
+    let mut builder = PciTopologyBuilder::new();
+    builder
+        .add_function(
+            PciFunctionSpec::new(
+                function_id.clone(),
+                PciEndpointIdentity::new(0x1af4, 0x1041, PciClass::new(0xff, 0, 0)),
+            )
+            .with_capability(capability),
+        )
+        .unwrap();
+    let topology = Arc::new(builder.resolve(0xc000_0000..0xc100_0000).unwrap());
+    let bdf = topology.function(&function_id).unwrap().bdf();
+    let root = Arc::new(PciRootState::new(Arc::clone(&topology)));
+    let binding = Arc::new(PciRootBinding::new(
+        DeviceNodeId::new("capability-header-effect-host").unwrap(),
+        Arc::clone(&root),
+    ));
+    let recording = Arc::new(RecordingFunction {
+        root,
+        bdf,
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
+        irq_line: None,
+        supports_effects: true,
+        pending: false,
+    });
+    let mut grants = Vec::new();
+    let _lease = binding
+        .bind_registered(
+            &function_id,
+            DeviceId::new(7),
+            recording.clone(),
+            &mut grants,
+        )
+        .unwrap();
+    let capability_offset = topology
+        .function(&function_id)
+        .unwrap()
+        .capabilities()
+        .next()
+        .unwrap()
+        .offset();
+
+    binding
+        .write_config(bdf, capability_offset, AccessWidth::Dword, 0xc000_dead)
+        .unwrap();
+    assert_eq!(
+        binding
+            .read_config(bdf, capability_offset, AccessWidth::Dword)
+            .unwrap(),
+        0x005a_0009
+    );
+
+    let write = recording.writes.lock_irqsave().pop().unwrap();
+    assert_eq!(write.0.capability(), PciCapabilityId::new(9));
+    assert_eq!(write.0.effect(), PciConfigEffectId::new(7));
+    assert_eq!(write.0.offset(), 2);
+    assert_eq!(write.0.width(), AccessWidth::Word);
+    assert_eq!(write.0.value(), 0xc000);
+    assert_eq!(
+        write.0.capability_snapshot().bytes(),
+        &[0x11, 0x22, 0x33, 0x44]
+    );
+}
+
+#[test]
 fn dynamic_interrupt_status_is_read_from_the_bound_endpoint() {
     let function_id = DeviceNodeId::new("intx-endpoint").unwrap();
     let mut builder = PciTopologyBuilder::new();

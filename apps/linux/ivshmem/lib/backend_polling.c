@@ -256,6 +256,33 @@ void *ivshmem_shared_memory(const struct ivshmem_device *dev, size_t *size)
     return dev->bars[IVSHMEM_BAR_SHARED].map;
 }
 
+int ivshmem_observe_peer_epoch(const struct ivshmem_device *dev,
+                               uint16_t peer, uint64_t *epoch)
+{
+    const struct ivshmem_mapping *mapping;
+    const uint64_t *epoch_value;
+    size_t offset;
+
+    if (dev == NULL || epoch == NULL) {
+        return IVSHMEM_ERR_ARGS;
+    }
+    if (peer >= IVSHMEM_MAX_PROFILE_PEERS) {
+        return IVSHMEM_ERR_ARGS;
+    }
+    mapping = &dev->bars[IVSHMEM_BAR_SHARED];
+    if (mapping->map == NULL) {
+        return IVSHMEM_ERR_BACKEND;
+    }
+    offset = IVSHMEM_STATE_EPOCH_OFFSET +
+             (size_t)peer * IVSHMEM_STATE_EPOCH_STRIDE;
+    if (offset + sizeof(*epoch_value) > mapping->size) {
+        return IVSHMEM_ERR_ARGS;
+    }
+    epoch_value = (const uint64_t *)((const char *)mapping->map + offset);
+    *epoch = __atomic_load_n(epoch_value, __ATOMIC_ACQUIRE);
+    return IVSHMEM_OK;
+}
+
 static int is_uio_name(const char *name)
 {
     const char *digit;

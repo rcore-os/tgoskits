@@ -33,6 +33,13 @@ pub enum DeviceMmap {
     /// This is for file descriptors whose mmap offset is a selector rather than
     /// a byte offset into a linear device, such as io_uring ring offsets.
     PhysicalResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps an uncached, already offset-resolved physical range with a
+    /// persistent data-only permission ceiling.
+    ///
+    /// The ceiling is retained by the VMA backend across split and fork, so
+    /// `mprotect` cannot add a permission that the device did not grant.
+    #[cfg(feature = "axivc-ivshmem")]
+    PhysicalResolvedRestricted(PhysAddrRange, Arc<dyn Any + Send + Sync>, DeviceMmapAccess),
     /// Cacheable counterpart of [`Self::PhysicalResolved`]: the mmap offset is
     /// a selector (the range is already resolved), but the backing is normal
     /// memory the CPU may cache. GPU host-visible shared memory (e.g. the
@@ -57,6 +64,16 @@ pub enum DeviceMmap {
     PhysicalPages(Vec<PhysAddr>, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to a cached file.
     Cache(CachedFile),
+}
+
+/// Persistent permission ceiling for a restricted device mapping.
+#[cfg(feature = "axivc-ivshmem")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceMmapAccess {
+    /// Payload may be read but never written or executed.
+    ReadOnly,
+    /// Payload may be read and written but never executed.
+    ReadWrite,
 }
 
 /// Trait for device operations.

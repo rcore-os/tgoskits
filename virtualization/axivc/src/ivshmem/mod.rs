@@ -140,10 +140,13 @@ pub enum IvshmemSessionState {
 ///
 /// The local output must be writable and the peer output must be mapped
 /// read-only. The pair is not cloneable. Construct one port per peer lane and
-/// use [`Self::try_connect`] once both peers are ready. After endpoints close,
-/// reconnect by dropping the old port and creating a new one for the same
-/// quiescent backing; its next [`Self::begin_session`] advances the incarnation.
-/// A port that issued endpoints never acknowledges a different incarnation.
+/// use [`Self::try_connect`] once both peers are ready. At explicit close, drop
+/// every local endpoint derived from this port, call
+/// [`Self::invalidate_session`], and then drop the port. Peer endpoints do not
+/// need to quiesce: their owner-only atomic reads observe the invalid header
+/// and reject the old generation. A later port over the persisted backing
+/// advances the preserved local incarnation in [`Self::begin_session`]. A port
+/// that issued endpoints never acknowledges a different incarnation.
 pub struct IvshmemMessagePort<'a> {
     local: IvshmemLocalChannel<'a>,
     peer: IvshmemPeerChannel<'a>,
@@ -177,8 +180,10 @@ impl<'a> IvshmemMessagePort<'a> {
     /// - The peer uses the same layout and the mapping remains alive until the
     ///   port and every endpoint returned from it are dropped.
     /// - No code outside this protocol performs ordinary reads or writes of
-    ///   the channel header, cursors, or slots. In particular, guest reset must
-    ///   stop old endpoints before a new port begins another session.
+    ///   the channel header, cursors, or slots. The local owner must drop every
+    ///   endpoint derived from this output before invalidating or replacing its
+    ///   session. Peer endpoints may remain live because their read-only
+    ///   owner-only atomic loads observe invalidation and incarnation changes.
     /// - The device layer invalidates doorbells and State before remapping or
     ///   releasing either output section.
     ///
@@ -235,10 +240,10 @@ impl<'a> IvshmemMessagePort<'a> {
     /// # Safety
     ///
     /// The caller must be the sole initializer of the local output region for
-    /// this generation. No endpoint from a previous generation may remain live
-    /// in any address space, and no other code may concurrently update the
-    /// local header, cursors, or slots. A reset guest creates a new port and
-    /// calls this method before polling the handshake.
+    /// this generation. No endpoint derived from this local output may remain
+    /// live; peer endpoints need not quiesce and observe the new incarnation
+    /// through owner-only atomic reads. No other code may concurrently update
+    /// the local header, cursors, or slots.
     pub unsafe fn begin_session(&mut self) -> Result<NonZeroU32, IvshmemMessageError> {
         if self.connected {
             return Err(IvshmemMessageError::SessionAlreadyConnected);
@@ -249,6 +254,25 @@ impl<'a> IvshmemMessagePort<'a> {
         self.local.publish_session(next.get());
         self.local_incarnation = Some(next);
         Ok(next)
+    }
+
+    /// Publishes an invalid session after all local endpoints are dropped.
+    ///
+    /// The incarnation, cursors, and slot contents are left intact. A later
+    /// port over the same backing therefore reads the previous incarnation and
+    /// advances it in [`Self::begin_session`]. Peers observe the invalid state
+    /// as a changed or lost session through read-only atomic loads.
+    ///
+    /// # Safety
+    ///
+    /// Every endpoint returned by [`Self::try_connect`] from this port must be
+    /// dropped, and the caller must still hold exclusive protocol ownership of
+    /// the local output section. No concurrent protocol operation or reset may
+    /// access the local header, cursors, or slots.
+    pub unsafe fn invalidate_session(&mut self) {
+        self.local.invalidate_session();
+        self.local_incarnation = None;
+        self.connected = false;
     }
 
     /// Advances the nonblocking incarnation handshake.

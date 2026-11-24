@@ -26,6 +26,7 @@ class CiImpactTests(unittest.TestCase):
             "ktest-only": "components/ktest-only",
             "arceos-test-suit": "test-suit/arceos/rust",
             "starryos": "os/StarryOS/starryos",
+            "starry-kernel": "os/StarryOS/kernel",
             "axvisor": "os/axvisor",
         }
         self.packages = []
@@ -66,7 +67,7 @@ class CiImpactTests(unittest.TestCase):
         arm_vgic = self.package_ids["arm-vgic"]
         dependency_names = {
             "arceos-test-suit": ["shared"],
-            "starryos": ["shared"],
+            "starryos": ["shared", "starry-kernel"],
             "axvisor": ["shared"] + (["arm-vgic"] if arch == "aarch64" else []),
             "ktest-only": ["axtest"],
         }
@@ -256,6 +257,37 @@ class CiImpactTests(unittest.TestCase):
                     impact.input_selections, ("axvisor:qemu:aarch64",)
                 )
                 self.assertEqual(impact.targets, ("axvisor:aarch64",))
+
+    def test_starry_axivc_device_inputs_keep_starry_and_add_axvisor_qemu(
+        self,
+    ) -> None:
+        for path in (
+            Path("os/StarryOS/kernel/src/pseudofs/dev/axivc.rs"),
+            Path("os/StarryOS/kernel/src/pseudofs/dev/axivc_ivshmem.rs"),
+        ):
+            with self.subTest(path=path):
+                impact = ci_impact.analyze_changed_paths(
+                    self.workspace_root,
+                    [path],
+                    self.metadata_by_arch,
+                )
+
+                self.assertFalse(impact.full)
+                self.assertEqual(impact.changed_packages, ("starry-kernel",))
+                self.assertEqual(impact.affected_oses, ("starry",))
+                self.assertEqual(
+                    impact.input_selections, ("axvisor:qemu:aarch64",)
+                )
+                self.assertIn("axvisor:aarch64", impact.targets)
+                self.assertIn("starry:aarch64", impact.targets)
+
+        unrelated = ci_impact.analyze_changed_paths(
+            self.workspace_root,
+            [Path("os/StarryOS/kernel/src/pseudofs/dev/unrelated.rs")],
+            self.metadata_by_arch,
+        )
+        self.assertEqual(unrelated.input_selections, ())
+        self.assertNotIn("axvisor:aarch64", unrelated.targets)
 
     def test_os_specific_config_without_arch_hint_selects_all_os_arches(self) -> None:
         impact = ci_impact.analyze_changed_paths(

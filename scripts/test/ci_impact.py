@@ -70,6 +70,18 @@ CI_OWNED_APP_INPUTS = (
     # V1 transport no longer reach AxVisor through the StarryOS dependency graph.
     (Path("virtualization/axivc"), "axvisor:qemu:aarch64"),
 )
+
+# These Starry devices are exercised by `qemu/aarch64/ivc-starry`. Keep the
+# mapping file-scoped so the normal Starry package impact still selects the
+# existing Starry checks without treating every `starry-kernel` change as an
+# AxVisor QEMU input.
+AXVISOR_STARRY_DEVICE_INPUTS = frozenset(
+    {
+        Path("os/StarryOS/kernel/src/pseudofs/dev/axivc.rs"),
+        Path("os/StarryOS/kernel/src/pseudofs/dev/axivc_ivshmem.rs"),
+    }
+)
+
 ARCH_PATH_ALIASES = {
     "aarch64": (
         "a1000",
@@ -284,6 +296,8 @@ def analyze_changed_paths(
         unknown_paths: list[Path] = []
 
         for path in impact_paths:
+            if path in AXVISOR_STARRY_DEVICE_INPUTS:
+                input_selections.add("axvisor:qemu:aarch64")
             if _test_suite_os(path) is not None:
                 test_suite_paths.add(path.as_posix())
                 continue

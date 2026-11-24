@@ -179,6 +179,16 @@ impl<'a> IvshmemLocalChannel<'a> {
         );
     }
 
+    /// Revokes this owner's current session without starting another one or
+    /// changing the incarnation/cursors used by the next `begin_session`.
+    pub(super) fn invalidate_session(self) {
+        self.store(
+            offset_of!(IvshmemMessageHeaderLayout, session_state),
+            IVSHMEM_SESSION_INVALID,
+            Ordering::Release,
+        );
+    }
+
     pub(super) fn acknowledge_peer(self, peer_incarnation: u32) {
         self.reset_cursors();
         self.store(

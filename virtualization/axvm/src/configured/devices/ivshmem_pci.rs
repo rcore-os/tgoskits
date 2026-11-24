@@ -8,7 +8,10 @@
 use std::{
     format,
     string::ToString,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use ax_std::os::arceos::sync::RawSpinLock;
@@ -23,11 +26,23 @@ use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiat
 
 const MODEL: &str = "ivshmem-pci";
 const HOST_KEY: &str = "aarch64-ecam";
+/// Legacy QEMU ivshmem VID:DID retained as an explicit compatibility alias.
+/// Drivers must additionally verify the AxVisor class, revision, and 0x09
+/// transport capability before binding.
 const IVSHMEM_VENDOR_ID: u16 = 0x1af4;
 const IVSHMEM_DEVICE_ID: u16 = 0x1110;
-/// Device revision of the ivshmem register model: revision 1 is the
-/// MSI-X-capable face shared by QEMU ivshmem and Jailhouse.
+const IVSHMEM_CLASS: PciClass = PciClass::new(0xff, 0x00, 0x00);
+/// Revision 1 is retained for the fixed upstream `uio_ivshmem` module, whose
+/// probe requires it. The vendor-specific class and AXIV capability remain the
+/// strict AxVisor discriminators.
 const IVSHMEM_REVISION: u8 = 1;
+const AXVISOR_TRANSPORT_CAPABILITY_ID: u8 = 0x09;
+const AXVISOR_TRANSPORT_CAPABILITY_LENGTH: u8 = 36;
+const AXVISOR_TRANSPORT_CAPABILITY_VERSION: u8 = 1;
+const AXVISOR_TRANSPORT_CAPABILITY_MAGIC: u32 = 0x5649_5841; // "AXIV"
+const AXVISOR_TRANSPORT_PROTOCOL: u16 = 0x4000;
+const AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH: u32 = 1 << 0;
+const AXVISOR_TRANSPORT_CAPABILITY_BODY_SIZE: usize = 34;
 /// BAR0 is the ivshmem register page. BAR1 carries the MSI-X table/PBA
 /// window, and BAR2 is the prefetchable shared memory of one link.
 const REGISTER_BAR_INDEX: u8 = 0;
@@ -45,6 +60,36 @@ fn host_key() -> PciHostKey {
     // A mismatch fails during typed graph declaration rather than silently
     // attaching the endpoint to another host.
     PciHostKey::new(HOST_KEY).expect("static AArch64 PCI host key is valid")
+}
+
+fn axvisor_transport_capability(
+    profile: LinkProfile,
+    epoch_base_offset: u64,
+    epoch_stride: u64,
+) -> PciResult<PciCapabilitySpec> {
+    let invalid = |field: &str| PciError::InvalidCapability {
+        detail: format!("ivshmem {field} does not fit the AxVisor transport capability"),
+    };
+    let epoch_base_offset = u32::try_from(epoch_base_offset).map_err(|_| invalid("epoch base"))?;
+    let epoch_stride = u32::try_from(epoch_stride).map_err(|_| invalid("epoch stride"))?;
+    let common_size = u32::try_from(profile.common_size()).map_err(|_| invalid("common size"))?;
+    let output_size = u32::try_from(profile.output_size()).map_err(|_| invalid("output size"))?;
+    let mut body = [0u8; AXVISOR_TRANSPORT_CAPABILITY_BODY_SIZE];
+    body[0] = AXVISOR_TRANSPORT_CAPABILITY_LENGTH;
+    body[1] = AXVISOR_TRANSPORT_CAPABILITY_VERSION;
+    body[2..6].copy_from_slice(&AXVISOR_TRANSPORT_CAPABILITY_MAGIC.to_le_bytes());
+    body[6..8].copy_from_slice(&AXVISOR_TRANSPORT_PROTOCOL.to_le_bytes());
+    body[10..14].copy_from_slice(&AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH.to_le_bytes());
+    body[14..18].copy_from_slice(&epoch_base_offset.to_le_bytes());
+    body[18..22].copy_from_slice(&epoch_stride.to_le_bytes());
+    body[22..26].copy_from_slice(&common_size.to_le_bytes());
+    body[26..30].copy_from_slice(&output_size.to_le_bytes());
+    body[30..34].copy_from_slice(&u32::from(profile.max_peers()).to_le_bytes());
+    PciCapabilitySpec::new(
+        PciCapabilityId::new(AXVISOR_TRANSPORT_CAPABILITY_ID),
+        body.to_vec(),
+        std::vec![0u8; AXVISOR_TRANSPORT_CAPABILITY_BODY_SIZE],
+    )
 }
 
 const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
@@ -154,17 +199,18 @@ impl DeviceModel for IvshmemPciModel {
         .prefetchable();
         let function = PciFunctionRequirement::new(
             host_key(),
-            PciEndpointIdentity::new(
-                IVSHMEM_VENDOR_ID,
-                IVSHMEM_DEVICE_ID,
-                PciClass::new(0x05, 0x00, 0x00),
-            )
-            .with_revision(IVSHMEM_REVISION),
+            PciEndpointIdentity::new(IVSHMEM_VENDOR_ID, IVSHMEM_DEVICE_ID, IVSHMEM_CLASS)
+                .with_revision(IVSHMEM_REVISION),
         )
         .with_bar(register_bar)?
         .with_bar(msix_bar)?
         .with_bar(shared_memory_bar)?
-        .with_capability(msix_capability_spec(1, MSIX_MESSAGE_CONTROL_EFFECT)?);
+        .with_capability(msix_capability_spec(1, MSIX_MESSAGE_CONTROL_EFFECT)?)
+        .with_capability(axvisor_transport_capability(
+            self.reservation.link().profile(),
+            self.reservation.link().layout().peer_epoch_base_offset(),
+            self.reservation.link().layout().peer_epoch_stride(),
+        )?);
         DeviceRequirements::new()
             .with_msi(
                 ResourceSlot::new(MSI_RESOURCE_SLOT)?,
@@ -206,16 +252,20 @@ impl DeviceModel for IvshmemPciModel {
         let msi = context.msi(MSI_RESOURCE_SLOT)?;
         let registers = Arc::new(Mutex::new(IvshmemRegisters::new()));
         let msix = Arc::new(Mutex::new(MsixState::new()));
+        let online = Arc::new(AtomicBool::new(true));
         let event_sink = Arc::new(MsixDoorbellSink::new(
             Arc::clone(&registers),
             Arc::clone(&msix),
             msi,
+            Arc::clone(&online),
         ));
         let function = IvshmemPciFunction {
             attachment,
             registers,
             msix,
             event_sink: Arc::clone(&event_sink),
+            online,
+            stopped: AtomicBool::new(false),
             stage2_remap,
             owner: context.node_id(),
             direct_plan: RawSpinLock::new(None),
@@ -245,6 +295,11 @@ struct IvshmemPciFunction {
     /// Doorbell-to-MSI-X adapter used by unmask transitions for pending
     /// redelivery.
     event_sink: Arc<MsixDoorbellSink>,
+    /// Cleared before any stop/reset teardown so a draining vCPU cannot make
+    /// a stopped endpoint look online.
+    online: Arc<AtomicBool>,
+    /// Makes successful repeated stop calls idempotent.
+    stopped: AtomicBool,
     /// Stage-2 update port; BAR2 maps directly into the guest.
     stage2_remap: Arc<dyn Stage2Remap>,
     /// Graph node identity of this endpoint; direct mappings register per
@@ -264,6 +319,7 @@ struct MsixDoorbellSink {
     registers: Arc<Mutex<IvshmemRegisters>>,
     msix: Arc<Mutex<MsixState>>,
     msi: MsiEndpoint,
+    online: Arc<AtomicBool>,
 }
 
 impl MsixDoorbellSink {
@@ -271,11 +327,13 @@ impl MsixDoorbellSink {
         registers: Arc<Mutex<IvshmemRegisters>>,
         msix: Arc<Mutex<MsixState>>,
         msi: MsiEndpoint,
+        online: Arc<AtomicBool>,
     ) -> Self {
         Self {
             registers,
             msix,
             msi,
+            online,
         }
     }
 
@@ -329,17 +387,50 @@ impl MsixDoorbellSink {
                 detail: "ivshmem MSI-X state lock is poisoned".into(),
             })
     }
-}
 
-impl IvshmemEventSink for MsixDoorbellSink {
-    fn deliver(&self, _event: DoorbellEvent) -> Result<(), IvshmemError> {
-        self.lock_registers("record doorbell event")?.record_event();
-        self.lock_msix("queue MSI-X doorbell")?.set_pending(0);
+    fn raise_event(&self, operation: &'static str) -> Result<(), IvshmemError> {
+        if !self.online.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.lock_registers(operation)?.record_event();
+        self.lock_msix("queue ivshmem MSI-X event")?.set_pending(0);
         self.redeliver_pending()
     }
 }
 
+impl IvshmemEventSink for MsixDoorbellSink {
+    fn deliver(&self, _event: DoorbellEvent) -> Result<(), IvshmemError> {
+        self.raise_event("record doorbell event")
+    }
+
+    fn peer_epoch_changed(&self, _peer: PeerId, _epoch: u64) -> Result<(), IvshmemError> {
+        self.raise_event("record peer epoch event")
+    }
+}
+
 impl IvshmemPciFunction {
+    fn ensure_online(&self, operation: &'static str) -> DeviceResult {
+        if !self.online.load(Ordering::Acquire) || !self.attachment.is_current() {
+            self.online.store(false, Ordering::Release);
+            return Err(DeviceError::InvalidState {
+                operation,
+                detail: "ivshmem endpoint is stopped or its peer attachment is stale".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn reset_endpoint_state(&self, operation: &'static str) -> DeviceResult {
+        self.lock_registers(operation)?.reset();
+        self.lock_msix(operation)?.reset();
+        self.attachment
+            .reset()
+            .map_err(|error| DeviceError::InvalidState {
+                operation,
+                detail: error.to_string(),
+            })
+    }
+
     fn lock_registers(
         &self,
         operation: &'static str,
@@ -577,6 +668,7 @@ impl PciFunction for IvshmemPciFunction {
         effect: PciConfigReadEffect,
         _context: &mut dyn PciEndpointContext,
     ) -> DeviceResult<u64> {
+        self.ensure_online("read ivshmem PCI config effect")?;
         if effect.effect() != MSIX_MESSAGE_CONTROL_EFFECT {
             return Err(DeviceError::Unsupported {
                 operation: "read ivshmem PCI config effect",
@@ -591,6 +683,7 @@ impl PciFunction for IvshmemPciFunction {
         effect: PciConfigWriteEffect,
         _context: &mut dyn PciEndpointContext,
     ) -> DeviceResult {
+        self.ensure_online("write ivshmem PCI config effect")?;
         if effect.effect() != MSIX_MESSAGE_CONTROL_EFFECT {
             return Err(DeviceError::Unsupported {
                 operation: "write ivshmem PCI config effect",
@@ -605,6 +698,7 @@ impl PciFunction for IvshmemPciFunction {
         access: PciBarAccess,
         _context: &mut dyn PciEndpointContext,
     ) -> DeviceResult<u64> {
+        self.ensure_online("read ivshmem BARs")?;
         match access.bar().value() {
             REGISTER_BAR_INDEX => {
                 if access.width() != AccessWidth::Dword {
@@ -616,7 +710,7 @@ impl PciFunction for IvshmemPciFunction {
                 let link = self.attachment.link();
                 let registers = self.lock_registers("read ivshmem BAR0 registers")?;
                 registers
-                    .read(access.offset(), self.attachment.peer_id(), link.max_peers())
+                    .read(access.offset(), self.attachment.peer_id(), link.profile())
                     .map(u64::from)
                     .map_err(bar_access_error)
             }
@@ -649,6 +743,7 @@ impl PciFunction for IvshmemPciFunction {
         value: u64,
         _context: &mut dyn PciEndpointContext,
     ) -> DeviceResult {
+        self.ensure_online("write ivshmem BARs")?;
         match access.bar().value() {
             REGISTER_BAR_INDEX => {
                 if access.width() != AccessWidth::Dword {
@@ -743,18 +838,31 @@ impl PciFunction for IvshmemPciFunction {
 
     fn reset(&self, _command: PciCommandState) -> DeviceResult {
         // Endpoint reset clears the local registers, the MSI-X capability
-        // state, and zeroes this peer's state-table entry; the rest of the
+        // state, zeroes this peer's state-table entry, and publishes a new
+        // lifecycle epoch before notifying surviving peers. The rest of the
         // shared backing stays intact for the other peers.
-        self.lock_registers("reset ivshmem endpoint")?.reset();
-        self.lock_msix("reset ivshmem endpoint")?.reset();
-        self.attachment
-            .link()
-            .clear_state(self.attachment.peer_id())
-            .map_err(|error| DeviceError::InvalidState {
-                operation: "reset ivshmem endpoint",
-                detail: error.to_string(),
-            })?;
-        Ok(())
+        self.ensure_online("reset ivshmem endpoint")?;
+        let result = self.reset_endpoint_state("reset ivshmem endpoint");
+        if result.is_err() {
+            self.online.store(false, Ordering::Release);
+        }
+        result
+    }
+
+    fn stop(&self) -> DeviceResult {
+        if self.stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        // Close the endpoint before any teardown step can race a draining
+        // vCPU. A failed stop leaves `stopped` clear so lifecycle teardown can
+        // retry, while every later access still fails closed through `online`.
+        self.online.store(false, Ordering::Release);
+        let result = self.reset_endpoint_state("stop ivshmem endpoint");
+        if result.is_ok() || !self.attachment.is_current() {
+            self.stopped.store(true, Ordering::Release);
+            return Ok(());
+        }
+        result
     }
 }
 
@@ -909,7 +1017,18 @@ mod tests {
         link_id: u32,
         peer_id: u16,
     ) -> IvshmemPciModel {
-        let reservation = registry.reserve(link_id, peer_id).unwrap();
+        model_for_profile(registry, link_id, peer_id, LinkProfile::baseline())
+    }
+
+    fn model_for_profile(
+        registry: &Arc<IvshmemLinkRegistry>,
+        link_id: u32,
+        peer_id: u16,
+        profile: LinkProfile,
+    ) -> IvshmemPciModel {
+        let reservation = registry
+            .reserve_with_profile(link_id, peer_id, profile)
+            .unwrap();
         IvshmemPciModel {
             reservation,
             message_controller: InterruptControllerId::new(0),
@@ -922,12 +1041,14 @@ mod tests {
         let registry = test_registry();
         let requirements = model_for(&registry, 7, 1).requirements().unwrap();
         let function = requirements.pci_function().unwrap();
+        let profile = LinkProfile::baseline();
+        let layout = IvshmemMemoryLayout::derive(profile.bar2_size(), profile).unwrap();
         let expected = PciFunctionRequirement::new(
             host_key(),
             PciEndpointIdentity::new(
                 IVSHMEM_VENDOR_ID,
                 IVSHMEM_DEVICE_ID,
-                PciClass::new(0x05, 0, 0),
+                PciClass::new(0xff, 0, 0),
             )
             .with_revision(IVSHMEM_REVISION),
         )
@@ -952,7 +1073,15 @@ mod tests {
             .prefetchable(),
         )
         .unwrap()
-        .with_capability(msix_capability_spec(1, MSIX_MESSAGE_CONTROL_EFFECT).unwrap());
+        .with_capability(msix_capability_spec(1, MSIX_MESSAGE_CONTROL_EFFECT).unwrap())
+        .with_capability(
+            axvisor_transport_capability(
+                profile,
+                layout.peer_epoch_base_offset(),
+                layout.peer_epoch_stride(),
+            )
+            .unwrap(),
+        );
         assert_eq!(function, &expected);
         let msi = requirements
             .entries()
@@ -1426,6 +1555,18 @@ mod tests {
                 .unwrap(),
             2
         );
+        assert_eq!(
+            peer0
+                .read_register(COMMON_SIZE_OFFSET, AccessWidth::Dword)
+                .unwrap(),
+            LinkProfile::baseline().common_size()
+        );
+        assert_eq!(
+            peer0
+                .read_register(OUTPUT_SIZE_OFFSET, AccessWidth::Dword)
+                .unwrap(),
+            LinkProfile::baseline().output_size()
+        );
 
         // State registers are endpoint-local.
         peer0.write_register(STATE_OFFSET, 0x1234).unwrap();
@@ -1509,6 +1650,191 @@ mod tests {
                 .read_bar(peer0.shared_bar + TEST_OFFSET, AccessWidth::Qword),
             Err(DeviceError::NotFound)
         ));
+    }
+
+    #[test]
+    fn bar0_exposes_large_geometry_and_routes_beyond_legacy_bar2() {
+        const COMMON_SIZE: u64 = 0x1000;
+        const OUTPUT_SIZE: u64 = 0x00c0_0000;
+        const BAR2_SIZE: u64 = 0x0200_0000;
+        const LEGACY_BAR2_SIZE: u64 = 0x1_0000;
+        const PEER0_FIRST: u64 = 0x2000;
+        const PEER0_LAST: u64 = PEER0_FIRST + OUTPUT_SIZE - 4;
+        const PEER1_FIRST: u64 = PEER0_FIRST + OUTPUT_SIZE;
+        const PEER1_LAST: u64 = PEER1_FIRST + OUTPUT_SIZE - 4;
+        const RESERVED_START: u64 = PEER1_FIRST + OUTPUT_SIZE;
+
+        let registry = test_registry();
+        let profile = LinkProfile::new(2, COMMON_SIZE, OUTPUT_SIZE).unwrap();
+        assert_eq!(profile.bar2_size(), BAR2_SIZE);
+        let peer0 = build_endpoint(
+            "ivshmem0",
+            model_for_profile(&registry, 1, 0, profile),
+            Arc::new(TestStage2Remap::default()),
+        );
+        let peer1 = build_endpoint(
+            "ivshmem1",
+            model_for_profile(&registry, 1, 1, profile),
+            Arc::new(TestStage2Remap::default()),
+        );
+        peer0.enable_memory();
+        peer1.enable_memory();
+
+        for endpoint in [&peer0, &peer1] {
+            assert_eq!(
+                endpoint
+                    .read_register(MAXIMUM_PEERS_OFFSET, AccessWidth::Dword)
+                    .unwrap(),
+                2
+            );
+            assert_eq!(
+                endpoint
+                    .read_register(COMMON_SIZE_OFFSET, AccessWidth::Dword)
+                    .unwrap(),
+                COMMON_SIZE
+            );
+            assert_eq!(
+                endpoint
+                    .read_register(OUTPUT_SIZE_OFFSET, AccessWidth::Dword)
+                    .unwrap(),
+                OUTPUT_SIZE
+            );
+        }
+        for (endpoint, node_id) in [(&peer0, "ivshmem0"), (&peer1, "ivshmem1")] {
+            let resolved = endpoint._graph.pci_topology(&host_key()).unwrap();
+            let bar2 = resolved
+                .function(&id(node_id))
+                .unwrap()
+                .bar(PciBarIndex::new(SHARED_MEMORY_BAR_INDEX).unwrap())
+                .unwrap();
+            assert_eq!(bar2.address(), endpoint.shared_bar);
+            assert_eq!(bar2.size(), BAR2_SIZE);
+        }
+
+        // Geometry fields are read-only.
+        peer0.write_register(COMMON_SIZE_OFFSET, 0).unwrap();
+        peer0.write_register(OUTPUT_SIZE_OFFSET, 0).unwrap();
+        assert_eq!(
+            peer0
+                .read_register(COMMON_SIZE_OFFSET, AccessWidth::Dword)
+                .unwrap(),
+            COMMON_SIZE
+        );
+        assert_eq!(
+            peer0
+                .read_register(OUTPUT_SIZE_OFFSET, AccessWidth::Dword)
+                .unwrap(),
+            OUTPUT_SIZE
+        );
+
+        // The common section follows the state table. The first address past
+        // the old 64 KiB window belongs to peer 0's output, and each owner's
+        // last Dword is writable through the enlarged BAR.
+        peer0
+            .binding
+            .write_bar(peer0.shared_bar + 0x1000, AccessWidth::Dword, 0x1111)
+            .unwrap();
+        peer0
+            .binding
+            .write_bar(
+                peer0.shared_bar + LEGACY_BAR2_SIZE,
+                AccessWidth::Dword,
+                0xa55a_a55a,
+            )
+            .unwrap();
+        peer0
+            .binding
+            .write_bar(peer0.shared_bar + PEER0_LAST, AccessWidth::Dword, 0x2222)
+            .unwrap();
+        peer1
+            .binding
+            .write_bar(peer1.shared_bar + PEER1_FIRST, AccessWidth::Dword, 0x3333)
+            .unwrap();
+        peer1
+            .binding
+            .write_bar(peer1.shared_bar + PEER1_LAST, AccessWidth::Dword, 0x4444)
+            .unwrap();
+        assert_eq!(
+            peer1
+                .binding
+                .read_bar(peer1.shared_bar + 0x1000, AccessWidth::Dword)
+                .unwrap(),
+            0x1111
+        );
+        assert_eq!(
+            peer1
+                .binding
+                .read_bar(peer1.shared_bar + LEGACY_BAR2_SIZE, AccessWidth::Dword)
+                .unwrap(),
+            0xa55a_a55a
+        );
+        assert_eq!(
+            peer1
+                .binding
+                .read_bar(peer1.shared_bar + PEER0_LAST, AccessWidth::Dword)
+                .unwrap(),
+            0x2222
+        );
+        assert_eq!(
+            peer0
+                .binding
+                .read_bar(peer0.shared_bar + PEER1_FIRST, AccessWidth::Dword)
+                .unwrap(),
+            0x3333
+        );
+        assert_eq!(
+            peer0
+                .binding
+                .read_bar(peer0.shared_bar + PEER1_LAST, AccessWidth::Dword)
+                .unwrap(),
+            0x4444
+        );
+
+        // Peer-owned ranges reject cross-writes. The page-rounded tail is
+        // accepted as a no-op and remains zero.
+        assert!(matches!(
+            peer1.binding.write_bar(
+                peer1.shared_bar + LEGACY_BAR2_SIZE,
+                AccessWidth::Dword,
+                0xdead
+            ),
+            Err(DeviceError::AccessDenied { .. })
+        ));
+        assert_eq!(
+            peer0
+                .binding
+                .read_bar(peer0.shared_bar + LEGACY_BAR2_SIZE, AccessWidth::Dword)
+                .unwrap(),
+            0xa55a_a55a
+        );
+        assert!(matches!(
+            peer0
+                .binding
+                .write_bar(peer0.shared_bar + PEER1_FIRST, AccessWidth::Dword, 0xbeef),
+            Err(DeviceError::AccessDenied { .. })
+        ));
+        assert_eq!(
+            peer1
+                .binding
+                .read_bar(peer1.shared_bar + PEER1_FIRST, AccessWidth::Dword)
+                .unwrap(),
+            0x3333
+        );
+        peer0
+            .binding
+            .write_bar(
+                peer0.shared_bar + RESERVED_START,
+                AccessWidth::Dword,
+                0x5555,
+            )
+            .unwrap();
+        assert_eq!(
+            peer0
+                .binding
+                .read_bar(peer0.shared_bar + RESERVED_START, AccessWidth::Dword)
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -1693,7 +2019,7 @@ mod tests {
     }
 
     #[test]
-    fn config_space_exposes_the_msix_capability() {
+    fn config_space_exposes_msix_and_the_axvisor_transport_identity() {
         let registry = test_registry();
         let peer0 = build_endpoint(
             "ivshmem0",
@@ -1727,6 +2053,73 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cap_id, 0x11);
+        assert_eq!(
+            peer0
+                .root
+                .read_config(
+                    peer0.bdf,
+                    ConfigOffset::new(0x08).unwrap(),
+                    AccessWidth::Dword,
+                )
+                .unwrap(),
+            0xff00_0001,
+        );
+        assert_eq!(
+            peer0
+                .root
+                .read_config(
+                    peer0.bdf,
+                    ConfigOffset::new(0x41).unwrap(),
+                    AccessWidth::Byte,
+                )
+                .unwrap(),
+            0x4c,
+        );
+        assert_eq!(
+            peer0
+                .root
+                .read_config(
+                    peer0.bdf,
+                    ConfigOffset::new(0x4c).unwrap(),
+                    AccessWidth::Byte,
+                )
+                .unwrap(),
+            u64::from(AXVISOR_TRANSPORT_CAPABILITY_ID),
+        );
+        assert_eq!(
+            peer0
+                .root
+                .read_config(
+                    peer0.bdf,
+                    ConfigOffset::new(0x4e).unwrap(),
+                    AccessWidth::Word,
+                )
+                .unwrap(),
+            u64::from(AXVISOR_TRANSPORT_CAPABILITY_LENGTH)
+                | (u64::from(AXVISOR_TRANSPORT_CAPABILITY_VERSION) << 8),
+        );
+        assert_eq!(
+            peer0
+                .root
+                .read_config(
+                    peer0.bdf,
+                    ConfigOffset::new(0x50).unwrap(),
+                    AccessWidth::Dword,
+                )
+                .unwrap(),
+            u64::from(AXVISOR_TRANSPORT_CAPABILITY_MAGIC),
+        );
+        assert_eq!(
+            peer0
+                .root
+                .read_config(
+                    peer0.bdf,
+                    ConfigOffset::new(0x54).unwrap(),
+                    AccessWidth::Dword,
+                )
+                .unwrap(),
+            u64::from(AXVISOR_TRANSPORT_PROTOCOL),
+        );
         // Message Control: table size 0 (one vector), disabled by default.
         assert_eq!(peer0.read_msix_control(), 0);
         // Table BIR/offset and PBA BIR/offset are frozen to BAR 1.
@@ -2153,6 +2546,90 @@ mod tests {
                 .unwrap(),
             0x33
         );
+    }
+
+    #[test]
+    fn reset_advances_epoch_and_notifies_masked_and_live_survivors() {
+        const OUTPUT_SIZE: u64 = 0x5000;
+        const EPOCH_OFFSET: u64 = 0x100;
+
+        let registry = test_registry();
+        let profile = LinkProfile::new(3, 0, OUTPUT_SIZE).unwrap();
+        let peer0 = build_endpoint(
+            "ivshmem0",
+            model_for_profile(&registry, 1, 0, profile),
+            Arc::new(TestStage2Remap::default()),
+        );
+        let peer1 = build_endpoint(
+            "ivshmem1",
+            model_for_profile(&registry, 1, 1, profile),
+            Arc::new(TestStage2Remap::default()),
+        );
+        let peer2 = build_endpoint(
+            "ivshmem2",
+            model_for_profile(&registry, 1, 2, profile),
+            Arc::new(TestStage2Remap::default()),
+        );
+        for endpoint in [&peer0, &peer1, &peer2] {
+            endpoint.enable_memory();
+        }
+        peer1.program_msix_table(0x0808_0040, 0, true);
+        peer2.program_msix_table(0x0808_0040, 0, false);
+        for endpoint in [&peer1, &peer2] {
+            endpoint
+                .write_register(INTERRUPT_CONTROL_OFFSET, 1)
+                .unwrap();
+            endpoint
+                .write_msix_control(MSIX_MESSAGE_CONTROL_ENABLE)
+                .unwrap();
+        }
+        peer0
+            .binding
+            .write_bar(
+                peer0.shared_bar + TEST_OFFSET,
+                AccessWidth::Qword,
+                TEST_VALUE,
+            )
+            .unwrap();
+        peer0.write_register(STATE_OFFSET, 0x55).unwrap();
+        let initial_epoch = peer1
+            .binding
+            .read_bar(peer1.shared_bar + EPOCH_OFFSET, AccessWidth::Qword)
+            .unwrap();
+        assert_ne!(initial_epoch, 0);
+
+        peer0.binding.reset().unwrap();
+        peer0.enable_memory();
+
+        assert_eq!(
+            peer1
+                .binding
+                .read_bar(peer1.shared_bar + EPOCH_OFFSET, AccessWidth::Qword)
+                .unwrap(),
+            initial_epoch + 1
+        );
+        assert_eq!(
+            peer1
+                .binding
+                .read_bar(peer1.shared_bar + TEST_OFFSET, AccessWidth::Qword)
+                .unwrap(),
+            TEST_VALUE
+        );
+        assert_eq!(event_status(&peer1), 1);
+        assert_eq!(event_status(&peer2), 1);
+        assert!(peer1.msi_deliveries().is_empty());
+        assert_eq!(peer1.read_msix(MSIX_PBA_OFFSET).unwrap(), 1);
+        let live_deliveries = peer2.msi_deliveries();
+        assert_eq!(live_deliveries.len(), 1);
+        assert_eq!(live_deliveries[0].address, 0x0808_0040);
+        assert_eq!(live_deliveries[0].data, 0);
+
+        peer1.write_msix(0xc, 0).unwrap();
+        let masked_now_live = peer1.msi_deliveries();
+        assert_eq!(masked_now_live.len(), 1);
+        assert_eq!(masked_now_live[0].address, 0x0808_0040);
+        assert_eq!(masked_now_live[0].data, 0);
+        assert_eq!(peer1.read_msix(MSIX_PBA_OFFSET).unwrap(), 0);
     }
 
     #[test]

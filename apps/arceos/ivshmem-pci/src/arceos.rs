@@ -3,7 +3,7 @@ use core::{
     marker::PhantomData,
     mem::size_of,
     ptr::NonNull,
-    sync::atomic::{self, Ordering},
+    sync::atomic::{self, AtomicU64, Ordering},
 };
 
 use ax_std::os::arceos::modules::ax_hal::{self, mem::PhysAddr};
@@ -13,10 +13,16 @@ const PCI_DEVICE_COUNT: u8 = 32;
 const PCI_FUNCTION_STRIDE: usize = 1 << 15;
 const PCI_ID_OFFSET: usize = 0x00;
 const PCI_COMMAND_OFFSET: usize = 0x04;
+const PCI_STATUS_OFFSET: usize = 0x06;
 const PCI_CLASS_REVISION_OFFSET: usize = 0x08;
 const PCI_BAR0_OFFSET: usize = 0x10;
 const PCI_BAR2_OFFSET: usize = 0x18;
+const PCI_CAPABILITY_POINTER_OFFSET: usize = 0x34;
 const PCI_COMMAND_MEMORY_ENABLE: u16 = 1 << 1;
+const PCI_STATUS_CAPABILITY_LIST: u16 = 1 << 4;
+const PCI_CAPABILITY_ID_VENDOR: u8 = 0x09;
+const PCI_CAPABILITY_LIST_LIMIT: usize = 64;
+const PCI_CONFIG_SPACE_SIZE: usize = 0x100;
 const PCI_BAR_IO_SPACE: u32 = 1 << 0;
 const PCI_BAR_TYPE_MASK: u32 = 0b110;
 const PCI_BAR_ADDRESS_MASK: u32 = 0xffff_fff0;
@@ -32,23 +38,37 @@ const REGISTER_MAX_PEERS: usize = 0x04;
 const REGISTER_DOORBELL: usize = 0x0c;
 const REGISTER_STATE: usize = 0x10;
 const REGISTER_EVENT_STATUS: usize = 0x14;
+const REGISTER_COMMON_SIZE: usize = 0x18;
+const REGISTER_OUTPUT_SIZE: usize = 0x1c;
 const OUTPUT_SECTION_BASE: usize = STATE_TABLE_SIZE;
+const PEER_EPOCH_OFFSET: usize = 0x100;
+const PEER_EPOCH_STRIDE: usize = 8;
+const MAX_PROFILE_PEERS: u32 = 15;
 const BASELINE_OUTPUT_SIZE: usize = 0x7000;
 const THREE_PEER_OUTPUT_SIZE: usize = 0x5000;
 const BASELINE_MAX_PEERS: u32 = 2;
 const THREE_PEER_MAX_PEERS: u32 = 3;
 const IVSHMEM_VENDOR_DEVICE: u32 = 0x1110_1af4;
-const IVSHMEM_CLASS_REVISION: u32 = 0x0500_0001;
+// Revision 1 is required by upstream uio_ivshmem; class 0xff0000 and the AXIV
+// capability distinguish AxVisor from classic QEMU functions.
+const IVSHMEM_CLASS_REVISION: u32 = 0xff00_0001;
+const AXVISOR_CAPABILITY_LENGTH: u8 = 36;
+const AXVISOR_CAPABILITY_VERSION: u8 = 1;
+const AXVISOR_CAPABILITY_MAGIC: u32 = 0x5649_5841; // "AXIV"
+const AXVISOR_TRANSPORT_PROTOCOL: u16 = 0x4000;
+const AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH: u32 = 1 << 0;
+const AXVISOR_TRANSPORT_CAPABILITY_BODY_SIZE: usize = 34;
 
 /// BAR2 layout advertised by one AxVisor ivshmem link profile.
 ///
-/// The first page is the read-only state table. Each peer then owns one
-/// page-aligned output section. The output size is part of the peer profile:
-/// the current two-peer baseline uses 28 KiB sections and the three-peer suite
-/// uses 20 KiB sections.
+/// The first page is the read-only state table, followed by the optional
+/// common section and one page-aligned output section per peer. Discovery
+/// validates all three sizes against this explicit layout and BAR2 before the
+/// device can expose a section.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IvshmemLayout {
     max_peers: u32,
+    common_size: usize,
     output_size: usize,
     bar2_size: usize,
 }
@@ -58,6 +78,7 @@ impl IvshmemLayout {
     pub const fn single_peer() -> Self {
         Self {
             max_peers: 1,
+            common_size: 0,
             output_size: BASELINE_OUTPUT_SIZE,
             bar2_size: BAR2_SIZE,
         }
@@ -67,6 +88,7 @@ impl IvshmemLayout {
     pub const fn two_peer() -> Self {
         Self {
             max_peers: BASELINE_MAX_PEERS,
+            common_size: 0,
             output_size: BASELINE_OUTPUT_SIZE,
             bar2_size: BAR2_SIZE,
         }
@@ -76,6 +98,7 @@ impl IvshmemLayout {
     pub const fn three_peer() -> Self {
         Self {
             max_peers: THREE_PEER_MAX_PEERS,
+            common_size: 0,
             output_size: THREE_PEER_OUTPUT_SIZE,
             bar2_size: BAR2_SIZE,
         }
@@ -84,7 +107,14 @@ impl IvshmemLayout {
     /// Start offset of one peer's output section.
     pub fn output_offset(self, peer: u32) -> Result<usize, IvshmemError> {
         self.check_peer(peer)?;
-        Ok(OUTPUT_SECTION_BASE + peer as usize * self.output_size)
+        let peer = usize::try_from(peer).map_err(|_| IvshmemError::AccessOutOfRange {
+            offset: self.bar2_size,
+            width: self.output_size,
+            region_size: self.bar2_size,
+        })?;
+        // Constructors and discovery keep the complete geometry within BAR2,
+        // so the peer range check above makes this addition bounded.
+        Ok(OUTPUT_SECTION_BASE + self.common_size + peer * self.output_size)
     }
 
     fn check_peer(self, peer: u32) -> Result<(), IvshmemError> {
@@ -95,6 +125,50 @@ impl IvshmemLayout {
             });
         }
         Ok(())
+    }
+
+    /// Replaces the expected geometry with the validated values advertised by
+    /// BAR0. The configured profile remains an explicit compatibility
+    /// requirement rather than a source of guessed section boundaries.
+    fn with_advertised_geometry(
+        self,
+        common_size: u32,
+        output_size: u32,
+    ) -> Result<Self, IvshmemError> {
+        let advertised_common_size = common_size;
+        let advertised_output_size = output_size;
+        let invalid = || IvshmemError::InvalidGeometry {
+            common_size: advertised_common_size,
+            output_size: advertised_output_size,
+        };
+        let common_size =
+            usize::try_from(common_size).map_err(|_| IvshmemError::InvalidGeometry {
+                common_size,
+                output_size,
+            })?;
+        let output_size = usize::try_from(output_size).map_err(|_| invalid())?;
+        if output_size == 0
+            || !common_size.is_multiple_of(STATE_TABLE_SIZE)
+            || !output_size.is_multiple_of(STATE_TABLE_SIZE)
+            || common_size != self.common_size
+            || output_size != self.output_size
+        {
+            return Err(invalid());
+        }
+        let max_peers = usize::try_from(self.max_peers).map_err(|_| invalid())?;
+        let section_bytes = max_peers.checked_mul(output_size).ok_or_else(invalid)?;
+        let end = STATE_TABLE_SIZE
+            .checked_add(common_size)
+            .and_then(|offset| offset.checked_add(section_bytes))
+            .ok_or_else(invalid)?;
+        if end > self.bar2_size {
+            return Err(invalid());
+        }
+        Ok(Self {
+            common_size,
+            output_size,
+            ..self
+        })
     }
 }
 
@@ -147,7 +221,8 @@ impl IvshmemDevice {
     /// BAR0 and BAR2 must be assigned, naturally aligned, and contained in
     /// that window. Discovery temporarily disables memory decode to probe each
     /// BAR size, restores the original config dwords, and then enables decode.
-    /// The advertised peer count must match `layout`.
+    /// The advertised peer count, common size, and output size must all match
+    /// `layout`; a zero output size means geometry is unavailable.
     pub fn discover(layout: IvshmemLayout) -> Result<Self, IvshmemError> {
         let host = configured_pci_host()?;
         let ecam = Mapping::device(host.ecam_base, ECAM_SIZE, "ECAM")?;
@@ -169,6 +244,9 @@ impl IvshmemDevice {
                 actual: class_revision,
             });
         }
+        if !has_axvisor_transport_capability(&ecam, function_offset)? {
+            return Err(IvshmemError::CapabilityMismatch);
+        }
 
         let (bar0_bus_address, bar0_size) =
             probe_memory_bar_size(&ecam, function_offset, PCI_BAR0_OFFSET, 0)?;
@@ -188,12 +266,15 @@ impl IvshmemDevice {
         let registers = Mapping::device(bar0_address, BAR0_SIZE, "ivshmem BAR0")?;
         let peer_id = registers.read_u32(REGISTER_PEER_ID)?;
         let max_peers = registers.read_u32(REGISTER_MAX_PEERS)?;
+        let common_size = registers.read_u32(REGISTER_COMMON_SIZE)?;
+        let output_size = registers.read_u32(REGISTER_OUTPUT_SIZE)?;
         if max_peers != layout.max_peers {
             return Err(IvshmemError::PeerCountMismatch {
                 advertised: max_peers,
                 configured: layout.max_peers,
             });
         }
+        let layout = layout.with_advertised_geometry(common_size, output_size)?;
         if peer_id >= max_peers {
             return Err(IvshmemError::PeerOutOfRange {
                 peer: peer_id,
@@ -246,6 +327,34 @@ impl IvshmemDevice {
     pub fn state(&self, peer: u32) -> Result<u32, IvshmemError> {
         self.layout.check_peer(peer)?;
         self.shared.read_u32(peer as usize * size_of::<u32>())
+    }
+
+    /// Observes one host-owned reset/detach epoch with acquire ordering.
+    ///
+    /// The epoch is in the read-only state page at
+    /// `0x100 + peer_id * 8`. A caller must retain the previous nonzero value
+    /// and discard stale Message V1 headers or queued data when it changes.
+    pub fn peer_epoch(&self, peer: u32) -> Result<u64, IvshmemError> {
+        self.layout.check_peer(peer)?;
+        let offset = PEER_EPOCH_OFFSET
+            .checked_add(peer as usize * PEER_EPOCH_STRIDE)
+            .ok_or(IvshmemError::AccessOutOfRange {
+                offset: PEER_EPOCH_OFFSET,
+                width: PEER_EPOCH_STRIDE,
+                region_size: STATE_TABLE_SIZE,
+            })?;
+        let pointer = self
+            .shared
+            .subrange(offset, size_of::<u64>())?
+            .as_ptr()
+            .cast::<u64>();
+        // SAFETY: the state page is 4 KiB aligned, the ABI offset is 8-byte
+        // aligned, subrange checked the eight-byte extent, and the mapping
+        // outlives this load. Guests are read-only observers; the host owns
+        // publication of the aligned epoch word.
+        Ok(u64::from_le(unsafe {
+            AtomicU64::from_ptr(pointer).load(Ordering::Acquire)
+        }))
     }
 
     /// Publishes this peer's value through BAR0 State.
@@ -486,6 +595,8 @@ pub enum IvshmemError {
     AmbiguousEndpoint,
     /// The function identity or register revision does not match.
     ProfileMismatch { expected: u32, actual: u32 },
+    /// The function lacks a valid AxVisor 0x09 transport capability.
+    CapabilityMismatch,
     /// A BAR is not an assigned memory32 BAR.
     InvalidMemoryBar { bar: u8 },
     /// A BAR is not naturally aligned for the requested size.
@@ -496,6 +607,8 @@ pub enum IvshmemError {
     BarSizeMismatch { bar: u8, expected: u64, actual: u64 },
     /// BAR0 advertises a different peer count from the caller's profile.
     PeerCountMismatch { advertised: u32, configured: u32 },
+    /// BAR0 geometry is unavailable or incompatible with the explicit layout.
+    InvalidGeometry { common_size: u32, output_size: u32 },
     /// A peer slot is outside the configured profile.
     PeerOutOfRange { peer: u32, max_peers: u32 },
     /// Mapping a physical aperture failed.
@@ -527,6 +640,9 @@ impl fmt::Display for IvshmemError {
                 formatter,
                 "ivshmem class/revision mismatch: expected {expected:#010x}, got {actual:#010x}"
             ),
+            Self::CapabilityMismatch => {
+                formatter.write_str("ivshmem AxVisor transport capability is missing or invalid")
+            }
             Self::InvalidMemoryBar { bar } => {
                 write!(formatter, "PCI BAR{bar} is not an assigned memory32 BAR")
             }
@@ -548,6 +664,14 @@ impl fmt::Display for IvshmemError {
             } => write!(
                 formatter,
                 "ivshmem max_peers={advertised}, configured profile expects {configured}"
+            ),
+            Self::InvalidGeometry {
+                common_size,
+                output_size,
+            } => write!(
+                formatter,
+                "ivshmem geometry is unavailable or incompatible: common_size={common_size:#x} \
+                 output_size={output_size:#x}"
             ),
             Self::PeerOutOfRange { peer, max_peers } => {
                 write!(formatter, "ivshmem peer {peer} is outside 0..{max_peers}")
@@ -643,6 +767,12 @@ impl Mapping {
         Ok(unsafe { core::ptr::read_volatile(self.ptr.as_ptr().add(offset).cast::<u16>()) })
     }
 
+    fn read_u8(&self, offset: usize) -> Result<u8, IvshmemError> {
+        self.check_bounds(offset, size_of::<u8>())?;
+        // SAFETY: the byte access is contained in the live mapping.
+        Ok(unsafe { core::ptr::read_volatile(self.ptr.as_ptr().add(offset)) })
+    }
+
     fn write_u16(&self, offset: usize, value: u16) -> Result<(), IvshmemError> {
         self.check_scalar(offset, size_of::<u16>())?;
         // SAFETY: the range check proves natural alignment and mapping bounds.
@@ -700,6 +830,63 @@ impl PciHost {
             .ok_or(IvshmemError::BarOutsideWindow { bar })?;
         usize::try_from(address).map_err(|_| IvshmemError::BarOutsideWindow { bar })
     }
+}
+
+fn has_axvisor_transport_capability(
+    ecam: &Mapping,
+    function_offset: usize,
+) -> Result<bool, IvshmemError> {
+    let status = ecam.read_u16(function_offset + PCI_STATUS_OFFSET)?;
+    if status & PCI_STATUS_CAPABILITY_LIST == 0 {
+        return Ok(false);
+    }
+    let mut offset =
+        usize::from(ecam.read_u8(function_offset + PCI_CAPABILITY_POINTER_OFFSET)? & !0b11);
+    for _ in 0..PCI_CAPABILITY_LIST_LIMIT {
+        let header_end = offset
+            .checked_add(2)
+            .ok_or(IvshmemError::CapabilityMismatch)?;
+        if offset == 0 || header_end > PCI_CONFIG_SPACE_SIZE {
+            return Ok(false);
+        }
+        let id = ecam.read_u8(function_offset + offset)?;
+        let next = usize::from(ecam.read_u8(function_offset + offset + 1)? & !0b11);
+        if id == PCI_CAPABILITY_ID_VENDOR {
+            let body_end = header_end
+                .checked_add(AXVISOR_TRANSPORT_CAPABILITY_BODY_SIZE)
+                .ok_or(IvshmemError::CapabilityMismatch)?;
+            if body_end > PCI_CONFIG_SPACE_SIZE {
+                return Ok(false);
+            }
+            let body = function_offset + header_end;
+            let length = ecam.read_u8(body)?;
+            let version = ecam.read_u8(body + 1)?;
+            let magic = ecam.read_u32(body + 2)?;
+            let protocol = ecam.read_u16(body + 6)?;
+            let features = ecam.read_u32(body + 10)?;
+            let epoch_offset = ecam.read_u32(body + 14)?;
+            let epoch_stride = ecam.read_u32(body + 18)?;
+            let common_size = ecam.read_u32(body + 22)?;
+            let output_size = ecam.read_u32(body + 26)?;
+            let max_peers = ecam.read_u32(body + 30)?;
+            return Ok(length == AXVISOR_CAPABILITY_LENGTH
+                && version == AXVISOR_CAPABILITY_VERSION
+                && magic == AXVISOR_CAPABILITY_MAGIC
+                && protocol == AXVISOR_TRANSPORT_PROTOCOL
+                && features & AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH != 0
+                && epoch_offset as usize == PEER_EPOCH_OFFSET
+                && epoch_stride as usize == PEER_EPOCH_STRIDE
+                && common_size.is_multiple_of(STATE_TABLE_SIZE as u32)
+                && output_size != 0
+                && output_size.is_multiple_of(STATE_TABLE_SIZE as u32)
+                && (1..=MAX_PROFILE_PEERS).contains(&max_peers));
+        }
+        if next == offset || (next != 0 && next < offset + 2) {
+            return Ok(false);
+        }
+        offset = next;
+    }
+    Ok(false)
 }
 
 fn configured_pci_host() -> Result<PciHost, IvshmemError> {

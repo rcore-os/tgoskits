@@ -60,6 +60,8 @@ mod acpi;
 mod fdt;
 #[cfg(feature = "arm-smmu-v3")]
 mod iommu_dma;
+#[cfg(feature = "ivshmem-pci")]
+pub mod ivshmem;
 pub mod msi;
 #[cfg(feature = "arm-smmu-v3")]
 mod smmu;
@@ -375,6 +377,7 @@ pub const fn has_pci_endpoint_drivers() -> bool {
         feature = "nvme",
         feature = "intel-hda",
         feature = "xhci-pci",
+        feature = "ivshmem-pci",
         feature = "virtio-net",
         feature = "virtio-gpu",
         feature = "virtio-input",

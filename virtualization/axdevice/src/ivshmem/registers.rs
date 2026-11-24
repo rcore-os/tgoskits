@@ -2,10 +2,15 @@
 //!
 //! The offsets follow the Jailhouse v2 base order and freeze one AxVisor
 //! extension: `Event Status` lets the polling path and the later MSI-X
-//! backend confirm where an event came from. All registers accept only
-//! aligned 32-bit accesses; unknown offsets read as zero and ignore writes.
+//! backend confirm where an event came from, while the adjacent Common Size
+//! and Output Size registers publish the frozen BAR2 geometry in bytes. All
+//! registers accept only aligned 32-bit accesses; unknown offsets read as zero
+//! and ignore writes.
 
-use super::{error::IvshmemError, link::PeerId};
+use super::{
+    error::IvshmemError,
+    link::{LinkProfile, PeerId},
+};
 
 /// Size of the BAR0 register page.
 ///
@@ -27,13 +32,18 @@ pub const DOORBELL_OFFSET: u64 = 0x0c;
 pub const STATE_OFFSET: u64 = 0x10;
 /// Offset of the write-one-to-clear event status register.
 pub const EVENT_STATUS_OFFSET: u64 = 0x14;
+/// Offset of the read-only common-section size register in bytes.
+pub const COMMON_SIZE_OFFSET: u64 = 0x18;
+/// Offset of the read-only per-peer output-section size register in bytes.
+pub const OUTPUT_SIZE_OFFSET: u64 = 0x1c;
 
 const INTERRUPT_CONTROL_ENABLE: u32 = 1;
 
 /// Mutable BAR0 register state of one endpoint.
 ///
-/// ID and Maximum Peers come from the link identity and are passed to
-/// [`read`](Self::read) so this type stays pure mutable state.
+/// ID, Maximum Peers, and section geometry come from the frozen link profile
+/// and are passed to [`read`](Self::read) so this type stays pure mutable
+/// state.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct IvshmemRegisters {
     interrupt_control: u32,
@@ -74,16 +84,36 @@ impl IvshmemRegisters {
     }
 
     /// Reads one aligned Dword of the BAR0 register page.
-    pub fn read(&self, offset: u64, peer: PeerId, max_peers: u16) -> Result<u32, IvshmemError> {
+    ///
+    /// A zero output size means section geometry is unavailable. Revision-1
+    /// devices written before the geometry extension also read zero at the
+    /// geometry offsets, so clients must not infer section boundaries from the
+    /// peer count alone.
+    pub fn read(
+        &self,
+        offset: u64,
+        peer: PeerId,
+        profile: LinkProfile,
+    ) -> Result<u32, IvshmemError> {
         Self::validate_access(offset)?;
         Ok(match offset {
             ID_OFFSET => peer.value().into(),
-            MAXIMUM_PEERS_OFFSET => max_peers.into(),
+            MAXIMUM_PEERS_OFFSET => profile.max_peers().into(),
             INTERRUPT_CONTROL_OFFSET => self.interrupt_control,
             // The doorbell is write-only by specification.
             DOORBELL_OFFSET => 0,
             STATE_OFFSET => self.state,
             EVENT_STATUS_OFFSET => self.event_status,
+            COMMON_SIZE_OFFSET => {
+                u32::try_from(profile.common_size()).map_err(|_| IvshmemError::InvalidProfile {
+                    detail: "common size does not fit the BAR0 geometry register".into(),
+                })?
+            }
+            OUTPUT_SIZE_OFFSET => {
+                u32::try_from(profile.output_size()).map_err(|_| IvshmemError::InvalidProfile {
+                    detail: "output size does not fit the BAR0 geometry register".into(),
+                })?
+            }
             _ => 0,
         })
     }
@@ -124,28 +154,42 @@ mod tests {
     use super::*;
 
     const PEER: PeerId = PeerId::new(1);
-    const MAX_PEERS: u16 = 2;
+    const PROFILE: LinkProfile = LinkProfile::baseline();
 
     #[test]
-    fn reads_identity_from_the_link_not_from_mutable_state() {
+    fn reads_identity_and_geometry_from_the_link_not_from_mutable_state() {
         let registers = IvshmemRegisters::new();
-        assert_eq!(registers.read(ID_OFFSET, PEER, MAX_PEERS).unwrap(), 1);
+        assert_eq!(registers.read(ID_OFFSET, PEER, PROFILE).unwrap(), 1);
         assert_eq!(
-            registers
-                .read(MAXIMUM_PEERS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(MAXIMUM_PEERS_OFFSET, PEER, PROFILE).unwrap(),
             2
+        );
+        assert_eq!(
+            registers.read(COMMON_SIZE_OFFSET, PEER, PROFILE).unwrap(),
+            0
+        );
+        assert_eq!(
+            registers.read(OUTPUT_SIZE_OFFSET, PEER, PROFILE).unwrap(),
+            0x7000
         );
         // Identity registers are read-only.
         let mut registers = registers;
         registers.write(ID_OFFSET, 0xffff).unwrap();
         registers.write(MAXIMUM_PEERS_OFFSET, 0xffff).unwrap();
-        assert_eq!(registers.read(ID_OFFSET, PEER, MAX_PEERS).unwrap(), 1);
+        registers.write(COMMON_SIZE_OFFSET, 0xffff).unwrap();
+        registers.write(OUTPUT_SIZE_OFFSET, 0xffff).unwrap();
+        assert_eq!(registers.read(ID_OFFSET, PEER, PROFILE).unwrap(), 1);
         assert_eq!(
-            registers
-                .read(MAXIMUM_PEERS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(MAXIMUM_PEERS_OFFSET, PEER, PROFILE).unwrap(),
             2
+        );
+        assert_eq!(
+            registers.read(COMMON_SIZE_OFFSET, PEER, PROFILE).unwrap(),
+            0
+        );
+        assert_eq!(
+            registers.read(OUTPUT_SIZE_OFFSET, PEER, PROFILE).unwrap(),
+            0x7000
         );
     }
 
@@ -157,14 +201,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             registers
-                .read(INTERRUPT_CONTROL_OFFSET, PEER, MAX_PEERS)
+                .read(INTERRUPT_CONTROL_OFFSET, PEER, PROFILE)
                 .unwrap(),
             INTERRUPT_CONTROL_ENABLE
         );
         registers.write(INTERRUPT_CONTROL_OFFSET, 0).unwrap();
         assert_eq!(
             registers
-                .read(INTERRUPT_CONTROL_OFFSET, PEER, MAX_PEERS)
+                .read(INTERRUPT_CONTROL_OFFSET, PEER, PROFILE)
                 .unwrap(),
             0
         );
@@ -175,7 +219,7 @@ mod tests {
         let mut registers = IvshmemRegisters::new();
         registers.write(STATE_OFFSET, 0xdead_beef).unwrap();
         assert_eq!(
-            registers.read(STATE_OFFSET, PEER, MAX_PEERS).unwrap(),
+            registers.read(STATE_OFFSET, PEER, PROFILE).unwrap(),
             0xdead_beef
         );
     }
@@ -184,7 +228,7 @@ mod tests {
     fn doorbell_reads_zero_and_ignores_writes() {
         let mut registers = IvshmemRegisters::new();
         registers.write(DOORBELL_OFFSET, 0x0001_0002).unwrap();
-        assert_eq!(registers.read(DOORBELL_OFFSET, PEER, MAX_PEERS).unwrap(), 0);
+        assert_eq!(registers.read(DOORBELL_OFFSET, PEER, PROFILE).unwrap(), 0);
         // The ignored doorbell must not leak into neighbour registers.
         assert_eq!(registers.state, 0);
         assert_eq!(registers.interrupt_control, 0);
@@ -194,31 +238,23 @@ mod tests {
     fn event_status_starts_clear_and_only_clears_on_write_one() {
         let mut registers = IvshmemRegisters::new();
         assert_eq!(
-            registers
-                .read(EVENT_STATUS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(EVENT_STATUS_OFFSET, PEER, PROFILE).unwrap(),
             0
         );
         registers.record_event();
         assert_eq!(
-            registers
-                .read(EVENT_STATUS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(EVENT_STATUS_OFFSET, PEER, PROFILE).unwrap(),
             1
         );
         // Writing zero does not clear the pending bit (W1C semantics).
         registers.write(EVENT_STATUS_OFFSET, 0).unwrap();
         assert_eq!(
-            registers
-                .read(EVENT_STATUS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(EVENT_STATUS_OFFSET, PEER, PROFILE).unwrap(),
             1
         );
         registers.write(EVENT_STATUS_OFFSET, 0xffff_ffff).unwrap();
         assert_eq!(
-            registers
-                .read(EVENT_STATUS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(EVENT_STATUS_OFFSET, PEER, PROFILE).unwrap(),
             0
         );
     }
@@ -229,24 +265,18 @@ mod tests {
         registers.record_event();
         registers.record_event();
         assert_eq!(
-            registers
-                .read(EVENT_STATUS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(EVENT_STATUS_OFFSET, PEER, PROFILE).unwrap(),
             1
         );
         // Recording after a W1C clear pends the bit again.
         registers.write(EVENT_STATUS_OFFSET, 1).unwrap();
         assert_eq!(
-            registers
-                .read(EVENT_STATUS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(EVENT_STATUS_OFFSET, PEER, PROFILE).unwrap(),
             0
         );
         registers.record_event();
         assert_eq!(
-            registers
-                .read(EVENT_STATUS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(EVENT_STATUS_OFFSET, PEER, PROFILE).unwrap(),
             1
         );
     }
@@ -254,9 +284,9 @@ mod tests {
     #[test]
     fn unknown_aligned_offsets_read_zero_and_ignore_writes() {
         let mut registers = IvshmemRegisters::new();
-        for offset in [0x18, 0x800, REGISTER_PAGE_SIZE - 4] {
+        for offset in [0x20, 0x800, REGISTER_PAGE_SIZE - 4] {
             registers.write(offset, 0xffff).unwrap();
-            assert_eq!(registers.read(offset, PEER, MAX_PEERS).unwrap(), 0);
+            assert_eq!(registers.read(offset, PEER, PROFILE).unwrap(), 0);
         }
     }
 
@@ -276,10 +306,7 @@ mod tests {
             REGISTER_PAGE_SIZE,
             REGISTER_PAGE_SIZE + 4,
         ] {
-            assert_eq!(
-                registers.read(offset, PEER, MAX_PEERS),
-                Err(expected(offset))
-            );
+            assert_eq!(registers.read(offset, PEER, PROFILE), Err(expected(offset)));
         }
         assert_eq!(
             format!("{}", expected(2)),
@@ -297,9 +324,7 @@ mod tests {
         registers.reset();
         assert_eq!(registers, IvshmemRegisters::new());
         assert_eq!(
-            registers
-                .read(EVENT_STATUS_OFFSET, PEER, MAX_PEERS)
-                .unwrap(),
+            registers.read(EVENT_STATUS_OFFSET, PEER, PROFILE).unwrap(),
             0
         );
     }

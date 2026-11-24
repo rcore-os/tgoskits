@@ -1,0 +1,76 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Shared Orange Pi 5 Plus AxVisor guest profile for the TGOS ivshmem samples.
+ *
+ * Zephyr links its devicetree before AxVisor creates the runtime guest FDT, so
+ * this fragment mirrors the current AxVM firmware inputs:
+ *
+ *   - one bus-zero ECAM window at 0x0b00_0000;
+ *   - one 64 MiB 32-bit PCI memory aperture at 0x0c00_0000;
+ *   - the board GICv3 at 0xfe60_0000 and both Orange Pi ITS instances.
+ *
+ * AxVM currently derives the default message controller from the first ITS in
+ * firmware path order, which is msi-controller@fe640000 on this board. The PCI
+ * host therefore uses ITS0. If AxVisor can relocate either PCI window or select
+ * another ITS, regenerate this fragment from that VM's final guest FDT instead
+ * of assuming these defaults remain fixed.
+ *
+ * The runtime guest FDT publishes the same bus-zero identity map through
+ * msi-map = <0 ITS0_phandle 0 256>. Zephyr's ECAM controller consumes the
+ * binding's single-controller msi-parent form, so ITS0 is selected explicitly
+ * here without encoding a requester ID or MSI-X vector.
+ *
+ * The pinned pci-host-ecam-generic binding imports interrupt-nexus.yaml and
+ * requires interrupt-map even though this MSI-X-only profile has no INTx path.
+ * Declare an explicitly empty map: the pinned devicetree parser accepts it and
+ * produces zero mappings, so no synthetic legacy IRQ is invented.
+ *
+ * No endpoint BDF, BAR, MSI-X EventID/vector, or legacy IRQ is described here.
+ * The ivshmem driver enumerates the function and discovers all of those values
+ * from PCI configuration space at runtime.
+ */
+
+/ {
+	chosen {
+		zephyr,pcie-controller = &axvisor_pci_ecam;
+	};
+
+	axvisor_pci_ecam: pci@b000000 {
+		compatible = "pci-host-ecam-generic";
+		device_type = "pci";
+		reg = <0x0b000000 0x00100000>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		#interrupt-cells = <1>;
+		bus-range = <0 0>;
+		ranges = <0x02000000 0x0 0x0c000000
+			  0x0c000000 0x0 0x04000000>;
+		interrupt-map = <>;
+		dma-coherent;
+		msi-parent = <&axvisor_its0>;
+		status = "okay";
+	};
+};
+
+&gic {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	ranges;
+
+	axvisor_its0: msi-controller@fe640000 {
+		compatible = "arm,gic-v3-its";
+		msi-controller;
+		#msi-cells = <1>;
+		reg = <0x0 0xfe640000 0x0 0x00020000>;
+		status = "okay";
+	};
+
+	axvisor_its1: msi-controller@fe660000 {
+		compatible = "arm,gic-v3-its";
+		msi-controller;
+		#msi-cells = <1>;
+		reg = <0x0 0xfe660000 0x0 0x00020000>;
+		status = "okay";
+	};
+};

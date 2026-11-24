@@ -1,0 +1,4 @@
+vm_configs = [
+    "test-suit/axvisor/qemu/aarch64/ivc-starry/configs/publisher.toml",
+    "test-suit/axvisor/qemu/aarch64/ivc-starry/configs/subscriber.toml",
+]

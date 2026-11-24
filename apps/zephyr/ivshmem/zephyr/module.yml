@@ -1,0 +1,5 @@
+name: tgos_ivc
+
+build:
+  cmake: .
+  kconfig: Kconfig

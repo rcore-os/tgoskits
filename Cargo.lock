@@ -408,7 +408,6 @@ version = "0.1.0"
 dependencies = [
  "arceos-ivshmem-pci",
  "ax-std",
- "axivc",
 ]
 
 [[package]]
@@ -417,7 +416,6 @@ version = "0.1.0"
 dependencies = [
  "arceos-ivshmem-pci",
  "ax-std",
- "axivc",
 ]
 
 [[package]]
@@ -426,7 +424,9 @@ version = "0.1.0"
 dependencies = [
  "ax-mm",
  "ax-std",
+ "axivc",
  "fdt-parser",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5081,6 +5081,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arceos-ivc-subscriber",
+ "arceos-ivshmem-pci",
  "axivc",
  "cc",
  "libc",
@@ -8131,6 +8132,7 @@ dependencies = [
  "axbacktrace",
  "axfs-ng-vfs",
  "axhvc",
+ "axivc",
  "axklib",
  "axplat-dyn",
  "axpoll",

@@ -3,9 +3,10 @@
 use alloc::vec::Vec;
 
 use super::{
-    PciBdf, PciCapabilityEffectRegion, PciCapabilityId, PciCapabilityLayout, PciCapabilitySnapshot,
-    PciEndpointIdentity, PciResult, ResolvedPciIntx,
+    PciBdf, PciCapabilityId, PciCapabilityLayout, PciCapabilitySnapshot, PciEndpointIdentity,
+    PciResult, ResolvedPciIntx,
     bar::{BarState, ResolvedBarPlan},
+    capability::PciCapabilityEffectMatch,
     config_layout::{
         COMMAND_BUS_MASTER_ENABLE, COMMAND_INTERRUPT_DISABLE, COMMAND_MEMORY_SPACE_ENABLE,
         CONFIG_BAR_END, CONFIG_BAR_MEMORY_ADDRESS_MASK, CONFIG_BAR_REGISTER_SIZE, CONFIG_BAR_START,
@@ -204,8 +205,7 @@ impl FunctionState {
     ) -> PciResult<
         Option<(
             PciCapabilityId,
-            PciCapabilityEffectRegion,
-            u8,
+            PciCapabilityEffectMatch,
             PciCapabilitySnapshot,
         )>,
     > {
@@ -213,17 +213,9 @@ impl FunctionState {
             let Some(effect) = capability.effect_for_access(offset, size, write, width)? else {
                 continue;
             };
-            let relative = offset
-                .checked_sub(usize::from(capability.offset().value()))
-                .ok_or(super::PciError::InvalidConfigAccess {
-                    offset: offset as u16,
-                    width,
-                    detail: "capability effect offset underflows",
-                })?;
             return Ok(Some((
                 capability.id(),
                 effect,
-                relative as u8,
                 capability.snapshot(&self.config),
             )));
         }

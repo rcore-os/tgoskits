@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig TGOS_IVC
+	bool "TGOSKits ivshmem Message V1 device"
+	default n
+	depends on ARM64
+	depends on ARM_MMU
+	depends on PCIE
+	depends on PCIE_CONTROLLER
+	depends on DT_HAS_PCI_HOST_ECAM_GENERIC_ENABLED
+	depends on GIC_V3_ITS
+	select PCIE_MSI
+	select PCIE_MSI_X
+	select PCIE_MSI_MULTI_VECTOR
+	select DYNAMIC_INTERRUPTS
+	help
+	  Enable the TGOSKits-owned Zephyr adapter for the AxVisor ivshmem
+	  Message V1 transport. The selected PCIe ECAM host and its GICv3 ITS
+	  are supplied by the board devicetree. The adapter discovers the
+	  single provisioned ivshmem endpoint through generic PCI and MSI-X
+	  APIs and exposes only the kernel-facing include/tgos_ivc.h interface.
+
+if TGOS_IVC
+
+config TGOS_IVC_MSI_PRIORITY
+	int "ivshmem MSI-X interrupt priority"
+	default 2
+	help
+	  Interrupt priority used when allocating the endpoint's single MSI-X
+	  vector.
+
+endif # TGOS_IVC

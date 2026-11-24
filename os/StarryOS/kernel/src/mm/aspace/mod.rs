@@ -2568,13 +2568,11 @@ impl AddrSpace {
             return None;
         }
         let mut fragment = None;
-        self.vma_root.for_each_overlapping_entry(
-            VirtAddrRange::new(cursor, end),
-            |entry| {
+        self.vma_root
+            .for_each_overlapping_entry(VirtAddrRange::new(cursor, end), |entry| {
                 fragment = entry.advice_fragment(cursor, end);
                 false
-            },
-        );
+            });
         fragment
     }
 
@@ -2625,10 +2623,7 @@ impl AddrSpace {
     }
 
     /// Collects only shared-file records intersecting a mutation range.
-    pub(crate) fn shared_file_vmas_in(
-        &self,
-        range: VirtAddrRange,
-    ) -> Vec<SharedFileVmaRecord> {
+    pub(crate) fn shared_file_vmas_in(&self, range: VirtAddrRange) -> Vec<SharedFileVmaRecord> {
         let mut records = Vec::new();
         self.vma_root.for_each_overlapping_entry(range, |entry| {
             if let Some(record) = entry.shared_file_record() {
@@ -5902,6 +5897,9 @@ impl AddrSpace {
         });
         if denied {
             return Err(StarryError::PermissionDenied);
+        }
+        for (_, operation) in self.mapping_operation_fragments(range, true)? {
+            operation.check_mprotect_flags(flags)?;
         }
 
         let vma_preimage = self.vma_root.clone();

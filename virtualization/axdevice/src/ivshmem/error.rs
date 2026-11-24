@@ -75,6 +75,17 @@ pub enum IvshmemError {
         /// The rejected access width in bytes.
         width: usize,
     },
+    /// A host-owned shared-memory word is not naturally aligned.
+    #[error(
+        "ivshmem shared-memory access at offset {offset:#x} with {width} bytes is not naturally \
+         aligned"
+    )]
+    UnalignedSharedMemoryAccess {
+        /// The rejected BAR2 offset.
+        offset: u64,
+        /// The requested access width in bytes.
+        width: usize,
+    },
     /// A BAR2 access falls outside the shared region.
     #[error(
         "ivshmem shared-memory access at offset {offset:#x} with {width} bytes exceeds the \

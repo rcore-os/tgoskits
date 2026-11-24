@@ -15,6 +15,13 @@
 
 /* PCI config-space byte holding the device revision (PCI 3.0, offset 0x08). */
 #define IVSHMEM_CONFIG_REVISION_OFFSET 0x08
+/* Conventional capability list status bit, pointer, and entry fields. */
+#define IVSHMEM_CONFIG_STATUS_OFFSET 0x06
+#define IVSHMEM_CONFIG_CAPABILITY_POINTER_OFFSET 0x34
+#define IVSHMEM_CONFIG_STATUS_CAPABILITY_LIST 0x0010u
+#define IVSHMEM_CAPABILITY_HEADER_SIZE 2u
+#define IVSHMEM_CAPABILITY_POINTER_MASK 0xfcu
+#define IVSHMEM_TRANSPORT_CAPABILITY_BODY_SIZE 34u
 
 /* PCI config-space Command register (offset 0x04) and its Memory Space
  * Enable bit; the polling adapter turns it on explicitly. */

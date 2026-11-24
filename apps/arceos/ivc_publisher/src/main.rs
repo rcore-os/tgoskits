@@ -15,14 +15,12 @@ fn main() {}
 
 #[cfg(feature = "arceos")]
 mod publisher {
-    use arceos_ivshmem_pci::{EVENT_VECTOR_0, IvshmemDevice, IvshmemLayout};
+    use arceos_ivshmem_pci::{IvcDevice, IvcEndpoint, IvcPeerRole, MessageRecordEndpoint};
     use ax_std::{
         format, println,
         string::{String, ToString},
-        thread,
         time::{Duration, Instant},
     };
-    use axivc::{IvcMessageReceiver, IvcMessageSender, IvshmemMessagePort, IvshmemSessionState};
 
     const ARCEOS_ACK_BODY: &[u8] = b"ack from arceos subscriber";
     const LINUX_ACK_BODY: &[u8] = b"ack from linux subscriber";
@@ -32,83 +30,65 @@ mod publisher {
     const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [231, 232, 233, 7424, 7484];
     const SUBSCRIBER_DATA_MESSAGE_LENGTHS: [usize; 3] = [233, 7425, 7484];
     const PUBLISH_COUNT: u64 = REQUEST_MESSAGE_LENGTHS.len() as u64;
-    const IVSHMEM_PEER_ID: u32 = 0;
-    const IVSHMEM_PEER_SLOT: u32 = 1;
     const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
     const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
-    const EVENT_POLL_DELAY: Duration = Duration::from_millis(1);
 
     pub fn run() {
         println!("ivc publisher backend=IvshmemPci");
-        ivshmem_run();
-    }
-
-    fn ivshmem_run() {
-        if let Err(error) = ivshmem_run_inner() {
-            println!("ivc session failed backend=ivshmem-pci peer={IVSHMEM_PEER_ID}: {error}");
+        if let Err(error) = run_inner() {
+            println!(
+                "ivc session failed backend=ivshmem-pci role={}: {error}",
+                IvcPeerRole::Publisher.as_str()
+            );
         }
     }
 
-    fn ivshmem_run_inner() -> Result<(), String> {
-        let device =
-            IvshmemDevice::discover(IvshmemLayout::two_peer()).map_err(|e| e.to_string())?;
-        if device.peer_id() != IVSHMEM_PEER_ID || device.max_peers() != 2 {
-            return Err(format!(
-                "unexpected ivshmem profile peer={} max_peers={}",
-                device.peer_id(),
-                device.max_peers()
-            ));
-        }
+    fn run_inner() -> Result<(), String> {
+        let mut device = IvcDevice::open(IvcPeerRole::Publisher).map_err(stringify)?;
+        let device_info = device.info();
         println!(
             "ivc publisher backend=ivshmem-pci peer={} max_peers={} event_mode=event-status-poll \
              msi_x=unavailable",
-            device.peer_id(),
-            device.max_peers()
+            device_info.peer_id(),
+            device_info.max_peers()
         );
 
-        let local_output = device.own_output().map_err(|e| e.to_string())?;
-        let peer_output = device
-            .output(IVSHMEM_PEER_SLOT)
-            .map_err(|e| e.to_string())?;
-        // SAFETY: the device owns both BAR2 mappings until this function
-        // returns. Its page-aligned output sections are exposed only to this
-        // protocol; the peer uses the reciprocal local/peer arrangement, and
-        // no endpoint from an earlier session remains in this single run.
-        let mut port = unsafe {
-            IvshmemMessagePort::attach(
-                local_output.as_ptr(),
-                local_output.len(),
-                peer_output.as_const_ptr(),
-                peer_output.len(),
-            )
-        }
-        .map_err(|e| e.to_string())?;
-        // SAFETY: this app is the sole initializer of its output section for
-        // this guest execution, and no endpoint has been created yet.
-        let local_incarnation = unsafe { port.begin_session() }.map_err(|e| e.to_string())?;
+        let pending = device.open_endpoint().map_err(stringify)?;
+        let pending_info = pending.info();
         println!(
             "ivc session marker=waiting backend=ivshmem-pci role=publisher peer={} \
-             local_incarnation={local_incarnation} phase=before-peer",
-            device.peer_id()
+             local_incarnation={} phase=before-peer",
+            pending_info.device().peer_id(),
+            pending_info.local_incarnation()
         );
 
-        wait_for_session(&device, &mut port, local_incarnation)?;
-        let (sender, receiver) = port.try_connect().map_err(|e| e.to_string())?.into_parts();
-        let mut sender = RequestSender::new(sender);
-        let mut receiver = ResponseReceiver::new(receiver);
+        let mut endpoint = pending.wait_ready(SESSION_TIMEOUT).map_err(stringify)?;
+        let ready = endpoint.info();
+        println!(
+            "ivc session marker=ready backend=ivshmem-pci role=publisher peer={} \
+             local_incarnation={} peer_incarnation={}",
+            ready.device().peer_id(),
+            ready.local_incarnation(),
+            ready.peer_incarnation()
+        );
+        let mut event_observed = ready.observed_event();
+        if event_observed {
+            println!("ivc session event backend=ivshmem-pci source=event-status");
+        }
+
+        let mut sender = RequestSender::new();
+        let mut receiver = ResponseReceiver::new();
         let started = Instant::now();
-        let mut event_observed = false;
 
         while !sender.is_complete() || !receiver.is_complete() {
-            let sent = sender.poll()?;
-            let received = receiver.poll()?;
-            if sent || received {
-                ring_peer(&device)?;
-            }
-            event_observed |= poll_events(&device, event_observed)?;
-
-            if !port.is_session_current() {
-                return Err("ivshmem Message V1 session was lost".into());
+            let sent = sender.poll(&mut endpoint)?;
+            let received = receiver.poll(&mut endpoint)?;
+            if !sent && !received {
+                let observed = endpoint.wait_for_progress().map_err(stringify)?;
+                if observed && !event_observed {
+                    println!("ivc session event backend=ivshmem-pci source=event-status");
+                }
+                event_observed |= observed;
             }
             if sender.is_complete() && receiver.is_complete() {
                 break;
@@ -121,85 +101,26 @@ mod publisher {
                     receiver.data_count()
                 ));
             }
-            if !sent && !received {
-                thread::sleep(EVENT_POLL_DELAY);
-            }
         }
 
         println!(
             "ivc session marker=complete backend=ivshmem-pci role=publisher peer={}",
-            device.peer_id()
+            ready.device().peer_id()
         );
         println!("ivc full-duplex demo complete backend=ivshmem-pci");
         Ok(())
     }
 
-    fn wait_for_session(
-        device: &IvshmemDevice,
-        port: &mut IvshmemMessagePort<'_>,
-        local_incarnation: core::num::NonZeroU32,
-    ) -> Result<(), String> {
-        let started = Instant::now();
-        let mut event_observed = false;
-        loop {
-            match port.poll_handshake().map_err(|e| e.to_string())? {
-                IvshmemSessionState::Ready { local, peer } => {
-                    if local != local_incarnation {
-                        return Err(format!(
-                            "session ready with unexpected local incarnation {local}"
-                        ));
-                    }
-                    println!(
-                        "ivc session marker=ready backend=ivshmem-pci role=publisher peer={} \
-                         local_incarnation={local} peer_incarnation={peer}",
-                        device.peer_id()
-                    );
-                    return Ok(());
-                }
-                IvshmemSessionState::WaitingForPeer { .. }
-                | IvshmemSessionState::WaitingForPeerAcknowledgement { .. } => {}
-                state => return Err(format!("session left the waiting path: {state:?}")),
-            }
-            event_observed |= poll_events(device, event_observed)?;
-            if started.elapsed() >= SESSION_TIMEOUT {
-                return Err("peer did not join the ivshmem Message V1 session".into());
-            }
-            thread::sleep(EVENT_POLL_DELAY);
-        }
-    }
-
-    fn poll_events(device: &IvshmemDevice, already_observed: bool) -> Result<bool, String> {
-        if device
-            .take_events(EVENT_VECTOR_0)
-            .map_err(|e| e.to_string())?
-            == 0
-        {
-            return Ok(false);
-        }
-        if !already_observed {
-            println!("ivc session event backend=ivshmem-pci source=event-status");
-        }
-        Ok(true)
-    }
-
-    fn ring_peer(device: &IvshmemDevice) -> Result<(), String> {
-        device
-            .ring_doorbell(IVSHMEM_PEER_SLOT, 0)
-            .map_err(|e| e.to_string())
-    }
-
-    struct RequestSender<'a> {
-        sender: IvcMessageSender<'a>,
+    struct RequestSender {
         payload: [u8; APP_MAX_MESSAGE_LEN],
         next_request: usize,
         active_len: usize,
         consumed: usize,
     }
 
-    impl<'a> RequestSender<'a> {
-        fn new(sender: IvcMessageSender<'a>) -> Self {
+    impl RequestSender {
+        fn new() -> Self {
             Self {
-                sender,
                 payload: [0; APP_MAX_MESSAGE_LEN],
                 next_request: 0,
                 active_len: 0,
@@ -207,22 +128,21 @@ mod publisher {
             }
         }
 
-        fn poll(&mut self) -> Result<bool, String> {
+        fn poll(&mut self, endpoint: &mut IvcEndpoint<'_>) -> Result<bool, String> {
             if self.is_complete() {
                 return Ok(false);
             }
             if self.active_len == 0 {
-                self.start_next()?;
+                self.start_next(endpoint)?;
             }
 
             let mut wrote = false;
             loop {
-                let progress = self
-                    .sender
-                    .try_write(&self.payload[self.consumed..self.active_len])
-                    .map_err(|e| format!("{e:?}"))?;
-                self.consumed += progress.consumed();
-                wrote |= progress.published_slots() > 0;
+                let progress = endpoint
+                    .write_record(&self.payload[self.consumed..self.active_len])
+                    .map_err(stringify)?;
+                self.consumed += progress.transferred();
+                wrote |= progress.progressed();
                 if progress.is_complete() {
                     let sequence = self.next_request as u64 + 1;
                     println!("ivc send seq={sequence} len={}", self.active_len);
@@ -231,13 +151,13 @@ mod publisher {
                     self.consumed = 0;
                     return Ok(true);
                 }
-                if progress.consumed() == 0 {
+                if !progress.progressed() {
                     return Ok(wrote);
                 }
             }
         }
 
-        fn start_next(&mut self) -> Result<(), String> {
+        fn start_next(&mut self, endpoint: &mut IvcEndpoint<'_>) -> Result<(), String> {
             let sequence = self.next_request as u64 + 1;
             let message_len = REQUEST_MESSAGE_LENGTHS[self.next_request];
             if !encode_pattern_message(
@@ -247,9 +167,9 @@ mod publisher {
             ) {
                 return Err(format!("cannot encode request seq={sequence}"));
             }
-            self.sender
-                .start_message(message_len as u64)
-                .map_err(|e| format!("{e:?}"))?;
+            endpoint
+                .start_record(message_len as u64)
+                .map_err(stringify)?;
             self.active_len = message_len;
             self.consumed = 0;
             Ok(())
@@ -264,8 +184,7 @@ mod publisher {
         }
     }
 
-    struct ResponseReceiver<'a> {
-        receiver: IvcMessageReceiver<'a>,
+    struct ResponseReceiver {
         payload: [u8; APP_MAX_MESSAGE_LEN],
         received: usize,
         expected_ack_sequence: u64,
@@ -273,10 +192,9 @@ mod publisher {
         complete: bool,
     }
 
-    impl<'a> ResponseReceiver<'a> {
-        fn new(receiver: IvcMessageReceiver<'a>) -> Self {
+    impl ResponseReceiver {
+        fn new() -> Self {
             Self {
-                receiver,
                 payload: [0; APP_MAX_MESSAGE_LEN],
                 received: 0,
                 expected_ack_sequence: 1,
@@ -285,39 +203,34 @@ mod publisher {
             }
         }
 
-        fn poll(&mut self) -> Result<bool, String> {
+        fn poll(&mut self, endpoint: &mut IvcEndpoint<'_>) -> Result<bool, String> {
             if self.complete {
                 return Ok(false);
             }
             let mut progressed = false;
             loop {
                 if self.received == 0 {
-                    match self
-                        .receiver
-                        .peek_message_meta()
-                        .map_err(|e| format!("{e:?}"))?
-                    {
-                        Some(meta) if message_fits(meta.len(), self.payload.len()) => {}
-                        Some(meta) => {
-                            return Err(format!("oversized reply message len={}", meta.len()));
+                    match endpoint.peek_record_len().map_err(stringify)? {
+                        Some(message_len) if message_fits(message_len, self.payload.len()) => {}
+                        Some(message_len) => {
+                            return Err(format!("oversized reply message len={message_len}"));
                         }
                         None => return Ok(progressed),
                     }
                 }
 
-                let progress = self
-                    .receiver
-                    .try_read(&mut self.payload[self.received..])
-                    .map_err(|e| format!("{e:?}"))?;
-                self.received += progress.written();
-                progressed |= progress.consumed_slots() > 0;
+                let progress = endpoint
+                    .read_record(&mut self.payload[self.received..])
+                    .map_err(stringify)?;
+                self.received += progress.transferred();
+                progressed |= progress.progressed();
                 if progress.is_complete() {
                     self.validate_message()?;
                     self.received = 0;
                     if self.complete {
                         return Ok(true);
                     }
-                } else if progress.consumed_slots() == 0 {
+                } else if !progress.progressed() {
                     return Ok(progressed);
                 }
             }
@@ -482,5 +395,9 @@ mod publisher {
         kind: AppMessageKind,
         sequence: u64,
         body: &'a [u8],
+    }
+
+    fn stringify(error: impl ToString) -> String {
+        error.to_string()
     }
 }

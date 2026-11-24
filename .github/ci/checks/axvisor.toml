@@ -120,7 +120,7 @@ echo "==> axvisor aarch64 HTTP control-plane, browser console, source-built IVC 
 # and their per-case initramfs/runtime inputs are still prepared independently.
 # Build ArceOS guests from this checkout rather than using prebuilt binaries.
 cargo xtask axvisor test qemu --arch aarch64 \
-  --test-case qemu/aarch64/http-control-plane,qemu/aarch64/ivc-local,qemu/aarch64/ivc-arceos,qemu/aarch64/ivshmem-pci
+  --test-case qemu/aarch64/http-control-plane,qemu/aarch64/ivc-local,qemu/aarch64/ivc-arceos,qemu/aarch64/ivc-starry,qemu/aarch64/ivshmem-pci
 '''
 
 [[check.suite]]
@@ -130,6 +130,7 @@ cases = [
   "qemu/aarch64/http-control-plane",
   "qemu/aarch64/ivc-local",
   "qemu/aarch64/ivc-arceos",
+  "qemu/aarch64/ivc-starry",
   "qemu/aarch64/ivshmem-pci",
 ]
 

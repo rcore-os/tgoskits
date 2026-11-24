@@ -2,10 +2,11 @@
 //!
 //! A BAR0 doorbell write is decoded into a [`Doorbell`], routed by the link,
 //! and handed to the target peer's [`IvshmemEventSink`] as a
-//! [`DoorbellEvent`]. These types are pure values: they hold no locks and
-//! perform no allocation, so the link and endpoint adapters can share them in
-//! `no_std + alloc` builds and tests can exercise routing without a PCI
-//! runtime.
+//! [`DoorbellEvent`]. The same sink receives peer reset/detach epoch changes
+//! through [`IvshmemEventSink::peer_epoch_changed`]. These value paths hold no
+//! locks and perform no allocation, so the link and endpoint adapters can
+//! share them in `no_std + alloc` builds and tests can exercise routing
+//! without a PCI runtime.
 
 use super::{error::IvshmemError, link::PeerId};
 
@@ -99,6 +100,16 @@ pub trait IvshmemEventSink: Send + Sync {
     /// link treats every error as a rate-limited diagnostic; a guest doorbell
     /// never becomes a device access error or a VM abort.
     fn deliver(&self, event: DoorbellEvent) -> Result<(), IvshmemError>;
+
+    /// Records a peer lifecycle epoch change on the target endpoint.
+    ///
+    /// The link first publishes the new epoch into the host-owned state page
+    /// and then invokes this method outside its lifecycle and backing locks.
+    /// Implementations may coalesce the notification with pending doorbells.
+    /// Errors have the same delivery policy as [`Self::deliver`].
+    fn peer_epoch_changed(&self, _peer: PeerId, _epoch: u64) -> Result<(), IvshmemError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

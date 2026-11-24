@@ -17,7 +17,7 @@ const char *ivshmem_strerror(int err)
     case IVSHMEM_ERR_AMBIGUOUS:
         return "several ivshmem devices found; an explicit BDF is required";
     case IVSHMEM_ERR_PROFILE:
-        return "device identity or revision does not match the adapter profile";
+        return "device identity, revision, or AxVisor transport capability does not match";
     case IVSHMEM_ERR_IO:
         return "sysfs or devtmpfs access failed";
     case IVSHMEM_ERR_MMAP:

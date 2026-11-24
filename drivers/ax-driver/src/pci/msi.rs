@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::{format, vec::Vec};
 
-use fdt_edit::{Fdt, NodeType, Phandle};
+use fdt_edit::{Fdt, Phandle};
 use log::warn;
 use pcie::{Endpoint, MsixError, MsixTableRegion};
 use rdif_msi::{Msi, MsiAllocation, MsiDeviceId, MsiMessage, MsiRequest};
@@ -429,7 +429,7 @@ fn fdt_msi_target_for_endpoint(info: PciInfo) -> Result<PciMsiTarget, OnProbeErr
 }
 
 fn resolve_fdt_msi_target(fdt: &Fdt, info: PciInfo) -> Result<PciMsiTarget, OnProbeError> {
-    let host = fdt_pci_host_for_endpoint(fdt, info)?;
+    let host = super::fdt::pci_host_for_endpoint(fdt, info)?;
     let rid = pci_requester_id(info.address);
 
     let host_node = fdt
@@ -444,50 +444,6 @@ fn resolve_fdt_msi_target(fdt: &Fdt, info: PciInfo) -> Result<PciMsiTarget, OnPr
     }
 
     Err(OnProbeError::Unsupported("PCI host has no FDT MSI routing"))
-}
-
-fn fdt_pci_host_for_endpoint(
-    fdt: &Fdt,
-    info: PciInfo,
-) -> Result<fdt_edit::PciNodeView<'_>, OnProbeError> {
-    let bus = info.address.bus();
-    let mut candidates = Vec::new();
-    let mut exact_range_matches = Vec::new();
-
-    for node in fdt.all_nodes() {
-        let NodeType::Pci(pci) = node else {
-            continue;
-        };
-        match pci.bus_range() {
-            Some(range) if range.contains(&(bus as u32)) => {
-                exact_range_matches.push(pci);
-                candidates.push(pci);
-            }
-            Some(_) => {}
-            None => candidates.push(pci),
-        }
-    }
-
-    if exact_range_matches.len() == 1 {
-        Ok(exact_range_matches[0])
-    } else if exact_range_matches.len() > 1 {
-        Err(OnProbeError::other(format!(
-            "multiple PCI host nodes in FDT match endpoint {} with the same bus-range",
-            info.address
-        )))
-    } else if candidates.len() == 1 {
-        Ok(candidates[0])
-    } else if candidates.is_empty() {
-        Err(OnProbeError::other(format!(
-            "no PCI host node in FDT matches endpoint {}",
-            info.address
-        )))
-    } else {
-        Err(OnProbeError::other(format!(
-            "multiple PCI host nodes in FDT match endpoint {} without a unique bus-range match",
-            info.address
-        )))
-    }
 }
 
 fn resolve_msi_parent(

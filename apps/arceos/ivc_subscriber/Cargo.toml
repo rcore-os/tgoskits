@@ -9,7 +9,7 @@ publish = false
 default = []
 arceos = [
   "dep:ax-std",
-  "dep:arceos-ivshmem-pci",
+  "arceos-ivshmem-pci/arceos",
   "ax-std/arceos",
   "ax-std/paging",
   "ax-std/alloc",
@@ -17,8 +17,7 @@ arceos = [
 
 [dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
-axivc.workspace = true
-arceos-ivshmem-pci = { path = "../ivshmem-pci", optional = true }
+arceos-ivshmem-pci = { path = "../ivshmem-pci", default-features = false }
 
 [lib]
 name = "arceos_ivc_subscriber"

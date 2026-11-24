@@ -1,0 +1,19 @@
+[package]
+name = "tgos-ivc-zephyr"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+axivc = { path = "../../../../virtualization/axivc" }
+
+[workspace]
+resolver = "3"
+
+[profile.release]
+codegen-units = 1
+panic = "abort"

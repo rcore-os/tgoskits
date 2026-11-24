@@ -1,0 +1,103 @@
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 1"
+success_regex = ["VM\\[1\\] started successfully"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ["Attached VM\\[1\\] console"]
+timeout = 30
+
+# The publisher has opened the automatic ivshmem endpoint, validated the
+# payload-only mapping contract, initialized its 10 MiB owner buffer, and
+# observed EAGAIN for both empty read and the pre-peer message write. It is now
+# blocked on POLLOUT for the late subscriber. Ctrl-X and the phase marker are
+# one step because the serial checker drains every observed success marker.
+[[shell_check_steps]]
+shell_prefix = "phase=before-peer cache=ENOTTY payload=10MiB local=rw peer=ro protocol=rejected peer-write=rejected peer-mprotect=rejected exec=rejected bad-offset=rejected oversize=rejected write=EAGAIN empty=EAGAIN"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[1\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 2"
+success_regex = ["VM\\[2\\] started successfully"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = ["Attached VM\\[2\\] console"]
+timeout = 30
+
+# The real MSI-X evidence, confirmed payload phase, and final 10 MiB PASS must be
+# observed in one step. Rust regex has no lookahead, so two alternatives cover
+# either observed IRQ/phase order while allowing ordinary logs before PASS.
+[[shell_check_steps]]
+success_regex = [
+    "(?ms)(?:axivc ivshmem MSI-X event.*?AXIVC_STARRY subscriber phase=payload-ready cache=ENOTTY payload=10MiB local=rw peer=ro protocol=rejected peer-write=rejected peer-mprotect=rejected exec=rejected bad-offset=rejected oversize=rejected\\r?\\n.*?AXIVC_STARRY subscriber PASS rx=48 tx=48 bulk=10485760 forward=ok reverse=ok empty=EAGAIN short=not-consumed hup=observed oldfd=EIO cache=ENOTTY close=ok|AXIVC_STARRY subscriber phase=payload-ready cache=ENOTTY payload=10MiB local=rw peer=ro protocol=rejected peer-write=rejected peer-mprotect=rejected exec=rejected bad-offset=rejected oversize=rejected\\r?\\n.*?axivc ivshmem MSI-X event.*?AXIVC_STARRY subscriber PASS rx=48 tx=48 bulk=10485760 forward=ok reverse=ok empty=EAGAIN short=not-consumed hup=observed oldfd=EIO cache=ENOTTY close=ok)[ \\t\\r]*$",
+]
+
+[[shell_check_steps]]
+shell_prefix = "AXIVC_STARRY subscriber phase=forced-victim-ready cause=host-stop"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[2\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ["Attached VM\\[1\\] console"]
+timeout = 30
+
+# VM 1 is detached while it receives the ACK, cleans up, and emits PASS. It
+# then opens a fresh generation and blocks on readiness while VM 2 is alive but
+# does not open its matching generation.
+[[shell_check_steps]]
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?AXIVC_STARRY publisher PASS rx=48 tx=48 bulk=10485760 forward=ok reverse=ok empty=EAGAIN cache=ENOTTY close=ok\\s*$",
+]
+
+[[shell_check_steps]]
+shell_prefix = "AXIVC_STARRY publisher phase=forced-wait cause=host-stop"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[1\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop --force 2"
+success_regex = ["(?m)^✓ VM\\[2\\] stopped successfully\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ["Attached VM\\[1\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?AXIVC_STARRY publisher PASS forced=host-stop hup=observed oldfd=EIO close=ok\\s*$",
+]
+
+[[shell_check_steps]]
+shell_prefix = "AXIVC_STARRY publisher FORCED_DETACH"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[1\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete --force 2"
+success_regex = ["(?m)^✓ VM\\[2\\] deleted completely\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete --force 1"
+success_regex = ["(?m)^✓ VM\\[1\\] deleted completely\\s*$"]
+timeout = 120

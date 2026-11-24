@@ -138,6 +138,13 @@ impl fmt::Debug for IvshmemMemoryLayout {
 impl IvshmemMemoryLayout {
     /// Size of one peer's state-table entry in bytes.
     const STATE_ENTRY_SIZE: u64 = 4;
+    /// First byte of the host-owned peer lifecycle epoch table.
+    ///
+    /// The table lives in the otherwise reserved tail of the read-only state
+    /// page, so guests can observe it but cannot write it through BAR2.
+    const PEER_EPOCH_OFFSET: u64 = 0x100;
+    /// Size of one peer lifecycle epoch.
+    const PEER_EPOCH_STRIDE: u64 = 8;
 
     /// Derives the layout from the link profile.
     ///
@@ -245,6 +252,54 @@ impl IvshmemMemoryLayout {
             });
         }
         Ok(self.state_table.offset() + u64::from(peer.value()) * Self::STATE_ENTRY_SIZE)
+    }
+
+    /// Returns the fixed BAR2-relative base of the peer lifecycle epoch table.
+    ///
+    /// The table is inside the read-only state page. Guest software computes
+    /// one peer's offset as `base + peer_id * stride`.
+    pub const fn peer_epoch_base_offset(&self) -> u64 {
+        self.state_table.offset() + Self::PEER_EPOCH_OFFSET
+    }
+
+    /// Returns the spacing between adjacent peer lifecycle epochs.
+    pub const fn peer_epoch_stride(&self) -> u64 {
+        Self::PEER_EPOCH_STRIDE
+    }
+
+    /// Returns the BAR2-relative offset of one host-owned peer epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IvshmemError::PeerOutOfProfile`] when `peer` is outside the
+    /// supplied profile, or [`IvshmemError::InvalidLayout`] if the epoch table
+    /// cannot fit in the state-table page.
+    pub fn peer_epoch_offset(&self, peer: PeerId, max_peers: u16) -> Result<u64, IvshmemError> {
+        if peer.value() >= max_peers {
+            return Err(IvshmemError::PeerOutOfProfile {
+                peer: peer.value(),
+                max_peers,
+            });
+        }
+        let offset = self
+            .peer_epoch_base_offset()
+            .checked_add(u64::from(peer.value()) * Self::PEER_EPOCH_STRIDE)
+            .ok_or_else(|| IvshmemError::InvalidLayout {
+                detail: "peer epoch offset overflow".into(),
+            })?;
+        let end = offset.checked_add(Self::PEER_EPOCH_STRIDE).ok_or_else(|| {
+            IvshmemError::InvalidLayout {
+                detail: "peer epoch range overflow".into(),
+            }
+        })?;
+        if end > self.state_table.offset() + self.state_table.size() {
+            return Err(IvshmemError::InvalidLayout {
+                detail: alloc::format!(
+                    "peer {peer} epoch at {offset:#x}..{end:#x} leaves the state-table page"
+                ),
+            });
+        }
+        Ok(offset)
     }
 
     /// Classifies one BAR2 offset into its owning section.
@@ -356,6 +411,29 @@ mod tests {
     }
 
     #[test]
+    fn derives_two_12_mib_outputs_in_a_32_mib_bar2() {
+        let profile = LinkProfile::new(2, 0, 0x00c0_0000).unwrap();
+        assert_eq!(profile.bar2_size(), 0x0200_0000);
+        let layout = IvshmemMemoryLayout::derive(profile.bar2_size(), profile).unwrap();
+
+        assert_eq!(layout.bar2_size(), 0x0200_0000);
+        assert_eq!(layout.outputs()[0].offset(), 0x1000);
+        assert_eq!(layout.outputs()[0].size(), 0x00c0_0000);
+        assert_eq!(layout.outputs()[1].offset(), 0x00c0_1000);
+        assert_eq!(layout.outputs()[1].size(), 0x00c0_0000);
+        assert_eq!(
+            layout.classify(0x00c0_0fff),
+            Bar2Section::Output(PeerId::new(0))
+        );
+        assert_eq!(
+            layout.classify(0x00c0_1000),
+            Bar2Section::Output(PeerId::new(1))
+        );
+        assert_eq!(layout.classify(0x01ff_ffff), Bar2Section::Reserved);
+        layout.validate().unwrap();
+    }
+
+    #[test]
     fn classifies_every_offset_boundary_into_its_section() {
         let layout = two_peer_layout();
         let expectations: &[(u64, Bar2Section)] = &[
@@ -372,6 +450,21 @@ mod tests {
         for (offset, expected) in expectations {
             assert_eq!(layout.classify(*offset), *expected, "offset {offset:#x}");
         }
+    }
+
+    #[test]
+    fn peer_epochs_use_the_reserved_read_only_state_page_tail() {
+        let layout = two_peer_layout();
+        assert_eq!(layout.peer_epoch_base_offset(), 0x100);
+        assert_eq!(layout.peer_epoch_stride(), 8);
+        assert_eq!(layout.peer_epoch_offset(PeerId::new(0), 2).unwrap(), 0x100);
+        assert_eq!(layout.peer_epoch_offset(PeerId::new(1), 2).unwrap(), 0x108);
+        assert_eq!(layout.classify(0x100), Bar2Section::StateTable);
+        assert_eq!(layout.classify(0x10f), Bar2Section::StateTable);
+        assert!(matches!(
+            layout.peer_epoch_offset(PeerId::new(2), 2),
+            Err(IvshmemError::PeerOutOfProfile { .. })
+        ));
     }
 
     #[test]

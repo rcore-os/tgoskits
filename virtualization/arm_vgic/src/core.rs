@@ -411,13 +411,20 @@ impl MessageInterruptSink for VgicMessageSink {
             event: message.event(),
             lpi: message.lpi(),
         };
-        // The current profile exposes a single ITS instance (id 0).
-        let expected_address = self
-            .controller
-            .config()
-            .its()
-            .filter(|_| message.its().value() == 0)
-            .map(|region| region.base() + GITS_TRANSLATER_OFFSET);
+        let expected_address =
+            self.controller
+                .config()
+                .its_instances()
+                .iter()
+                .find_map(|(its, region)| {
+                    if *its != message.its() {
+                        return None;
+                    }
+                    let address = region.base().checked_add(GITS_TRANSLATER_OFFSET)?;
+                    region
+                        .contains(address, core::mem::size_of::<u32>())
+                        .then_some(address)
+                });
         let expected_data = message.event().value();
         let Some(expected_address) = expected_address else {
             return Err(IrqError::MessageEncodingMismatch {

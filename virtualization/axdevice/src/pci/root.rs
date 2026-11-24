@@ -216,13 +216,13 @@ impl PciRootState {
         width: AccessWidth,
     ) -> PciResult<PciConfigReadOutcome> {
         let (offset, size) = offset.validate_access(width)?;
-        let (token, command, capability, effect, relative, snapshot) = {
+        let (token, command, capability, effect, snapshot) = {
             let state = self.state.lock_irqsave();
             let Some(function_index) = state.function_index(bdf) else {
                 return Ok(PciConfigReadOutcome::Value(all_ones(size)));
             };
             let function = &state.functions[function_index];
-            let Some((capability, effect, relative, snapshot)) =
+            let Some((capability, effect, snapshot)) =
                 function.config_effect(offset, size, width, false)?
             else {
                 let value = function.read(offset, size);
@@ -259,7 +259,6 @@ impl PciRootState {
                 function.command_state(),
                 capability,
                 effect,
-                relative,
                 snapshot,
             )
         };
@@ -268,9 +267,9 @@ impl PciRootState {
             command,
             effect: Box::new(PciConfigReadEffect::new(
                 capability,
-                effect.effect(),
-                relative,
-                width,
+                effect.effect_id(),
+                effect.offset(),
+                effect.width(),
                 snapshot,
                 command,
             )),
@@ -314,7 +313,7 @@ impl PciRootState {
         value: u64,
     ) -> PciResult<PciConfigWriteOutcome> {
         let (offset, size) = offset.validate_access(width)?;
-        let (token, command, capability, effect, relative, snapshot) = {
+        let (token, command, capability, effect, snapshot, effect_value) = {
             let mut state = self.state.lock_irqsave();
             let Some(function_index) = state.function_index(bdf) else {
                 return Ok(PciConfigWriteOutcome::Complete);
@@ -336,9 +335,10 @@ impl PciRootState {
                     function: function.id().to_string(),
                 });
             }
-            if let Some((capability, effect, relative, snapshot)) =
+            if let Some((capability, effect, snapshot)) =
                 state.functions[function_index].config_effect(offset, size, width, true)?
             {
+                let effect_value = effect.translate_write_value(value);
                 let token = state
                     .bindings
                     .get(&bdf)
@@ -351,8 +351,8 @@ impl PciRootState {
                     state.functions[function_index].command_state(),
                     capability,
                     effect,
-                    relative,
                     snapshot,
+                    effect_value,
                 )
             } else {
                 let bar_action =
@@ -433,13 +433,13 @@ impl PciRootState {
             effect: Box::new(PciConfigWriteEffect::new(
                 PciConfigReadEffect::new(
                     capability,
-                    effect.effect(),
-                    relative,
-                    width,
+                    effect.effect_id(),
+                    effect.offset(),
+                    effect.width(),
                     snapshot,
                     command,
                 ),
-                value,
+                effect_value,
             )),
         })
     }

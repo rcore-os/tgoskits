@@ -3,13 +3,13 @@
 //! Application-level Message V1 subscriber state machines.
 //!
 //! This crate validates the publisher requests and drives the subscriber's
-//! patterned data and acknowledgement messages over [`axivc::IvcEndpoints`].
-//! It performs no logging, sleeping, doorbell signalling, or session polling.
+//! patterned data and acknowledgement messages over a logical
+//! [`MessageRecordEndpoint`]. Device discovery, Message V1, doorbells, waiting,
+//! and session lifetime remain owned by the endpoint implementation.
 
 use core::fmt;
 
-pub use axivc::{IvcEndpoints, IvcMessageError};
-use axivc::{IvcMessageReceiver, IvcMessageSender};
+pub use arceos_ivshmem_pci::{MessageRecordEndpoint, RecordProgress};
 
 const APP_HEADER_LEN: usize = 11;
 // Exercise single-fragment and full-ring payload boundaries.
@@ -74,10 +74,10 @@ pub enum MessageDemoEvent<'a> {
 }
 
 /// Errors from subscriber construction or application-message validation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MessageDemoError {
+#[derive(Debug)]
+pub enum MessageDemoError<E> {
     /// The underlying Message V1 endpoint failed.
-    Transport(IvcMessageError),
+    Transport(E),
     /// The runtime-provided acknowledgement body cannot fit in one demo
     /// application message.
     AckBodyTooLong {
@@ -108,13 +108,7 @@ pub enum MessageDemoError {
     },
 }
 
-impl From<IvcMessageError> for MessageDemoError {
-    fn from(error: IvcMessageError) -> Self {
-        Self::Transport(error)
-    }
-}
-
-impl fmt::Display for MessageDemoError {
+impl<E: fmt::Display> fmt::Display for MessageDemoError<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Transport(error) => error.fmt(formatter),
@@ -136,7 +130,10 @@ impl fmt::Display for MessageDemoError {
     }
 }
 
-impl core::error::Error for MessageDemoError {
+impl<E> core::error::Error for MessageDemoError<E>
+where
+    E: core::error::Error + 'static,
+{
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Transport(error) => Some(error),
@@ -147,26 +144,30 @@ impl core::error::Error for MessageDemoError {
 
 /// Stateful, nonblocking subscriber for the Linux/ArceOS Message V1 demo.
 ///
-/// Construct it from the subscriber side of an [`IvcEndpoints`] pair and the
-/// acknowledgement body required by the peer. Every event is delivered through
-/// the callback supplied to [`Self::poll`], so the runtime retains ownership of
-/// console output and other platform-specific side effects.
-pub struct MessageDemoSubscriber<'a> {
+/// Construct it from a logical device endpoint and the acknowledgement body
+/// required by the peer. Every event is delivered through the callback supplied
+/// to [`Self::poll`], so the runtime retains ownership of console output and
+/// other platform-specific side effects.
+pub struct MessageDemoSubscriber<'a, E> {
+    endpoint: E,
     sender: DuplexSender<'a>,
-    receiver: RequestReceiver<'a>,
+    receiver: RequestReceiver,
 }
 
-impl<'a> MessageDemoSubscriber<'a> {
-    /// Creates the two application state machines from subscriber endpoints.
+impl<'a, E> MessageDemoSubscriber<'a, E>
+where
+    E: MessageRecordEndpoint,
+{
+    /// Creates the two application state machines around one device endpoint.
     ///
     /// `ack_body` is copied into each acknowledgement message and must live for
-    /// at least as long as the endpoints.
+    /// at least as long as the subscriber.
     ///
     /// # Errors
     ///
     /// Returns [`MessageDemoError::AckBodyTooLong`] when the body cannot fit in
     /// one demo application message.
-    pub fn new(endpoints: IvcEndpoints<'a>, ack_body: &'a [u8]) -> Result<Self, MessageDemoError> {
+    pub fn new(endpoint: E, ack_body: &'a [u8]) -> Result<Self, MessageDemoError<E::Error>> {
         if ack_body.len() > ACK_BODY_MAX_LEN {
             return Err(MessageDemoError::AckBodyTooLong {
                 len: ack_body.len(),
@@ -174,10 +175,10 @@ impl<'a> MessageDemoSubscriber<'a> {
             });
         }
 
-        let (sender, receiver) = endpoints.into_parts();
         Ok(Self {
-            sender: DuplexSender::new(sender, ack_body),
-            receiver: RequestReceiver::new(receiver),
+            endpoint,
+            sender: DuplexSender::new(ack_body),
+            receiver: RequestReceiver::new(),
         })
     }
 
@@ -192,18 +193,39 @@ impl<'a> MessageDemoSubscriber<'a> {
     /// Returns a transport error for a failed Message V1 operation and
     /// [`MessageDemoError::InvalidRequest`] for a mismatched request sequence,
     /// length, or pattern.
-    pub fn poll<F>(&mut self, mut on_event: F) -> Result<PollOutcome, MessageDemoError>
+    pub fn poll<F>(&mut self, mut on_event: F) -> Result<PollOutcome, MessageDemoError<E::Error>>
     where
         F: for<'event> FnMut(MessageDemoEvent<'event>),
     {
-        let received = self.receiver.poll(&mut on_event)?;
-        let sent = self
-            .sender
-            .poll(self.receiver.highest_received(), &mut on_event)?;
+        let received = self.receiver.poll(&mut self.endpoint, &mut on_event)?;
+        let sent = self.sender.poll(
+            &mut self.endpoint,
+            self.receiver.highest_received(),
+            &mut on_event,
+        )?;
         Ok(PollOutcome::new(
             received || sent,
             self.receiver.is_complete() && self.sender.is_complete(),
         ))
+    }
+
+    /// Waits for device or peer progress after an idle poll.
+    ///
+    /// Returns whether a device event was observed.
+    pub fn wait_for_progress(&mut self) -> Result<bool, MessageDemoError<E::Error>> {
+        self.endpoint
+            .wait_for_progress()
+            .map_err(MessageDemoError::Transport)
+    }
+
+    /// Returns whether the peer consumed every published data and ACK slot.
+    ///
+    /// Call after [`Self::is_complete`] so no local record is still active and
+    /// the endpoint's receive credit represents final delivery.
+    pub fn outbound_drained(&mut self) -> Result<bool, MessageDemoError<E::Error>> {
+        self.endpoint
+            .outbound_drained()
+            .map_err(MessageDemoError::Transport)
     }
 
     /// Returns whether both application directions are complete.
@@ -228,7 +250,6 @@ impl<'a> MessageDemoSubscriber<'a> {
 }
 
 struct DuplexSender<'a> {
-    sender: IvcMessageSender<'a>,
     ack_body: &'a [u8],
     payload: [u8; APP_MAX_MESSAGE_LEN],
     active: Option<ActiveSend>,
@@ -252,9 +273,8 @@ impl ActiveSend {
 }
 
 impl<'a> DuplexSender<'a> {
-    fn new(sender: IvcMessageSender<'a>, ack_body: &'a [u8]) -> Self {
+    fn new(ack_body: &'a [u8]) -> Self {
         Self {
-            sender,
             ack_body,
             payload: [0; APP_MAX_MESSAGE_LEN],
             active: None,
@@ -264,25 +284,31 @@ impl<'a> DuplexSender<'a> {
         }
     }
 
-    fn poll<F>(&mut self, highest_received: u64, on_event: &mut F) -> Result<bool, MessageDemoError>
+    fn poll<E, F>(
+        &mut self,
+        endpoint: &mut E,
+        highest_received: u64,
+        on_event: &mut F,
+    ) -> Result<bool, MessageDemoError<E::Error>>
     where
+        E: MessageRecordEndpoint,
         F: for<'event> FnMut(MessageDemoEvent<'event>),
     {
         if self.is_complete() {
             return Ok(false);
         }
-        if self.active.is_none() && !self.start_next(highest_received)? {
+        if self.active.is_none() && !self.start_next(endpoint, highest_received)? {
             return Ok(false);
         }
         let active = self.active.ok_or(MessageDemoError::InvalidSendState)?;
 
         let mut wrote = false;
         loop {
-            let progress = self
-                .sender
-                .try_write(&self.payload[self.consumed..active.len()])?;
-            self.consumed += progress.consumed();
-            wrote |= progress.published_slots() > 0;
+            let progress = endpoint
+                .write_record(&self.payload[self.consumed..active.len()])
+                .map_err(MessageDemoError::Transport)?;
+            self.consumed += progress.transferred();
+            wrote |= progress.progressed();
             if progress.is_complete() {
                 match active {
                     ActiveSend::Data { sequence, len } => {
@@ -298,13 +324,20 @@ impl<'a> DuplexSender<'a> {
                 self.consumed = 0;
                 return Ok(true);
             }
-            if progress.consumed() == 0 {
+            if !progress.progressed() {
                 return Ok(wrote);
             }
         }
     }
 
-    fn start_next(&mut self, highest_received: u64) -> Result<bool, MessageDemoError> {
+    fn start_next<E>(
+        &mut self,
+        endpoint: &mut E,
+        highest_received: u64,
+    ) -> Result<bool, MessageDemoError<E::Error>>
+    where
+        E: MessageRecordEndpoint,
+    {
         if self.data_sent < DATA_COUNT {
             let sequence = self.data_sent + 1;
             let message_len = *DATA_MESSAGE_LENGTHS
@@ -317,7 +350,9 @@ impl<'a> DuplexSender<'a> {
             ) {
                 return Err(MessageDemoError::InvalidSendState);
             }
-            self.sender.start_message(message_len as u64)?;
+            endpoint
+                .start_record(message_len as u64)
+                .map_err(MessageDemoError::Transport)?;
             self.consumed = 0;
             self.active = Some(ActiveSend::Data {
                 sequence,
@@ -332,7 +367,9 @@ impl<'a> DuplexSender<'a> {
         let sequence = self.last_acked + 1;
         let message_len = APP_HEADER_LEN + self.ack_body.len();
         encode_ack(&mut self.payload[..message_len], sequence, self.ack_body);
-        self.sender.start_message(message_len as u64)?;
+        endpoint
+            .start_record(message_len as u64)
+            .map_err(MessageDemoError::Transport)?;
         self.consumed = 0;
         self.active = Some(ActiveSend::Ack {
             sequence,
@@ -346,8 +383,7 @@ impl<'a> DuplexSender<'a> {
     }
 }
 
-struct RequestReceiver<'a> {
-    receiver: IvcMessageReceiver<'a>,
+struct RequestReceiver {
     payload: [u8; APP_MAX_MESSAGE_LEN],
     received: usize,
     expected_sequence: u64,
@@ -355,10 +391,9 @@ struct RequestReceiver<'a> {
     complete: bool,
 }
 
-impl<'a> RequestReceiver<'a> {
-    fn new(receiver: IvcMessageReceiver<'a>) -> Self {
+impl RequestReceiver {
+    fn new() -> Self {
         Self {
-            receiver,
             payload: [0; APP_MAX_MESSAGE_LEN],
             received: 0,
             expected_sequence: 1,
@@ -367,8 +402,13 @@ impl<'a> RequestReceiver<'a> {
         }
     }
 
-    fn poll<F>(&mut self, on_event: &mut F) -> Result<bool, MessageDemoError>
+    fn poll<E, F>(
+        &mut self,
+        endpoint: &mut E,
+        on_event: &mut F,
+    ) -> Result<bool, MessageDemoError<E::Error>>
     where
+        E: MessageRecordEndpoint,
         F: for<'event> FnMut(MessageDemoEvent<'event>),
     {
         if self.complete {
@@ -377,32 +417,38 @@ impl<'a> RequestReceiver<'a> {
         let mut progressed = false;
         loop {
             if self.received == 0 {
-                match self.receiver.peek_message_meta()? {
-                    Some(meta) if message_fits(meta.len(), self.payload.len()) => {}
-                    Some(meta) => {
-                        return Err(MessageDemoError::OversizedRequest { len: meta.len() });
+                match endpoint
+                    .peek_record_len()
+                    .map_err(MessageDemoError::Transport)?
+                {
+                    Some(len) if message_fits(len, self.payload.len()) => {}
+                    Some(len) => {
+                        return Err(MessageDemoError::OversizedRequest { len });
                     }
                     None => return Ok(progressed),
                 }
             }
 
-            let progress = self.receiver.try_read(&mut self.payload[self.received..])?;
-            self.received += progress.written();
-            progressed |= progress.consumed_slots() > 0;
+            let progress = endpoint
+                .read_record(&mut self.payload[self.received..])
+                .map_err(MessageDemoError::Transport)?;
+            self.received += progress.transferred();
+            progressed |= progress.progressed();
             if progress.is_complete() {
-                self.validate_request(on_event)?;
+                self.validate_request::<F, E>(on_event)?;
                 self.received = 0;
                 if self.complete {
                     return Ok(true);
                 }
-            } else if progress.consumed_slots() == 0 {
+            } else if !progress.progressed() {
                 return Ok(progressed);
             }
         }
     }
 
-    fn validate_request<F>(&mut self, on_event: &mut F) -> Result<(), MessageDemoError>
+    fn validate_request<F, E>(&mut self, on_event: &mut F) -> Result<(), MessageDemoError<E::Error>>
     where
+        E: MessageRecordEndpoint,
         F: for<'event> FnMut(MessageDemoEvent<'event>),
     {
         let message = decode_app_message(&self.payload[..self.received])
