@@ -74,6 +74,17 @@ def result_succeeded(mode, prepare, checks):
     return mode == "full" and checks == "success"
 
 
+def preflight_tool_artifact(matrix):
+    """Use the existing CI plan as the sole producer/name registry."""
+    producers = [row for row in matrix.get("include", []) if row.get("upload_xtask_bin_artifact")]
+    if len(producers) != 1:
+        raise ValueError("Clippy reuse requires exactly one preflight tool producer")
+    name = producers[0].get("xtask_bin_artifact_name")
+    if not isinstance(name, str) or not name or '\n' in name or '\r' in name:
+        raise ValueError("invalid preflight tool artifact name")
+    return name
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -89,8 +100,12 @@ def main():
     result_parser.add_argument("--selection-mode", required=True)
     result_parser.add_argument("--prepare", required=True)
     result_parser.add_argument("--checks", required=True)
+    producer_parser = sub.add_parser("preflight-tool")
+    producer_parser.add_argument("--matrix", required=True)
     args = parser.parse_args()
-    if args.mode == "selection":
+    if args.mode == "preflight-tool":
+        print("artifact=" + preflight_tool_artifact(json.loads(args.matrix)))
+    elif args.mode == "selection":
         for key, value in selection_outputs(json.loads(args.document.read_text()), args.sha).items():
             print(f"{key}={value}")
     elif args.mode == "result":

@@ -57,9 +57,13 @@ class ToolReuseTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/clippy-checks.yml').read_text()
         for name in ['Validate preflight tool revision', 'Download the preflight tool', 'Restore the preflight tool']:
             self.assertIn('if: inputs.reuse_preflight_tool', named_step_block(workflow, name))
+        self.assertIn('name: ${{ steps.preflight.outputs.artifact }}', named_step_block(workflow, 'Download the preflight tool'))
         self.assertIn('if: ${{ !inputs.reuse_preflight_tool }}', named_step_block(workflow, 'Build the tool for an independent call'))
         caller = (ROOT / '.github/workflows/ci.yml').read_text()
         self.assertIn("reuse_preflight_tool: ${{ needs.static_checks.result == 'success' }}", caller)
+        # The same-run fixed name must be replaceable when its producer reruns.
+        producer = (ROOT / '.github/workflows/reusable-check-matrix.yml').read_text()
+        self.assertIn('overwrite: true', named_step_block(producer, 'Upload tg-xtask binary artifact'))
 
     def test_preflight_archive_is_atomic_and_rejects_unsafe_payloads(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -132,6 +136,7 @@ class ToolReuseTests(unittest.TestCase):
             output = root / 'output'
             env = dict(os.environ, PATH=str(root / 'shim') + os.pathsep + os.environ['PATH'],
                        EXPECTED_REVISION=sha, SINCE_REF='', FORCE_FULL='true',
+                       PREFLIGHT_MATRIX=json.dumps({'include': [{'upload_xtask_bin_artifact': True, 'xtask_bin_artifact_name': 'custom-tool'}]}),
                        INCREMENTAL_TIMEOUT='120', GITHUB_OUTPUT=str(output))
             result = subprocess.run(['bash', '-e', '-c', shell_step('Validate timeout and select checks')],
                                     cwd=root, env=env, capture_output=True, text=True)
@@ -141,3 +146,5 @@ class ToolReuseTests(unittest.TestCase):
                 result = subprocess.run(['bash', '-e', '-c', shell_step('Validate preflight tool revision')],
                                         cwd=root, env=dict(env, EXPECTED_REVISION=expected), capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, success, result.stderr)
+                if success:
+                    self.assertIn('artifact=custom-tool', output.read_text())

@@ -5,10 +5,18 @@ import subprocess
 import tempfile
 import unittest
 
-from ci_clippy import classify, result_succeeded, selection_outputs
+from ci_clippy import classify, preflight_tool_artifact, result_succeeded, selection_outputs
 
 
 class ClippyModeTests(unittest.TestCase):
+    def test_tool_reuse_resolves_one_producer_from_the_existing_plan(self):
+        producer = {'upload_xtask_bin_artifact': True, 'xtask_bin_artifact_name': 'custom tool'}
+        self.assertEqual(preflight_tool_artifact({'include': [{}, producer]}), 'custom tool')
+        for rows in [[], [producer, producer], [{**producer, 'xtask_bin_artifact_name': ''}],
+                     [{**producer, 'xtask_bin_artifact_name': 'tool\nmode=empty'}]]:
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                preflight_tool_artifact({'include': rows})
+
     def test_classification_requires_planning_when_comparison_is_uncertain(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

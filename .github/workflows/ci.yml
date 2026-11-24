@@ -507,4 +507,5 @@ jobs:
       since_ref: ${{ needs.plan_ci.outputs.since_ref }}
       force_full: ${{ inputs.clippy_full || false }}
       reuse_preflight_tool: ${{ needs.static_checks.result == 'success' }}
+      preflight_matrix: ${{ needs.plan_ci.outputs.static_matrix }}
       incremental_timeout_minutes: 120
