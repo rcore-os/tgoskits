@@ -16,5 +16,6 @@ pub use task::{
     BlockNotification, BlockRuntimeOps, BlockThread, has_runtime_ops, runtime_ops, set_runtime_ops,
 };
 pub use time::{
-    BlockTimeProvider, has_time_provider, monotonic_time, set_time_provider, wall_time,
+    BlockTimeProvider, has_time_provider, monotonic_time, set_time_provider, try_wall_time,
+    wall_time,
 };

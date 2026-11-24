@@ -43,6 +43,9 @@ fn open_keeps_one_link_budget_through_the_final_target_and_creation() {
     ax_block::os::task::install_test_runtime_ops();
     let filesystem = MemoryFs::new();
     let mount = Mountpoint::new_root(&filesystem);
+    // The shared link budget is independent of automatic timestamp work.
+    // Mountpoint currently accepts Linux MS_* option bits (MS_NOATIME).
+    mount.set_mount_flags(1 << 10);
     let root = mount.root_location();
     let credentials = MutationCredentials::root();
     let mode = NodePermission::from_bits_truncate(0o700);

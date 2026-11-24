@@ -643,7 +643,18 @@ impl NodeOps for MemoryNode {
         Ok(metadata)
     }
 
-    fn cached_link_target(&self) -> VfsResult<Arc<str>> {
+    fn cached_link_target(&self, atime: axfs_ng_vfs::AccessTimePolicy) -> VfsResult<Arc<str>> {
+        if atime != axfs_ng_vfs::AccessTimePolicy::NoAtime {
+            let now = crate::os::time::try_wall_time().ok_or(VfsError::WouldBlock)?;
+            let metadata = self
+                .inode
+                .metadata
+                .try_lock_irqsave()
+                .ok_or(VfsError::WouldBlock)?;
+            if atime.needs_update(&metadata, now) {
+                return Err(VfsError::WouldBlock);
+            }
+        }
         self.inode
             .as_file()?
             .symlink

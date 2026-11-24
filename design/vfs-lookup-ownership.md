@@ -5320,19 +5320,21 @@ Linux v7.1 的 `complete_walk` 在取得路径引用时清除 LOOKUP_CACHED，�
 `pick_link` 在取得目标前调用 `atime_needs_update`；需要更新时间时退出 RCU，
 而 `try_to_unlazy` 拒绝缓存请求。现有 `cached_links` 的私有挂载明确使用
 `MS_NOATIME`，因此该阶段的正向结果没有覆盖时间更新条件。
-本节先记录待实现方案，运行结果随后以实际提交另行补齐。
+本节定义此次准入边界，运行结果按实际提交单独记录。
 
-挂载时间策略继续从 `Mountpoint` 的原有选项读取，不增加另一份策略登记表。
-Linux `mount` 的默认 relatime、严格模式优先级及未指定模式的 remount 保留
-规则由 Kernel 适配层解释；VFS 将本次观察交为 `AccessTimePolicy`。
+挂载时间策略继续从 `Mountpoint` 的原有 Linux `MS_*` 选项读取，不增加另一份
+策略登记表。VFS 按这些选项解释默认 relatime 和显式严格模式的优先级，并将
+本次观察交为 `AccessTimePolicy`；Kernel 保留未指定时间选项的 remount 模式。
 共享文件系统只读状态抑制 atime，而仅本挂载只读仍可能要求退出缓存路径，
 这一区别以固定版本的 `IS_NOATIME` 和 `touch_atime` 为依据。
 
 `NodeOps::cached_link_target` 的静态文本 producer 同时证明时间条件。
 MemoryFs 只尝试读取原 inode 元数据，使用明确允许非阻塞读取的时钟能力，
 在需要更新或无法确认时返回 `WouldBlock`。未审计的时间提供者默认拒绝，
-不能沿普通 `wall_time` 回退。NoAtime 不读取时钟或 inode 时间；其余模式
-先结束挂载状态观察，再读取时钟、尝试元数据保护并退出，最后复制静态目标。
+不能沿普通 `wall_time` 回退。运行时在发布时钟提供者前完成转换初始化，后续
+采样只读取计数器和原子调整量。NoAtime 的链接准入不额外读取时钟或链接
+inode 时间；其余模式先结束挂载状态观察，再读取时钟、尝试元数据保护并退出，
+最后复制静态目标。
 不在这些保护内分配路径帧、写时间或执行后端操作。
 
 一律拒绝时间启用的链接会丢失 relatime 的正常缓存命中；调用普通链接读取

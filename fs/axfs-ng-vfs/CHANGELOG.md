@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- [**breaking**] `NodeOps::cached_link_target` 接收 `AccessTimePolicy`，静态文本
+  producer 必须同时证明无需更新时间；MemoryFs 已迁移，未确认的状态返回
+  `WouldBlock`。新增非阻塞时钟能力默认拒绝，普通时间读取接口不作为回退。
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.8.0...axfs-ng-vfs-v0.8.1) - 2026-09-22
 
 ### Added

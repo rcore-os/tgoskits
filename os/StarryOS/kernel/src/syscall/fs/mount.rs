@@ -35,6 +35,7 @@ const MS_NOSUID: i32 = 2;
 const MS_NODEV: i32 = 4;
 const MS_NOEXEC: i32 = 8;
 const MS_NOATIME: i32 = 1 << 10;
+const MS_NODIRATIME: i32 = 1 << 11;
 const MS_RELATIME: i32 = 1 << 21;
 const MS_STRICTATIME: i32 = 1 << 24;
 const MS_REMOUNT: i32 = 1 << 5;
@@ -669,7 +670,14 @@ pub fn sys_mount(
         } else {
             mp.set_readonly(flags & MS_RDONLY != 0)?;
         }
-        mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+        let mut options = (flags & MOUNT_OPTION_FLAGS) as u32;
+        let atime_modes = MS_NOATIME | MS_RELATIME | MS_STRICTATIME;
+        // Linux preserves the existing time options only when no timestamp
+        // option was supplied at all, including the directory-only option.
+        if flags & (atime_modes | MS_NODIRATIME) == 0 {
+            options |= mp.mount_flags() & atime_modes as u32;
+        }
+        mp.set_mount_flags(options);
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }

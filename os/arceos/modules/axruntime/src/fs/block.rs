@@ -34,6 +34,12 @@ impl BlockTimeProvider for RuntimeTimeProvider {
         ax_hal::time::wall_time()
     }
 
+    fn try_wall_time(&self) -> Option<Duration> {
+        // init prepares the immutable timer conversion before publication.
+        // Later samples use the hardware counter and atomic clock adjustment.
+        Some(ax_hal::time::wall_time())
+    }
+
     fn monotonic_time(&self) -> Duration {
         ax_hal::time::monotonic_time()
     }
@@ -313,6 +319,8 @@ const BUILTIN_INITRAMFS: &[u8] = &[];
 
 pub(super) fn init(bootargs: Option<&str>) {
     ONLINE_BLOCK_CPUS.store(1, Ordering::Release);
+    // Prepare lazy timer conversion before exposing nonblocking clock reads.
+    let _initial_time = TIME_PROVIDER.wall_time();
     ax_block::os::install_dma_device_resolver(ax_driver::dma_device_for_info);
     ax_fs_ng::os::install(
         &TIME_PROVIDER,

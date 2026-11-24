@@ -347,7 +347,7 @@ pub struct Mountpoint {
     /// exclusion, so this bit does not publish other memory (Relaxed suffices).
     retired: AtomicBool,
     /// Mount option flags (Linux MS_* bits: MS_NOSUID=2, MS_NODEV=4,
-    /// MS_NOEXEC=8, MS_NOATIME=0x400, MS_RELATIME=0x800000,
+    /// MS_NOEXEC=8, MS_NOATIME=0x400, MS_RELATIME=0x200000,
     /// MS_STRICTATIME=0x1000000). MS_RDONLY is tracked separately via
     /// `readonly` for backward compatibility.
     mount_flags: AtomicU32,
@@ -889,6 +889,36 @@ impl Mountpoint {
 
     pub fn set_mount_flags(&self, flags: u32) {
         self.mount_flags.store(flags, Ordering::Release);
+    }
+
+    pub(crate) fn cached_link_time_policy(&self) -> VfsResult<crate::AccessTimePolicy> {
+        use crate::AccessTimePolicy;
+
+        // These are the existing Linux MS_* options, not internal MNT_* bits.
+        // Legacy mount defaults to relatime; explicit strictatime wins even
+        // when the request also contains noatime.
+        const MS_NOATIME: u32 = 1 << 10;
+        const MS_STRICTATIME: u32 = 1 << 24;
+        let flags = self.mount_flags();
+        let policy = if flags & MS_STRICTATIME != 0 {
+            AccessTimePolicy::Strict
+        } else if flags & MS_NOATIME != 0 {
+            return Ok(AccessTimePolicy::NoAtime);
+        } else {
+            AccessTimePolicy::Relative
+        };
+        // Linux IS_NOATIME includes the superblock's read-only restriction.
+        // A mount-local read-only bit alone does not suppress pick_link work.
+        let shared = self
+            .filesystem_state
+            .writes
+            .try_lock()
+            .ok_or(VfsError::WouldBlock)?;
+        Ok(if shared.readonly {
+            AccessTimePolicy::NoAtime
+        } else {
+            policy
+        })
     }
 
     pub fn mark_expired(&self) -> bool {

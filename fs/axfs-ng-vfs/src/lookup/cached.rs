@@ -149,7 +149,8 @@ impl<'a> CachedLookup<'a> {
                             return Err(VfsError::FilesystemLoop);
                         }
                         links += 1;
-                        target = Some(child.location().entry().cached_link_target()?);
+                        let atime = child.location().mountpoint().cached_link_time_policy()?;
+                        target = Some(child.location().entry().cached_link_target(atime)?);
                     } else {
                         current = child;
                     }

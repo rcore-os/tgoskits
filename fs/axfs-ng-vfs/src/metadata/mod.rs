@@ -12,6 +12,35 @@ use crate::{
     NamespaceState, NodePermission, PreparedWrite, VfsResult,
 };
 
+/// Access-time work required by a mount before following a symbolic link.
+///
+/// The mount supplies the policy; the producer must also account for its
+/// native inode restrictions and timestamp precision before opting into a
+/// cache-only read. This predicate does not authorize a metadata update.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessTimePolicy {
+    /// Mount or shared-filesystem state suppresses access-time work.
+    NoAtime,
+    /// Update after metadata changes or a full day of whole Unix seconds.
+    Relative,
+    /// Update whenever the current timestamp differs from the wall clock.
+    Strict,
+}
+
+impl AccessTimePolicy {
+    /// Tests current inode timestamps against an already sampled wall clock.
+    /// Relative age uses whole Unix seconds, including the one-day boundary.
+    pub fn needs_update(self, metadata: &Metadata, now: Duration) -> bool {
+        if self == Self::NoAtime || metadata.atime == now {
+            return false;
+        }
+        self == Self::Strict
+            || metadata.mtime >= metadata.atime
+            || metadata.ctime >= metadata.atime
+            || now.as_secs().saturating_sub(metadata.atime.as_secs()) >= 24 * 60 * 60
+    }
+}
+
 /// An inode timestamp intention, resolved only inside the real owner lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimeChange {
@@ -306,5 +335,48 @@ impl Location {
             }
         })?
         .into_result()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_time_policy_uses_inode_order_and_whole_second_age() {
+        let mut metadata = Metadata {
+            device: 0,
+            inode: 1,
+            nlink: 1,
+            mode: NodePermission::default(),
+            node_type: crate::NodeType::Symlink,
+            uid: 0,
+            gid: 0,
+            size: 0,
+            block_size: 4096,
+            blocks: 0,
+            rdev: DeviceId(0),
+            atime: Duration::new(86_401, 999_999_999),
+            mtime: Duration::ZERO,
+            ctime: Duration::ZERO,
+        };
+        let now = Duration::from_secs(172_801);
+        assert!(!AccessTimePolicy::Relative.needs_update(&metadata, now - Duration::from_secs(1)));
+        // Linux compares tv_sec: the subsecond part does not delay this edge.
+        assert!(AccessTimePolicy::Relative.needs_update(&metadata, now));
+        assert!(!AccessTimePolicy::NoAtime.needs_update(&metadata, now));
+
+        metadata.atime = now + Duration::from_secs(1);
+        assert!(!AccessTimePolicy::Relative.needs_update(&metadata, now));
+        assert!(AccessTimePolicy::Strict.needs_update(&metadata, now));
+        metadata.mtime = metadata.atime;
+        assert!(AccessTimePolicy::Relative.needs_update(&metadata, now));
+        metadata.mtime = Duration::ZERO;
+        metadata.ctime = metadata.atime;
+        assert!(AccessTimePolicy::Relative.needs_update(&metadata, now));
+
+        metadata.atime = now;
+        assert!(!AccessTimePolicy::Relative.needs_update(&metadata, now));
+        assert!(!AccessTimePolicy::Strict.needs_update(&metadata, now));
     }
 }

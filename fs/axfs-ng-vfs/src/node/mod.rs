@@ -87,7 +87,9 @@ pub trait NodeOps: Send + Sync + 'static {
     ///
     /// Only static text producers may opt in. Object links and caller-dependent
     /// producers must not substitute their display text or ordinary LinkOps.
-    fn cached_link_target(&self) -> VfsResult<Arc<str>> {
+    /// The producer must prove that the mount policy and its native inode
+    /// state require no access-time update. Unknown state returns `WouldBlock`.
+    fn cached_link_target(&self, _atime: crate::AccessTimePolicy) -> VfsResult<Arc<str>> {
         Err(VfsError::WouldBlock)
     }
 
@@ -383,11 +385,11 @@ impl DirEntry {
             .ok_or(VfsError::WouldBlock)
     }
 
-    pub(crate) fn cached_link_target(&self) -> VfsResult<Arc<str>> {
+    pub(crate) fn cached_link_target(&self, atime: crate::AccessTimePolicy) -> VfsResult<Arc<str>> {
         if self.node_type() != NodeType::Symlink {
             return Err(VfsError::InvalidData);
         }
-        self.0.node.cached_link_target()
+        self.0.node.cached_link_target(atime)
     }
 
     pub fn downcast<T: NodeOps>(&self) -> VfsResult<Arc<T>> {
