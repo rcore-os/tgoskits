@@ -200,7 +200,9 @@ impl PlatOp for Plat {
                     warn!("EIOINTC vector {external:?} arrived before domain publication");
                     return None;
                 };
-                Some(ActiveIrq::new(irq, Completion::EioIntc { irq: external }))
+                // EIOINTC claim already acknowledged this latched event. A
+                // deferred clear could discard a new event during dispatch.
+                Some(ActiveIrq::new(irq, Completion::None))
             }
             RawIrq::Unknown => {
                 warn!("unrouted LoongArch CPU interrupt line {raw}");
@@ -256,12 +258,7 @@ impl PlatOp for Plat {
 
 enum Completion {
     None,
-    EioIntc {
-        irq: loongarch_intc_driver::EioVector,
-    },
-    LioIntc {
-        irq: IrqId,
-    },
+    LioIntc { irq: IrqId },
 }
 
 pub struct ActiveIrq {
@@ -283,7 +280,6 @@ impl Drop for ActiveIrq {
     fn drop(&mut self) {
         match self.completion {
             Completion::None => {}
-            Completion::EioIntc { irq } => eiointc::complete_irq(irq),
             Completion::LioIntc { irq } => liointc::complete_irq(irq),
         }
     }

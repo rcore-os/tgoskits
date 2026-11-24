@@ -5,7 +5,7 @@ Loongson EIOINTC, PCH-PIC, and LIOINTC interrupt controllers.
 
 The crate owns hardware protocol only:
 
-- EIOINTC IOCSR initialization, vector enable, claim, and W1 completion;
+- EIOINTC IOCSR initialization, vector enable, and acknowledged pending claims;
 - PCH-PIC trigger/polarity, local mask, HTVEC route, and immutable
   EIO-vector-to-input mapping;
 - LIOINTC parent routes, W1 enable/disable, and a lock-free enabled snapshot
@@ -36,6 +36,11 @@ Production `IocsrAccess` implementations are also hard-IRQ capabilities: their
 64-bit read/write operations must be bounded and must not sleep, allocate,
 take a blocking lock, or call back into OS services.
 
+`EioIntcCpuInterface::claim()` clears only the returned pending vector before
+its device handler runs. A later pulse remains pending for the next claim.
+There is no separate EIO `complete()` call: clearing on handler return could
+discard that later pulse. Claims remain serialized on the dispatching CPU.
+
 The crate intentionally has no `dma-api` dependency: these interrupt
 controllers do not own DMA memory, device-visible addresses, or cache
 coherency transitions. A DMA capability should only be added with a real DMA
@@ -64,8 +69,10 @@ validation plan.
 
 ## Validation
 
+After committing the change, select its affected std-test profiles with the
+base commit and check the driver through the project task tool:
+
 ```bash
-cargo test -p loongarch-intc-driver
-cargo test -p loongarch-intc-driver --all-features
+cargo xtask test --since <base-ref>
 cargo xtask clippy --package loongarch-intc-driver
 ```
