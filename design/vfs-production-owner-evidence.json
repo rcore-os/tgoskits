@@ -13263,5 +13263,90 @@
       }
     },
     "conclusion": "Both runtime issues remain under diagnosis. Successful unchanged-source observations do not prove a fix. Original assertions, SMP, clock and deadlines are retained. Detailed runtime snapshots stay in private task artifacts."
+  },
+  "ordinary_link_time_multiarch_runtime_20261124": {
+    "recorded_at": "2026-11-24T15:35:53.786555+00:00",
+    "source_commit": "775e993228970fcace875af778d6a11b74754d0e",
+    "test_source": "test-suit/starryos/qemu/standard/system/fs/test-path-lookup-ownership/src/main.c",
+    "test_sha256": "5305cd041231239b67c301e012560be81c3058323012f7cb3be85c9d00ea5eb3",
+    "scope": "MemoryFs 普通链接时间及两种只读来源；不外推完整系统调用或原生/动态后端",
+    "ci_run": "https://github.com/rcore-os/tgoskits/actions/runs/45406852513",
+    "runtime": [
+      {
+        "job_id": 138495265851,
+        "name": "Starry / QEMU x86_64 · Suites",
+        "sha256": "556c46f9b93657351b7fe7c0632b1abbd5c5e2361351ad884f5c182aebd525fa",
+        "program_begin": true,
+        "program_pass": true,
+        "pass_count": 291,
+        "evidence_kind": null
+      },
+      {
+        "job_id": 138495265961,
+        "name": "Starry / QEMU riscv64 · Suites",
+        "sha256": "a409b77a421d832ff5bd6cd05875931579727dc9ae89f11723d027f6ebd62f79",
+        "program_begin": true,
+        "program_pass": true,
+        "pass_count": 288,
+        "evidence_kind": null
+      },
+      {
+        "job_id": 138495265975,
+        "name": "Starry / QEMU loongarch64 · Suites",
+        "sha256": "f8feba1b0fb5037f1ff96ca6e53f78416e8ccdfd3b8275decc8589aff93d2b7c",
+        "program_begin": true,
+        "program_pass": true,
+        "pass_count": null,
+        "evidence_kind": "Exact-head real suite begin and passed program result; successful program stdout suppressed by runner, per-assertion counts not printed"
+      },
+      {
+        "job_id": 138495266461,
+        "name": "Starry / QEMU aarch64 · Suites",
+        "sha256": "3f9d66e28455654ea575745bd1db73e6522429f510aa4dcb5b179c4283cfead7",
+        "program_begin": true,
+        "program_pass": true,
+        "pass_count": 288,
+        "evidence_kind": null
+      }
+    ],
+    "whole_ci": {
+      "success": 43,
+      "failure": 1,
+      "skipped_duplicate_wrappers": 5,
+      "failure_scope": "独立 AArch64 性能看门狗；不是本链接程序断言"
+    },
+    "remaining": "原生精度和标志、动态/组合 producer、其他间接时间消费者及原设计剩余交付"
+  },
+  "fifo_pmu_watchdog_exit_progress_20261124": {
+    "recorded_at": "2026-11-24T15:35:53.786555+00:00",
+    "source_base": "775e993228970fcace875af778d6a11b74754d0e",
+    "production_source": "test-suit/starryos/qemu/standard/system/perf/perf-hw-stat/src/perf_hw_fifo_stop.c",
+    "production_c_sha256": "4fc2684c276f18bd9ab9c5dfe14896e4a97ab9bcbe288de4c327f9804e506f82",
+    "problem": "原看门狗阻碍退出回收，使已完成的远端性能操作在清理时被报为超时。",
+    "change": "仅看门狗使用普通调度，原 FIFO 性能负载、断言、CPU 数、时钟和截止时间保留；不修改 PMU 内核。",
+    "controlled_real_runtime": {
+      "original_exit": 1,
+      "fixed_exit": 0,
+      "fixed_operations": 8,
+      "original_log_sha256": "ea7803290faa758c89468dd665ee5881da7ee4639cbe4270e143c473f778a577",
+      "fixed_log_sha256": "c1920924484f5fb60bdb6dd9eeee9823c44688d7ee0cd2239b48d9c3d496e30b",
+      "temporary_sources_restored": true
+    },
+    "production_runtime": {
+      "command": "cargo xtask starry test qemu --arch aarch64 -c qemu/system",
+      "entry_used": "精确已核对的 CI tg-xtask 制品，原 qemu/system 选择与 profile 顺序",
+      "exit": 0,
+      "passed_program_results": 539,
+      "fifo_operations": 8,
+      "log_sha256": "7769373a5a9441745d43b8d8c4434bbdb68ec9d7ce135deccb699302689ce767",
+      "guest_cpus": 4,
+      "host_cpu_quota": 2,
+      "temporary_kernel_diagnostics": false,
+      "case_and_image_config_restored": true
+    },
+    "default_program_and_boot_count_change": 0,
+    "ci_after_fix": "发布后继续取得当前 head 完整终态，不能用本地通过代替。",
+    "local_limitation": "补充 LoongArch 容器观察在固件阶段未到目标程序，已停止并恢复配置；时间结论使用当前精确 head 的 CI 原程序成功记录。",
+    "remaining": "完整 CI、原生时间/标志及原 VFS 剩余交付和独立领域审查。"
   }
 }

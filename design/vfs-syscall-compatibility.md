@@ -947,22 +947,26 @@ Unchanged。缓存路径保留原封闭 producer，不调用这个更新入口�
 
 ### 26.2 其他目标与后端
 
-其余目标必须运行这个提交的增强用例才能补齐结论。以下行的入口与编号已经
-沿当前调用链核对，但当前没有把历史架构运行改写为本阶段证据。原生、动态
-和组合 producer 未启用新的能力；它们的标志、精度、授权和转发继续分别审计。
+`775e993228` 的当前 CI 已实际执行相同增强程序。AArch64 与 RISC-V 各有
+288 项直接断言通过；LoongArch 运行器明确记录该程序开始和正常通过，成功
+stdout 被收起，不补写断言数量。三者的入口、编号、固定 Linux 语义及本次
+状态所有者相同，故下列同行列全架构；AArch64 整体任务仍因独立性能检查失败。
+原生、动态和组合 producer 未启用新的能力，其标志、精度、授权和转发继续审计。
 其他路径消费者的间接时间行为也需按前文各入口继续补齐直接观察，不能从
 下列打开与显示链接的结果推导全部系统调用已经兼容。
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| openat2/普通 MemoryFs 时间及只读来源；AArch64/RISC-V/LoongArch64 均 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2003) | 普通跟随更新 atime；缓存只允许无需时间工作，区分共享与局部只读 | sys_openat2 → LookupSession.follow/Location.link_target 或 CachedLookup → 原挂载与实际 MemoryFs inode | 无法确认 | 本阶段已有相同 C 的 Linux 与 x86 直接证据；本提交的该目标运行尚待实际任务 |
-| openat/普通 MemoryFs 链接时间；AArch64/RISC-V/LoongArch64 均 56 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2003) | 普通跟随按挂载模式更新 atime，其他元数据保持 | sys_openat → FsView/LookupSession.follow → Location.link_target → MemoryFs metadata owner | 无法确认 | 本阶段已有相同 C 的 Linux 与 x86 直接证据；本提交的该目标运行尚待实际任务 |
-| readlinkat/非空路径 MemoryFs 时间；AArch64/RISC-V/LoongArch64 均 78 | v7.1 [do_readlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L559) | 显示目标前尽力更新时间，失败不取代原链接结果 | sys_readlinkat → with_fs/FsView.read_link → Location.read_link → MemoryFs metadata owner | 无法确认 | 本阶段已有相同 C 的 Linux 与 x86 直接证据；本提交的该目标运行尚待实际任务 |
-| readlinkat/保留 fd 空路径 MemoryFs 时间；AArch64/RISC-V/LoongArch64 均 78 | v7.1 [do_readlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L559) | 使用保留的实际链接对象进行同一尽力更新，不重新按旧路径解析 | sys_readlinkat/empty → retained File.location → Location.read_link → MemoryFs metadata owner | 无法确认 | 本阶段已有相同 C 的 Linux 与 x86 直接证据；本提交的该目标运行尚待实际任务 |
-| mount/局部只读的链接时间；AArch64/RISC-V/LoongArch64 均 40 | v7.1 [touch_atime](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2248) | 局部只读允许链接读取，时间写入被原挂载准入拒绝 | sys_mount/bind remount → mount write state；Location.read_link → PreparedWrite | 无法确认 | 本阶段已有相同 C 的 Linux 与 x86 直接证据；本提交的该目标运行尚待实际任务 |
-| mount/共享只读的链接时间；AArch64/RISC-V/LoongArch64 均 40 | v7.1 [touch_atime](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2248) | 共享文件系统只读抑制时间工作，普通读取保留其结果 | sys_mount/shared readonly → FilesystemMountState；Location.read_link 与 CachedLookup 使用原状态 | 无法确认 | 本阶段已有相同 C 的 Linux 与 x86 直接证据；本提交的该目标运行尚待实际任务 |
+| openat2/普通 MemoryFs 时间及只读来源；AArch64/RISC-V/LoongArch64 均 437 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2003) | 普通跟随更新 atime；缓存只允许无需时间工作，区分共享与局部只读 | sys_openat2 → LookupSession.follow/Location.link_target 或 CachedLookup → 原挂载与实际 MemoryFs inode | 正确 | 同 C 的 Linux 291/0；775e993228 的 ARM/RISC-V 各 288/0，LoongArch 原程序实际开始并正常通过；仅覆盖本行 MemoryFs 时间行为 |
+| openat/普通 MemoryFs 链接时间；AArch64/RISC-V/LoongArch64 均 56 | v7.1 [pick_link](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2003) | 普通跟随按挂载模式更新 atime，其他元数据保持 | sys_openat → FsView/LookupSession.follow → Location.link_target → MemoryFs metadata owner | 正确 | 同 C 的 Linux 291/0；775e993228 的 ARM/RISC-V 各 288/0，LoongArch 原程序实际开始并正常通过；仅覆盖本行 MemoryFs 时间行为 |
+| readlinkat/非空路径 MemoryFs 时间；AArch64/RISC-V/LoongArch64 均 78 | v7.1 [do_readlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L559) | 显示目标前尽力更新时间，失败不取代原链接结果 | sys_readlinkat → with_fs/FsView.read_link → Location.read_link → MemoryFs metadata owner | 正确 | 同 C 的 Linux 291/0；775e993228 的 ARM/RISC-V 各 288/0，LoongArch 原程序实际开始并正常通过；仅覆盖本行 MemoryFs 时间行为 |
+| readlinkat/保留 fd 空路径 MemoryFs 时间；AArch64/RISC-V/LoongArch64 均 78 | v7.1 [do_readlinkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L559) | 使用保留的实际链接对象进行同一尽力更新，不重新按旧路径解析 | sys_readlinkat/empty → retained File.location → Location.read_link → MemoryFs metadata owner | 正确 | 同 C 的 Linux 291/0；775e993228 的 ARM/RISC-V 各 288/0，LoongArch 原程序实际开始并正常通过；仅覆盖本行 MemoryFs 时间行为 |
+| mount/局部只读的链接时间；AArch64/RISC-V/LoongArch64 均 40 | v7.1 [touch_atime](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2248) | 局部只读允许链接读取，时间写入被原挂载准入拒绝 | sys_mount/bind remount → mount write state；Location.read_link → PreparedWrite | 正确 | 同 C 的 Linux 291/0；775e993228 的 ARM/RISC-V 各 288/0，LoongArch 原程序实际开始并正常通过；仅覆盖本行 MemoryFs 时间行为 |
+| mount/共享只读的链接时间；AArch64/RISC-V/LoongArch64 均 40 | v7.1 [touch_atime](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2248) | 共享文件系统只读抑制时间工作，普通读取保留其结果 | sys_mount/shared readonly → FilesystemMountState；Location.read_link 与 CachedLookup 使用原状态 | 正确 | 同 C 的 Linux 291/0；775e993228 的 ARM/RISC-V 各 288/0，LoongArch 原程序实际开始并正常通过；仅覆盖本行 MemoryFs 时间行为 |
 
-证据键为 `ordinary_link_access_time_20261124`。原共享只读缺口由本节 x86
-直接旅程补齐；目录时间、原生 inode 条件、动态授权与完整挂载策略仍分开
-核对。当前两项运行时 CI 失败见 `ci_c8d0c778b4_runtime_failures_20261124`，
-本阶段局部通过没有被记为完整 PR 验收完成。
+证据键为 `ordinary_link_access_time_20261124` 与
+`ordinary_link_time_multiarch_runtime_20261124`。两种只读来源已取得四架构
+实际程序证据；目录时间、原生 inode 条件、动态授权与完整挂载策略仍分开核对。
+`c8d0c778b4` 两项历史失败保留原记录；`775e993228` 唯一失败及后续看门狗
+修复的本地证明见 `fifo_pmu_watchdog_exit_progress_20261124`。局部通过不等于
+完整 PR 验收，其他间接消费者的时间行为也不由本节推导。
