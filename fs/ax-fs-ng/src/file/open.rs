@@ -683,14 +683,17 @@ impl OpenOptions {
                         constraints,
                         must_be_dir || Path::new(target.as_str()).has_trailing_slash(),
                         credentials,
-                        // `parent_counters` is already absolute for the whole
-                        // resolution (both budgets accumulated from the seeds
-                        // inside the parent walk); re-adding the entry seeds
-                        // would inflate the BENEATH boundary. The failed
-                        // follow above also charged its own expansion to the
-                        // shared budget, so the re-entry continues from the
-                        // combined count instead of restoring it.
-                        parent_counters,
+                        // `counters` already carries both budgets for the
+                        // whole open: the failed follow wrote back the
+                        // expansions it charged plus every expansion inside
+                        // its target walk, and it leaves `depth` at the
+                        // parent's depth because the re-entry restarts there.
+                        // Passing the pre-follow `parent_counters` instead
+                        // would let every dangling re-entry restart the
+                        // symlink budget, so a chain of dangling links could
+                        // expand without ever reaching `SYMLINKS_MAX`
+                        // (Linux keeps one `total_link_count` for the open).
+                        counters,
                     );
                 }
                 Err(error) => return Err(error),

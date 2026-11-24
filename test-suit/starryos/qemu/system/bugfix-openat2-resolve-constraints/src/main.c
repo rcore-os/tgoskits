@@ -138,6 +138,7 @@ int main(void)
     char q_from[64];
     char q_to[64];
     char sub_leaf[64];
+    char dl_from[64];
 
     /* Pre-run cleanup covers every name the case may create, so a previous
      * aborted run cannot turn leftover state into a bogus fixture failure. */
@@ -158,6 +159,14 @@ int main(void)
         unlink(p_from);
         unlink(q_from);
     }
+    for (int i = 0; i < 12; i++) {
+        snprintf(dl_from, sizeof(dl_from), "%s/dl%02d", root, i);
+        unlink(dl_from);
+    }
+    unlink("/tmp/o2c/dl-missing");
+    unlink("/tmp/o2c/ds00");
+    unlink("/tmp/o2c/ds01");
+    unlink("/tmp/o2c/ds-missing");
     snprintf(sub_leaf, sizeof(sub_leaf), "%s/sub/leaf", root);
     unlink(sub_leaf);
     rmdir(sub);
@@ -332,6 +341,46 @@ int main(void)
     expect_errno("BENEATH rejects an escaping dangling symlink", rootfd,
                  "sub/link-out", RESOLVE_BENEATH,
                  O_CREAT | O_WRONLY | O_CLOEXEC, EXDEV);
+
+    /* A dangling-target O_CREAT re-entry continues the same symlink budget
+     * instead of restarting it: a short chain still creates its final
+     * target, while a chain whose re-entry expansions pass SYMLINKS_MAX
+     * reports ELOOP and creates nothing. */
+    {
+        char dl_to[64];
+        for (int i = 0; i < 12; i++) {
+            snprintf(dl_from, sizeof(dl_from), "%s/dl%02d", root, i);
+            if (i == 11) {
+                snprintf(dl_to, sizeof(dl_to), "dl-missing");
+            } else {
+                snprintf(dl_to, sizeof(dl_to), "dl%02d", i + 1);
+            }
+            CHECK(symlink(dl_to, dl_from) == 0,
+                  "create dangling-budget chain fixture");
+        }
+        expect_errno("BENEATH keeps the budget across dangling re-entries",
+                     rootfd, "dl00", RESOLVE_BENEATH,
+                     O_CREAT | O_WRONLY | O_CLOEXEC, ELOOP);
+        errno = 0;
+        if (stat("/tmp/o2c/dl-missing", &st) == 0 || errno != ENOENT) {
+            CHECK(0, "a rejected dangling chain creates nothing");
+        } else {
+            CHECK(1, "a rejected dangling chain creates nothing");
+        }
+
+        CHECK(symlink("ds01", "/tmp/o2c/ds00") == 0,
+              "create short dangling chain head");
+        CHECK(symlink("ds-missing", "/tmp/o2c/ds01") == 0,
+              "create short dangling chain tail");
+        expect_open("BENEATH creates through a short dangling chain", rootfd,
+                    "ds00", RESOLVE_BENEATH, O_CREAT | O_WRONLY | O_CLOEXEC);
+        errno = 0;
+        if (stat("/tmp/o2c/ds-missing", &st) == 0) {
+            CHECK(1, "a short dangling chain creates its final target");
+        } else {
+            CHECK(0, "a short dangling chain creates its final target");
+        }
+    }
 
     /* A dangling link whose target carries a trailing slash demands a
      * directory: O_CREAT must fail EISDIR and leave no created file behind
@@ -672,6 +721,14 @@ int main(void)
         unlink(p_from);
         unlink(q_from);
     }
+    for (int i = 0; i < 12; i++) {
+        snprintf(dl_from, sizeof(dl_from), "%s/dl%02d", root, i);
+        unlink(dl_from);
+    }
+    unlink("/tmp/o2c/dl-missing");
+    unlink("/tmp/o2c/ds00");
+    unlink("/tmp/o2c/ds01");
+    unlink("/tmp/o2c/ds-missing");
     snprintf(sub_leaf, sizeof(sub_leaf), "%s/sub/leaf", root);
     unlink(sub_leaf);
     CHECK(rmdir(sub) == 0, "remove fixture subdirectory");
