@@ -177,6 +177,7 @@ def request(method, path, body=None, timeout=None):
         headers["Content-Type"] = "application/json"
         data = body.encode("utf-8")
     req = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
+    started = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = resp.status
@@ -194,6 +195,13 @@ def request(method, path, body=None, timeout=None):
         # timeout. Converting it to a retryable RuntimeError here lets the poll
         # loops retry instead of crashing the probe in the boot window.
         raise RuntimeError("request %s %s failed: %s" % (method, path, err))
+    finally:
+        if method in ("POST", "DELETE") and path.startswith("/api/vms/"):
+            print(
+                "  http probe: %s %s elapsed %.3fs (timeout %.3fs)"
+                % (method, path, time.monotonic() - started, timeout),
+                flush=True,
+            )
     if not raw:
         return status, None
     return status, json.loads(raw.decode("utf-8"))
@@ -989,7 +997,9 @@ def main():
     check("POST /api/vms/1/start (already running)", status, 409)
 
     # 23. Resume while already `Running` is an idempotent no-op (200, sync).
-    status, body = request("POST", "/api/vms/1/resume")
+    status, body = request(
+        "POST", "/api/vms/1/resume", timeout=COMPLETION_TIMEOUT
+    )
     check("POST /api/vms/1/resume (already running)", status, 200)
     check_action("POST /api/vms/1/resume (already running)", body, True, False)
 
@@ -997,7 +1007,9 @@ def main():
     #     accepts and completes it. The `Paused` snapshot then appears only after the owner
     #     parked every vCPU and quieted devices/ports/timers, so polling for
     #     `paused` is the real completion signal.
-    status, body = request("POST", "/api/vms/1/pause")
+    status, body = request(
+        "POST", "/api/vms/1/pause", timeout=COMPLETION_TIMEOUT
+    )
     check("POST /api/vms/1/pause", status, 200)
     check_action("POST /api/vms/1/pause", body, True, False)
     poll_vm_status(1, "paused")
@@ -1014,7 +1026,9 @@ def main():
     # 25. Pausing an already-paused VM is an idempotent no-op (200): it must not
     #     request a duplicate park, and the parked VM's counters must stay
     #     frozen.
-    status, body = request("POST", "/api/vms/1/pause")
+    status, body = request(
+        "POST", "/api/vms/1/pause", timeout=COMPLETION_TIMEOUT
+    )
     check("POST /api/vms/1/pause (already paused)", status, 200)
     check_action("POST /api/vms/1/pause (already paused)", body, True, False)
     status, body = request("GET", "/api/vms/1")
@@ -1037,13 +1051,17 @@ def main():
     entries = entries + 1
 
     # 27. Resuming an already-running VM is an idempotent no-op (200).
-    status, body = request("POST", "/api/vms/1/resume")
+    status, body = request(
+        "POST", "/api/vms/1/resume", timeout=COMPLETION_TIMEOUT
+    )
     check("POST /api/vms/1/resume (already running)", status, 200)
     check_action("POST /api/vms/1/resume (already running)", body, True, False)
 
     # 28-29. Second suspend/wake cycle: a parked vCPU is woken and re-parked
     #        repeatedly, so the wake path must converge every time.
-    status, body = request("POST", "/api/vms/1/pause")
+    status, body = request(
+        "POST", "/api/vms/1/pause", timeout=COMPLETION_TIMEOUT
+    )
     check("POST /api/vms/1/pause (cycle 2)", status, 200)
     check_action("POST /api/vms/1/pause (cycle 2)", body, True, False)
     poll_vm_status(1, "paused")
@@ -1068,7 +1086,9 @@ def main():
     # 30. Stop waits for the owner (`async=false`): the `stopped` state arrives only
     #     after the owner has fully torn the run down (vCPUs joined, devices and
     #     memory retired), which drops the per-run counters back to zero.
-    status, body = request("POST", "/api/vms/1/stop")
+    status, body = request(
+        "POST", "/api/vms/1/stop", timeout=COMPLETION_TIMEOUT
+    )
     check("POST /api/vms/1/stop", status, 200)
     check_action("POST /api/vms/1/stop", body, True, False)
     poll_vm_status(1, "stopped")
@@ -1082,7 +1102,9 @@ def main():
 
     # 31. Stopping an already-stopped VM is an idempotent success (200) and must
     #     not resurrect any run resource.
-    status, body = request("POST", "/api/vms/1/stop")
+    status, body = request(
+        "POST", "/api/vms/1/stop", timeout=COMPLETION_TIMEOUT
+    )
     check("POST /api/vms/1/stop (already stopped)", status, 200)
     check_action("POST /api/vms/1/stop (already stopped)", body, True, False)
     status, body = request("GET", "/api/vms/1")
@@ -1105,7 +1127,9 @@ def main():
     poll_guest_entries(1, 1)
 
     # 33. The restarted run stops again cleanly.
-    status, body = request("POST", "/api/vms/1/stop")
+    status, body = request(
+        "POST", "/api/vms/1/stop", timeout=COMPLETION_TIMEOUT
+    )
     check("POST /api/vms/1/stop (restarted run)", status, 200)
     check_action("POST /api/vms/1/stop (restarted run)", body, True, False)
     poll_vm_status(1, "stopped")
@@ -1144,7 +1168,9 @@ def main():
     # The recreated runtime's vCPU must actually enter the guest, proving the
     # fresh build is runnable (not just registered as `Running`).
     poll_guest_entries(1, 1)
-    status, _ = request("POST", "/api/vms/1/stop")
+    status, _ = request(
+        "POST", "/api/vms/1/stop", timeout=COMPLETION_TIMEOUT
+    )
     check("POST /api/vms/1/stop (recreated)", status, 200)
     poll_vm_status(1, "stopped")
 
