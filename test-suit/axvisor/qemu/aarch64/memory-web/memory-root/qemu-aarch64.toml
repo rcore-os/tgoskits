@@ -1,0 +1,30 @@
+args = [
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-cpu",
+    "cortex-a72",
+    "-m",
+    "512M",
+    "-smp",
+    "1",
+    "-nographic",
+    "-serial",
+    "mon:stdio",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+]
+success_regex = []
+timeout = 90
+to_bin = true
+uefi = false
+
+
+[[shell_check_steps]]
+success_regex = [
+    "host root selected: Memory",
+]
+
+[axbuild]
+id = "qemu/aarch64/memory-web/memory-root"

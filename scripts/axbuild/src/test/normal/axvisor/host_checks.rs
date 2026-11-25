@@ -78,6 +78,7 @@ impl ForwardingEndpoint {
 
 struct Member {
     path: PathBuf,
+    prerequisite: bool,
     budget: Duration,
     steps: Vec<ShellCheckStep>,
     probe: Option<AxvisorHttpProbeConfig>,
@@ -97,6 +98,7 @@ pub(super) fn prepare(qemu: &mut QemuConfig, case: &AxvisorQemuCase) -> Result<H
     if plan.checks.is_empty() {
         members.push(Member {
             path: case.case.qemu_config_path.clone(),
+            prerequisite: false,
             budget: Duration::from_secs(
                 qemu.timeout
                     .filter(|s| *s > 0)
@@ -135,6 +137,7 @@ pub(super) fn prepare(qemu: &mut QemuConfig, case: &AxvisorQemuCase) -> Result<H
             members.push(Member {
                 probe: load_axvisor_http_probe_config(&check.path)?,
                 path: check.path,
+                prerequisite: check.prerequisite,
                 budget: Duration::from_secs(seconds),
                 steps,
             });
@@ -177,7 +180,12 @@ pub(super) fn prepare(qemu: &mut QemuConfig, case: &AxvisorQemuCase) -> Result<H
             };
             let deadline = member_deadline(start, member.budget, group_deadline)?;
             println!(
-                "[axbuild] member check: {} budget={:?}",
+                "[axbuild] {}: {} budget={:?}",
+                if member.prerequisite {
+                    "prerequisite"
+                } else {
+                    "member check"
+                },
                 member.path.display(),
                 member.budget
             );

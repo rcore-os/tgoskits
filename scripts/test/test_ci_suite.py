@@ -477,6 +477,36 @@ class ClassifiedStarryRoutingTests(unittest.TestCase):
             self.assertEqual({item.template_id for item in selections}, {"fixture-board"})
 
 class ExplicitAxvisorCheckRoutingTests(unittest.TestCase):
+    def test_complete_runtime_boot_group_keeps_ids_and_routes_prerequisites(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            group = root / 'test-suit/axvisor/qemu/aarch64/fixture'
+            group.mkdir(parents=True)
+            (group / 'build-aarch64-unknown-none-softfloat.toml').write_text(
+                "target='aarch64-unknown-none-softfloat'\n")
+            identity = 'qemu/aarch64/fixture'
+            manifest = group / 'boot-group.toml'
+            manifest.write_text(f"id='{identity}'\ntimeout=90\ncases=['first/qemu-aarch64.toml','second/qemu-aarch64.toml']\n")
+            for name in ('first', 'second'):
+                directory = group / name
+                directory.mkdir()
+                (directory / 'qemu-aarch64.toml').write_text(
+                    f"args=[]\ntimeout=30\n[[shell_check_steps]]\nshell_cmd='check'\nsuccess_regex=['PASS']\n"
+                    f"[axbuild]\nid='{identity}/{name}'\nrequires=['../prepare.toml']\n")
+            prerequisite = group / 'prepare.toml'
+            prerequisite.write_text("timeout=10\n[[shell_check_steps]]\nshell_cmd='prepare'\n")
+            checks = [{'id': 'fixture', 'name': 'Fixture', 'command': 'fixture',
+                       'suite': [{'kind': 'axvisor-qemu', 'arch': 'aarch64', 'cases': [identity]}]}]
+            ci_suite.validate_suite_catalog(root, checks)
+            for changed in (manifest, prerequisite):
+                rows = ci_suite.resolve_suite_selections(root, checks, [changed.relative_to(root).as_posix()])
+                self.assertEqual(len(rows), 1)
+                self.assertIn(identity + '/first,' + identity + '/second', rows[0].command)
+            # Missing membership must fail catalog validation, rather than run a second boot.
+            manifest.write_text(f"id='{identity}'\ntimeout=90\ncases=['first/qemu-aarch64.toml']\n")
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.validate_suite_catalog(root, checks)
+
     def test_member_registration_preserves_one_boot_and_excludes_manual_checks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

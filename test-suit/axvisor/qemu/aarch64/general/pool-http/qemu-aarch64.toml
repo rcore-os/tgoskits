@@ -1,0 +1,49 @@
+args = [
+    "-nographic",
+    "-snapshot",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-append",
+    "root=/dev/nvme0n1 rw init=/bin/sh",
+    "-m",
+    "8g",
+]
+fail_regex = [
+    "(?m)^VIRTIO_BLK_MOUNT_FAIL:",
+    "(?i)I/O error",
+    "(?i)filesystem resource is busy",
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+    "(?m)^(?:echo|cat|rm): (?:can't (?:open|remove) |cannot remove |/tmp/axvisor-nvme-rw:)",
+    "(?i)unhandled page fault",
+    "ivc publish failed",
+    "ivc subscribe failed",
+    "(?i)kernel panic",
+]
+timeout = 600
+to_bin = true
+uefi = false
+
+
+[host_http_probe]
+asset_dir = ".."
+probe_script = "../probes/pool.py"
+request_timeout_secs = 60
+
+[host_http_probe.env]
+AXVISOR_POOL_VM_IDS = "12,13,14"
+AXVISOR_POOL_DIRECTORY = "/pool"
+AXVISOR_POOL_BUILTIN_IDS = "1,2,3,4,6"
+
+[axbuild]
+id = "qemu/aarch64/general/pool-http"
+requires = ["../tests/prepare-http-pool.toml"]

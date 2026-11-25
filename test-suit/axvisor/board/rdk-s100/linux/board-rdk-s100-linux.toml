@@ -12,7 +12,20 @@ uboot_cmd = [
     "run avb_boot",
 ]
 
-[axbuild]
-checks = [
-    "tests/smoke.toml",
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = [
+    "ubuntu login:",
 ]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+]
+
+[axbuild]
+id = "board/rdk-s100/linux"
+aliases = ["smoke"]

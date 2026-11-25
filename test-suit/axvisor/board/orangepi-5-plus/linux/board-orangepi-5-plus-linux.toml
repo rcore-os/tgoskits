@@ -5,7 +5,21 @@ fail_regex = [
 ]
 timeout = 300
 
-[axbuild]
-checks = [
-    "tests/smoke.toml",
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = "pwd && echo 'test pass'"
+success_regex = [
+    "(?m)^test pass\\s*$",
 ]
+fail_regex = [
+    "(?i)failed|panic",
+]
+
+[axbuild]
+id = "board/orangepi-5-plus/linux"
+aliases = ["smoke"]

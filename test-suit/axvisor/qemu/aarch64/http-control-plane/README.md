@@ -10,7 +10,7 @@ cargo xtask image pull
 cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/http-control-plane/control-plane
 ```
 
-场景根 `qemu-aarch64.toml` 的 `[axbuild].checks` 引用 `tests/browser-console.toml` 与 `tests/control-plane.toml`；后者的 `[host_http_probe]` 让 runner 追加
+场景根 `boot-group.toml` 按序引用 `browser-console/qemu-aarch64.toml` 与 `control-plane/qemu-aarch64.toml` 两份完整配置；选择组 ID 时只启动一次。后者的 `[host_http_probe]` 让 runner 追加
 hostfwd 与 virtio-net-pci 网卡，并在转发端口可达后执行
 `control-plane/http_probe.py`；脚本退出码即用例判定。`fail_regex` 仍会在
 guest 内核 panic 时直接失败。

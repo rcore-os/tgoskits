@@ -1,0 +1,11 @@
+id = "qemu/x86_64/vmx/functional"
+timeout = 3600
+# Ordered complete runtime files; this declaration owns the shared boot.
+cases = [
+    "direct-acpi/qemu-x86_64-vmx.toml",
+    "mp-fallback/qemu-x86_64-vmx.toml",
+    "ovmf-acpi/qemu-x86_64-vmx.toml",
+    "pci-enumeration/qemu-x86_64-vmx.toml",
+    "pci-block-rw/qemu-x86_64-vmx.toml",
+    "pci-block-ro/qemu-x86_64-vmx.toml",
+]

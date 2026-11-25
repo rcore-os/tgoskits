@@ -1,6 +1,6 @@
 # QEMU 启动组
 
-一个场景目录中的 `build-*.toml` 负责构建，`qemu-*.toml` 负责一次宿主启动，`[axbuild].checks` 按顺序引用 `tests/*.toml`。检查脚本和客户机配置放在所属场景；跨架构 Web 探针在 `common/web-ui`，VMX/SVM 共用的客户机配置在 `x86_64/common/guests`。
+一个场景目录中的 `build-*.toml` 负责构建；每项完整 `qemu-*.toml` 包含启动配置和自己的检查。已有多成员组使用 `boot-group.toml` 按序列出完整成员路径、稳定 ID 和整组 timeout，执行器据此只启动一次 QEMU。检查脚本和客户机配置放在所属场景；跨架构 Web 探针在 `common/web-ui`，VMX/SVM 共用的客户机配置在 `x86_64/common/guests`。
 
 ## 分组与 CI
 
@@ -49,7 +49,7 @@ cargo xtask axvisor test qemu --arch x86_64 \
   --test-case qemu/x86_64/vmx/functional/pci-block-ro
 ```
 
-同一命令选择同组多个成员，仍按 `checks` 声明顺序执行且只启动一次。`requires` 只登记必要准备，不是新增功能；每份准备同一次启动仅执行一次。
+同一命令选择同组多个成员，仍按 `boot-group.toml` 声明顺序执行且只启动一次。`requires` 只登记必要准备，不是新增功能；每份准备同一次启动仅执行一次。
 
 CI 作业在 `.github/ci/checks/axvisor.toml` 登记。`command` 与 `check.suite.cases` 同步选择整组或限定成员。增量路由按实际成员及其依赖选择，同组成员合入一条命令，避免拆成多次启动。
 
@@ -59,7 +59,7 @@ CI 作业在 `.github/ci/checks/axvisor.toml` 登记。`command` 与 `check.suit
 - CLI pool、IVC、HTTP pool及dashboard前按显式requires用API回收运行中的客户机；builtin候选不删除。单项选择只执行所需准备，不执行未选功能。
 - builtin VM1/VM2为IVC发布者/订阅者，VM3/VM4为块设备客户机，VM6为dashboard。CLI pool仍使用动态VM5；HTTP pool使用动态VM12/13/14，保留原3客户机和8终端槽耗尽/释放检查。
 - 两类pool统一目录`/pool`。HTTP pool先核对已知builtin ID集合，再明确断言动态客户机ID不在builtin中，保证实际从动态池启动。HTTP阶段前清理CLI pool的临时配置并复制原HTTP夹具。
-- guest配置直接放general根目录的`guest-*.toml`。`tests/`登记功能与必要准备；`probes/`实现API检查；`sh/`承载安装到客户机文件系统的夹具。
+- guest配置直接放general根目录的`guest-*.toml`。各功能子目录存完整运行文件，`tests/`仅保留必要准备；`probes/`实现API检查；`sh/`承载安装到客户机文件系统的夹具。
 - RISC-V SMP/IPI 前退出块设备客户机、回收 VM1/VM2，再启动具有原3个 vCPU 和亲和性的 VM3。单选 SMP/IPI 时仍使用组的宿主启动配置，自动启动的 VM1/VM2 会先被回收，不执行它们的块设备检查。
 - x86 functional 中客户机 ID 唯一，按成员逐个启动、检查、退出并删除。原启动协议、固件、CPU 亲和性、驱动黑名单及只读/读写配置保持；只读项原有的删除和重建步骤也保留。
 
@@ -90,7 +90,7 @@ AXVISOR_POOL_DIRECTORY = "/pool"
 AXVISOR_POOL_BUILTIN_IDS = "1,2,3,4,6"
 ```
 
-框架提供的HTTP地址、夹具目录、连接/请求预算优先于自定义env，不修改调用进程环境。混合组支持串口→API→串口→HTTP；全局fail_regex监控贯穿HTTP阶段和退出排空，任一失败中止后续检查。单项预算包含去重后的必要准备，且不超过整组预算。
+框架提供的HTTP地址、夹具目录、连接/请求预算优先于自定义env，不修改调用进程环境。混合组支持串口→API→串口→HTTP；全局fail_regex监控贯穿HTTP阶段和退出排空，任一失败中止后续检查。准备节点和功能成员分别计时；部分选择的整组上限取去重后的准备及功能预算之和与原组上限的较小值。
 
 `requires`按检查文件去重，不表示每次引用都重跑。不同阶段需要重复恢复状态时，使用不同的准备声明引用同一实现；每个功能也必须完成自身资源回收。新增客户机不能占用其他功能或终端耗尽夹具的编号，调整编号时同步更新guest配置、probe env和期望集合。
 

@@ -1,0 +1,7 @@
+id = "qemu/aarch64/memory-web"
+timeout = 270
+# Ordered complete runtime files; this declaration owns the shared boot.
+cases = [
+    "memory-root/qemu-aarch64.toml",
+    "dashboard/qemu-aarch64.toml",
+]

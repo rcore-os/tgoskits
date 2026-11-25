@@ -1,0 +1,30 @@
+args = [
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-cpu",
+    "cortex-a72",
+    "-m",
+    "512M",
+    "-smp",
+    "1",
+    "-nographic",
+    "-serial",
+    "mon:stdio",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+]
+success_regex = []
+timeout = 180
+to_bin = true
+uefi = false
+
+
+[host_http_probe]
+asset_dir = ".."
+request_timeout_secs = 15
+probe_script = "../dashboard/http_probe.py"
+
+[axbuild]
+id = "qemu/aarch64/memory-web/dashboard"
