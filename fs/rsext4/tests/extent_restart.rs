@@ -1065,6 +1065,222 @@ fn assert_first_restart_commit(
     }
 }
 
+#[test]
+fn failed_commit_after_small_extent_truncate_keeps_the_tail() {
+    assert_small_truncate_commit(SmallFileMapping::Extent, CommitAfterTruncate::Fails);
+}
+
+#[test]
+fn failed_commit_after_small_legacy_truncate_keeps_the_tail() {
+    assert_small_truncate_commit(SmallFileMapping::Legacy, CommitAfterTruncate::Fails);
+}
+
+#[test]
+fn power_cut_before_commit_after_small_extent_truncate_keeps_the_tail() {
+    assert_small_truncate_commit(
+        SmallFileMapping::Extent,
+        CommitAfterTruncate::PowerCutBefore,
+    );
+}
+
+#[test]
+fn power_cut_before_commit_after_small_legacy_truncate_keeps_the_tail() {
+    assert_small_truncate_commit(
+        SmallFileMapping::Legacy,
+        CommitAfterTruncate::PowerCutBefore,
+    );
+}
+
+/// How the two blocks of a small test file are mapped.
+#[derive(Clone, Copy, Debug)]
+enum SmallFileMapping {
+    Extent,
+    Legacy,
+}
+
+/// What happens to the first commit after a shrink of a small file returned.
+#[derive(Clone, Copy, Debug)]
+enum CommitAfterTruncate {
+    /// Writing the commit block fails and returns an error.
+    Fails,
+    /// Power is cut just before the commit block is written.
+    PowerCutBefore,
+}
+
+/// Builds a two-block file whose shrink fits in one transaction, and returns
+/// its journal, filesystem, power-cut probe, inode and first data block.
+fn build_small_file_fixture(
+    mapping: SmallFileMapping,
+) -> (
+    Jbd2Dev<RestartDevice>,
+    Ext4FileSystem,
+    Rc<PowerCutProbe>,
+    InodeNumber,
+    AbsoluteBN,
+) {
+    const PATH: &str = "/small-truncate";
+    let device = RestartDevice::new(16 * 1024);
+    let power_cut = Rc::clone(&device.power_cut);
+    let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+    mkfs(&mut journal).expect("mkfs failed");
+    let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("mount failed");
+    let initial_data = match mapping {
+        SmallFileMapping::Extent => Some(vec![0u8; 2 * BLOCK_SIZE]),
+        SmallFileMapping::Legacy => None,
+    };
+    mkfile(
+        &mut journal,
+        &mut filesystem,
+        PATH,
+        initial_data.as_deref(),
+        None,
+    )
+    .expect("file creation failed");
+    let inode_number = dir::get_inode_with_num(&mut filesystem, &mut journal, PATH)
+        .expect("lookup failed")
+        .expect("created inode missing")
+        .0;
+    if let SmallFileMapping::Legacy = mapping {
+        let blocks = [
+            filesystem
+                .alloc_block(&mut journal)
+                .expect("first data allocation failed"),
+            filesystem
+                .alloc_block(&mut journal)
+                .expect("second data allocation failed"),
+        ];
+        filesystem
+            .modify_inode(&mut journal, inode_number, |inode| {
+                inode.i_flags &= !Ext4Inode::EXT4_EXTENTS_FL;
+                inode.i_block = [0; 15];
+                for (slot, block) in blocks.iter().enumerate() {
+                    inode.i_block[slot] = block.to_u32().expect("direct block number");
+                }
+                inode.i_size_lo = (2 * BLOCK_SIZE) as u32;
+                inode.i_size_high = 0;
+                inode.i_blocks_lo = 2 * (BLOCK_SIZE / 512) as u32;
+            })
+            .expect("legacy inode publication failed");
+    }
+    let mut inode = filesystem
+        .get_inode_by_num(&mut journal, inode_number)
+        .expect("inode read failed");
+    assert_eq!(
+        inode.uses_extents(),
+        matches!(mapping, SmallFileMapping::Extent)
+    );
+    assert_eq!(inode.size(), 2 * BLOCK_SIZE as u64);
+    let first_block = rsext4::loopfile::resolve_inode_block(
+        &filesystem,
+        &mut journal,
+        inode_number,
+        &mut inode,
+        0,
+    )
+    .expect("first block lookup failed")
+    .expect("first block must be mapped");
+    filesystem
+        .datablock_cache
+        .modify(&mut journal, first_block, |block| {
+            for (index, byte) in block.iter_mut().enumerate() {
+                *byte = (index % 251) as u8 + 1;
+            }
+        })
+        .expect("first block fill failed");
+    filesystem
+        .sync_filesystem(&mut journal)
+        .expect("fixture sync failed");
+    journal.flush().expect("fixture checkpoint failed");
+    (journal, filesystem, power_cut, inode_number, first_block)
+}
+
+/// Shrinks a small file to 100 bytes, applies `fault` to the first commit
+/// after the shrink returned, remounts, and checks the EOF block.
+///
+/// Whichever size recovery keeps, the bytes inside it must be the original
+/// ones and the rest of the EOF block must be zero: the old size with its
+/// old tail, or 100 bytes followed by zeros.
+fn assert_small_truncate_commit(mapping: SmallFileMapping, fault: CommitAfterTruncate) {
+    const NEW_SIZE: usize = 100;
+    let (mut journal, mut filesystem, power_cut, inode_number, first_block) =
+        build_small_file_fixture(mapping);
+    let original_size = 2 * BLOCK_SIZE as u64;
+    let mut original = vec![0u8; BLOCK_SIZE];
+    read_inode_data_into(
+        &mut journal,
+        &mut filesystem,
+        inode_number,
+        0,
+        &mut original,
+    )
+    .expect("first block read failed");
+
+    truncate_inode(&mut journal, &mut filesystem, inode_number, NEW_SIZE as u64)
+        .expect("the shrink itself must succeed");
+    match fault {
+        CommitAfterTruncate::Fails => {
+            power_cut.arm_failed_commit(1);
+            let error = filesystem
+                .sync_filesystem(&mut journal)
+                .expect_err("the failed commit must fail the sync");
+            assert_eq!(
+                error.kind(),
+                Ext4ErrorKind::Io,
+                "unexpected error {error:?}"
+            );
+        }
+        CommitAfterTruncate::PowerCutBefore => {
+            power_cut.arm_power_cut_before_commit(1);
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                filesystem.sync_filesystem(&mut journal)
+            }));
+            assert!(outcome.is_err(), "the fixture must cut power");
+        }
+    }
+    assert_eq!(
+        power_cut.commit_writes.get(),
+        1,
+        "the fault must hit the first commit after the shrink returned"
+    );
+
+    drop(filesystem);
+    let device = journal.into_inner();
+    device.power_cut.disable();
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted =
+        Ext4FileSystem::mount(&mut remount_device).expect("mount after the fault failed");
+    let size = remounted
+        .get_inode_by_num(&mut remount_device, inode_number)
+        .expect("inode read after remount failed")
+        .size();
+    assert!(
+        size == original_size || size == NEW_SIZE as u64,
+        "recovery must keep the old or the new size, not {size}"
+    );
+    assert_eq!(
+        remounted.superblock.s_last_orphan, 0,
+        "recovery must leave no orphan"
+    );
+    let mut data = vec![0u8; BLOCK_SIZE];
+    remount_device
+        .read_blocks(&mut data, first_block, 1)
+        .expect("first block read after remount failed");
+    let visible = core::cmp::min(size, BLOCK_SIZE as u64) as usize;
+    let first_changed = data[..visible]
+        .iter()
+        .zip(&original[..visible])
+        .position(|(now, was)| now != was);
+    assert_eq!(
+        first_changed, None,
+        "after a {fault:?} fault, a {size}-byte file must keep every byte inside its size"
+    );
+    assert_eq!(
+        data[visible..].iter().position(|byte| *byte != 0),
+        None,
+        "the EOF block past the size must be zero"
+    );
+}
+
 fn assert_large_extent_removal_restarts(path: &str, operation: ExtentRemovalOperation) {
     let mut fixture = build_large_extent_fixture(path);
     install_small_journal(&mut fixture);

@@ -20,8 +20,6 @@ struct MockBlockDevice {
     fail_on_write: bool,
     fail_on_read: bool,
     fail_after_write_sector: Rc<Cell<Option<u64>>>,
-    /// Takes the place of `fail_after_write_sector` once that failure fires.
-    then_fail_after_write_sector: Rc<Cell<Option<u64>>>,
     now: Cell<i64>,
 }
 
@@ -33,7 +31,6 @@ impl MockBlockDevice {
             fail_on_write: false,
             fail_on_read: false,
             fail_after_write_sector: Rc::new(Cell::new(None)),
-            then_fail_after_write_sector: Rc::new(Cell::new(None)),
             now: Cell::new(1_700_000_000),
         }
     }
@@ -42,12 +39,6 @@ impl MockBlockDevice {
         let device = Self::new(size);
         let handle = Rc::clone(&device.fail_after_write_sector);
         (device, handle)
-    }
-
-    /// Returns the handle for a write failure armed once the first one fires.
-    #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
-    fn then_write_failure_handle(&self) -> Rc<Cell<Option<u64>>> {
-        Rc::clone(&self.then_fail_after_write_sector)
     }
 }
 
@@ -84,8 +75,7 @@ impl BlockIo for MockBlockDevice {
         }
         self.data[start..end].copy_from_slice(buffer);
         if self.fail_after_write_sector.get() == Some(sector.raw()) {
-            self.fail_after_write_sector
-                .set(self.then_fail_after_write_sector.take());
+            self.fail_after_write_sector.set(None);
             Err(Ext4Error::io())
         } else {
             Ok(())
@@ -2027,7 +2017,7 @@ mod file_functional_tests {
     }
 
     #[test]
-    fn failed_extent_truncate_restores_the_zeroed_tail_of_the_retained_block() {
+    fn failed_extent_truncate_keeps_every_byte_of_the_file() {
         let (device, fail_after_write_sector) =
             MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
@@ -2065,7 +2055,7 @@ mod file_functional_tests {
 
     #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
     #[test]
-    fn failed_tail_zeroing_write_restores_the_retained_block() {
+    fn failed_tail_zeroing_write_leaves_the_shrink_to_orphan_recovery() {
         let (device, fail_after_write_sector) =
             MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
@@ -2089,60 +2079,24 @@ mod file_functional_tests {
 
         fail_after_write_sector.set(Some(retained_block.raw()));
         let error = truncate(&mut jbd2_dev, &mut fs, "/tail-zeroing-write", 100)
-            .expect_err("a failed tail zeroing write must abort the truncate");
+            .expect_err("a failed tail zeroing write must fail the truncate");
         assert_eq!(error.kind(), Ext4ErrorKind::Io);
+        // The new size and the orphan record were published before the tail
+        // was zeroed, so the shrink is left to orphan recovery.
+        let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+        assert_eq!(inode.size(), 100);
+        assert_eq!(fs.superblock.s_last_orphan, inode_number.raw());
 
-        let data = read_file(&mut jbd2_dev, &mut fs, "/tail-zeroing-write").unwrap();
-        assert_eq!(data.len(), original.len());
-        let first_changed = data.iter().zip(&original).position(|(now, was)| now != was);
+        truncate(&mut jbd2_dev, &mut fs, "/tail-zeroing-write", 100)
+            .expect("the next truncate must finish the shrink");
+        assert_eq!(fs.superblock.s_last_orphan, 0);
+        let mut block = vec![0u8; BLOCK_SIZE];
+        jbd2_dev.read_blocks(&mut block, retained_block, 1).unwrap();
+        assert_eq!(block[..100], original[..100]);
         assert_eq!(
-            first_changed, None,
-            "a failed truncate must leave every byte of the file as it was"
-        );
-    }
-
-    #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
-    #[test]
-    fn failed_tail_restore_after_failed_truncate_commit_is_reported() {
-        let (device, fail_after_write_sector) =
-            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
-        let then_fail_after_write_sector = device.then_write_failure_handle();
-        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
-
-        mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
-        mkfile(&mut jbd2_dev, &mut fs, "/tail-restore-write", None, None)
-            .expect("file creation failed");
-        let original: Vec<u8> = (0..2 * BLOCK_SIZE).map(|i| (i % 251) as u8 + 1).collect();
-        write_file(&mut jbd2_dev, &mut fs, "/tail-restore-write", 0, &original).unwrap();
-        jbd2_dev.umount_commit().unwrap();
-        jbd2_dev.set_journal_use(false).unwrap();
-        let (inode_number, mut inode) =
-            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/tail-restore-write")
-                .unwrap()
-                .unwrap();
-        let retained_block =
-            loopfile::resolve_inode_block(&fs, &mut jbd2_dev, inode_number, &mut inode, 0)
-                .unwrap()
-                .expect("retained block missing");
-        let inode_table = fs.group_descs[0].inode_table();
-
-        fail_after_write_sector.set(Some(inode_table));
-        then_fail_after_write_sector.set(Some(retained_block.raw()));
-        let error = truncate(&mut jbd2_dev, &mut fs, "/tail-restore-write", 100)
-            .expect_err("inode finalize failure must abort the truncate");
-        assert_eq!(error.kind(), Ext4ErrorKind::Io);
-        assert_eq!(
-            error.context(),
-            Some(rsext4::error::ErrorContext::Operation {
-                op: "rollback:truncate_tail_restore"
-            }),
-            "a failed tail restore must be reported in place of the commit error"
-        );
-        assert_eq!(
-            fail_after_write_sector.get(),
+            block[100..].iter().position(|byte| *byte != 0),
             None,
-            "the restore write must have been the one that failed"
+            "recovery must zero the EOF block past the new size"
         );
     }
 
