@@ -1719,28 +1719,63 @@ fn only_one_live_mapping_endpoint_can_be_installed() {
 #[test]
 fn truncate_cache_miss_does_not_expose_stale_tail_after_reopen_and_extend() {
     with_test_page_provider(true, |_| {
-        let backing = Arc::new(CacheTestFile::new(Vec::new()));
-        let cached = reopen_cached_file(backing.clone());
-        let nonzero = vec![0xa5; PAGE_SIZE];
-        assert_eq!(cached.write_at(nonzero.as_slice(), 0).unwrap(), PAGE_SIZE);
-        cached.writeback().unwrap();
-        drop(cached);
+        for direct in [false, true] {
+            for resident in [false, true] {
+                let backing = Arc::new(CacheTestFile::new(Vec::new()));
+                let cached = reopen_cached_file(backing.clone());
+                let nonzero = vec![0xa5; PAGE_SIZE];
+                assert_eq!(cached.write_at(nonzero.as_slice(), 0).unwrap(), PAGE_SIZE);
+                cached.writeback().unwrap();
+                drop(cached);
 
-        let reopened = reopen_cached_file(backing.clone());
-        let truncated_len = PAGE_SIZE / 2;
-        reopened.set_len(truncated_len as u64).unwrap();
-        reopened.set_len(PAGE_SIZE as u64).unwrap();
-        drop(reopened);
+                let reopened = reopen_cached_file(backing.clone());
+                if resident {
+                    let mut bytes = vec![0; PAGE_SIZE];
+                    assert_eq!(
+                        reopened.read_at(bytes.as_mut_slice(), 0).unwrap(),
+                        PAGE_SIZE
+                    );
+                    assert_eq!(bytes, nonzero);
+                }
+                let resize = if direct {
+                    crate::file::FileBackend::Direct(reopened.path_handle().clone())
+                } else {
+                    crate::file::FileBackend::Cached(reopened.clone())
+                };
+                let truncated_len = PAGE_SIZE / 2;
+                resize.set_len(truncated_len as u64).unwrap();
+                assert_eq!(reopened.len(), truncated_len as u64);
+                assert_eq!(resize.len().unwrap(), truncated_len as u64);
+                let mut eof = [0xff];
+                assert_eq!(
+                    reopened
+                        .read_at(&mut eof[..], truncated_len as u64)
+                        .unwrap(),
+                    0
+                );
+                resize.set_len(PAGE_SIZE as u64).unwrap();
+                assert_eq!(reopened.len(), PAGE_SIZE as u64);
+                let mut visible = vec![0xff; PAGE_SIZE];
+                assert_eq!(
+                    reopened.read_at(visible.as_mut_slice(), 0).unwrap(),
+                    PAGE_SIZE
+                );
+                assert_eq!(&visible[..truncated_len], &nonzero[..truncated_len]);
+                assert!(visible[truncated_len..].iter().all(|byte| *byte == 0));
+                drop(resize);
+                drop(reopened);
 
-        let reopened = reopen_cached_file(backing);
-        let mut tail = vec![0xff; PAGE_SIZE - truncated_len];
-        assert_eq!(
-            reopened
-                .read_at(tail.as_mut_slice(), truncated_len as u64)
-                .unwrap(),
-            tail.len()
-        );
-        assert!(tail.iter().all(|byte| *byte == 0));
+                let reopened = reopen_cached_file(backing);
+                let mut tail = vec![0xff; PAGE_SIZE - truncated_len];
+                assert_eq!(
+                    reopened
+                        .read_at(tail.as_mut_slice(), truncated_len as u64)
+                        .unwrap(),
+                    tail.len()
+                );
+                assert!(tail.iter().all(|byte| *byte == 0));
+            }
+        }
     });
 }
 
