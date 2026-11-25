@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "cached_write_resident_batch_20261125",
+  "latest_evidence_section": "perf_result_observation_20261125",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -5674,7 +5674,7 @@
     ],
     "syscall_rows_after_phase": 113
   },
-  "updated_at": "2026-11-24T20:00:09.665816+00:00",
+  "updated_at": "2026-11-25T11:32:21.089326+00:00",
   "mqueue_path_descriptions": {
     "source": "10ed803b4a682ec8099c475910728c3aaeee4e58",
     "source_files": [
@@ -14098,5 +14098,128 @@
     "remaining_physical_error_progress": "Completed bytes after a later physical failure are not claimed by this input-staging checkpoint; retain for logical native-write migration",
     "four_arch_system_runtime_passed": true,
     "current_source_runtime_verified": true
+  },
+  "perf_result_observation_20261125": {
+    "validation_snapshot": "c7d3497312418b27e8610f92e89060a9d2027030",
+    "production_rust_unchanged_from": "286b95302614e81d043077c9c8532fa403e440b0",
+    "test_file": "test-suit/starryos/qemu/standard/system/perf/bpf-perf-event-output/src/bpf_perf_event_output.c",
+    "test_file_sha256": "2b62e40459434dca25e5f0fe36407cab222855ac4a3df9b2e587e28c3297e793",
+    "deterministic_negative": {
+      "source": "36ced73317ca4d06a98182976d31f3a3c796e737",
+      "arch": "riscv64",
+      "suite_exit": 1,
+      "program_started": true,
+      "program_failed": true,
+      "group_failed": true,
+      "foreign_result_overwrite": true,
+      "observer_setup_failed": false,
+      "close_rounds": [
+        2048
+      ],
+      "compiler_errors": false,
+      "source_clean": true,
+      "source_unchanged": true,
+      "c_unchanged": true,
+      "log_sha256": "436d544d68cc786fa7ae39173de307ef9daffd1142cbe874c6d69b1fad02623b"
+    },
+    "same_observer_body_red_green": true,
+    "system_runtime": [
+      {
+        "source": "c7d3497312418b27e8610f92e89060a9d2027030",
+        "arch": "riscv64",
+        "c_sha256": "2b62e40459434dca25e5f0fe36407cab222855ac4a3df9b2e587e28c3297e793",
+        "suite_exit": 0,
+        "program_started": true,
+        "program_passed": true,
+        "group_passed": true,
+        "program_success_marker": true,
+        "close_rounds": [
+          2048
+        ],
+        "source_clean": true,
+        "source_unchanged": true,
+        "c_unchanged": true,
+        "log_sha256": "dd67dd06a9add1f5d2b629eed657a2620bb5256449ac7dfbc986db1028699009"
+      },
+      {
+        "source": "c7d3497312418b27e8610f92e89060a9d2027030",
+        "arch": "x86_64",
+        "c_sha256": "2b62e40459434dca25e5f0fe36407cab222855ac4a3df9b2e587e28c3297e793",
+        "suite_exit": 0,
+        "program_started": true,
+        "program_passed": true,
+        "group_passed": true,
+        "program_success_marker": true,
+        "close_rounds": [
+          2048
+        ],
+        "source_clean": true,
+        "source_unchanged": true,
+        "c_unchanged": true,
+        "log_sha256": "96e43d73c755ab0dff6857c2a5d92af221b272979c912252f16076cbd1ceaed7"
+      },
+      {
+        "source": "c7d3497312418b27e8610f92e89060a9d2027030",
+        "arch": "aarch64",
+        "c_sha256": "2b62e40459434dca25e5f0fe36407cab222855ac4a3df9b2e587e28c3297e793",
+        "suite_exit": 0,
+        "program_started": true,
+        "program_passed": true,
+        "group_passed": true,
+        "program_success_marker": true,
+        "close_rounds": [
+          2048
+        ],
+        "log_sha256": "a247008173c7f88389455ab36b4f52367f90d1aaaea22af6c82a2866acdf2c01",
+        "image_config_restored": true,
+        "source_clean": true,
+        "source_unchanged": true,
+        "c_unchanged": true
+      },
+      {
+        "source": "c7d3497312418b27e8610f92e89060a9d2027030",
+        "arch": "loongarch64",
+        "c_sha256": "2b62e40459434dca25e5f0fe36407cab222855ac4a3df9b2e587e28c3297e793",
+        "suite_exit": 0,
+        "program_started": true,
+        "program_passed": true,
+        "group_passed": true,
+        "program_success_marker": false,
+        "close_rounds": [],
+        "log_sha256": "7255b4a005d1054d4fdc64d2902dfe68973253052b4bbd5f46cefbe031b24882",
+        "image_config_restored": true,
+        "source_clean": true,
+        "source_unchanged": true,
+        "c_unchanged": true
+      }
+    ],
+    "original_full_system": {
+      "source": "286b95302614e81d043077c9c8532fa403e440b0",
+      "arch": "riscv64",
+      "program_pass_count": 539,
+      "suite_exit": 0,
+      "group_passed": true,
+      "log_sha256": "07ef94d4afea08c7a73353c8e1a9e5ec0e72a0dddbe8bd3cec1f3ead4aaf1b37"
+    },
+    "previous_published_ci": {
+      "source": "286b95302614e81d043077c9c8532fa403e440b0",
+      "run_url": "https://github.com/rcore-os/tgoskits/actions/runs/45589161744",
+      "jobs_succeeded": 41,
+      "jobs_failed": 1,
+      "std_job_conclusion": "success",
+      "failed_scope": "Starry / QEMU riscv64 suites"
+    },
+    "linux_semantics": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "source": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L11361",
+      "fact": "The trace callback programs execute before event filtering; isolate test observation rather than change callback execution."
+    },
+    "new_default_programs": 0,
+    "new_default_boots": 0,
+    "runtime_parameters_changed": false,
+    "kernel_implementation_changed": false,
+    "native_write_time_migration_complete": false,
+    "new_published_head_ci_pending": true,
+    "recorded_at": "2026-11-25T11:32:21.089326+00:00"
   }
 }
