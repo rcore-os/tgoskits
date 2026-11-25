@@ -310,9 +310,18 @@ impl FileBackend {
     }
 
     /// Truncates or extends the file to `len` bytes.
+    /// A direct data endpoint still shares the inode's cache layout owner.
+    /// Native control operations on non-cacheable nodes keep their own semantics.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
         match self {
             Self::Cached(cached) => cached.set_len(len),
+            Self::Direct(path)
+                if path.location().node_type() == NodeType::RegularFile
+                    && !path.location().flags().contains(NodeFlags::NON_CACHEABLE) =>
+            {
+                // Cache preparation precedes every physical cache I/O gate.
+                CachedFile::get_or_create(path.clone())?.set_len(len)
+            }
             Self::Direct(path) => path.location().entry().as_file()?.set_len(len),
             Self::Layered(file) => file.native.set_len(len),
         }
