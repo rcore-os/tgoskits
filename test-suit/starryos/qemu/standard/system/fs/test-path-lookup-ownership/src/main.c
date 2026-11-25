@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -825,6 +826,8 @@ static void cached_write_completion(int rootfd, int original)
     char saved[64], bytes[8];
     int first = -1, second = -1, shared = -1;
     int changed = 0;
+    void *mapped = MAP_FAILED;
+    size_t mapping_len = 0;
     ssize_t length = syscall(SYS_pread64, original, saved, sizeof(saved), 0);
     REQUIRE(length >= 8 && length < (ssize_t)sizeof(saved));
     first = cached_open(rootfd, "file", O_RDWR | O_NONBLOCK | O_CLOEXEC, 0);
@@ -931,6 +934,22 @@ static void cached_write_completion(int rootfd, int original)
         }
     }
     REQUIRE(syscall(SYS_fcntl, first, F_SETFL, (long)(status & O_NONBLOCK)) == 0);
+    mapping_len = (size_t)length;
+    mapped = (void *)syscall(SYS_mmap, NULL, mapping_len, PROT_READ,
+                            MAP_PRIVATE, first, (off_t)0);
+    REQUIRE(mapped != MAP_FAILED);
+    REQUIRE(lseek(first, (off_t)0, SEEK_SET) == 0);
+    CHECK(syscall(SYS_write, shared, mapped, mapping_len) == length,
+          "CACHED writer reads its retained file mapping");
+    REQUIRE(fstat(original, &after_empty) == 0);
+    CHECK(after_empty.st_size == before_empty.st_size
+              && lseek(first, (off_t)0, SEEK_CUR) == length
+              && syscall(SYS_pread64, original, after_bytes, mapping_len,
+                         (off_t)0) == length
+              && memcmp(after_bytes, before_bytes, mapping_len) == 0,
+          "same-file mapped source preserves contents and advances the shared cursor");
+    REQUIRE(syscall(SYS_munmap, mapped, mapping_len) == 0);
+    mapped = MAP_FAILED;
     REQUIRE(lseek(first, cursor, SEEK_SET) == cursor);
     close_fd(first);
     first = -1;
@@ -939,6 +958,8 @@ static void cached_write_completion(int rootfd, int original)
               && memcmp(bytes, "YZ", 2) == 0,
           "retained dup continues writing after the original fd closes");
 out:
+    if (mapped != MAP_FAILED)
+        syscall(SYS_munmap, mapped, mapping_len);
     close_fd(shared);
     close_fd(second);
     close_fd(first);

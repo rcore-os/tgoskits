@@ -13466,5 +13466,511 @@
     "test_count_change": 0,
     "default_boot_count_change": 0,
     "scope": "Independent LoongArch native firmware stack lifetime and CPU boot input preservation. Existing ABI, features, guest CPUs, clocks, and deadlines retained. Unmerged dependency implementation excluded; full VFS work continues."
+  },
+  "live_append_and_latest_main_ci_20261125": {
+    "source": "03551788e50dc578b1a085e7612a43f0dab08e50",
+    "base_main": "a2923d6349db73b1a8e7d48080538ea7c53b56a5",
+    "run_url": "https://github.com/rcore-os/tgoskits/actions/runs/45543574501",
+    "success_checks": 44,
+    "intentional_wrapper_skips": [
+      "Starry",
+      "AxVisor",
+      "ArceOS",
+      "Workspace",
+      "Preflight"
+    ],
+    "actual_clippy": {
+      "checks_passed": 125,
+      "checks_failed": 0,
+      "checks_skipped": 0
+    },
+    "actual_std_packages_passed": 91,
+    "actual_four_arch_programs_passed": 4,
+    "runtime_log_audits": 14,
+    "scope": "Current append state, empty append cursor, sendfile current-state check and latest mainline integration. Native write-time migration excluded."
+  },
+  "cached_write_input_progress_20261125": {
+    "validation_snapshot": "858f44d91b4f686352ffb718fbf2ea46160a66d7",
+    "production_file_sha256": {
+      "fs/ax-fs-ng/src/file/cache/mod.rs": "2707af797d64ced74d73b8869c87c984e03f468b0fe8d89fc9b5a3b218a6caf2",
+      "fs/ax-fs-ng/src/file/cache/resize.rs": "0623bdaa115c2ef59c584ebfae3114d9a6eddd1857ac3561f6b21f74c31efc1b",
+      "fs/ax-fs-ng/src/file/handle/backend.rs": "e6875b02a01b5c7cacb013e4765931bb1bbc0609efb28911eb98af8223ef5ba1",
+      "fs/ax-fs-ng/src/file/handle/mod.rs": "bfea9e4fcab217b9d5056bcd411d7f44b13814ef79476073354748a64216d603",
+      "fs/ax-fs-ng/src/file/cache/write.rs": "6ccf7a511099db606deb92315eef6d9ae4de7ee5b469a99adb2c20994c8da528"
+    },
+    "test_file_sha256": {
+      "fs/ax-fs-ng/src/file/cache/tests/mod.rs": "d5c5df984dc6f1f6715c529c36827f0adf939c3a9f61b86dc0e866b58fccb9e7",
+      "fs/ax-fs-ng/src/file/handle/mod.rs": "bfea9e4fcab217b9d5056bcd411d7f44b13814ef79476073354748a64216d603",
+      "test-suit/starryos/qemu/standard/system/fs/test-path-lookup-ownership/src/main.c": "b0368f36ddd4a1c187f2fe56a559abb74136a5a089569686d6e71f923d4daf30"
+    },
+    "linux": {
+      "assertions_passed": 320,
+      "assertions_failed": 0,
+      "fixture_failures": 0
+    },
+    "component_original_negative": {
+      "source": "532fae2a71bb7801e0a8210284da4509c20dd5a3",
+      "test": "file::cache::tests::extending_write_preserves_progress_and_zeroes_gaps",
+      "failed_profiles": 5,
+      "compiler_errors": 0
+    },
+    "guard_sensitivity_negative": {
+      "source": "19826d0d0e98bf2565a72edeae746c0d5cdc48dc",
+      "other_std_packages_passed": 18,
+      "component_results": {
+        "file::cache::tests::extending_write_preserves_progress_and_zeroes_gaps": {
+          "passed": 5,
+          "failed": 0
+        },
+        "file::cache::tests::append_keeps_the_whole_input_ordered_while_staging": {
+          "passed": 0,
+          "failed": 5
+        },
+        "file::handle::tests::write_input_last_owner_retires_after_description_position": {
+          "passed": 0,
+          "failed": 5
+        }
+      },
+      "context": "较早的有界页框暂存候选分别去掉完整追加串行和输入拥有者保留；三项测试主体与最终堆缓冲实现一致。",
+      "compiler_errors": 0
+    },
+    "final_component_results": {
+      "file::cache::tests::extending_write_preserves_progress_and_zeroes_gaps": {
+        "passed": 5,
+        "failed": 0
+      },
+      "file::cache::tests::append_keeps_the_whole_input_ordered_while_staging": {
+        "passed": 5,
+        "failed": 0
+      },
+      "file::handle::tests::write_input_last_owner_retires_after_description_position": {
+        "passed": 5,
+        "failed": 0
+      }
+    },
+    "test_body_sha256": {
+      "extending_write_preserves_progress_and_zeroes_gaps": "cf5d9d84787f3609b60df7aee6152bf015c02927bb6b4e6c679df7a5b2c8f50b",
+      "append_keeps_the_whole_input_ordered_while_staging": "152b31317aeb0d5181d59b6afb736cd08e15ed2214b8c695107ee70f73c599f1",
+      "write_input_last_owner_retires_after_description_position": "21bb4db1dc9cad4a7e55734095136e637eaa1f7a82a553fdb8d030260fc0988d"
+    },
+    "local_clippy_checks_passed": 6,
+    "local_std_packages_passed": 19,
+    "system_runtime": {
+      "x86_64": {
+        "program_passed": true,
+        "group_passed": true,
+        "assertions_passed": 320
+      },
+      "riscv64": {
+        "program_passed": true,
+        "group_passed": true,
+        "assertions_passed": 317
+      },
+      "aarch64": {
+        "program_passed": true,
+        "group_passed": true,
+        "assertions_passed": 317
+      },
+      "loongarch64": {
+        "program_passed": true,
+        "group_passed": true,
+        "assertions_passed": null
+      }
+    },
+    "range_program": {
+      "selector": "qemu/system/syscall-test-fallocate",
+      "installed_program": "test-fallocate",
+      "passed": true
+    },
+    "resident_staging": "一次非空调用使用有界、已初始化堆缓冲；没有缓存页框所有权。",
+    "new_unit_test_functions": 2,
+    "new_default_programs": 0,
+    "new_default_boots": 0,
+    "native_write_time_migration_complete": false,
+    "scope": "输入获取进度、缓存数据和偏移、完整追加顺序及输入最后拥有者释放；原生写入时间迁移尚未完成。",
+    "source_file_sha256": {
+      "fs/ax-fs-ng/src/file/cache/mod.rs": "2707af797d64ced74d73b8869c87c984e03f468b0fe8d89fc9b5a3b218a6caf2",
+      "fs/ax-fs-ng/src/file/cache/resize.rs": "0623bdaa115c2ef59c584ebfae3114d9a6eddd1857ac3561f6b21f74c31efc1b",
+      "fs/ax-fs-ng/src/file/cache/tests/mod.rs": "d5c5df984dc6f1f6715c529c36827f0adf939c3a9f61b86dc0e866b58fccb9e7",
+      "fs/ax-fs-ng/src/file/cache/tests/read.rs": "337cfd29b87aac09c31692b475a402cf96064855947f63493a179be1ba5d0ae2",
+      "fs/ax-fs-ng/src/file/cache/write.rs": "6ccf7a511099db606deb92315eef6d9ae4de7ee5b469a99adb2c20994c8da528",
+      "fs/ax-fs-ng/src/file/handle/backend.rs": "e6875b02a01b5c7cacb013e4765931bb1bbc0609efb28911eb98af8223ef5ba1",
+      "fs/ax-fs-ng/src/file/handle/mod.rs": "bfea9e4fcab217b9d5056bcd411d7f44b13814ef79476073354748a64216d603",
+      "test-suit/starryos/qemu/standard/system/fs/test-path-lookup-ownership/src/main.c": "b0368f36ddd4a1c187f2fe56a559abb74136a5a089569686d6e71f923d4daf30"
+    },
+    "performance": {
+      "configuration": {
+        "benchmark": "benchmark/block-io-bench",
+        "arch": "x86_64",
+        "qemu_configuration": "default, unchanged eight-CPU NVMe profile",
+        "rounds_per_boot": 5,
+        "boots_per_source": 2,
+        "bytes_per_round": 4194304,
+        "block_bytes": 4096,
+        "fsync": true,
+        "cache_drop": "none",
+        "source_tree_equality_of_workload_and_tools": true
+      },
+      "sources": {
+        "03551788e50dc578b1a085e7612a43f0dab08e50": {
+          "metrics": {
+            "coherence-read": {
+              "samples": 10,
+              "median_us": 61066.5,
+              "min_us": 46224,
+              "max_us": 107150,
+              "per_boot_medians_us": [
+                81747,
+                46659
+              ]
+            },
+            "coherence-rewrite": {
+              "samples": 10,
+              "median_us": 161349.5,
+              "min_us": 106040,
+              "max_us": 241582,
+              "per_boot_medians_us": [
+                233175,
+                108830
+              ]
+            },
+            "fsync": {
+              "samples": 10,
+              "median_us": 48453.0,
+              "min_us": 26842,
+              "max_us": 88743,
+              "per_boot_medians_us": [
+                72920,
+                29263
+              ]
+            },
+            "read": {
+              "samples": 10,
+              "median_us": 62024.5,
+              "min_us": 46827,
+              "max_us": 107400,
+              "per_boot_medians_us": [
+                87784,
+                47562
+              ]
+            },
+            "write": {
+              "samples": 10,
+              "median_us": 146319.5,
+              "min_us": 116875,
+              "max_us": 236676,
+              "per_boot_medians_us": [
+                216237,
+                117871
+              ]
+            }
+          },
+          "diskstats": {
+            "coherence-read": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "writes": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_written": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              }
+            },
+            "coherence-rewrite": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 1.5,
+                "max": 2
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 12.0,
+                "max": 16
+              },
+              "writes": {
+                "min": 12,
+                "median": 14.0,
+                "max": 15
+              },
+              "sectors_written": {
+                "min": 8256,
+                "median": 8256.0,
+                "max": 8256
+              }
+            },
+            "fsync": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 0.0,
+                "max": 1
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 0.0,
+                "max": 8
+              },
+              "writes": {
+                "min": 10,
+                "median": 10.0,
+                "max": 10
+              },
+              "sectors_written": {
+                "min": 8272,
+                "median": 8272.0,
+                "max": 8272
+              }
+            },
+            "read": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "writes": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_written": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              }
+            },
+            "write": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "writes": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_written": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              }
+            }
+          }
+        },
+        "858f44d91b4f686352ffb718fbf2ea46160a66d7": {
+          "metrics": {
+            "coherence-read": {
+              "samples": 10,
+              "median_us": 70645.0,
+              "min_us": 48029,
+              "max_us": 100810,
+              "per_boot_medians_us": [
+                48704,
+                89761
+              ]
+            },
+            "coherence-rewrite": {
+              "samples": 10,
+              "median_us": 143426.0,
+              "min_us": 104954,
+              "max_us": 245888,
+              "per_boot_medians_us": [
+                119664,
+                178129
+              ]
+            },
+            "fsync": {
+              "samples": 10,
+              "median_us": 44743.0,
+              "min_us": 30510,
+              "max_us": 68755,
+              "per_boot_medians_us": [
+                33237,
+                47462
+              ]
+            },
+            "read": {
+              "samples": 10,
+              "median_us": 53656.5,
+              "min_us": 46250,
+              "max_us": 92819,
+              "per_boot_medians_us": [
+                50184,
+                56573
+              ]
+            },
+            "write": {
+              "samples": 10,
+              "median_us": 133270.5,
+              "min_us": 114152,
+              "max_us": 280135,
+              "per_boot_medians_us": [
+                118353,
+                152590
+              ]
+            }
+          },
+          "diskstats": {
+            "coherence-read": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "writes": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_written": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              }
+            },
+            "coherence-rewrite": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 2.0,
+                "max": 2
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 16.0,
+                "max": 16
+              },
+              "writes": {
+                "min": 12,
+                "median": 15.0,
+                "max": 18
+              },
+              "sectors_written": {
+                "min": 8256,
+                "median": 8256.0,
+                "max": 8320
+              }
+            },
+            "fsync": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 0.0,
+                "max": 1
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 0.0,
+                "max": 8
+              },
+              "writes": {
+                "min": 6,
+                "median": 10.0,
+                "max": 10
+              },
+              "sectors_written": {
+                "min": 2832,
+                "median": 8272.0,
+                "max": 8272
+              }
+            },
+            "read": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "writes": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_written": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              }
+            },
+            "write": {
+              "samples": 10,
+              "reads": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "sectors_read": {
+                "min": 0,
+                "median": 0.0,
+                "max": 0
+              },
+              "writes": {
+                "min": 0,
+                "median": 0.0,
+                "max": 6
+              },
+              "sectors_written": {
+                "min": 0,
+                "median": 0.0,
+                "max": 5448
+              }
+            }
+          }
+        }
+      },
+      "combined_write_fsync": {
+        "03551788e50dc578b1a085e7612a43f0dab08e50": {
+          "samples": 10,
+          "median_us": 194772.5,
+          "min_us": 144930,
+          "max_us": 313760
+        },
+        "858f44d91b4f686352ffb718fbf2ea46160a66d7": {
+          "samples": 10,
+          "median_us": 185839.5,
+          "min_us": 144662,
+          "max_us": 325285
+        }
+      },
+      "data_verifications_passed": 40,
+      "interpretation": "启动间波动明显，部分写回 I/O 跨越写入与同步采样阶段；样本仅作为回归观察，尚不足以确定稳定的速度或尾延迟变化。"
+    }
   }
 }

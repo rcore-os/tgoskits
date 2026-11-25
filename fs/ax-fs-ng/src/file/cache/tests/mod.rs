@@ -1745,7 +1745,48 @@ fn truncate_cache_miss_does_not_expose_stale_tail_after_reopen_and_extend() {
 }
 
 #[test]
-fn extending_write_cache_miss_zeroes_gap_before_write_offset() {
+fn extending_write_preserves_progress_and_zeroes_gaps() {
+    struct Input<R> {
+        reader: R,
+        remaining: usize,
+    }
+
+    impl<R: ax_io::Read> ax_io::Read for Input<R> {
+        fn read(&mut self, dst: &mut [u8]) -> ax_io::Result<usize> {
+            let read = self.reader.read(dst)?;
+            self.remaining -= read;
+            Ok(read)
+        }
+
+        fn read_buf(&mut self, mut dst: core::io::BorrowedCursor<'_, u8>) -> ax_io::Result<()> {
+            let before = dst.written();
+            let result = self.reader.read_buf(dst.reborrow());
+            self.remaining -= dst.written() - before;
+            result
+        }
+    }
+
+    impl<R> ax_io::IoBuf for Input<R> {
+        fn remaining(&self) -> usize {
+            self.remaining
+        }
+    }
+
+    struct FilledPrefix;
+
+    impl ax_io::Read for FilledPrefix {
+        fn read(&mut self, _dst: &mut [u8]) -> ax_io::Result<usize> {
+            Err(ax_io::Error::InvalidInput)
+        }
+
+        fn read_buf(&mut self, mut dst: core::io::BorrowedCursor<'_, u8>) -> ax_io::Result<()> {
+            if dst.capacity() != 0 {
+                dst.append(&[0x5a]);
+            }
+            Err(ax_io::Error::InvalidInput)
+        }
+    }
+
     with_test_page_provider(true, |_| {
         let backing = Arc::new(CacheTestFile::new(vec![0xa5; PAGE_SIZE]));
         let old_len = PAGE_SIZE / 2;
@@ -1758,6 +1799,63 @@ fn extending_write_cache_miss_zeroes_gap_before_write_offset() {
         assert_eq!(cached.len(), old_len as u64);
         assert_eq!(backing.len().unwrap(), old_len as u64);
         assert_eq!(backing.state.lock().unwrap().physical_data, before_empty);
+
+        let rejected = Input {
+            reader: ax_io::read_fn(|_| Err(ax_io::Error::InvalidInput)),
+            remaining: 2,
+        };
+        assert_eq!(
+            cached.write_at(rejected, write_offset as u64),
+            Err(VfsError::InvalidInput)
+        );
+        assert_eq!(cached.len(), old_len as u64);
+        assert_eq!(backing.len().unwrap(), old_len as u64);
+        assert_eq!(backing.state.lock().unwrap().physical_data, before_empty);
+
+        let same_file = Input {
+            reader: ax_io::read_fn(|dst: &mut [u8]| {
+                // Fail promptly instead of hanging if input cannot perform
+                // the actual same-file read while the writer is active.
+                let io = cached
+                    .shared
+                    .io_lock
+                    .try_lock()
+                    .ok_or(ax_io::Error::WouldBlock)?;
+                drop(io);
+                cached.read_at(dst, 0).map_err(crate::vfs_error_to_io_error)
+            }),
+            remaining: 1,
+        };
+        assert_eq!(cached.write_at(same_file, 0), Ok(1));
+        assert_eq!(cached.len(), old_len as u64);
+        assert_eq!(backing.len().unwrap(), old_len as u64);
+
+        let mut prefix = &[0x5a][..];
+        let interrupted = Input {
+            reader: ax_io::read_fn(|dst: &mut [u8]| {
+                if prefix.is_empty() {
+                    Err(ax_io::Error::InvalidInput)
+                } else {
+                    ax_io::Read::read(&mut prefix, dst)
+                }
+            }),
+            remaining: 2,
+        };
+        assert_eq!(cached.write_at(interrupted, write_offset as u64), Ok(1));
+        assert_eq!(cached.len(), (write_offset + 1) as u64);
+        assert_eq!(backing.len().unwrap(), (write_offset + 1) as u64);
+        assert_eq!(
+            cached.write_at(
+                Input {
+                    reader: FilledPrefix,
+                    remaining: 2,
+                },
+                write_offset as u64,
+            ),
+            Ok(1)
+        );
+        assert_eq!(cached.len(), (write_offset + 1) as u64);
+        assert_eq!(backing.len().unwrap(), (write_offset + 1) as u64);
         assert_eq!(
             cached.write_at(&[0x5a][..], write_offset as u64).unwrap(),
             1
@@ -1779,6 +1877,87 @@ fn extending_write_cache_miss_zeroes_gap_before_write_offset() {
                 .all(|byte| *byte == 0)
         );
         assert_eq!(gap_and_byte.last(), Some(&0x5a));
+    });
+}
+
+#[test]
+fn append_keeps_the_whole_input_ordered_while_staging() {
+    struct PausedInput {
+        remaining: usize,
+        staged: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl ax_io::Read for PausedInput {
+        fn read(&mut self, dst: &mut [u8]) -> ax_io::Result<usize> {
+            if dst.is_empty() {
+                return Ok(0);
+            }
+            if self.remaining == PAGE_SIZE {
+                self.staged.send(()).unwrap();
+                self.release.recv().unwrap();
+            }
+            let count = dst.len().min(self.remaining);
+            dst[..count].fill(0x31);
+            self.remaining -= count;
+            Ok(count)
+        }
+    }
+
+    impl ax_io::IoBuf for PausedInput {
+        fn remaining(&self) -> usize {
+            self.remaining
+        }
+    }
+
+    struct ReleaseInput(std::sync::mpsc::Sender<()>);
+
+    impl Drop for ReleaseInput {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing);
+        let (staged_tx, staged_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::sync_channel(1);
+        *cached.shared.content_wait_observer.lock() = Some(waiting_tx);
+        let second_bytes = vec![0x72; PAGE_SIZE];
+
+        std::thread::scope(|scope| {
+            // Release the paused reader before scoped threads are joined,
+            // including when a fixture or assertion unwinds this scope.
+            let release = ReleaseInput(release_tx);
+            let first = scope.spawn(|| {
+                cached.append(PausedInput {
+                    remaining: 2 * PAGE_SIZE,
+                    staged: staged_tx,
+                    release: release_rx,
+                })
+            });
+            let staged = staged_rx.recv_timeout(Duration::from_secs(5));
+            let second = scope.spawn(|| cached.append(second_bytes.as_slice()));
+            let waiting = waiting_rx.recv_timeout(Duration::from_secs(5));
+            drop(release);
+            let first = first.join().unwrap();
+            let second = second.join().unwrap();
+            assert!(
+                staged.is_ok(),
+                "the first append reached its next input chunk"
+            );
+            assert!(waiting.is_ok(), "the peer attempted an overlapping append");
+            assert_eq!(first, Ok((2 * PAGE_SIZE, (2 * PAGE_SIZE) as u64)));
+            assert_eq!(second, Ok((PAGE_SIZE, (3 * PAGE_SIZE) as u64)));
+        });
+
+        assert_eq!(cached.len(), (3 * PAGE_SIZE) as u64);
+        let mut actual = vec![0; 3 * PAGE_SIZE];
+        assert_eq!(cached.read_at(actual.as_mut_slice(), 0), Ok(actual.len()));
+        assert!(actual[..2 * PAGE_SIZE].iter().all(|byte| *byte == 0x31));
+        assert!(actual[2 * PAGE_SIZE..].iter().all(|byte| *byte == 0x72));
     });
 }
 

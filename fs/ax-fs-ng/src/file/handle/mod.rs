@@ -162,8 +162,8 @@ impl File {
     }
 
     /// Writes a number of bytes starting from a given offset.
-    pub fn write_at(&self, src: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        self.access(FileFlags::WRITE)?.write_at(src, offset)
+    pub fn write_at(&self, mut src: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
+        self.access(FileFlags::WRITE)?.write_at(&mut src, offset)
     }
 
     /// Truncates or extends the file to `len` bytes.
@@ -224,7 +224,7 @@ impl File {
     }
 
     /// Writes data at the current position (or appends), advancing the cursor.
-    pub fn write(&self, src: impl Read + IoBuf) -> ax_io::Result<usize> {
+    pub fn write(&self, mut src: impl Read + IoBuf) -> ax_io::Result<usize> {
         self.access_flags.fetch_or(3, Ordering::AcqRel);
         // WRITE bit is mandatory for any write path, regardless of whether
         // APPEND is set. Otherwise O_RDONLY|O_APPEND fd would silently
@@ -235,20 +235,20 @@ impl File {
         if let Some(pos) = self.position.as_ref() {
             let mut pos = pos.lock();
             if let Ok(f) = self.access(FileFlags::APPEND) {
-                let (written, new_size) = f.append(src).map_err(vfs_error_to_io_error)?;
+                let (written, new_size) = f.append(&mut src).map_err(vfs_error_to_io_error)?;
                 if written != 0 {
                     *pos = new_size;
                 }
                 Ok(written)
             } else {
-                self.write_at(src, *pos)
+                self.write_at(&mut src, *pos)
                     .map_err(vfs_error_to_io_error)
                     .inspect(|n| {
                         *pos += *n as u64;
                     })
             }
         } else {
-            self.write_at(src, 0).map_err(vfs_error_to_io_error)
+            self.write_at(&mut src, 0).map_err(vfs_error_to_io_error)
         }
     }
 
@@ -531,6 +531,84 @@ mod tests {
 
     fn reset_drop_metadata_update_attempts() {
         DROP_METADATA_UPDATE_ATTEMPTS.store(0, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn write_input_last_owner_retires_after_description_position() {
+        struct Owner {
+            file: alloc::sync::Weak<File>,
+            retired: Arc<core::sync::atomic::AtomicBool>,
+        }
+
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                // Record without recursive acquisition, so an incorrect
+                // candidate fails rather than hanging during destruction.
+                let outside = self.file.upgrade().is_some_and(|file| {
+                    file.position
+                        .as_ref()
+                        .is_some_and(|position| position.try_lock().is_some())
+                });
+                self.retired.store(outside, Ordering::Relaxed);
+            }
+        }
+
+        struct Input {
+            remaining: usize,
+            _owner: Arc<Owner>,
+        }
+
+        impl ax_io::IoBuf for Input {
+            fn remaining(&self) -> usize {
+                self.remaining
+            }
+        }
+
+        impl ax_io::Read for Input {
+            fn read(&mut self, _dst: &mut [u8]) -> ax_io::Result<usize> {
+                Err(ax_io::Error::InvalidInput)
+            }
+        }
+
+        let _guard = DROP_METADATA_UPDATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for remaining in [0, 1] {
+            let entry = test_entry(Arc::new(MetadataTrackingTestFile::new(
+                &WRITABLE_TEST_FILESYSTEM,
+                Arc::new(AtomicUsize::new(0)),
+            )));
+            let filesystem = Filesystem::new(Arc::new(TestFilesystem {
+                name: "write-input-retirement-test",
+                readonly: false,
+                root: Some(entry.clone()),
+            }));
+            let location = Location::new(Mountpoint::new_root(&filesystem), entry);
+            let file = Arc::new(File::new(
+                FileBackend::new_direct(location).unwrap(),
+                FileFlags::READ | FileFlags::WRITE,
+            ));
+            let retired = Arc::new(core::sync::atomic::AtomicBool::new(false));
+            let owner = Arc::new(Owner {
+                file: Arc::downgrade(&file),
+                retired: retired.clone(),
+            });
+            let observed = Arc::downgrade(&owner);
+            let result = file.write(Input {
+                remaining,
+                _owner: owner,
+            });
+            assert_eq!(
+                result,
+                if remaining == 0 {
+                    Ok(0)
+                } else {
+                    Err(ax_io::Error::InvalidInput)
+                }
+            );
+            assert!(observed.upgrade().is_none());
+            assert!(retired.load(Ordering::Relaxed));
+        }
     }
 
     #[test]

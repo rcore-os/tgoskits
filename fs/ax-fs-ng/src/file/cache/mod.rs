@@ -9,6 +9,7 @@ mod readahead;
 mod reclaim;
 mod resize;
 mod update;
+mod write;
 mod writeback;
 #[cfg(feature = "ext4")]
 pub(crate) use reclaim::observe_filesystem_persistence;
@@ -24,7 +25,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use ax_io::prelude::*;
 use axfs_ng_vfs::{FileNode, FilesystemOps, Location, PathHandle, VfsError, VfsResult};
 use pages::CachedPages;
 pub(crate) use prefetch::start_background_readahead;
@@ -317,6 +317,11 @@ struct CachedFileShared {
     pending_fills: fill::PendingFills,
     updating: AtomicBool,
     mapping_layout_lock: Mutex<()>,
+    // Logical content operations stay serialized while input reads release
+    // physical cache protection. Read fills, reclaim and writeback skip it.
+    content_operation_lock: Mutex<()>,
+    #[cfg(test)]
+    content_wait_observer: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
     io_lock: Mutex<()>,
     writeback_lock: Mutex<()>,
     mapping_endpoint: Mutex<Option<Weak<dyn CacheMappingEndpoint>>>,
@@ -337,6 +342,18 @@ struct CachedFileShared {
 }
 
 impl CachedFileShared {
+    fn lock_content_operation(&self) -> MutexGuard<'_, ()> {
+        if let Some(guard) = self.content_operation_lock.try_lock() {
+            return guard;
+        }
+        #[cfg(test)]
+        if let Some(observer) = self.content_wait_observer.lock().take() {
+            // One-shot test observation never changes acquisition or lifetime.
+            let _ = observer.send(());
+        }
+        self.content_operation_lock.lock()
+    }
+
     pub fn new(len: u64, backing: FileNode) -> Self {
         Self {
             identity: CachedFileIdentity::allocate(),
@@ -344,6 +361,9 @@ impl CachedFileShared {
             pending_fills: fill::PendingFills::new(),
             updating: AtomicBool::new(false),
             mapping_layout_lock: Mutex::new(()),
+            content_operation_lock: Mutex::new(()),
+            #[cfg(test)]
+            content_wait_observer: Mutex::new(None),
             io_lock: Mutex::new(()),
             writeback_lock: Mutex::new(()),
             mapping_endpoint: Mutex::new(None),
@@ -368,6 +388,9 @@ impl CachedFileShared {
             pending_fills: fill::PendingFills::new(),
             updating: AtomicBool::new(false),
             mapping_layout_lock: Mutex::new(()),
+            content_operation_lock: Mutex::new(()),
+            #[cfg(test)]
+            content_wait_observer: Mutex::new(None),
             io_lock: Mutex::new(()),
             writeback_lock: Mutex::new(()),
             mapping_endpoint: Mutex::new(None),
@@ -1123,125 +1146,6 @@ impl CachedFile {
             paddr,
             backing: page.backing(),
         }))
-    }
-
-    fn write_at_locked(
-        &self,
-        mut buf: impl Read + IoBuf,
-        offset: u64,
-        update: &mut update::CacheUpdateGuard<'_>,
-    ) -> VfsResult<usize> {
-        self.shared.ensure_writeback_owner_active()?;
-        // An empty request has no extent; its cursor must not become a new EOF.
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let _backing_change = (!self.in_memory)
-            .then(|| self.shared.backing_persistence.begin())
-            .transpose()?;
-        let file = self.inner.location().entry().as_file()?;
-        let end = offset.saturating_add(buf.remaining() as u64);
-        let old_len = self.shared.len();
-        if end > old_len {
-            update.without_io(|| -> VfsResult<()> {
-                let _writeback = self.shared.writeback_lock.lock();
-                let _update = self.shared.lock_for_update();
-                let next_epoch = self.shared.prepare_mapping_epoch()?;
-                if !old_len.is_multiple_of(PAGE_SIZE as u64) {
-                    let page_number = (old_len / PAGE_SIZE as u64) as u32;
-                    let page_start = u64::from(page_number) * PAGE_SIZE as u64;
-                    self.zero_partial_page_locked(
-                        file,
-                        page_number,
-                        (old_len - page_start) as usize,
-                        (end - page_start).min(PAGE_SIZE as u64) as usize,
-                    )?;
-                }
-                file.set_len(end)?;
-                self.shared.update_len_max(end);
-                self.shared.publish_mapping_epoch(next_epoch);
-                Ok(())
-            })?;
-        }
-
-        let mut scratch = PageCache::new()?;
-        let mut written = 0;
-        let mut current = offset;
-        while current < end && buf.remaining() > 0 {
-            let pn = (current / PAGE_SIZE as u64) as u32;
-            let page_start = pn as u64 * PAGE_SIZE as u64;
-            let page_offset = (current - page_start) as usize;
-            let chunk_len =
-                ((PAGE_SIZE - page_offset).min(buf.remaining())).min((end - current) as usize);
-            let n = buf
-                .read(&mut scratch.data()[..chunk_len])
-                .map_err(crate::io_error_to_vfs_error)?;
-            if n == 0 {
-                break;
-            }
-            self.shared.update_len_max(current + n as u64);
-
-            let read_backing = page_start < old_len && !(page_offset == 0 && n == PAGE_SIZE);
-            self.with_page_or_insert(file, pn, read_backing, |page, _| {
-                page.data()[page_offset..page_offset + n].copy_from_slice(&scratch.data()[..n]);
-                if !self.in_memory {
-                    page.mark_dirty();
-                }
-            })?;
-            if !self.in_memory {
-                update.without_io(|| self.shared.balance_dirty_pages(end > old_len))?;
-            }
-
-            written += n;
-            current += n as u64;
-        }
-
-        Ok(written)
-    }
-
-    /// Writes `buf` to the file at `offset`.
-    pub fn write_at(&self, buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        self.write_at_with_completion(buf, offset, |_| Ok(()))
-    }
-
-    /// Runs completion after releasing cache locks while retaining write admission.
-    pub(crate) fn write_at_with_completion(
-        &self,
-        buf: impl Read + IoBuf,
-        offset: u64,
-        complete: impl FnOnce(usize) -> VfsResult<()>,
-    ) -> VfsResult<usize> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
-        let written = {
-            let _layout = self.shared.mapping_layout_lock.lock();
-            let mut update = self.shared.lock_for_update();
-            self.write_at_locked(buf, offset, &mut update)
-        }?;
-        complete(written)?;
-        Ok(written)
-    }
-
-    /// Appends `buf` to the end of the file. Returns `(bytes_written, new_end)`.
-    pub fn append(&self, buf: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
-        self.append_with_completion(buf, |_| Ok(()))
-    }
-
-    /// Runs completion after releasing cache locks while retaining write admission.
-    pub(crate) fn append_with_completion(
-        &self,
-        buf: impl Read + IoBuf,
-        complete: impl FnOnce(usize) -> VfsResult<()>,
-    ) -> VfsResult<(usize, u64)> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
-        let (written, end) = {
-            let _layout = self.shared.mapping_layout_lock.lock();
-            let mut update = self.shared.lock_for_update();
-            let len = self.shared.len();
-            self.write_at_locked(buf, len, &mut update)
-                .map(|written| (written, len + written as u64))
-        }?;
-        complete(written)?;
-        Ok((written, end))
     }
 
     pub fn writeback(&self) -> VfsResult<alloc::vec::Vec<u32>> {

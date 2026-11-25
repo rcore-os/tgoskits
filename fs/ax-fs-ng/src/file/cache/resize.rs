@@ -113,6 +113,7 @@ impl CachedFile {
     /// Reserves backing storage and keeps the cached length coherent.
     pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
         let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
+        let _content = self.shared.lock_content_operation();
         let end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
         let file = self.inner.location().entry().as_file()?;
         let _backing_change = (!self.in_memory)
@@ -144,6 +145,7 @@ impl CachedFile {
             return self.preallocate(offset, len, mode);
         }
         let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
+        let _content = self.shared.lock_content_operation();
         let _backing_change = (!self.in_memory)
             .then(|| self.shared.backing_persistence.begin())
             .transpose()?;
@@ -598,6 +600,7 @@ impl CachedFile {
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
         let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
+        let _content = self.shared.lock_content_operation();
         let file = self.inner.location().entry().as_file()?;
         let _backing_change = (!self.in_memory)
             .then(|| self.shared.backing_persistence.begin())

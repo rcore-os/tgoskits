@@ -172,7 +172,7 @@ impl FileBackend {
     /// Writes `src` to the file at `offset`.
     pub fn write_at(&self, mut src: impl Read + IoBuf, mut offset: u64) -> VfsResult<usize> {
         match self {
-            Self::Cached(cached) => cached.write_at_with_completion(src, offset, |written| {
+            Self::Cached(cached) => cached.write_at_with_completion(&mut src, offset, |written| {
                 Self::finish_cached_write(cached, written)
             }),
             Self::Layered(file) => file.native.write_at(src, offset),
@@ -222,8 +222,9 @@ impl FileBackend {
     /// Appends `src` to the end of the file. Returns `(bytes_written, new_end)`.
     pub fn append(&self, mut src: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
         match self {
-            Self::Cached(cached) => cached
-                .append_with_completion(src, |written| Self::finish_cached_write(cached, written)),
+            Self::Cached(cached) => cached.append_with_completion(&mut src, |written| {
+                Self::finish_cached_write(cached, written)
+            }),
             Self::Layered(file) => file.native.append(src),
             Self::Direct(path) => {
                 let loc = path.location();
