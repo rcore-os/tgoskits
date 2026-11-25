@@ -14303,5 +14303,45 @@
     "native_write_time_migration_complete": false,
     "remaining": "完整原生时间、物理写回、范围及映射写入、组合后端、挂载策略、性能资源对照与原设计其余验收。",
     "recorded_at": "2026-11-25T15:46:32.858638+00:00"
+  },
+  "direct_io_resize_proposal_rejected_20261126": {
+    "status": "proposal_rejected_complete_direct_io_owner_pending",
+    "rejected_public_proposal": "c287575a384ac6a3f30b45ea41a5af262d73a2fc",
+    "production_restore_commit": "45e5b4f790ae90df5126d149bc9eccb5cc4fc808",
+    "original_test_source": "4fee618b301876ae3131111b45aea5f2f5399189",
+    "rejected_test_source": "4d6a1a1d3dd8a38dbabf01101eddb48893f0daee",
+    "proof": "direct-write-resize-proposal-rejected-verified.private.json",
+    "same_complete_test_function": true,
+    "original_std_packages": 19,
+    "original_target_profiles_passed": 5,
+    "proposal_expected_failures": 5,
+    "proposal_other_failures": 0,
+    "compiler_errors": false,
+    "restored_clippy_profiles": 6,
+    "restored_production_equals": "5389361f5aa8d9d2c629dd89e24e46f23027256d",
+    "new_default_programs": 0,
+    "new_default_batches": 0,
+    "new_default_boots": 0,
+    "acceptance_tests_to_restore": [
+      "expanded truncate_cache_miss_does_not_expose_stale_tail_after_reopen_and_extend from a1b561b151",
+      "ArceOS direct resize fs-basic journey from a1b561b151 with the native writer migration from 57a2528eff",
+      "native direct resize system checks from e9b0ce003d",
+      "new alternating direct write regression from 4fee618b30"
+    ],
+    "full_frontend_resize_complete": false,
+    "qualified_design_approval": false,
+    "full_pr_complete": false,
+    "remaining": [
+      "shared owner for direct reads, writes, append, ranges and resize",
+      "producer-owned progress and errors",
+      "current actor and resize origin",
+      "backend-owned attribute phases",
+      "lock-external journal pressure and completion",
+      "canonical length readers and mapping publication",
+      "other producers and Overlay lifecycle",
+      "normal FAT source and dependency order",
+      "performance/resources and independent review",
+      "final exact-head CI, affected runtimes and syscall comparison"
+    ]
   }
 }
