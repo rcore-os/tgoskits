@@ -1129,6 +1129,10 @@ impl CachedFile {
         update: &mut update::CacheUpdateGuard<'_>,
     ) -> VfsResult<usize> {
         self.shared.ensure_writeback_owner_active()?;
+        // An empty request cannot extend the file.
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let file = self.inner.entry().as_file()?;
         let end = offset.saturating_add(buf.remaining() as u64);
         let old_len = self.shared.len();
