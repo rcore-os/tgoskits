@@ -996,7 +996,7 @@ Linux v7.1 的
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| write/空输入及常规映射输入；x86_64 1；aarch64/riscv64/loongarch64 64 | v7.1 [vfs_write](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c)、[generic_perform_write](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/mm/filemap.c) | 空写入保持长度和偏移；取得输入与发布数据之间保持正确的进度和阻塞关系 | sys_write → VmBytes → KernelFile::write → File::write → FileBackend → CachedFile::write_source；位置归打开描述，内容操作归真实缓存所有者 | 正确 | 同一 C 的 Linux 320、x86 320、ARM/RISC-V 各 317；LoongArch 原程序开始与通过已核实；三项组件旅程各五种配置通过 |
+| write/空输入及常规映射输入；x86_64 1；aarch64/riscv64/loongarch64 64 | v7.1 [vfs_write](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c)、[generic_perform_write](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/mm/filemap.c) | 空写入保持长度和偏移；取得输入与发布数据之间保持正确的进度和阻塞关系 | sys_write → VmBytes → FileLike::write → file::fs::File::write → ax_fs_ng::File::write → FileBackend → CachedFile::write_source；位置归打开描述，内容操作归真实缓存所有者 | 正确 | 同一 C 的 Linux 320、x86 320、ARM/RISC-V 各 317；LoongArch 原程序开始与通过已核实；三项组件旅程各五种配置通过 |
 | writev/空输入；x86_64 20；aarch64/riscv64/loongarch64 66 | v7.1 [do_writev](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c) | 空向量写入保持文件数据、长度和打开描述偏移 | sys_writev → IoVectorBuf → resident payload → File::write → cache；本行限定已验证的普通文件空输入 | 正确 | 既有六入口空输入旅程在 Linux 与四架构实际执行；未把前端向量复制失败概括为本轮已验证 |
 | pwrite64/空输入；x86_64 18；aarch64/riscv64/loongarch64 68 | v7.1 [ksys_pwrite64](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c) | 合法普通文件的空定位写保持内容、长度和共享偏移 | sys_pwrite64 的空长度返回；非空定位分支进入 File::write_at，本行不扩展至其他追加语义 | 正确 | 同源六入口空输入旅程及共享偏移回读，Linux/四架构通过 |
 | pwritev/空输入；x86_64 296；aarch64/riscv64/loongarch64 70 | v7.1 [do_pwritev](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c) | 空定位向量不改变普通文件数据、长度和共享偏移 | sys_pwritev → IoVectorBuf → 定位写分派 → File::write_at；文件数据仍由同一缓存所有者发布 | 正确 | 同源六入口空输入旅程在 Linux/四架构通过；前端导入及其他参数仍按原范围验收 |
@@ -1018,3 +1018,11 @@ Linux v7.1 的
 | fallocate/本轮 ext4 范围数据；x86_64 285；aarch64/riscv64/loongarch64 47 | v7.1 [vfs_fallocate](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 已验证范围操作的数据与长度遵循既有成功及失败结果 | sys_fallocate → File::operate_range → FileBackend → CachedFile::preallocate/operate_range → 原生范围操作及回滚 | 正确 | 最终源码的现有 test-fallocate 实际运行 1/1，组件范围恢复用例通过；不扩展至其他后端与未测模式 |
 
 空或非空写入的原生时间、关闭与写回的时间顺序、输入复制的全部错误边界、映射写入以及其余端点仍按原迁移计划验收。本节不以局部数据证据替代这些剩余语义的实现结论。
+
+### 28.3 驻留批次的验证边界
+
+`CachedFile::write_source()` 现在按最多 16 页的驻留批次发布实际输入，`write_resident_batch()` 在增长原生长度前准备所有缺失页框。`write` 经 `FileLike::write` 和 `file::fs::File::write` 进入实际打开描述；`writev` 的普通文件分支先导入向量负载，再使用同一顺序写路径。定位入口继续从 `sys_pwrite64` 或 `sys_pwritev`/`sys_pwritev2` 分派到 `ax_fs_ng::File::write_at`；批次不代替这些入口原有的参数、权限、标志和偏移处理。
+
+增强既有组件旅程，直接验证首次页框分配失败不会增长缓存或原生长度；同一主体在旧实现五种配置失败，修后五种配置通过。完整追加顺序及输入最后拥有者旅程各通过五种配置。该证据证明缓存组件的长度发布规则，未在真实 StarryOS 中注入系统级页框分配失败，不能扩展为所有写入口资源耗尽路径的兼容结论；后续物理错误的已完成进度与原生时间顺序继续按原迁移计划验收。
+
+既有同源系统程序在 `862b4796e6` 的四架构实际通过，程序与分组终态均已核对；x86 为 320 项、ARM/RISC-V 各为 317 项，LoongArch 不推算没有打印的数量。现有范围程序实际通过。28.1 与 28.2 的直接系统行为仍限定在各行已有的输入和状态范围，原生时间、其他写标志及全部错误边界没有由本批证据扩大。源码摘要、相同主体的负向结果与本批实际终态记录在 `cached_write_resident_batch_20261125`。

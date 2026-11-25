@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "loongarch_native_firmware_boot_handoff_20261125",
+  "latest_evidence_section": "cached_write_resident_batch_20261125",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -13972,5 +13972,131 @@
       "data_verifications_passed": 40,
       "interpretation": "启动间波动明显，部分写回 I/O 跨越写入与同步采样阶段；样本仅作为回归观察，尚不足以确定稳定的速度或尾延迟变化。"
     }
+  },
+  "cached_write_resident_batch_20261125": {
+    "validation_snapshot": "862b4796e6300acc4480e81bb4c07df07754149e",
+    "production_file_sha256": {
+      "fs/ax-fs-ng/src/file/cache/write.rs": "35eaadf8fd882ef03417bfbc3bbc5e2919f67e751c39d59049904f5a81f2b44f",
+      "fs/ax-fs-ng/src/file/cache/update.rs": "2bfa8a9484258dd90c32f025efa46d0a3168f876c22b2e05933058d8374f0b48",
+      "fs/ax-fs-ng/src/file/cache/mod.rs": "e9ef9e981333c92293c569626ea125ca69cfd4d856e4b4870d03797398d79c26"
+    },
+    "test_file_sha256": {
+      "fs/ax-fs-ng/src/file/cache/tests/mod.rs": "5c530233e920cadadba0ffeb4327238320bc5a912a5577a376735b813293429f",
+      "test-suit/starryos/qemu/standard/system/fs/test-path-lookup-ownership/src/main.c": "b0368f36ddd4a1c187f2fe56a559abb74136a5a089569686d6e71f923d4daf30"
+    },
+    "component_negative": {
+      "source": "02ba24556523627e93ba1189dc6f9a2dbe2a1c7a",
+      "test": "extending_write_preserves_progress_and_zeroes_gaps",
+      "failed_profiles": 5,
+      "compiler_errors": false,
+      "same_test_body_as_final": true,
+      "test_body_sha256": "b5d747124e01a6c55292318d676e74fee547b66cf008c232efbbef2a8a1c5047"
+    },
+    "component_positive": {
+      "std_packages_passed": 19,
+      "clippy_checks_passed": 6,
+      "clippy_failed": 0,
+      "clippy_skipped": 0,
+      "critical_test_profile_results": {
+        "extending_write_preserves_progress_and_zeroes_gaps": 5,
+        "append_keeps_the_whole_input_ordered_while_staging": 5,
+        "write_input_last_owner_retires_after_description_position": 5
+      }
+    },
+    "system_runtime": [
+      {
+        "arch": "x86_64",
+        "source": "862b4796e6300acc4480e81bb4c07df07754149e",
+        "suite_exit": 0,
+        "program_started": true,
+        "program_passed": true,
+        "group_passed": true,
+        "assertions_passed": 320,
+        "log_sha256": "d77730ece37a3f4174b43b20447565edad7a28bf5f96e4d1c17a2971f2b02c62",
+        "source_clean": true,
+        "source_unchanged": true,
+        "test_unchanged": true
+      },
+      {
+        "arch": "riscv64",
+        "source": "862b4796e6300acc4480e81bb4c07df07754149e",
+        "suite_exit": 0,
+        "program_started": true,
+        "program_passed": true,
+        "group_passed": true,
+        "assertions_passed": 317,
+        "log_sha256": "3f7ff93bf8e4091d0ab098b27d9249a7e7fb84a8053c3e899e12b8e89a739012",
+        "source_clean": true,
+        "source_unchanged": true,
+        "test_unchanged": true
+      },
+      {
+        "arch": "aarch64",
+        "source": "862b4796e6300acc4480e81bb4c07df07754149e",
+        "suite_exit": 0,
+        "program_started": true,
+        "program_passed": true,
+        "group_passed": true,
+        "assertions_passed": 317,
+        "log_sha256": "64b5d3824695a211abb774a9ba65d56337486d2b6bb0ee44c4d47bc98c9ed378",
+        "source_clean": true,
+        "source_unchanged": true,
+        "test_unchanged": true
+      },
+      {
+        "arch": "loongarch64",
+        "source": "862b4796e6300acc4480e81bb4c07df07754149e",
+        "suite_exit": 0,
+        "program_started": true,
+        "program_passed": true,
+        "group_passed": true,
+        "assertions_passed": null,
+        "log_sha256": "7ea295cdb3e681aca8a5830d02b41844511f23f370fb3c76812e1009947b22f4",
+        "source_clean": true,
+        "source_unchanged": true,
+        "test_unchanged": true
+      }
+    ],
+    "linux_same_c_baseline": {
+      "assertions_passed": 320,
+      "assertions_failed": 0,
+      "fixture_failures": 0
+    },
+    "c_source_unchanged_from_prior_linux_baseline": true,
+    "range_program": {
+      "selector": "qemu/system/syscall-test-fallocate",
+      "arch": "x86_64",
+      "program_passed": true,
+      "group_passed": true,
+      "suite_exit": 0
+    },
+    "original_axloader_runtime": {
+      "source": "d3a84ad560eeb3e5e432580e5c54abd536bdc3fe",
+      "suite_exit": 0,
+      "resource_pass": true,
+      "full_fat_pass": true,
+      "rollback_pass": true,
+      "original_configuration_preserved": true,
+      "batch_and_page_initialization_files_byte_equal_to_validation_snapshot": true,
+      "other_differences": "Only append input segmentation in the existing test and removal of unused io suspension remain",
+      "log_sha256": "e48f70e26a719c948c493f855085b28174c7f98f4411ac8127af63626b37d202"
+    },
+    "limits": {
+      "write_batch_pages": 16,
+      "resident_byte_limit": 65536,
+      "small_request_bytes": "min(remaining, batch limit)",
+      "prepared_frame_limit": 16,
+      "frame_retirement": "after cache and write-admission guards"
+    },
+    "new_unit_test_functions": 0,
+    "new_default_programs": 0,
+    "new_default_boots": 0,
+    "native_write_time_migration_complete": false,
+    "system_allocator_failure_directly_tested": false,
+    "performance": "No formal new performance claim; prior single-page staging benchmark keeps its own source snapshot",
+    "scope": "Resident input, native/cache EOF publication after frame preparation, existing loader storage progress; native time and physical failure ordering remain separate",
+    "remaining_physical_error_progress": "Completed bytes after a later physical failure are not claimed by this input-staging checkpoint; retain for logical native-write migration",
+    "four_arch_system_runtime_passed": true,
+    "current_source_runtime_verified": true
   }
 }
