@@ -1,3 +1,5 @@
+use ostool::build::config::Cargo;
+
 use super::{
     AXSTD_STD_CLIPPY_FEATURES, AXSTD_STD_DEFAULT_FEATURE, AXSTD_STD_PACKAGE, HOST_TEST_FEATURE,
 };
@@ -113,20 +115,31 @@ impl ClippyCheck {
             .iter()
             .position(|arg| arg == "--")
             .expect("clippy arguments must delimit rustc flags");
-        args.splice(rustc_args_index + 1..rustc_args_index + 1, target.rustflags);
-        args.splice(rustc_args_index..rustc_args_index, target.cargo_args);
-
-        let mut env = self.env.clone();
-        for (key, value) in target.env {
-            if let Some((_, existing)) = env.iter_mut().find(|(existing, _)| existing == &key) {
-                *existing = value;
-            } else {
-                env.push((key, value));
-            }
-        }
+        let crate_flags = args.split_off(rustc_args_index);
+        args.extend(target.cargo_args);
+        let mut cargo = Cargo {
+            args,
+            target: target.target,
+            env: self.env.iter().cloned().collect(),
+            ..Default::default()
+        };
+        cargo.env.extend(target.env);
+        // Target policy applies to dependencies too. Only per-check source
+        // configuration and lint levels belong after Clippy's `--` boundary.
+        let flags = target
+            .rustflags
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        crate::build::append_cargo_rustflags(&mut cargo, &flags);
+        cargo.args.extend(crate_flags);
+        let mut env = cargo.env.into_iter().collect::<Vec<_>>();
         env.sort();
 
-        ClippyCargoInvocation { args, env }
+        ClippyCargoInvocation {
+            args: cargo.args,
+            env,
+        }
     }
 
     pub(super) fn label(&self) -> String {
