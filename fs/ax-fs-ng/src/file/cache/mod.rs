@@ -951,6 +951,17 @@ impl CachedFile {
         read_backing: bool,
     ) -> VfsResult<PageCache> {
         let mut page = PageCache::new()?;
+        self.initialize_cache_page(file, pn, read_backing, &mut page)?;
+        Ok(page)
+    }
+
+    fn initialize_cache_page(
+        &self,
+        file: &FileNode,
+        pn: u32,
+        read_backing: bool,
+        page: &mut PageCache,
+    ) -> VfsResult<()> {
         if self.in_memory || !read_backing {
             page.data().fill(0);
         } else {
@@ -963,7 +974,7 @@ impl CachedFile {
             let read = file.read_at(&mut page.data(), pn as u64 * PAGE_SIZE as u64)?;
             page.data()[read..].fill(0);
         }
-        Ok(page)
+        Ok(())
     }
 
     /// Updates an existing page or publishes one fully prepared cache page.
