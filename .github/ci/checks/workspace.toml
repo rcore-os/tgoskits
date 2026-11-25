@@ -72,3 +72,13 @@ cache_key = ""
 command = '''
 python3 scripts/test/check_axbuild_independence.py --since "$SINCE_REF"
 '''
+
+[[check]]
+id = "build-rsext4-fuzz"
+name = "rsext4 fuzz targets build"
+# The fuzz crate has its own workspace, so cargo xtask never builds it.
+# Building the targets keeps them compiling against the rsext4 API; this does not run fuzzing.
+timeout_minutes = 30
+command = '''
+cargo build --manifest-path fs/rsext4/fuzz/Cargo.toml --bins
+'''
