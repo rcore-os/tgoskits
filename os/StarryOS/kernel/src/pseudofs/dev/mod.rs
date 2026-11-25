@@ -58,6 +58,7 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(feature = "sg2002")]
 use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
 
@@ -74,8 +75,6 @@ use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, Simple
 const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
-
-static INITIAL_PTS_INSTANCE: OnceLock<Arc<tty::PtsInstance>> = OnceLock::new();
 
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
 pub(super) struct IrqRegistration {
@@ -127,26 +126,11 @@ pub(crate) fn init_drm_kapi() {
     }
 }
 
-pub(crate) fn new_devptsfs(mount: tty::DevPtsMount) -> Filesystem {
+pub(crate) fn new_devptsfs(options: tty::DevPtsOptions) -> Filesystem {
     SimpleFs::new_with("devpts".into(), 0x00001cd1, move |fs| {
-        devpts_builder(fs, mount)
+        let instance = tty::PtsInstance::new(options);
+        SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(fs, instance)))
     })
-}
-
-fn devpts_builder(fs: Arc<SimpleFs>, mount: tty::DevPtsMount) -> DirMaker {
-    let instance = match mount {
-        tty::DevPtsMount::Legacy(options) => initial_pts_instance(options),
-        tty::DevPtsMount::NewInstance(options) => tty::PtsInstance::new(options),
-    };
-    SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(fs, instance)))
-}
-
-fn initial_pts_instance(options: tty::DevPtsOptions) -> Arc<tty::PtsInstance> {
-    let instance = INITIAL_PTS_INSTANCE
-        .call_once(|| tty::PtsInstance::new(options))
-        .clone();
-    instance.update_options(options);
-    instance
 }
 
 struct Null;
@@ -464,7 +448,7 @@ impl DeviceOps for CpuDmaLatency {
 
 fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
     let mut root = DirMapping::new();
-    let pts_instance = initial_pts_instance(tty::DevPtsOptions::root());
+    let pts_instance = tty::PtsInstance::new(tty::DevPtsOptions::root());
 
     // Linux environments conventionally expose descriptor paths through
     // these links into procfs (proc_pid_fd(5)). Bash process substitution and

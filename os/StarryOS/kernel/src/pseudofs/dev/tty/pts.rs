@@ -41,19 +41,12 @@ impl DevPtsOptions {
     }
 }
 
-/// Selects whether a devpts mount reuses the initial instance or creates one.
-#[derive(Clone, Copy)]
-pub(crate) enum DevPtsMount {
-    Legacy(DevPtsOptions),
-    NewInstance(DevPtsOptions),
-}
-
 /// Indexes one devpts instance can hand out at the same time.
 const PTY_SLOTS: usize = 16;
 
 /// PTY index space and mount options owned by one devpts filesystem instance.
 pub(crate) struct PtsInstance {
-    options: RawSpinLock<DevPtsOptions>,
+    options: DevPtsOptions,
     table: RawSpinLock<FlattenObjects<Arc<Device>, PTY_SLOTS>>,
     /// Slaves that outlived their master: the node is gone, the index is not
     /// yet free.
@@ -63,14 +56,10 @@ pub(crate) struct PtsInstance {
 impl PtsInstance {
     pub(crate) fn new(options: DevPtsOptions) -> Arc<Self> {
         Arc::new(Self {
-            options: RawSpinLock::new(options),
+            options,
             table: RawSpinLock::new(FlattenObjects::new()),
             hidden: RawSpinLock::new([false; PTY_SLOTS]),
         })
-    }
-
-    pub(crate) fn update_options(&self, options: DevPtsOptions) {
-        *self.options.lock_irqsave() = options;
     }
 
     /// Linux devpts_pty_kill() removes the node when the master closes, even
@@ -94,7 +83,7 @@ impl PtsInstance {
     }
 
     pub(crate) fn add_slave(&self, fs: Arc<SimpleFs>, pty: Arc<PtyDriver>) -> StarryResult<u32> {
-        let options = *self.options.lock_irqsave();
+        let options = self.options;
         let terminal = pty.terminal.clone();
         let device = Device::new(fs, NodeType::CharacterDevice, DeviceId::default(), pty);
         device.update_metadata(MetadataUpdate {
@@ -116,7 +105,7 @@ impl PtsInstance {
     }
 
     fn ptmx(self: &Arc<Self>, fs: Arc<SimpleFs>) -> VfsResult<Arc<Device>> {
-        let options = *self.options.lock_irqsave();
+        let options = self.options;
         let device = Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
