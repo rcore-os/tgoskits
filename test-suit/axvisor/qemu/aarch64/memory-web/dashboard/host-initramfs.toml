@@ -1,0 +1,5 @@
+# No guest for the diskless variant: the case exists to prove the dashboard is
+# served from the initramfs memory root, which needs no VM. An empty
+# `vm_configs` also keeps the bundle free of external disk images, so the run
+# needs no managed rootfs download and no block device at all.
+vm_configs = []

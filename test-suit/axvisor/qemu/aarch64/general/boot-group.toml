@@ -1,0 +1,10 @@
+id = "qemu/aarch64/general"
+timeout = 2400
+# Ordered complete runtime files; this declaration owns the shared boot.
+cases = [
+    "shell-and-block/qemu-aarch64.toml",
+    "pool/qemu-aarch64.toml",
+    "ivc/qemu-aarch64.toml",
+    "pool-http/qemu-aarch64.toml",
+    "dashboard/qemu-aarch64.toml",
+]

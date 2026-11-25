@@ -14,11 +14,37 @@ use serde::Deserialize;
 pub(crate) struct CheckReferences {
     pub(crate) id: Option<String>,
     pub(crate) checks: Option<Vec<PathBuf>>,
+    #[serde(default)]
+    pub(crate) requires: Vec<PathBuf>,
+    #[serde(default)]
+    pub(crate) aliases: Vec<String>,
+    #[serde(default)]
+    pub(crate) standalone: bool,
+}
+
+impl CheckReferences {
+    pub(super) fn validate(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(id) = &self.id {
+            crate::execution::qemu::validate_selected_case_name(id, "declared", "runtime")?;
+            ensure!(id.trim() == id, "invalid runtime ID in {}", path.display());
+        }
+        let mut aliases = BTreeSet::new();
+        for alias in &self.aliases {
+            crate::execution::qemu::validate_selected_case_name(alias, "declared", "alias")?;
+            ensure!(
+                !alias.contains('/') && alias.trim() == alias && aliases.insert(alias),
+                "invalid or duplicate member alias in {}",
+                path.display()
+            );
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct CheckFile {
     pub(crate) path: PathBuf,
     pub(crate) document: toml::Table,
+    pub(crate) prerequisite: bool,
 }
 
 pub(crate) struct RuntimeChecks {
@@ -28,19 +54,33 @@ pub(crate) struct RuntimeChecks {
 }
 
 pub(crate) fn runtime_check_references(path: &Path) -> anyhow::Result<CheckReferences> {
+    if super::boot_group::is_manifest(path) {
+        return Ok(CheckReferences {
+            id: Some(super::boot_group::read(path)?.id),
+            ..Default::default()
+        });
+    }
     let source: toml::Table = toml::from_str(&fs::read_to_string(path)?)?;
-    source
+    let references: CheckReferences = source
         .get("axbuild")
         .cloned()
         .map(toml::Value::try_into)
         .transpose()
-        .with_context(|| format!("invalid check references in {}", path.display()))
-        .map(Option::unwrap_or_default)
+        .with_context(|| format!("invalid check references in {}", path.display()))?
+        .unwrap_or_default();
+    references.validate(path)?;
+    Ok(references)
 }
 
 /// Read the ordered public member names without running or preparing anything.
 pub(crate) fn runtime_check_names(path: &Path) -> anyhow::Result<Vec<String>> {
+    if super::boot_group::is_manifest(path) {
+        return super::boot_group::member_names(path);
+    }
     let refs = runtime_check_references(path)?;
+    if refs.checks.is_none() {
+        return Ok(refs.aliases);
+    }
     let mut seen = BTreeSet::new();
     refs.checks
         .unwrap_or_default()
@@ -124,6 +164,9 @@ pub(crate) fn load_selected_runtime_checks(
     path: &Path,
     selected: Option<&[String]>,
 ) -> anyhow::Result<RuntimeChecks> {
+    if super::boot_group::is_manifest(path) {
+        return super::boot_group::load(path, selected);
+    }
     let content = fs::read_to_string(path)
         .with_context(|| format!("read runtime configuration {}", path.display()))?;
     let mut runtime: toml::Table = toml::from_str(&content)
@@ -134,14 +177,7 @@ pub(crate) fn load_selected_runtime_checks(
         .transpose()
         .with_context(|| format!("invalid axbuild check references in {}", path.display()))?
         .unwrap_or_default();
-    if let Some(id) = &references.id {
-        crate::execution::qemu::validate_selected_case_name(id, "declared", "runtime")?;
-        ensure!(
-            !id.trim().is_empty() && id.trim() == id,
-            "invalid check group ID in {}",
-            path.display()
-        );
-    }
+    references.validate(path)?;
     let names = runtime_check_names(path)?;
     if let Some(selected) = selected {
         ensure!(
@@ -182,7 +218,7 @@ pub(crate) fn load_selected_runtime_checks(
                     "duplicate check reference {}",
                     file.display()
                 );
-                expand_check(&file, &mut visiting, &mut completed, &mut checks)?;
+                expand_check(&file, &mut visiting, &mut completed, &mut checks, false)?;
             }
         }
         if selected.is_some()
@@ -224,6 +260,35 @@ pub(crate) fn load_selected_runtime_checks(
             runtime.insert("shell_check_steps".into(), toml::Value::Array(steps));
         }
     }
+    // Inlined migrated cases retain the ordered runner's deadline and serial
+    // semantics, even when they have no prerequisites or HTTP probe.
+    if !references.requires.is_empty() || !references.aliases.is_empty() {
+        ensure!(
+            references.checks.is_none(),
+            "cannot mix checks and runtime requires in {}",
+            path.display()
+        );
+        let mut visiting = BTreeSet::new();
+        let mut completed = BTreeSet::new();
+        for required in &references.requires {
+            expand_check(
+                &path
+                    .parent()
+                    .context("runtime has no parent")?
+                    .join(required),
+                &mut visiting,
+                &mut completed,
+                &mut checks,
+                true,
+            )?;
+        }
+        checks.push(inline_check(path, &runtime)?);
+        runtime.insert(
+            "timeout".into(),
+            toml::Value::Integer(total_budget(&checks)?),
+        );
+        combine_steps(&mut runtime, &checks)?;
+    }
     Ok(RuntimeChecks {
         references,
         runtime,
@@ -231,11 +296,12 @@ pub(crate) fn load_selected_runtime_checks(
     })
 }
 
-fn expand_check(
+pub(super) fn expand_check(
     path: &Path,
     visiting: &mut BTreeSet<PathBuf>,
     completed: &mut BTreeSet<PathBuf>,
     checks: &mut Vec<CheckFile>,
+    prerequisite: bool,
 ) -> anyhow::Result<()> {
     let canonical = path
         .canonicalize()
@@ -281,6 +347,7 @@ fn expand_check(
                 visiting,
                 completed,
                 checks,
+                true,
             )?;
         }
     }
@@ -302,7 +369,83 @@ fn expand_check(
     checks.push(CheckFile {
         path: path.to_path_buf(),
         document,
+        prerequisite,
     });
+    Ok(())
+}
+
+/// Preserve the functional boundary independently of its preparation nodes.
+pub(super) fn inline_check(path: &Path, runtime: &toml::Table) -> anyhow::Result<CheckFile> {
+    ensure!(
+        runtime.contains_key("shell_check_steps") || runtime.contains_key("host_http_probe"),
+        "{} defines no executable checks",
+        path.display()
+    );
+    if let Some(steps) = runtime.get("shell_check_steps") {
+        let decoded: Vec<ostool::run::ShellCheckStep> = steps.clone().try_into()?;
+        ensure!(
+            !decoded.is_empty(),
+            "empty shell sequence in {}",
+            path.display()
+        );
+    }
+    let document = runtime
+        .iter()
+        .filter(|(key, _)| {
+            ["timeout", "shell_check_steps", "host_http_probe"].contains(&key.as_str())
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    Ok(CheckFile {
+        path: path.to_path_buf(),
+        document,
+        prerequisite: false,
+    })
+}
+
+pub(super) fn total_budget(checks: &[CheckFile]) -> anyhow::Result<i64> {
+    checks.iter().try_fold(0_i64, |total, check| {
+        let timeout = check
+            .document
+            .get("timeout")
+            .and_then(toml::Value::as_integer)
+            .filter(|t| *t > 0)
+            .with_context(|| {
+                format!(
+                    "finite positive timeout required in {}",
+                    check.path.display()
+                )
+            })?;
+        total
+            .checked_add(timeout)
+            .context("check timeout budget overflow")
+    })
+}
+
+pub(super) fn combine_steps(runtime: &mut toml::Table, checks: &[CheckFile]) -> anyhow::Result<()> {
+    runtime.remove("host_http_probe");
+    runtime.remove("shell_check_steps");
+    let mut steps = Vec::new();
+    for check in checks {
+        if let Some(value) = check.document.get("shell_check_steps") {
+            let decoded: Vec<ostool::run::ShellCheckStep> = value.clone().try_into()?;
+            ensure!(
+                !decoded.is_empty(),
+                "empty shell sequence in {}",
+                check.path.display()
+            );
+            steps.extend(
+                value
+                    .as_array()
+                    .context("shell_check_steps must be an array")?
+                    .iter()
+                    .cloned(),
+            );
+        }
+    }
+    if !steps.is_empty() {
+        runtime.insert("shell_check_steps".into(), toml::Value::Array(steps));
+    }
     Ok(())
 }
 
@@ -313,7 +456,11 @@ pub(crate) fn materialize_selected_runtime_checks(
     selected: Option<&[String]>,
 ) -> anyhow::Result<Option<tempfile::NamedTempFile>> {
     let plan = load_selected_runtime_checks(path, selected)?;
-    if plan.references.checks.is_none() && plan.references.id.is_none() {
+    if plan.references.checks.is_none()
+        && plan.references.id.is_none()
+        && plan.references.requires.is_empty()
+        && !super::boot_group::is_manifest(path)
+    {
         return Ok(None);
     }
     if !plan.checks.is_empty() {
@@ -321,7 +468,7 @@ pub(crate) fn materialize_selected_runtime_checks(
             "[axbuild] ordered checks: {}",
             plan.checks
                 .iter()
-                .filter_map(|check| check.path.file_stem().and_then(|name| name.to_str()))
+                .map(|check| check.path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(" -> ")
         );
@@ -467,6 +614,23 @@ success_regex=['SECOND']
         let all =
             select_runtime_members(&descriptors, &["second".into(), "environment".into()]).unwrap();
         assert_eq!(all, [(0, None)]);
+        write(
+            "inline.toml",
+            r#"timeout=30
+[[shell_check_steps]]
+shell_cmd='check'
+success_regex=['PASS']
+[axbuild]
+id='fixture'
+aliases=['smoke']
+"#,
+        );
+        let inline =
+            load_selected_runtime_checks(&root.path().join("inline.toml"), Some(&["smoke".into()]))
+                .unwrap();
+        assert_eq!(inline.checks.len(), 1);
+        assert!(!inline.checks[0].prerequisite);
+        assert_eq!(inline.runtime["timeout"].as_integer(), Some(30));
         assert!(
             select_runtime_members(
                 &[("a", config.as_path()), ("b", config.as_path())],

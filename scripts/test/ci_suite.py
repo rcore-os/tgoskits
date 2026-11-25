@@ -864,11 +864,59 @@ def _rust_board_selections(workspace_root: Path, registrations, path: Path) -> l
     return _runtime_selections(registrations, path, cases)
 
 
+def _axvisor_boot_groups(root: Path):
+    """Read caller-owned membership; CI and axbuild keep the same group identity."""
+    owned = {}
+    groups = {}
+    for manifest in sorted(root.rglob("boot-group.toml")):
+        document = _toml_document(manifest)
+        identity = document.get("id", "")
+        members = document.get("cases", [])
+        timeout = document.get("timeout")
+        if (set(document) != {"id", "cases", "timeout"}
+                or not isinstance(identity, str) or not identity or identity.strip() != identity
+                or any(part in {"", ".", ".."} for part in identity.split("/"))
+                or not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0
+                or not isinstance(members, list) or not members):
+            raise SuiteRouteError(f"invalid boot group: {manifest}")
+        if identity in groups:
+            raise SuiteRouteError(f"duplicate boot group ID: {identity}")
+        names = set()
+        for member in members:
+            if not isinstance(member, str) or Path(member).is_absolute():
+                raise SuiteRouteError(f"invalid boot group member: {manifest}")
+            runtime = (manifest.parent / member).resolve()
+            if runtime in owned or not runtime.is_file() or not runtime.name.startswith("qemu-"):
+                raise SuiteRouteError(f"duplicate or missing boot group member: {runtime}")
+            metadata = _toml_document(runtime).get("axbuild", {})
+            member_id = metadata.get("id", "")
+            if (not isinstance(member_id, str) or member_id.strip() != member_id
+                    or metadata.get("standalone", False)):
+                raise SuiteRouteError(f"invalid boot group member metadata: {runtime}")
+            if "checks" in metadata:
+                raise SuiteRouteError(f"boot group requires complete inline runtime: {runtime}")
+            parsed = _parse_qemu_config_name(runtime.stem)
+            if parsed is None or _nearest_qemu_build_config(runtime.parent, root, *parsed) is None:
+                raise SuiteRouteError(f"boot group member has no build wrapper: {runtime}")
+            name = member_id.removeprefix(identity + "/")
+            if not member_id.startswith(identity + "/") or name in {"", ".", ".."} or "/" in name or name in names:
+                raise SuiteRouteError(f"invalid boot group member ID: {runtime}")
+            names.add(name)
+            owned[runtime] = (manifest, identity)
+        groups[identity] = manifest
+    for runtime in root.rglob("qemu-*.toml"):
+        containing = [manifest for manifest in groups.values() if _is_prefix(runtime, manifest.parent)]
+        if containing and runtime.resolve() not in owned and not _toml_document(runtime).get("axbuild", {}).get("standalone", False):
+            raise SuiteRouteError(f"runtime missing from boot group: {runtime}")
+    return owned
+
+
 def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
     cases = []
     qemu_kind = f"{os_name}-qemu"
     board_kind = f"{os_name}-board"
     declared_roots = set()
+    boot_members = _axvisor_boot_groups(root) if os_name == "axvisor" else {}
     if os_name == "arceos":
         for board_root, board, name, batch in _board_suite_batches(root):
             declared_roots.add(board_root)
@@ -915,7 +963,10 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             runtime_config=runtime_config,
             build_config=build_config,
         )
-        if os_name == "axvisor" and "checks" in references:
+        if runtime_config.resolve() in boot_members:
+            manifest, group_id = boot_members[runtime_config.resolve()]
+            cases.append(replace(runtime_case, runtime_config=manifest, case_dir=manifest.parent, check=runtime_config))
+        elif os_name == "axvisor" and "checks" in references:
             if not references["checks"]:
                 raise SuiteRouteError(f"empty runtime check list: {runtime_config}")
             names = set()
@@ -925,6 +976,9 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
                     raise SuiteRouteError(f"invalid or duplicate runtime check: {check}")
                 names.add(check.stem)
                 cases.append(replace(runtime_case, case=f"{case}/{check.stem}", check=check))
+        elif os_name == "axvisor" and references.get("aliases"):
+            for alias in references["aliases"]:
+                cases.append(replace(runtime_case, case=f"{case}/{alias}", check=runtime_config))
         else:
             cases.append(runtime_case)
 
@@ -1004,7 +1058,7 @@ def _references_runtime_input(case: _RuntimeCase, changed: Path, workspace_root:
         else:
             for entry in document.get("axbuild", {}).get("checks", []):
                 pending.append(source.parent / entry)
-        for entry in document.get("requires", []):
+        for entry in document.get("requires", []) + document.get("axbuild", {}).get("requires", []):
             pending.append(source.parent / entry)
         for entry in document.get("vm_configs", []):
             pending.append(workspace_root / str(entry).replace("${workspace}/", ""))

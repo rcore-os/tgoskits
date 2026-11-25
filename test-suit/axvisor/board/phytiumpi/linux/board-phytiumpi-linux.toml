@@ -8,7 +8,20 @@ fail_regex = [
 ]
 timeout = 300
 
-[axbuild]
-checks = [
-    "tests/smoke.toml",
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+    "(?m)^phytiumpi login:",
 ]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+]
+
+[axbuild]
+id = "board/phytiumpi/linux"
+aliases = ["smoke"]

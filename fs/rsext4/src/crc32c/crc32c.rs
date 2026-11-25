@@ -1,9 +1,10 @@
 // crc32c.rs
+use core::sync::atomic::{AtomicBool, Ordering};
+
 #[cfg(target_arch = "aarch64")]
-#[allow(dead_code)]
-use crate::crc32c::arm64::*;
+use crate::crc32c::arm64::crc32c_hardware;
 #[cfg(target_arch = "x86_64")]
-use crate::crc32c::x86_64::{crc32c_hardware, is_hardware_crc32_supported};
+use crate::crc32c::x86_64::crc32c_hardware;
 use crate::superblock::Ext4Superblock;
 
 const POLY: u32 = 0x82F63B78;
@@ -88,23 +89,66 @@ pub fn crc32c_finalize(crc: u32) -> u32 {
     crc ^ 0xFFFF_FFFF
 }
 
+/// Set only by [`enable_hardware_crc32c`].
+static HARDWARE_CRC32C: AtomicBool = AtomicBool::new(false);
+
+/// Lets [`crc32c_append`] use the CPU's CRC32C instructions.
+///
+/// Until this is called, rsext4 computes CRC32C with its table-driven code,
+/// which runs on any CPU, so one build of the crate works everywhere. rsext4
+/// does not read CPU feature registers to decide this itself: a register read
+/// describes only the CPU that made it, and the code may later run on another.
+///
+/// The instructions are the ARMv8 CRC32 extension on aarch64
+/// (`ID_AA64ISAR0_EL1.CRC32` at least 1) and SSE4.2 on x86_64 (CPUID leaf 1,
+/// ECX bit 20). On other architectures this call has no effect.
+///
+/// # Safety
+///
+/// The caller guarantees that every CPU that may execute rsext4 code from this
+/// call on implements those instructions, including any CPU brought online
+/// later and any CPU a task may move to.
+///
+/// # Where the guarantee comes from
+///
+/// - A monolithic kernel such as ArceOS, which runs rsext4 inside the kernel,
+///   can call this once its CPU bring-up has read the feature register on every
+///   CPU and found the extension on all of them, provided it never brings up a
+///   CPU without it afterwards.
+/// - A file-system server in user space under a microkernel can call this when
+///   the feature set its kernel publishes for all CPUs includes the extension.
+/// - A Linux user-space program on aarch64 can call this when
+///   `std::arch::is_aarch64_feature_detected!("crc")` returns true. std reads
+///   `HWCAP_CRC32` from `AT_HWCAP`; Linux sets that bit from the value it
+///   sanitises across all CPUs and refuses to bring up a later CPU that lacks
+///   it. On x86_64, `is_x86_feature_detected!("sse4.2")` runs CPUID on the
+///   calling CPU only, so it is not by itself such a guarantee.
+pub unsafe fn enable_hardware_crc32c() {
+    // Relaxed is enough: the flag publishes no other data, and a CPU that has
+    // not yet observed the store only keeps using the table-driven path.
+    HARDWARE_CRC32C.store(true, Ordering::Relaxed);
+}
+
+/// Returns whether [`enable_hardware_crc32c`] has been called.
+#[inline]
+pub fn hardware_crc32c_enabled() -> bool {
+    HARDWARE_CRC32C.load(Ordering::Relaxed)
+}
+
 #[inline]
 pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
-    // Use hardware acceleration on aarch64 when the CPU advertises CRC support.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     {
-        if is_hardware_crc32_supported() {
-            return unsafe { crc32c_hardware(crc, data) };
-        }
-    }
-
-    // x86 CRC32C uses only GPR operands. Runtime detection keeps the generic
-    // binary valid on CPUs without SSE4.2 and leaves the OS lock model out of
-    // this portable algorithm boundary.
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_hardware_crc32_supported() {
-            return unsafe { crc32c_hardware(crc, data) };
+        if hardware_crc32c_enabled() {
+            return unsafe {
+                // SAFETY: `crc32c_hardware` needs the ARMv8 CRC32 extension
+                // (aarch64) or SSE4.2 (x86_64) on the CPU that runs it. The
+                // flag is set only by `enable_hardware_crc32c`, whose caller
+                // guarantees that every CPU that may run this code implements
+                // it, so the precondition holds on whichever CPU runs this
+                // call.
+                crc32c_hardware(crc, data)
+            };
         }
     }
 
@@ -203,10 +247,17 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
     #[test]
-    fn x86_64_hardware_crc_matches_software_for_unaligned_slices() {
-        if !crate::crc32c::x86_64::is_hardware_crc32_supported() {
+    fn table_path_is_used_until_hardware_is_enabled() {
+        // No test in this crate calls `enable_hardware_crc32c`, so every
+        // checksum in the test run goes through the table-driven path.
+        assert!(!hardware_crc32c_enabled());
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_hardware_crc_matches_software_for_unaligned_slices() {
+        if !std::arch::is_aarch64_feature_detected!("crc") {
             return;
         }
 
@@ -219,7 +270,103 @@ mod tests {
                 for len in 0..=257 {
                     let data = &storage[offset..offset + len];
                     assert_eq!(
-                        unsafe { crate::crc32c::x86_64::crc32c_hardware(seed, data) },
+                        unsafe {
+                            // SAFETY: the test returned early above unless std
+                            // reported `crc`. On Linux that is `HWCAP_CRC32`,
+                            // which holds for every CPU; on macOS every CPU is
+                            // ARMv8.1 or later, where the extension is
+                            // mandatory.
+                            crate::crc32c::arm64::crc32c_hardware(seed, data)
+                        },
+                        crc32c_update(seed, data),
+                        "offset={offset} length={len} seed={seed:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    // The x86_64 helper's precondition is a property of the CPU that runs it,
+    // and x86_64 has no system-wide feature contract like aarch64's
+    // `HWCAP_CRC32`. So the test pins its thread to one CPU, reads CPUID on
+    // that CPU, and only then runs the helper. Pinning uses Linux
+    // `sched_setaffinity`; other x86_64 hosts skip the test. Linux moves a
+    // pinned thread off its CPU only if that CPU is taken offline, a cpuset
+    // change removes it, or another process with permission changes the
+    // thread's affinity; the test assumes none of these happens while it
+    // runs, as no user-space pin can prevent them.
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    #[test]
+    fn x86_64_hardware_crc_matches_software_for_unaligned_slices() {
+        // A dedicated thread, so the harness thread keeps its affinity.
+        std::thread::spawn(x86_64_hardware_crc_on_one_cpu)
+            .join()
+            .unwrap();
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    fn x86_64_hardware_crc_on_one_cpu() {
+        unsafe extern "C" {
+            fn sched_getcpu() -> i32;
+            fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const CpuSet) -> i32;
+        }
+
+        // glibc's and musl's 1024-bit `cpu_set_t`.
+        #[repr(C)]
+        struct CpuSet {
+            bits: [usize; 16],
+        }
+
+        // Every skip prints this marker and one of two reasons, so a log run
+        // with `--nocapture` shows whether the hardware path was checked and,
+        // if not, whether the thread could not be pinned or the CPU lacks
+        // SSE4.2.
+        const SKIPPED: &str = "RSEXT4_X86_64_HARDWARE_CRC32C_TEST_SKIPPED";
+
+        // SAFETY: `sched_getcpu` takes no arguments and only reads state.
+        let Ok(cpu) = usize::try_from(unsafe { sched_getcpu() }) else {
+            let error = std::io::Error::last_os_error();
+            std::println!("{SKIPPED} reason=cannot-pin-cpu sched_getcpu: {error}");
+            return;
+        };
+        let word_bits = usize::BITS as usize;
+        let mut mask = CpuSet { bits: [0; 16] };
+        let Some(word) = mask.bits.get_mut(cpu / word_bits) else {
+            std::println!("{SKIPPED} reason=cannot-pin-cpu cpu={cpu} is outside cpu_set_t");
+            return;
+        };
+        *word |= 1 << (cpu % word_bits);
+        // SAFETY: `mask` has the `cpu_set_t` layout and outlives the call; pid
+        // 0 selects the calling thread.
+        if unsafe { sched_setaffinity(0, size_of::<CpuSet>(), &mask) } != 0 {
+            let error = std::io::Error::last_os_error();
+            std::println!("{SKIPPED} reason=cannot-pin-cpu cpu={cpu} sched_setaffinity: {error}");
+            return;
+        }
+        // The thread now runs only on `cpu`, so this read describes it.
+        if core::arch::x86_64::__cpuid(1).ecx & (1 << 20) == 0 {
+            std::println!("{SKIPPED} reason=no-sse4.2 cpu={cpu}");
+            return;
+        }
+
+        let mut storage = [0u8; 265];
+        for (index, byte) in storage.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_mul(29).wrapping_add(13);
+        }
+        for seed in [0, crc32c_init(), 0x1234_5678] {
+            for offset in 0..8 {
+                for len in 0..=257 {
+                    let data = &storage[offset..offset + len];
+                    assert_eq!(
+                        unsafe {
+                            // SAFETY: this thread is pinned to one CPU, and
+                            // CPUID leaf 1 ECX bit 20 read on that CPU after
+                            // pinning reported SSE4.2, so the CPU executing
+                            // `crc32` here is the one that reported it,
+                            // barring an outside change to the thread's
+                            // affinity during the test (see above).
+                            crate::crc32c::x86_64::crc32c_hardware(seed, data)
+                        },
                         crc32c_update(seed, data),
                         "offset={offset} length={len} seed={seed:#x}"
                     );

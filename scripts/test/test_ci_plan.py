@@ -1239,10 +1239,9 @@ command = "true"
         root = MODULE_PATH.parents[2] / "test-suit/axvisor/qemu/x86_64"
         marker = "AXVISOR_X86_OVMF_ACPI_PASSED"
         for backend in ("vmx", "svm"):
-            config_path = root / backend / "functional" / ("qemu-x86_64-vmx.toml" if backend == "vmx" else "qemu-x86_64.toml")
+            config_path = root / backend / "functional" / "ovmf-acpi" / ("qemu-x86_64-vmx.toml" if backend == "vmx" else "qemu-x86_64.toml")
             config = tomllib.loads(config_path.read_text())
-            steps = [step for relative in config["axbuild"]["checks"]
-                     for step in tomllib.loads((config_path.parent / relative).read_text())["shell_check_steps"]]
+            steps = config["shell_check_steps"]
             patterns = [pattern for step in steps for pattern in step.get("success_regex", [])]
             self.assertTrue(patterns)
             for output in (f"error: {marker} was not observed\n", f"{marker} failed\n"):
@@ -1266,10 +1265,6 @@ command = "true"
                 self.assertEqual(
                     config["board_type"], "OrangePi-5-Plus-Robot-UART6"
                 )
-                if "axbuild" in config:
-                    config["shell_check_steps"] = [step
-                        for relative in config["axbuild"]["checks"]
-                        for step in tomllib.loads((path.parent / relative).read_text()).get("shell_check_steps", [])]
                 step = config["shell_check_steps"][-1]
                 for pattern in step["success_regex"] + step["fail_regex"]:
                     self.assertIsNone(re.search(pattern, step["shell_cmd"]))

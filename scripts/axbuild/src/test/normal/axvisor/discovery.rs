@@ -80,6 +80,7 @@ pub(crate) fn discover_qemu_cases(
         let found = test_qemu::discover_qemu_cases_allow_empty(
             root, arch, target, None, "Axvisor", "qemu",
         )?;
+        let found = apply_boot_groups(root, found, arch)?;
         for mut case in found {
             if source.is_app() {
                 case.name = relative_app_name(root, &case.case_dir)?;
@@ -133,6 +134,100 @@ pub(crate) fn discover_qemu_cases(
         return Ok(selected_cases);
     }
     Ok(cases)
+}
+
+/// Substitute explicitly declared groups for their members. No automatic batching.
+fn apply_boot_groups(
+    root: &Path,
+    found: Vec<test_qemu::DiscoveredQemuCase>,
+    arch: &str,
+) -> anyhow::Result<Vec<test_qemu::DiscoveredQemuCase>> {
+    let mut owned = BTreeSet::new();
+    let mut groups = Vec::new();
+    for entry in walkdir::WalkDir::new(root) {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type().is_file() || !super::boot_group::is_manifest(path) {
+            continue;
+        }
+        let group = super::boot_group::read(path)?;
+        let directory = path.parent().context("boot group has no directory")?;
+        let members = group
+            .cases
+            .iter()
+            .map(|member| directory.join(member).canonicalize())
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut candidates = Vec::new();
+        for case in &found {
+            if members.contains(&case.qemu_config_path.canonicalize()?) {
+                candidates.push(case);
+            }
+        }
+        // A manifest for another architecture is irrelevant to this discovery pass.
+        let Some(first) = candidates.first() else {
+            let selected_arch = format!("qemu-{arch}");
+            anyhow::ensure!(
+                !group
+                    .cases
+                    .iter()
+                    .any(|member| member.file_stem().is_some_and(|name| name
+                        == selected_arch.as_str()
+                        || name
+                            .to_string_lossy()
+                            .starts_with(&format!("{selected_arch}-")))),
+                "boot group members have no discoverable build wrapper: {}",
+                path.display()
+            );
+            continue;
+        };
+        anyhow::ensure!(
+            candidates.len() == members.len(),
+            "boot group has missing or mixed-architecture members: {}",
+            path.display()
+        );
+        super::boot_group::load(path, None)?;
+        for member in members {
+            anyhow::ensure!(
+                owned.insert(member),
+                "runtime belongs to multiple boot groups: {}",
+                path.display()
+            );
+        }
+        for case in &found {
+            let canonical = case.qemu_config_path.canonicalize()?;
+            if case.case_dir.starts_with(directory) && !owned.contains(&canonical) {
+                let refs = super::checks::runtime_check_references(&case.qemu_config_path)?;
+                anyhow::ensure!(
+                    refs.standalone,
+                    "runtime missing from boot group; declare axbuild.standalone=true if \
+                     intentional: {}",
+                    case.qemu_config_path.display()
+                );
+            }
+        }
+        let mut case = (**first).clone();
+        case.name = group.id.clone();
+        case.display_name = group.id;
+        case.case_dir = directory.to_path_buf();
+        case.qemu_config_path = path.to_path_buf();
+        groups.push(case);
+    }
+    for case in found {
+        if !owned.contains(&case.qemu_config_path.canonicalize()?) {
+            groups.push(case);
+        }
+    }
+    groups.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut ids = BTreeSet::new();
+    for case in &groups {
+        let refs = super::checks::runtime_check_references(&case.qemu_config_path)?;
+        anyhow::ensure!(
+            ids.insert(refs.id.unwrap_or_else(|| case.name.clone())),
+            "duplicate runtime ID under {}",
+            root.display()
+        );
+    }
+    Ok(groups)
 }
 
 /// Merge the listed QEMU cases of every suite root for one group.
@@ -203,11 +298,19 @@ pub(crate) fn list_all_qemu_cases(
 fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<AxvisorQemuCase> {
     let build_group = case.build_group;
     let build_config_path = case.build_config_path;
-    let test_case = test_qemu::load_test_qemu_case_fields(
+    let runtime_path = if super::boot_group::is_manifest(&case.qemu_config_path) {
+        let group = super::boot_group::read(&case.qemu_config_path)?;
+        case.case_dir.join(&group.cases[0])
+    } else {
+        case.qemu_config_path.clone()
+    };
+    // The manifest owns membership, while the complete member still owns the
+    // generic test contract (including the prohibition on persistent writes).
+    let mut test_case = test_qemu::load_test_qemu_case_fields(
         case.display_name,
         case.name,
         case.case_dir,
-        case.qemu_config_path,
+        runtime_path,
         "Axvisor",
         false,
     )?;
@@ -218,6 +321,7 @@ fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<Axvisor
             test_case.qemu_config_path.display()
         );
     }
+    test_case.qemu_config_path = case.qemu_config_path;
     Ok(AxvisorQemuCase {
         selected_checks: None,
         case: test_case,

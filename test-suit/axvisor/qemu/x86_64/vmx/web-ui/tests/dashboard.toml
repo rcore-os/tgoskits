@@ -1,7 +1,0 @@
-timeout = 600
-
-[host_http_probe]
-asset_dir = "../../../../common/web-ui"
-nic_model = "e1000"
-request_timeout_secs = 30
-probe_script = "../dashboard/default_guest_probe.py"
