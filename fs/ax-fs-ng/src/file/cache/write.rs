@@ -168,17 +168,15 @@ impl CachedFile {
         let next_epoch = grew
             .then(|| self.shared.prepare_mapping_epoch())
             .transpose()?;
-        if grew {
-            if !old_len.is_multiple_of(PAGE_SIZE as u64) {
-                let page_number = (old_len / PAGE_SIZE as u64) as u32;
-                let page_start = u64::from(page_number) * PAGE_SIZE as u64;
-                self.zero_partial_page_locked(
-                    file,
-                    page_number,
-                    (old_len - page_start) as usize,
-                    (end - page_start).min(PAGE_SIZE as u64) as usize,
-                )?;
-            }
+        if grew && !old_len.is_multiple_of(PAGE_SIZE as u64) {
+            let page_number = (old_len / PAGE_SIZE as u64) as u32;
+            let page_start = u64::from(page_number) * PAGE_SIZE as u64;
+            self.zero_partial_page_locked(
+                file,
+                page_number,
+                (old_len - page_start) as usize,
+                (end - page_start).min(PAGE_SIZE as u64) as usize,
+            )?;
         }
         // The old partial tail can install its own page. Prepare after that
         // step, then retain layout and I/O exclusion until every copy commits.

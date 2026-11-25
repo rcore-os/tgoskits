@@ -1772,22 +1772,40 @@ fn extending_write_preserves_progress_and_zeroes_gaps() {
         }
     }
 
-    struct FilledPrefix;
+    struct FilledPrefix<'a>(&'a [u8]);
 
-    impl ax_io::Read for FilledPrefix {
+    impl ax_io::Read for FilledPrefix<'_> {
         fn read(&mut self, _dst: &mut [u8]) -> ax_io::Result<usize> {
             Err(ax_io::Error::InvalidInput)
         }
 
         fn read_buf(&mut self, mut dst: core::io::BorrowedCursor<'_, u8>) -> ax_io::Result<()> {
-            if dst.capacity() != 0 {
-                dst.append(&[0x5a]);
+            let count = dst.capacity().min(self.0.len());
+            dst.append(&self.0[..count]);
+            self.0 = &self.0[count..];
+            if self.0.is_empty() {
+                Err(ax_io::Error::InvalidInput)
+            } else {
+                Ok(())
             }
-            Err(ax_io::Error::InvalidInput)
         }
     }
 
-    with_test_page_provider(true, |_| {
+    with_test_page_provider(true, |provider| {
+        let allocation_backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let allocation_cached = reopen_cached_file(allocation_backing.clone());
+        provider.fail_after(0);
+        let failed_allocation = allocation_cached.write_at(&[0x3c][..], 0);
+        provider.fail_after(usize::MAX);
+        assert_eq!(failed_allocation, Err(VfsError::NoMemory));
+        assert_eq!(
+            allocation_cached.len(),
+            0,
+            "failed allocation cannot publish EOF"
+        );
+        assert_eq!(allocation_backing.len().unwrap(), 0);
+        drop(allocation_cached);
+
         let backing = Arc::new(CacheTestFile::new(vec![0xa5; PAGE_SIZE]));
         let old_len = PAGE_SIZE / 2;
         backing.set_len(old_len as u64).unwrap();
@@ -1847,7 +1865,7 @@ fn extending_write_preserves_progress_and_zeroes_gaps() {
         assert_eq!(
             cached.write_at(
                 Input {
-                    reader: FilledPrefix,
+                    reader: FilledPrefix(&[0x5a]),
                     remaining: 2,
                 },
                 write_offset as u64,
@@ -1863,7 +1881,7 @@ fn extending_write_preserves_progress_and_zeroes_gaps() {
         cached.writeback().unwrap();
         drop(cached);
 
-        let reopened = reopen_cached_file(backing);
+        let reopened = reopen_cached_file(backing.clone());
         let mut gap_and_byte = vec![0xff; write_offset + 1 - old_len];
         assert_eq!(
             reopened
@@ -1877,6 +1895,31 @@ fn extending_write_preserves_progress_and_zeroes_gaps() {
                 .all(|byte| *byte == 0)
         );
         assert_eq!(gap_and_byte.last(), Some(&0x5a));
+
+        let filled = vec![0x6b; 2 * PAGE_SIZE + 17];
+        let filled_offset = write_offset + 1;
+        let expected_end = filled_offset + filled.len();
+        let interrupted = Input {
+            reader: FilledPrefix(&filled),
+            remaining: filled.len() + 1,
+        };
+        assert_eq!(
+            reopened.write_at(interrupted, filled_offset as u64),
+            Ok(filled.len())
+        );
+        assert_eq!(reopened.len(), expected_end as u64);
+        assert_eq!(backing.len().unwrap(), expected_end as u64);
+        reopened.writeback().unwrap();
+        drop(reopened);
+        let reopened = reopen_cached_file(backing);
+        let mut actual = vec![0; filled.len()];
+        assert_eq!(
+            reopened
+                .read_at(actual.as_mut_slice(), filled_offset as u64)
+                .unwrap(),
+            actual.len()
+        );
+        assert_eq!(actual, filled);
     });
 }
 
