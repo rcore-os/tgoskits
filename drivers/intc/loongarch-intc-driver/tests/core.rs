@@ -25,7 +25,7 @@ const LIO_POLARITY: usize = 0x30;
 const LIO_EDGE: usize = 0x34;
 
 #[test]
-fn eio_initializes_cpu0_routes_and_handles_pending_w1_completion() {
+fn eio_routes_vectors_and_preserves_interrupts_raised_during_service() {
     let iocsr = FakeIocsr::new();
     iocsr.set_u64(EIO_MISC, 0x40);
     let mut parts = EioIntcParts::new(iocsr.clone(), EioIntcConfig::new(256).unwrap()).unwrap();
@@ -46,9 +46,10 @@ fn eio_initializes_cpu0_routes_and_handles_pending_w1_completion() {
         value: u64::MAX,
     }));
 
-    iocsr.set_u64(EIO_ISR + 8, 1 << 1);
+    let adjacent = EioVector::new(66).unwrap();
+    iocsr.set_u64(EIO_ISR + 8, (1 << 1) | (1 << 2));
     assert_eq!(parts.cpu_interface.claim(), Some(vector));
-    parts.cpu_interface.complete(vector).unwrap();
+    assert_eq!(iocsr.read_u64(EIO_ISR + 8), 1 << 2);
     assert_eq!(
         iocsr.writes().last(),
         Some(&IocsrWrite::U64 {
@@ -56,6 +57,16 @@ fn eio_initializes_cpu0_routes_and_handles_pending_w1_completion() {
             value: 1 << 1,
         })
     );
+
+    // The source can pulse again while its first handler is still running.
+    // Claiming must already have acknowledged the first pulse, so returning
+    // from that handler cannot clear the second one or an adjacent vector.
+    iocsr.set_u64(EIO_ISR + 8, iocsr.read_u64(EIO_ISR + 8) | (1 << 1));
+    assert_eq!(parts.cpu_interface.claim(), Some(vector));
+    assert_eq!(iocsr.read_u64(EIO_ISR + 8), 1 << 2);
+    assert_eq!(parts.cpu_interface.claim(), Some(adjacent));
+    assert_eq!(iocsr.read_u64(EIO_ISR + 8), 0);
+    assert_eq!(parts.cpu_interface.claim(), None);
 
     parts.controller.set_enabled(vector, false).unwrap();
     assert_eq!(iocsr.read_u64(EIO_ENABLE + 8), 0);

@@ -57,7 +57,15 @@ impl IocsrAccess for FakeIocsr {
 
     fn write_u64(&self, offset: usize, value: u64) {
         let mut state = self.state.lock().unwrap();
-        state.bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        // ISR banks clear only the written bits; configuration registers store
+        // their new value. Hardware can raise another interrupt after a clear.
+        let value_after_write = if (0x1800..0x1820).contains(&offset) {
+            let pending = u64::from_le_bytes(state.bytes[offset..offset + 8].try_into().unwrap());
+            pending & !value
+        } else {
+            value
+        };
+        state.bytes[offset..offset + 8].copy_from_slice(&value_after_write.to_le_bytes());
         state.writes.push(IocsrWrite::U64 { offset, value });
     }
 
