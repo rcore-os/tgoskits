@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Acknowledge EIOINTC pending vectors inside `claim()` before device dispatch.
+  Remove the separate EIO `complete()` method so handler return cannot clear
+  an interrupt raised during service; consumers must remove deferred completion.
+
 ## [0.1.1](https://github.com/rcore-os/tgoskits/compare/loongarch-intc-driver-v0.1.0...loongarch-intc-driver-v0.1.1) - 2026-09-09
 
 ### Other
