@@ -7,6 +7,6 @@ pub mod crc32c;
 
 // Re-export commonly used functions from crc32c module
 pub use crc32c::{
-    crc32c, crc32c_append, crc32c_finalize, crc32c_init, ext4_crc32c_seed_from_superblock,
-    ext4_superblock_has_metadata_csum,
+    crc32c, crc32c_append, crc32c_finalize, crc32c_init, enable_hardware_crc32c,
+    ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum, hardware_crc32c_enabled,
 };

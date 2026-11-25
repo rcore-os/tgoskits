@@ -1,36 +1,6 @@
 //! x86_64 CRC32C acceleration without SIMD register state.
 
-use core::{
-    arch::{asm, x86_64::__cpuid},
-    sync::atomic::{AtomicBool, Ordering},
-};
-
-static CRC32_HW_CHECKED: AtomicBool = AtomicBool::new(false);
-static CRC32_HW_SUPPORTED: AtomicBool = AtomicBool::new(false);
-
-/// Returns whether x86_64 CRC32C instructions are available.
-///
-/// Acquire/Release publishes the cached feature result. Concurrent first
-/// callers may repeat CPUID, but they publish the same immutable CPU feature.
-#[inline]
-pub(crate) fn is_hardware_crc32_supported() -> bool {
-    if CRC32_HW_CHECKED.load(Ordering::Acquire) {
-        return CRC32_HW_SUPPORTED.load(Ordering::Relaxed);
-    }
-
-    let supported = has_hardware_crc32();
-    CRC32_HW_SUPPORTED.store(supported, Ordering::Relaxed);
-    CRC32_HW_CHECKED.store(true, Ordering::Release);
-    supported
-}
-
-#[inline]
-fn has_hardware_crc32() -> bool {
-    // CPUID is part of the x86_64 architectural baseline. Leaf 1 only reads
-    // feature registers and has no memory or OS-runtime precondition.
-    let feature = __cpuid(1);
-    feature.ecx & (1 << 20) != 0
-}
+use core::arch::asm;
 
 /// Updates a raw CRC32C accumulator with x86 `crc32` instructions.
 ///
