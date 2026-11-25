@@ -2534,7 +2534,7 @@ mod tests {
         boxed::Box,
         sync::{
             Arc,
-            atomic::{AtomicU32, Ordering},
+            atomic::{AtomicI64, AtomicU32, Ordering},
         },
         vec::Vec,
     };
@@ -2554,6 +2554,7 @@ mod tests {
     /// so host tests do not share a process-global counter or call log.
     struct TestHwState {
         counter: AtomicU32,
+        timestamp: AtomicI64,
         enable_calls: AtomicU32,
         disable_calls: AtomicU32,
     }
@@ -2562,6 +2563,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 counter: AtomicU32::new(0),
+                timestamp: AtomicI64::new(0),
                 enable_calls: AtomicU32::new(0),
                 disable_calls: AtomicU32::new(0),
             }
@@ -2577,6 +2579,23 @@ mod tests {
             let state = (*(*crtc).dev).dev_private.cast::<TestHwState>();
             (*state).counter.load(Ordering::SeqCst)
         }
+    }
+    /// # Safety
+    ///
+    /// The CRTC owns a live fixture state and `timestamp` is writable.
+    unsafe extern "C" fn fake_get_vblank_timestamp(
+        crtc: *mut DrmCrtc,
+        _max_error: *mut i32,
+        timestamp: *mut i64,
+        _in_vblank_irq: bool,
+    ) -> bool {
+        // SAFETY: The fixture retains its device state and the core supplies
+        // an exclusive output slot for this synchronous callback.
+        unsafe {
+            let state = &*(*(*crtc).dev).dev_private.cast::<TestHwState>();
+            *timestamp = state.timestamp.load(Ordering::Acquire);
+        }
+        true
     }
     /// # Safety
     ///
@@ -2733,7 +2752,7 @@ mod tests {
     }
 
     #[test]
-    fn get_put_refcount_enables_and_immediately_disables() {
+    fn vblank_references_follow_enable_disable_and_resume_counting() {
         let mut fx = Fixture::new(1);
         let dev = fx.dev();
         // SAFETY: Acquires and releases vblank references on fixture pipe 0, verifying refcount transitions.
@@ -2777,6 +2796,85 @@ mod tests {
             // A new reference turns the interrupt back on.
             assert_eq!(drm_crtc_vblank_get(fx.crtc(0)), 0);
             assert_eq!(fx.hw.enable_calls.load(Ordering::SeqCst), 2);
+            drm_vblank_put(dev, 0);
+            let frozen = drm_vblank_count(dev, 0);
+            (*(*fx.crtc(0)).funcs).get_vblank_timestamp = Some(fake_get_vblank_timestamp);
+            const FRAME_NS: i64 = 4_000_000;
+            (*v).framedur_ns = FRAME_NS as i32;
+            drm_crtc_vblank_off(fx.crtc(0));
+            assert_eq!(drm_crtc_vblank_get(fx.crtc(0)), -EINVAL);
+
+            // An arbitrary disabled interval must not be extrapolated into
+            // the software count when the CRTC starts a new time epoch.
+            fx.hw.timestamp.store(100 * FRAME_NS, Ordering::Release);
+            let config = DrmVblankCrtcConfig {
+                offdelay_ms: -1,
+                disable_immediate: false,
+            };
+            drm_crtc_vblank_on_config(fx.crtc(0), &config);
+            assert_eq!(drm_vblank_count(dev, 0), frozen + 1);
+
+            // With no reference, the first query enables the timer later.
+            // Linux rounds 3/4 of an active frame to one, in addition to the
+            // explicit modeset increment. A floor-based elapsed bound is false.
+            let queried_at = 100 * FRAME_NS + 3 * FRAME_NS / 4;
+            fx.hw.timestamp.store(queried_at, Ordering::Release);
+            assert_eq!(drm_crtc_vblank_get(fx.crtc(0)), 0);
+            let mut timestamp = 0;
+            assert_eq!(
+                drm_crtc_vblank_count_and_time(fx.crtc(0), &mut timestamp),
+                frozen + 2
+            );
+            assert_eq!(timestamp, queried_at);
+            drm_vblank_put(dev, 0);
+        }
+    }
+
+    #[test]
+    fn timer_vblank_preserves_the_published_edge_until_the_next_frame() {
+        let mut fx = Fixture::new(1);
+        let dev = fx.dev();
+        const FRAME_NS: i64 = 4_000_000;
+        // SAFETY: The fixture owns the CRTC, locks and vblank state. The
+        // hrtimer has no callback and is synchronously cancelled before each
+        // observation, retaining its deadline without asynchronous mutation.
+        unsafe {
+            let crtc = fx.crtc(0);
+            let v = fx.vblank(0);
+            (*v).enabled = true;
+            (*v).refcount.counter.store(1, Ordering::SeqCst);
+            (*v).framedur_ns = FRAME_NS as i32;
+            (*(*crtc).funcs).get_vblank_timestamp = Some(
+                crate::drm_vblank_helper_upstream::drm_crtc_vblank_helper_get_vblank_timestamp_from_timer,
+            );
+            let vtimer = core::ptr::addr_of_mut!((*v).vblank_timer);
+            (*vtimer).crtc = crtc;
+            (*vtimer).interval = FRAME_NS;
+            spin_lock_init_ptr(core::ptr::addr_of_mut!((*vtimer).interval_lock));
+            let timer = core::ptr::addr_of_mut!((*vtimer).timer);
+            drm_kapi::timer::hrtimer_setup(timer, None, CLOCK_MONOTONIC, 0);
+            drm_kapi::timer::hrtimer_start_range_ns(timer, FRAME_NS, 0, 0);
+            drm_kapi::timer::hrtimer_cancel(timer);
+
+            // Enabling publishes a clock sample after the timer was armed.
+            // Until its first expiry, expiry - interval precedes that sample.
+            spin_lock_raw(core::ptr::addr_of_mut!((*dev).vblank_time_lock));
+            store_vblank(dev, 0, 0, 3 * FRAME_NS / 4, 0);
+            spin_unlock_raw(core::ptr::addr_of_mut!((*dev).vblank_time_lock));
+            assert!(drm_handle_vblank(dev, 0));
+            let mut timestamp = 0;
+            assert_eq!(drm_crtc_vblank_count_and_time(crtc, &mut timestamp), 0);
+            assert_eq!(timestamp, 3 * FRAME_NS / 4);
+
+            // A forwarded deadline contributes its real completed edge once.
+            drm_kapi::timer::hrtimer_start_range_ns(timer, 3 * FRAME_NS, 0, 0);
+            drm_kapi::timer::hrtimer_cancel(timer);
+            assert!(drm_handle_vblank(dev, 0));
+            assert_eq!(drm_crtc_vblank_count_and_time(crtc, &mut timestamp), 1);
+            assert_eq!(timestamp, 2 * FRAME_NS);
+            assert!(drm_handle_vblank(dev, 0));
+            assert_eq!(drm_crtc_vblank_count_and_time(crtc, &mut timestamp), 1);
+            assert_eq!(timestamp, 2 * FRAME_NS);
         }
     }
 
