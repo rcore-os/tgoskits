@@ -3893,8 +3893,10 @@ owned 投影并验证相同规则转绿。接口字段迁移只改变输入构�
 新的领域命令不能成为一层外观，仍由 syscall 先读旧 metadata、填满 owner/mode
 后调用原始更新。Starry 的 chmod、chown 和时间入口迁移时只处理 ABI 与路径/FD
 入口差异，再把原意图与成对凭据交给实际 inode owner；删除这些入口的重复授权
-和旧快照回写。`fops::File::set_times` 是显式时间修改 API，也必须取得正确的调用
-身份，不能误当自动 atime 或默认为 root。
+和旧快照回写。`fops::File::set_times` 现通过 `Location::change_metadata` 提交
+显式时间意图，每次调用显式传入 `MutationCredentials`；未指定字段映射为
+`TimeChange::Keep`。ArceOS 的 `sys_futimens` 提供其内核执行角色的凭据，
+VFS 统一执行当前 inode 授权、挂载准入及后端完成，不从打开模式推测时间修改权限。
 
 内部时间维护与初始化不是用户权限命令。`File::drop` 的访问/写入时间维护、
 rsext4 自己的读取 atime、initramfs/归档恢复、Overlay work 暂存、挂载根和 PTY

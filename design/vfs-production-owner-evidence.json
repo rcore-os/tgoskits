@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "perf_result_observation_20261125",
+  "latest_evidence_section": "public_timestamp_intention_bridge_20261125",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -14219,7 +14219,89 @@
     "runtime_parameters_changed": false,
     "kernel_implementation_changed": false,
     "native_write_time_migration_complete": false,
-    "new_published_head_ci_pending": true,
-    "recorded_at": "2026-11-25T11:32:21.089326+00:00"
+    "new_published_head_ci_pending": false,
+    "recorded_at": "2026-11-25T11:32:21.089326+00:00",
+    "published_head_ci": {
+      "source": "48a9bb0c4b88be34cf1f5437f78261bb7e645293",
+      "run_id": 45605644983,
+      "url": "https://github.com/rcore-os/tgoskits/actions/runs/45605644983",
+      "jobs_succeeded": 42,
+      "all_jobs_terminal": true,
+      "changed_program_and_group_four_arch_log_verified": true,
+      "all_runtime_log_audit_complete": false
+    }
+  },
+  "public_timestamp_intention_bridge_20261125": {
+    "implementation_source": "c8fa6377134732897c754a8569c1c36b8c2f995f",
+    "public_base": "48a9bb0c4b88be34cf1f5437f78261bb7e645293",
+    "runtime_source": "23c7b42205182113901bf0b89b5d8a0f71b035b4",
+    "source_files": [
+      "fs/ax-fs-ng/src/fops.rs",
+      "os/arceos/api/arceos_posix_api/src/imp/fs.rs",
+      "test-suit/arceos/rust/src/fs/basic.rs"
+    ],
+    "contract": "fops::File::set_times accepts the current call identity and submits MetadataChange::Times through Location::change_metadata; omitted fields remain Keep. ArceOS sys_futimens supplies its actual kernel role.",
+    "deterministic_component_regression": {
+      "positive": "c8fa6377134732897c754a8569c1c36b8c2f995f",
+      "negative": "ac0169b9b7e15e2770d69a5f337a1bddcf2b5eee",
+      "public_base": "48a9bb0c4b88be34cf1f5437f78261bb7e645293",
+      "same_environment_and_checkout": true,
+      "same_fixture_sha256": "2d3cf77db4395ba8cf8e8d4ff2c55b11e141feb75282bbbbff8cbc293df61dbd",
+      "target": "fops::metadata_tests::file_times_use_current_authority_and_mount_admission",
+      "negative_expected_failures": 5,
+      "positive_target_passes": 5,
+      "negative_other_test_failures": 0,
+      "negative_compiler_errors": false,
+      "positive_std_selected": 19,
+      "positive_std_exit": 0,
+      "positive_clippy_profiles": 19,
+      "positive_clippy_exit": 0,
+      "negative_log_sha256": "b1f31bfc1015269f0e3103e83840d3d875cc32a1c41e9a264f07fe16b7a3e0c6",
+      "positive_log_sha256": "52827ad68dc2c5083d9eb69231ef8f2a5f566c4ebeea0a72f94748c5bfed50db",
+      "clippy_log_sha256": "34e8470316a74f1b0214c95227e937b52ea8df3cd8a0c411913be2a9117fd756",
+      "new_std_tests": 1,
+      "new_default_programs": 0,
+      "new_default_boots": 0,
+      "test_scope": "Actual fops timestamp boundary over MemoryFs, VFS current-call authority, read-only data description, mount admission and omitted fields. No runtime or whole-PR completion claim.",
+      "production_source_hashes": {
+        "fs/ax-fs-ng/CHANGELOG.md": "cc1db4cd28e4f062a82bea8192345ab98f54c111a62effa0ada26d1c4e158fef",
+        "fs/ax-fs-ng/src/fops.rs": "c940d0a7772353a8541be5055eb82701d557a38547d520dfad6309e0dbbe965a",
+        "os/arceos/api/arceos_posix_api/CHANGELOG.md": "e2d08bb6fd53e0768220cb6247012faf234d83c3916c7fa1feebc8fa33d2ec49",
+        "os/arceos/api/arceos_posix_api/src/imp/fs.rs": "7c36bbf35604ec1201f8f55f4af46206f7832e05231043094f66446401569d1b"
+      },
+      "recorded_at": "2026-11-25T15:40:32.836173+00:00"
+    },
+    "arceos_clippy": {
+      "source": "23c7b42205182113901bf0b89b5d8a0f71b035b4",
+      "profiles": 43,
+      "exit_code": 0,
+      "log_sha256": "4c1ce934615a0098094583b614bae10645caf2eaecb7f9ce5a17e5d2fb693807"
+    },
+    "arceos_runtime": {
+      "source": "23c7b42205182113901bf0b89b5d8a0f71b035b4",
+      "arch": "x86_64",
+      "selector": "rust/fs-basic",
+      "suite_exit": 0,
+      "case_ok": true,
+      "suite_ok": true,
+      "log_sha256": "1ddcec586590b33efd81fc772e5ec2452402852fc8e3102aef4e819cc93d0522",
+      "source_and_test_unchanged": true,
+      "host_release_storage_isolated": true,
+      "runtime_configuration_unchanged": true
+    },
+    "preserved_environment_failure": {
+      "stage": "first arceos runtime",
+      "boot_started": false,
+      "cause": "Existing host release build output ownership prevented Cargo preparation.",
+      "log_sha256": "0d1552dcfeafdc28c23dc150c6322e42bf41c94329577e19d4c3677549242ed4"
+    },
+    "new_std_test_functions": 1,
+    "new_default_programs": 0,
+    "new_default_batches": 0,
+    "new_default_boots": 0,
+    "unmerged_dependency_ancestor": false,
+    "native_write_time_migration_complete": false,
+    "remaining": "完整原生时间、物理写回、范围及映射写入、组合后端、挂载策略、性能资源对照与原设计其余验收。",
+    "recorded_at": "2026-11-25T15:46:32.858638+00:00"
   }
 }
