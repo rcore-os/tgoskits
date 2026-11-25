@@ -130,7 +130,7 @@ fn host_test_feature_uses_host_target_outside_docs_target_matrix() {
 }
 
 #[test]
-fn clippy_preserves_non_bare_docs_rs_targets() {
+fn clippy_preserves_target_and_dependency_compilation_boundaries() {
     let target = "x86_64-unknown-linux-gnu";
     let check = ClippyCheck {
         package: "host-package".into(),
@@ -149,6 +149,57 @@ fn clippy_preserves_non_bare_docs_rs_targets() {
     );
     assert!(!invocation.args.iter().any(|arg| arg == "json-target-spec"));
     assert!(invocation.env.is_empty());
+
+    for (target, required) in [
+        ("x86_64-unknown-none", "chacha20_backend=\"soft\""),
+        (
+            "aarch64-unknown-none-softfloat",
+            "-Cllvm-args=--max-store-memcpy=16",
+        ),
+    ] {
+        let check = ClippyCheck {
+            package: "kernel".into(),
+            kind: ClippyCheckKind::Configuration {
+                name: "source-only".into(),
+                features: Vec::new(),
+                rustflags: vec!["--cfg".into(), "clippy_source_only".into()],
+            },
+            target: Some(target.into()),
+            env: Vec::new(),
+        };
+        let invocation = check.cargo_invocation();
+        let boundary = invocation.args.iter().position(|arg| arg == "--").unwrap();
+        let flags = invocation
+            .env
+            .iter()
+            .find(|(key, _)| key == "CARGO_ENCODED_RUSTFLAGS")
+            .map(|(_, value)| value.split('\x1f').map(str::to_owned).collect::<Vec<_>>())
+            .or_else(|| {
+                invocation.args[..boundary]
+                    .windows(2)
+                    .filter(|args| args[0] == "--config")
+                    .find_map(|args| {
+                        let config: toml::Table = args[1].parse().unwrap();
+                        Some(
+                            config
+                                .get("target")?
+                                .get(target)?
+                                .get("rustflags")?
+                                .as_array()?
+                                .iter()
+                                .map(|flag| flag.as_str().unwrap().to_owned())
+                                .collect(),
+                        )
+                    })
+            })
+            .expect("target policy must configure Cargo dependencies before the -- boundary");
+        assert!(flags.iter().any(|flag| flag == required));
+        assert_eq!(
+            &invocation.args[boundary + 1..],
+            ["--cfg", "clippy_source_only", "-D", "warnings"],
+            "per-check source cfg must stay local to the selected crate"
+        );
+    }
 }
 
 #[test]
