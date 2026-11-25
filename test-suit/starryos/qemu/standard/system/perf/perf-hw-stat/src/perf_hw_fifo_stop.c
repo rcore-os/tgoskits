@@ -226,8 +226,9 @@ static int run_checks(void) {
 
 int main(void) {
 #if defined(__aarch64__)
-    /* Keep the watchdog off the FIFO CPU: the ordinary suite reaper itself
-     * can otherwise be starved by the regression. A timeout is failure only. */
+    /* Keep the watchdog fair and off the FIFO CPU so exit-time reclamation
+     * can make progress on its CPU. The nonblocking deadline below does not
+     * depend on a timer worker. A timeout is failure only. */
     cpu_set_t cpus;
     CPU_ZERO(&cpus);
     CPU_SET(1, &cpus);
@@ -255,7 +256,7 @@ int main(void) {
     close(done[1]);
     char ready;
     if (read(done[0], &ready, 1) != 1 || ready != 'r' ||
-        policy(SCHED_FIFO) != 0)
+        policy(SCHED_OTHER) != 0)
         return 1;
     if (fcntl(done[0], F_SETFL, O_NONBLOCK) != 0)
         return 1;
