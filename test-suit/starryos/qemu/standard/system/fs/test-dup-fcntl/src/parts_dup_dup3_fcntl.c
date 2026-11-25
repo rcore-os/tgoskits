@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/sendfile.h>
 #include <string.h>
 #include <errno.h>
 
@@ -141,7 +142,20 @@ int parts_dup_dup3_fcntl(void)
 
     CHECK_RET(fcntl(fd, F_SETFL, O_APPEND), 0, "F_SETFL -> O_APPEND: 设置成功");
 
-    write(fd, "_middle", 7);
+    CHECK_RET(lseek(fd, 1, SEEK_SET), 1, "设置追加写入前的偏移");
+    CHECK_RET(write(fd, "", 0), 0, "空追加写入成功");
+    CHECK_RET(lseek(fd, 0, SEEK_CUR), 1, "空追加写入保留偏移");
+
+    int input = openat(AT_FDCWD, TMPFILE, O_RDONLY);
+    CHECK(input >= 0, "打开 sendfile 输入文件");
+    if (input >= 0) {
+        errno = 0;
+        CHECK_ERR(sendfile(fd, input, NULL, 0), EINVAL,
+                  "sendfile 拒绝通过 F_SETFL 启用的 O_APPEND");
+        close(input);
+    }
+
+    CHECK_RET(write(fd, "_middle", 7), 7, "非空追加写入成功");
     off_t pos = lseek(fd, 0, SEEK_CUR);
     CHECK_RET(pos, 12, "O_APPEND: write 后 offset 在末尾");
 
@@ -160,6 +174,14 @@ int parts_dup_dup3_fcntl(void)
     int fl_after = fcntl(fd, F_GETFL);
     CHECK(fl_after >= 0, "清除后 F_GETFL 成功");
     CHECK((fl_after & O_APPEND) == 0, "O_APPEND 已被清除");
+
+    input = openat(AT_FDCWD, TMPFILE, O_RDONLY);
+    CHECK(input >= 0, "重新打开 sendfile 输入文件");
+    if (input >= 0) {
+        CHECK_RET(sendfile(fd, input, NULL, 0), 0,
+                  "sendfile 接受已通过 F_SETFL 清除的 O_APPEND");
+        close(input);
+    }
 
     lseek(fd, 0, SEEK_SET);
     write(fd, "X", 1);
