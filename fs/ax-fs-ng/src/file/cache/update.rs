@@ -8,21 +8,7 @@ use crate::os::sync::MutexGuard;
 /// Keeps tentative content changes hidden until commit or rollback completes.
 pub(super) struct CacheUpdateGuard<'a> {
     shared: &'a CachedFileShared,
-    io: Option<MutexGuard<'a, ()>>,
-}
-
-impl CacheUpdateGuard<'_> {
-    /// Publishes completed bytes before a potentially blocking writeback step.
-    /// The caller retains mapping-layout serialization throughout this phase.
-    pub(super) fn without_io<R>(&mut self, operation: impl FnOnce() -> R) -> R {
-        self.shared.updating.store(false, Ordering::Release);
-        drop(self.io.take());
-        let result = operation();
-        self.io = Some(self.shared.io_lock.lock());
-        self.shared.pending_fills.invalidate();
-        self.shared.updating.store(true, Ordering::Release);
-        result
-    }
+    _io: MutexGuard<'a, ()>,
 }
 
 impl CachedFileShared {
@@ -34,7 +20,7 @@ impl CachedFileShared {
         self.updating.store(true, Ordering::Release);
         CacheUpdateGuard {
             shared: self,
-            io: Some(io),
+            _io: io,
         }
     }
 
