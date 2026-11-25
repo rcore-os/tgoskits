@@ -111,6 +111,31 @@ pub fn relocate_kernel_to_vm_code() -> ! {
         })
         .unwrap();
 
+    if super::entry::is_boot_from_uefi() && !crate::efi_stub::loongarch64::inherited_handoff() {
+        // Native EFI still uses the image-owned identity stack here. Retain
+        // every stack page across the root replacement; the final jump below
+        // starts a fresh call chain on the permanent direct-map stack.
+        let stack_start = to_phys(sym_running_addr!(__cpu0_stack)) & !(PAGE_SIZE - 1);
+        let stack_end = to_phys(sym_running_addr!(__cpu0_stack_top))
+            .checked_next_multiple_of(PAGE_SIZE)
+            .expect("native EFI boot stack alignment overflow");
+        table
+            .map(&MapConfig {
+                vaddr: VirtAddr::from_usize(stack_start),
+                paddr: stack_start.into(),
+                size: stack_end - stack_start,
+                pte: PteConfig {
+                    read: true,
+                    writable: true,
+                    mem_attr: MemAttributes::Normal,
+                    ..Default::default()
+                },
+                allow_huge: false,
+                flush: false,
+            })
+            .expect("failed to retain the native EFI boot stack");
+    }
+
     let tb_addr = table.root_paddr();
     crate::mem::mmu::set_boot_table(table);
 

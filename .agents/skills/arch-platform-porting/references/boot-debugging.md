@@ -685,6 +685,17 @@ OUT2 与所需 IER 来源，不能为此调用完整 startup 或重设波特率�
 
 #### LoongArch EFI 目标启动与通用交接
 
+原生固件启动时，`Arch::efi_enter_kernel` 与 `kernel_entry` 保持镜像自有启动栈的
+固件身份映射，直到 `ExitBootServices` 完成；`relocate_kernel_to_vm_code` 再安装
+永久直映栈。固件函数可能用自己的栈帧进行设备传输，不能提前把该栈换成内核
+专有地址形式。安装启动根表前，按 `__cpu0_stack` 到 `__cpu0_stack_top` 保留
+完整的内核专用、不可执行的身份栈映射；最终跳转后由既有启动页表所有者统一退休。
+`ax_cpu::boot::install_boot_page_table` 为上下两侧根保留独立寄存器，
+所有 `CSRWR` 交换操作都声明输入输出；不能把交换回来的旧值再次写入另一侧根。
+`inherited_handoff()` 为真时保留调用方交接的直映上下文，不能
+假定已经退出服务的继承路径仍有固件身份映射。定位这类停顿时保留同一 ELF、
+固件及设备配置；用实际目标程序完成判据验收，不通过移除显示设备或修改超时绕过。
+
 - PE 数据段的文件区间须满足 FileAlignment，并实际包含全部 RawData 字节。
 - 目标退出 Boot Services 后的虚拟地址图不能假设只有 32 项；保留 descriptor stride、version 和尾随字节，避免早期堆分配。
 - `Exiting UEFI boot services...` 是视频 ConOut 关闭前的最后输出。3A6000 ArceOS 板测通过 HTTP job cmdline 传入 `earlycon=ns16550,mmio,0x1fe001e0`，让目标早期日志进入同一 UART；不能依赖 USB loader 的 cmdline 自动继承，也不猜测 console 或 guest selector。

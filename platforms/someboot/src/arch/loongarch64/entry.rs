@@ -47,12 +47,20 @@ pub(crate) fn set_secondary_boot_arg(hartid: usize, arg: usize) -> Result<(), Cp
     Err(CpuOnError::InvalidParameters)
 }
 
+/// Enters the primary kernel with the selected boot context.
+///
+/// # Safety
+/// The image and boot stack must remain allocated and mapped through takeover.
+/// An EFI caller selects `firmware_stack == 1` only while boot services and
+/// their identity mappings remain active. Inherited handoff uses zero because
+/// its caller already owns the replacement translation context.
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub unsafe extern "C" fn kernel_entry(
     _efi_boot: usize,
     _cmdline: *const u8,
     _systemtable: *const c_void,
+    _firmware_stack: usize,
 ) {
     naked_asm!(
     // SETUP_DMWINS
@@ -114,6 +122,17 @@ pub unsafe extern "C" fn kernel_entry(
 "
         la.pcrel    $t0, __cpu0_stack_top
         addi.d      $sp, $t0, 0
+
+        # Firmware may DMA from its own stack frames. Keep the image-owned
+        # stack in the firmware identity mapping until boot services exit.
+        # The final paging entry installs the permanent direct-map stack.
+        li.d        $t0, 1
+        bne         $a0, $t0, 4f
+        bne         $a1, $zero, 4f
+        beq         $a2, $zero, 4f
+        bne         $a3, $t0, 4f
+        bstrpick.d  $sp, $sp, ({DMW_PABITS} - 1), 0
+    4:
 
         ibar        0
         dbar        0
@@ -178,8 +197,8 @@ pub(crate) fn mmu_entry() -> ! {
     crate::prime_entry()
 }
 
-fn is_boot_from_uefi() -> bool {
-    // The LoongArch EFI wrapper calls `kernel_entry(1, null, system_table)`.
+pub(super) fn is_boot_from_uefi() -> bool {
+    // The LoongArch EFI wrapper passes one, null, and the system table.
     // U-Boot `go` may also pass `a0 == 1` as argc, so require the EFI-only
     // null second argument before treating `a2` as an EFI system table.
     unsafe { FW_ARG0 == 1 && FW_ARG1 == 0 && FW_ARG2 != 0 }
