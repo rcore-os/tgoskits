@@ -1753,6 +1753,11 @@ fn extending_write_cache_miss_zeroes_gap_before_write_offset() {
 
         let cached = reopen_cached_file(backing.clone());
         let write_offset = PAGE_SIZE * 3 / 4;
+        let before_empty = backing.state.lock().unwrap().physical_data.clone();
+        assert_eq!(cached.write_at(&[][..], write_offset as u64), Ok(0));
+        assert_eq!(cached.len(), old_len as u64);
+        assert_eq!(backing.len().unwrap(), old_len as u64);
+        assert_eq!(backing.state.lock().unwrap().physical_data, before_empty);
         assert_eq!(
             cached.write_at(&[0x5a][..], write_offset as u64).unwrap(),
             1

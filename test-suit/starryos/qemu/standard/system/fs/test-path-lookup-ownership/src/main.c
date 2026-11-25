@@ -16,6 +16,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -860,6 +861,54 @@ static void cached_write_completion(int rootfd, int original)
     CHECK(syscall(SYS_read, shared, bytes, 2) == 2
               && memcmp(bytes, saved + 4, 2) == 0,
           "positioned CACHED write preserves the shared cursor");
+    struct stat before_empty, after_empty;
+    char before_bytes[sizeof(saved)], after_bytes[sizeof(saved)];
+    REQUIRE(fstat(original, &before_empty) == 0 && before_empty.st_size == length);
+    REQUIRE(syscall(SYS_pread64, original, before_bytes, length, (off_t)0) == length);
+    off_t cursor = lseek(first, 0, SEEK_CUR);
+    REQUIRE(cursor >= 0);
+    off_t beyond = before_empty.st_size + 3;
+    struct iovec empty = {.iov_base = bytes, .iov_len = 0};
+    for (int kind = 0; kind < 6; kind++) {
+        int positioned = kind == 2 || kind == 3 || kind == 5;
+        off_t expected_cursor = positioned ? cursor : beyond;
+        REQUIRE(lseek(first, expected_cursor, SEEK_SET) == expected_cursor);
+        ssize_t result;
+        switch (kind) {
+        case 0:
+            result = syscall(SYS_write, first, bytes, (size_t)0);
+            break;
+        case 1:
+            result = syscall(SYS_writev, first, &empty, (unsigned long)1);
+            break;
+        case 2:
+            result = syscall(SYS_pwrite64, first, bytes, (size_t)0, beyond);
+            break;
+        case 3:
+            result = syscall(SYS_pwritev, first, &empty, (unsigned long)1,
+                             beyond, 0UL);
+            break;
+        case 4:
+            result = syscall(SYS_pwritev2, first, &empty, (unsigned long)1,
+                             (off_t)-1, 0UL, 0UL);
+            break;
+        default:
+            result = syscall(SYS_pwritev2, first, &empty, (unsigned long)1,
+                             beyond, 0UL, 0UL);
+            break;
+        }
+        REQUIRE(fstat(original, &after_empty) == 0);
+        CHECK(result == 0 && after_empty.st_size == before_empty.st_size
+                  && lseek(first, 0, SEEK_CUR) == expected_cursor,
+              "empty CACHED write preserves size and cursor kind=%d", kind);
+        /* Restore a failed candidate before the next independent observation. */
+        if (after_empty.st_size != before_empty.st_size)
+            REQUIRE(syscall(SYS_ftruncate, first, before_empty.st_size) == 0);
+        REQUIRE(syscall(SYS_pread64, original, after_bytes, length, (off_t)0) == length);
+        CHECK(memcmp(after_bytes, before_bytes, length) == 0,
+              "empty CACHED write preserves existing contents kind=%d", kind);
+    }
+    REQUIRE(lseek(first, cursor, SEEK_SET) == cursor);
     close_fd(first);
     first = -1;
     CHECK(syscall(SYS_write, shared, "YZ", 2) == 2
