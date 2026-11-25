@@ -1132,6 +1132,10 @@ impl CachedFile {
         update: &mut update::CacheUpdateGuard<'_>,
     ) -> VfsResult<usize> {
         self.shared.ensure_writeback_owner_active()?;
+        // An empty request has no extent; its cursor must not become a new EOF.
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let _backing_change = (!self.in_memory)
             .then(|| self.shared.backing_persistence.begin())
             .transpose()?;
