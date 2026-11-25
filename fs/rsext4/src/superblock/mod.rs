@@ -8,5 +8,7 @@ mod geometry;
 #[cfg(test)]
 mod tests;
 mod types;
+#[cfg(kani)]
+mod verification;
 
 pub use types::{Ext4Superblock, UUID};

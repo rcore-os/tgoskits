@@ -11,3 +11,5 @@ pub use table::{BlockGroupDescIter, BlockGroupDescTable, BlockGroupDescTableMut}
 
 #[cfg(test)]
 mod tests;
+#[cfg(kani)]
+mod verification;
