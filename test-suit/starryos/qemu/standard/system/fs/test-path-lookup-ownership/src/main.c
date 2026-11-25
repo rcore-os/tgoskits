@@ -869,45 +869,68 @@ static void cached_write_completion(int rootfd, int original)
     REQUIRE(cursor >= 0);
     off_t beyond = before_empty.st_size + 3;
     struct iovec empty = {.iov_base = bytes, .iov_len = 0};
-    for (int kind = 0; kind < 6; kind++) {
-        int positioned = kind == 2 || kind == 3 || kind == 5;
-        off_t expected_cursor = positioned ? cursor : beyond;
-        REQUIRE(lseek(first, expected_cursor, SEEK_SET) == expected_cursor);
-        ssize_t result;
-        switch (kind) {
-        case 0:
-            result = syscall(SYS_write, first, bytes, (size_t)0);
-            break;
-        case 1:
-            result = syscall(SYS_writev, first, &empty, (unsigned long)1);
-            break;
-        case 2:
-            result = syscall(SYS_pwrite64, first, bytes, (size_t)0, beyond);
-            break;
-        case 3:
-            result = syscall(SYS_pwritev, first, &empty, (unsigned long)1,
-                             beyond, 0UL);
-            break;
-        case 4:
-            result = syscall(SYS_pwritev2, first, &empty, (unsigned long)1,
-                             (off_t)-1, 0UL, 0UL);
-            break;
-        default:
-            result = syscall(SYS_pwritev2, first, &empty, (unsigned long)1,
-                             beyond, 0UL, 0UL);
-            break;
+    for (int append = 0; append < 2; append++) {
+        REQUIRE(syscall(SYS_fcntl, first, F_SETFL,
+                        (long)((status & O_NONBLOCK) | (append ? O_APPEND : 0))) == 0);
+        errno = 0;
+        ssize_t transferred = syscall(SYS_sendfile, first, original, NULL, (size_t)0);
+        CHECK(append ? transferred == -1 && errno == EINVAL : transferred == 0,
+              "CACHED file transfer observes current append state append=%d", append);
+        for (int kind = 0; kind < 6; kind++) {
+            int positioned = kind == 2 || kind == 3 || kind == 5;
+            off_t expected_cursor = positioned ? cursor : beyond;
+            REQUIRE(lseek(first, expected_cursor, SEEK_SET) == expected_cursor);
+            ssize_t result;
+            switch (kind) {
+            case 0:
+                result = syscall(SYS_write, first, bytes, (size_t)0);
+                break;
+            case 1:
+                result = syscall(SYS_writev, first, &empty, (unsigned long)1);
+                break;
+            case 2:
+                result = syscall(SYS_pwrite64, first, bytes, (size_t)0, beyond);
+                break;
+            case 3:
+                result = syscall(SYS_pwritev, first, &empty, (unsigned long)1,
+                                 beyond, 0UL);
+                break;
+            case 4:
+                result = syscall(SYS_pwritev2, first, &empty, (unsigned long)1,
+                                 (off_t)-1, 0UL, 0UL);
+                break;
+            default:
+                result = syscall(SYS_pwritev2, first, &empty, (unsigned long)1,
+                                 beyond, 0UL, 0UL);
+                break;
+            }
+            REQUIRE(fstat(original, &after_empty) == 0);
+            CHECK(result == 0 && after_empty.st_size == before_empty.st_size
+                      && lseek(first, 0, SEEK_CUR) == expected_cursor,
+                  "empty CACHED write preserves size and cursor kind=%d append=%d",
+                      kind, append);
+            /* Restore a failed candidate before the next independent observation. */
+            if (after_empty.st_size != before_empty.st_size)
+                REQUIRE(syscall(SYS_ftruncate, first, before_empty.st_size) == 0);
+            REQUIRE(syscall(SYS_pread64, original, after_bytes, length, (off_t)0) == length);
+            CHECK(memcmp(after_bytes, before_bytes, length) == 0,
+                  "empty CACHED write preserves existing contents kind=%d append=%d",
+                      kind, append);
         }
-        REQUIRE(fstat(original, &after_empty) == 0);
-        CHECK(result == 0 && after_empty.st_size == before_empty.st_size
-                  && lseek(first, 0, SEEK_CUR) == expected_cursor,
-              "empty CACHED write preserves size and cursor kind=%d", kind);
-        /* Restore a failed candidate before the next independent observation. */
-        if (after_empty.st_size != before_empty.st_size)
+        if (append) {
+            REQUIRE(lseek(first, cursor, SEEK_SET) == cursor);
+            ssize_t written = syscall(SYS_write, first, "AP", (size_t)2);
+            REQUIRE(fstat(original, &after_empty) == 0);
+            CHECK(written == 2 && after_empty.st_size == before_empty.st_size + 2
+                      && lseek(shared, 0, SEEK_CUR) == before_empty.st_size + 2
+                      && syscall(SYS_pread64, original, after_bytes, (size_t)2,
+                                 before_empty.st_size) == 2
+                      && memcmp(after_bytes, "AP", 2) == 0,
+                  "nonempty CACHED append uses EOF and advances the shared cursor");
             REQUIRE(syscall(SYS_ftruncate, first, before_empty.st_size) == 0);
-        REQUIRE(syscall(SYS_pread64, original, after_bytes, length, (off_t)0) == length);
-        CHECK(memcmp(after_bytes, before_bytes, length) == 0,
-              "empty CACHED write preserves existing contents kind=%d", kind);
+        }
     }
+    REQUIRE(syscall(SYS_fcntl, first, F_SETFL, (long)(status & O_NONBLOCK)) == 0);
     REQUIRE(lseek(first, cursor, SEEK_SET) == cursor);
     close_fd(first);
     first = -1;

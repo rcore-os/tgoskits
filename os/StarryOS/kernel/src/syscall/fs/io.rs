@@ -9,7 +9,7 @@ use axfs_ng_vfs::{
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     __kernel_off_t, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_KEEP_SIZE,
-    FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
+    FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE,
 };
 use syscalls::Sysno;
 
@@ -903,7 +903,7 @@ pub fn sys_sendfile(
         len
     );
     let out_file = get_file_like(out_fd)?;
-    if (out_file.open_flags() & O_APPEND) != 0 {
+    if out_file.append() {
         return Err(StarryError::InvalidInput);
     }
 

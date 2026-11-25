@@ -333,8 +333,10 @@ pub trait FileLike: Pollable + DowncastSync {
         None
     }
 
+    /// Reports append mode from this description's authoritative flags.
+    /// Override when `open_flags()` only describes the initial open.
     fn append(&self) -> bool {
-        false
+        self.open_flags() & linux_raw_sys::general::O_APPEND != 0
     }
 
     fn set_append(&self, _append: bool) -> StarryResult {

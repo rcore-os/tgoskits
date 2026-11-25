@@ -6,7 +6,6 @@ use core::{
 };
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsView};
-use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{
     DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, PathHandle, VfsResult,
 };
@@ -222,7 +221,6 @@ pub struct File {
     inner: ax_fs_ng::File,
     open_flags: u32,
     nonblock: AtomicBool,
-    append: AtomicBool,
 }
 
 impl File {
@@ -231,7 +229,6 @@ impl File {
             inner,
             open_flags,
             nonblock: AtomicBool::new(false),
-            append: AtomicBool::new(open_flags & O_APPEND != 0),
         }
     }
 
@@ -311,10 +308,7 @@ impl FileLike for File {
     }
 
     fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
-        let mut inner = self.inner();
-        if self.append() {
-            inner.seek(SeekFrom::End(0))?;
-        }
+        let inner = self.inner();
         let result: StarryResult<usize> = if likely(self.is_blocking()) {
             Ok(inner.write(src)?)
         } else {
@@ -385,11 +379,10 @@ impl FileLike for File {
     }
 
     fn append(&self) -> bool {
-        self.append.load(Ordering::Acquire)
+        self.inner().flags().contains(FileFlags::APPEND)
     }
 
     fn set_append(&self, flag: bool) -> StarryResult {
-        self.append.store(flag, Ordering::Release);
         self.inner().set_flag(FileFlags::APPEND, flag);
         Ok(())
     }
