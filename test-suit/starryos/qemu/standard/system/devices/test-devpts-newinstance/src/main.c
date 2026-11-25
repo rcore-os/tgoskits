@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,15 +39,15 @@ static int mount_devpts(const char *path)
     return 0;
 }
 
-static int mount_legacy_devpts(const char *path)
+static int mount_default_devpts(const char *path)
 {
     if (mkdir(path, 0755) != 0 && errno != EEXIST) {
-        fail("create legacy devpts mountpoint");
+        fail("create default devpts mountpoint");
         return -1;
     }
     if (mount("none", path, "devpts", 0,
               "mode=0620,gid=5,ptmxmode=0666") != 0) {
-        fail("mount legacy devpts instance");
+        fail("mount default devpts instance");
         return -1;
     }
     return 0;
@@ -88,6 +89,12 @@ static int allocate_pty(const char *mountpoint, unsigned int *number)
         close(master);
         return -1;
     }
+    int locked = 0;
+    if (ioctl(master, TIOCSPTLCK, &locked) != 0) {
+        fail("unlock the allocated slave");
+        close(master);
+        return -1;
+    }
     return master;
 }
 
@@ -122,42 +129,48 @@ static void check_slave_visible(const char *mountpoint, unsigned int number,
     }
 }
 
-static void check_legacy_mounts_share_initial_instance(void)
+static void check_default_mounts_are_private(void)
 {
-    static const char first_mount[] = "/tmp/devpts-legacy-a";
-    static const char second_mount[] = "/tmp/devpts-legacy-b";
-
-    if (mount_legacy_devpts(first_mount) != 0 ||
-        mount_legacy_devpts(second_mount) != 0) {
+    static const char first_mount[] = "/tmp/devpts-default-a";
+    static const char second_mount[] = "/tmp/devpts-default-b";
+    if (mount_default_devpts(first_mount) != 0 ||
+        mount_default_devpts(second_mount) != 0) {
         return;
     }
 
     unsigned int first_number = ~0U;
     int first_master = allocate_pty(first_mount, &first_number);
-    if (first_master < 0) {
-        return;
+    if (first_master < 0) return;
+    errno = 0;
+    if (first_number != 0 || slave_exists(second_mount, first_number) != -1 ||
+        errno != ENOENT) {
+        fail("default mounts keep the first allocation private");
+    } else {
+        pass("default mounts keep the first allocation private");
     }
-    check_slave_visible(second_mount, first_number,
-                        "legacy mounts share slaves with each other");
-    check_slave_visible("/dev/pts", first_number,
-                        "legacy mounts share slaves with the initial instance");
 
     unsigned int second_number = ~0U;
     int second_master = allocate_pty(second_mount, &second_number);
-    if (second_master < 0) {
-        close(first_master);
-        return;
+    if (second_master >= 0) {
+        if (second_number != 0) {
+            fail("default mounts have independent PTY index spaces");
+        } else {
+            pass("default mounts have independent PTY index spaces");
+        }
+        check_slave_visible(first_mount, first_number,
+                            "first default mount exposes its own slave");
+        check_slave_visible(second_mount, second_number,
+                            "second default mount exposes its own slave");
+        struct stat first, second, initial;
+        if (stat(first_mount, &first) != 0 || stat(second_mount, &second) != 0 ||
+            stat("/dev/pts", &initial) != 0 || first.st_dev == second.st_dev ||
+            first.st_dev == initial.st_dev || second.st_dev == initial.st_dev) {
+            fail("default mounts and the initial instance have distinct filesystem identities");
+        } else {
+            pass("default mounts and the initial instance have distinct filesystem identities");
+        }
+        close(second_master);
     }
-    if (second_number == first_number) {
-        errno = EPROTO;
-        fail("legacy mounts share one PTY index allocator");
-    } else {
-        pass("legacy mounts share one PTY index allocator");
-    }
-    check_slave_visible(first_mount, second_number,
-                        "second legacy allocation is visible in the first mount");
-
-    close(second_master);
     close(first_master);
     umount2(second_mount, MNT_DETACH);
     umount2(first_mount, MNT_DETACH);
@@ -166,7 +179,7 @@ static void check_legacy_mounts_share_initial_instance(void)
 }
 
 static void check_private_controlling_tty(const char *mountpoint,
-                                          unsigned int number)
+                                          unsigned int number, int master)
 {
     char path[128];
     int length = snprintf(path, sizeof(path), "%s/%u", mountpoint, number);
@@ -201,11 +214,11 @@ static void check_private_controlling_tty(const char *mountpoint,
             _exit(12);
         }
 
-        struct stat metadata;
-        if (fstat(current_tty, &metadata) != 0) {
+        pid_t foreground;
+        if (ioctl(current_tty, TIOCGPGRP, &foreground) != 0 || foreground != getpgrp()) {
             _exit(13);
         }
-        if ((metadata.st_mode & 07777) != 0620 || metadata.st_gid != 5) {
+        if (write(current_tty, "T", 1) != 1) {
             _exit(14);
         }
         close(current_tty);
@@ -219,6 +232,12 @@ static void check_private_controlling_tty(const char *mountpoint,
         WEXITSTATUS(status) != 0) {
         errno = EPROTO;
         fail("/dev/tty reopens the private devpts controlling terminal");
+        return;
+    }
+    struct pollfd output = { .fd = master, .events = POLLIN };
+    char byte = 0;
+    if (poll(&output, 1, 5000) != 1 || read(master, &byte, 1) != 1 || byte != 'T') {
+        fail("/dev/tty writes to its private devpts master");
         return;
     }
     pass("/dev/tty reopens the private devpts controlling terminal");
@@ -292,7 +311,8 @@ int main(void)
         check_metadata(first_slave_path, 0620, 5,
                        "mode and gid apply to the allocated slave node");
     }
-    check_private_controlling_tty(first_mount, first_number);
+    check_private_controlling_tty(first_mount, first_number,
+                                   first_masters[first_master_count - 1]);
 
     errno = 0;
     if (slave_exists(second_mount, first_number) == 0 || errno != ENOENT) {
@@ -329,7 +349,7 @@ int main(void)
     rmdir(second_mount);
     rmdir(first_mount);
 
-    check_legacy_mounts_share_initial_instance();
+    check_default_mounts_are_private();
 
     if (failures != 0) {
         printf("TEST_DEVPTS_NEWINSTANCE_FAILED failures=%d\n", failures);
