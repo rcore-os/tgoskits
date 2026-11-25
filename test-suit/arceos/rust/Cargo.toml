@@ -53,7 +53,7 @@ virtio-block-lifecycle = [
     "dep:virtio-drivers",
     "dep:zerocopy",
 ]
-fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs", "dep:ax-fs-ng", "dep:libc"]
+fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs", "dep:libc"]
 intel-itco-qemu = ["ax-std", "dep:intel-itco-watchdog"]
 nvme-qemu = [
     "ax-std",

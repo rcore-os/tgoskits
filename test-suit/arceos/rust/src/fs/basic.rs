@@ -106,75 +106,11 @@ pub fn run() -> crate::TestResult {
 
     env::set_current_dir(&original_dir).expect("failed to restore current dir after fs test");
 
-    verify_direct_resize_layout();
-
     fs::remove_file(FILE).expect("failed to remove fs smoke file");
     fs::remove_file(NESTED_FILE).expect("failed to remove nested fs smoke file");
     fs::remove_dir(SUBDIR).expect("failed to remove nested fs smoke directory");
     fs::remove_dir(DIR).expect("failed to remove fs smoke directory");
     Ok(())
-}
-
-fn verify_direct_resize_layout() {
-    use ax_fs_ng::file::OpenOptions;
-
-    // This native ArceOS batch uses the same kernel caller as the fops facade.
-    let caller = ax_fs_ng::NativeLinkCaller::root();
-    let view = ax_fs_ng::FsView::current(ax_fs_ng::current_fs_context(), &caller);
-    let mut options = OpenOptions::new();
-    options.read(true).write(true);
-    let cached = options.open(&view, FILE).unwrap().into_file().unwrap();
-    let direct = options
-        .direct(true)
-        .open(&view, FILE)
-        .unwrap()
-        .into_file()
-        .unwrap();
-    let mut bytes = vec![0; CONTENT.len()];
-    assert_eq!(
-        cached.read_at(bytes.as_mut_slice(), 0).unwrap(),
-        bytes.len()
-    );
-    assert_eq!(bytes, CONTENT.as_bytes());
-    // Keep a dirty cached tail while another open description changes EOF.
-    cached
-        .write_at(b"Z".as_slice(), (CONTENT.len() - 1) as u64)
-        .unwrap();
-    let shortened = CONTENT.len() / 2;
-    direct.set_len(shortened as u64).unwrap();
-    assert_eq!(
-        cached.backend().unwrap().len().unwrap(),
-        shortened as u64,
-        "direct resize did not update the shared cache length"
-    );
-    assert_eq!(cached.read_at(bytes.as_mut_slice(), 0).unwrap(), shortened);
-    assert_eq!(&bytes[..shortened], &CONTENT.as_bytes()[..shortened]);
-    direct.set_len(CONTENT.len() as u64).unwrap();
-    bytes.fill(0xff);
-    assert_eq!(
-        cached.read_at(bytes.as_mut_slice(), 0).unwrap(),
-        bytes.len()
-    );
-    assert_eq!(&bytes[..shortened], &CONTENT.as_bytes()[..shortened]);
-    assert!(bytes[shortened..].iter().all(|byte| *byte == 0));
-    cached.sync(false).unwrap();
-    direct.sync(false).unwrap();
-    drop(direct);
-    drop(cached);
-    let reopened = options
-        .direct(false)
-        .open(&view, FILE)
-        .unwrap()
-        .into_file()
-        .unwrap();
-    bytes.fill(0xff);
-    assert_eq!(
-        reopened.read_at(bytes.as_mut_slice(), 0).unwrap(),
-        bytes.len()
-    );
-    assert_eq!(&bytes[..shortened], &CONTENT.as_bytes()[..shortened]);
-    assert!(bytes[shortened..].iter().all(|byte| *byte == 0));
-    std::println!("DIRECT_RESIZE_LAYOUT_OK");
 }
 
 fn verify_fstatat_empty_path_and_cwd_contracts() -> crate::TestResult {

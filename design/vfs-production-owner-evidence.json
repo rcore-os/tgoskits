@@ -14303,50 +14303,5 @@
     "native_write_time_migration_complete": false,
     "remaining": "完整原生时间、物理写回、范围及映射写入、组合后端、挂载策略、性能资源对照与原设计其余验收。",
     "recorded_at": "2026-11-25T15:46:32.858638+00:00"
-  },
-  "direct_resize_public_progress_20261126": {
-    "status": "independent_public_fix_validated_full_migration_pending",
-    "base": "5389361f5aa8d9d2c629dd89e24e46f23027256d",
-    "implementation_source": "4b0ec6633193a7cef4ef474b11b1bb0592da10ed",
-    "original_test_source": "a1b561b1515fbf5bae72d5e010395131156bb899",
-    "proof": "resize-cache-coherence-public-red-green-verified.private.json",
-    "production_owner": "FileBackend::set_len selects the canonical CachedFile for cacheable regular files",
-    "tests_identical_in_red_and_green": true,
-    "std_expected_failures": 5,
-    "std_other_failures": 0,
-    "std_packages": 19,
-    "affected_clippy_profiles": 49,
-    "runtime_arch": "aarch64",
-    "runtime_case": "rust/fs-basic",
-    "runtime_original_expected_failure": 1,
-    "runtime_actual_behavior_marker": "DIRECT_RESIZE_LAYOUT_OK",
-    "runtime_case_and_outer_passed": true,
-    "new_default_programs": 0,
-    "new_default_batches": 0,
-    "new_default_boots": 0,
-    "actual_diagnostic_boots": 2,
-    "unmerged_native_interfaces_copied": false,
-    "lockfile_changed": false,
-    "host_permission_failure_before_boot_not_used_as_product_negative": true,
-    "source_hashes": {
-      "fs/ax-fs-ng/src/file/cache/tests/mod.rs": "7665cbe4b56259af0e8b7c85a760f7534aecec27bc3620fb72ce9d269236a8aa",
-      "fs/ax-fs-ng/src/file/handle/backend.rs": "c95dbea67964b01e02e7893848619204a73dc79c133cc3c4dd008a1aedb495e5",
-      "test-suit/arceos/rust/Cargo.toml": "7fa86acd18eacaf5d851b83a56b6b26534fe1b8ca6ecba737ee3270175ae67b4",
-      "test-suit/arceos/rust/src/fs/basic.rs": "e2fa0db38a750dc6eccabab31ae3b4c870574ee2d6c028054f35a98b2224f2d9"
-    },
-    "full_frontend_resize_complete": false,
-    "qualified_design_approval": false,
-    "full_pr_complete": false,
-    "remaining": [
-      "current actor and resize origin",
-      "backend-owned attribute publication and failures",
-      "lock-external journal pressure and completion",
-      "concurrent length snapshots",
-      "direct data writes and range operations",
-      "other producers and Overlay lifecycle",
-      "normal FAT upstream source and dependency order",
-      "performance/resources and independent design review",
-      "final exact-head CI and affected runtimes"
-    ]
   }
 }
