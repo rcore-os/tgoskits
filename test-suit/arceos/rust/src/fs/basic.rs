@@ -1,4 +1,9 @@
-use std::{env, fs, io, mem, ptr, string::String, vec::Vec};
+use std::{
+    env, fs, io, mem, ptr,
+    string::String,
+    time::{Duration, UNIX_EPOCH},
+    vec::Vec,
+};
 
 const DIR: &str = "/arceos-test-suit";
 const FILE: &str = "/arceos-test-suit/basic.txt";
@@ -39,6 +44,32 @@ pub fn run() -> crate::TestResult {
             .expect("missing file metadata")
             .is_file()
     );
+    // Exercise Rust std's futimens path on a read-only data description.
+    // FAT stores access dates at midnight and modification times in even seconds.
+    let accessed = UNIX_EPOCH + Duration::from_secs(1_704_067_200);
+    let modified = accessed + Duration::from_secs(46);
+    let timestamp_file = fs::File::open(FILE).expect("failed to open timestamp file");
+    timestamp_file
+        .set_times(
+            fs::FileTimes::new()
+                .set_accessed(accessed)
+                .set_modified(modified),
+        )
+        .expect("failed to set file timestamps");
+    let metadata = timestamp_file
+        .metadata()
+        .expect("missing timestamp metadata");
+    assert_eq!(metadata.accessed().unwrap(), accessed);
+    assert_eq!(metadata.modified().unwrap(), modified);
+    let modified = modified + Duration::from_secs(2);
+    timestamp_file
+        .set_modified(modified)
+        .expect("failed to update only the modification time");
+    drop(timestamp_file);
+    let metadata = fs::metadata(FILE).expect("missing persisted timestamp metadata");
+    assert_eq!(metadata.accessed().unwrap(), accessed);
+    assert_eq!(metadata.modified().unwrap(), modified);
+
     assert!(ax_std::fs::create_dir_all(FILE).is_err());
     assert!(ax_std::fs::create_dir_all("/arceos-test-suit/basic.txt/child").is_err());
     assert_eq!(fs::read_to_string(FILE).unwrap(), CONTENT);
