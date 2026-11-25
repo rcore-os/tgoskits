@@ -1940,7 +1940,8 @@ fn append_keeps_the_whole_input_ordered_while_staging() {
                 self.staged.send(()).unwrap();
                 self.release.recv().unwrap();
             }
-            let count = dst.len().min(self.remaining);
+            // Deliver one source chunk per call regardless of requested capacity.
+            let count = dst.len().min(self.remaining).min(PAGE_SIZE);
             dst[..count].fill(0x31);
             self.remaining -= count;
             Ok(count)
