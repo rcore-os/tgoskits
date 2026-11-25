@@ -17,7 +17,9 @@ command = '''
 echo "==> axvisor aarch64 shared general boot (five CI checks)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/general
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
-timeout 240s apps/arceos/virtio-blk-test/run.sh
+# The runner starts its 180 s guest deadline after build and asset preparation.
+# Compiler work remains bounded by the job budget above.
+apps/arceos/virtio-blk-test/run.sh
 echo "==> axvisor aarch64 five virtio-net guest vCPUs on two host CPUs"
 timeout 600s apps/arceos/virtio-net-peer/run.sh --vcpus
 echo "==> axvisor aarch64 PCI memory test ArceOS guest"
