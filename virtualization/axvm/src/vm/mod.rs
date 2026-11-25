@@ -2,6 +2,7 @@
 
 use std::{alloc::Layout, boxed::Box, string::String, sync::Arc, vec::Vec};
 
+use ax_std::os::arceos::sync::RawSpinLock;
 use axaddrspace::AddrSpace;
 use axdevice::{
     DeviceRuntime, FwCfgKernelPayload, FwCfgPayloadSlot, FwCfgPlatformConfig, RuntimeAccessPorts,
@@ -23,6 +24,7 @@ use crate::{
 pub(crate) mod boot;
 pub(crate) mod memory;
 pub(crate) mod prepare;
+pub(crate) mod stage2;
 #[cfg(any(test, target_arch = "aarch64"))]
 mod timer_wait;
 pub use memory::PreparedMemoryLayout;
@@ -61,7 +63,10 @@ pub(crate) fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
 }
 
 pub(crate) struct AxVMResources {
-    pub(crate) address_space: AddrSpace<ArchNestedPageTable>,
+    /// Stage-2 mappings are shared with the direct-mapping device service.
+    pub(crate) address_space: Arc<RawSpinLock<AddrSpace<ArchNestedPageTable>>>,
+    /// Device-facing stage-2 update port for directly mapped BAR ranges.
+    pub(crate) stage2_remap: Arc<stage2::AxStage2Remap>,
     pub(crate) nested_paging: NestedPagingConfig,
     pub(crate) memory_regions: Vec<VMMemoryRegion>,
     pub(crate) phys_cpu_ls: PhysCpuList,
@@ -87,8 +92,11 @@ impl AxVMResources {
         )
         .map_err(|error| AxVmError::from_addrspace("create guest address space", error))?;
         let nested_paging = build_nested_paging(address_space.page_table_root())?;
+        let address_space = Arc::new(RawSpinLock::new(address_space));
+        let stage2_remap = Arc::new(stage2::AxStage2Remap::new(Arc::clone(&address_space)));
         Ok(Self {
             address_space,
+            stage2_remap,
             nested_paging,
             memory_regions: Vec::new(),
             phys_cpu_ls: PhysCpuList::default(),
@@ -123,9 +131,11 @@ impl AxVMResources {
         self.vcpu_list = None;
         self.interrupt_controller = None;
         self.address_layout = None;
-        self.address_space.clear();
+        let mut address_space = self.address_space.lock_irqsave();
+        address_space.clear();
+        self.stage2_remap.reset_registry();
         for lease in &self.memory_leases {
-            self.address_space
+            address_space
                 .map_linear(
                     lease.range.start,
                     lease.host,
@@ -225,7 +235,10 @@ impl AxVM {
         self.resources.memory_regions.clone()
     }
     pub(crate) fn nested_page_table_root(&self) -> HostPhysAddr {
-        self.resources.address_space.page_table_root()
+        self.resources
+            .address_space
+            .lock_irqsave()
+            .page_table_root()
     }
     pub(crate) fn device_access_ports(&self) -> RuntimeAccessPorts {
         self.ports.clone()
@@ -344,6 +357,7 @@ impl AxVM {
         )?;
         self.resources
             .address_space
+            .lock_irqsave()
             .map_linear(guest, host, layout.size(), flags)
             .map_err(|error| AxVmError::from_addrspace("map allocated guest RAM", error))?;
         self.resources.memory_regions.push(VMMemoryRegion {
@@ -382,6 +396,7 @@ impl AxVM {
         )?;
         self.resources
             .address_space
+            .lock_irqsave()
             .map_linear(guest, host, layout.size(), flags)
             .map_err(|error| AxVmError::from_addrspace("map reserved guest RAM", error))?;
         self.resources.memory_regions.push(VMMemoryRegion {
@@ -403,22 +418,16 @@ impl AxVM {
     }
 
     pub(crate) fn write_to_guest(&mut self, guest: GuestPhysAddr, input: &[u8]) -> AxVmResult {
-        copy_owner_memory(
-            &self.resources.address_space,
-            guest,
-            input.len(),
-            |offset, address| {
-                // SAFETY: the owner is loading unpublished RAM and retains its
-                // allocation. No Rust reference to guest memory escapes this call.
-                unsafe { address.write_volatile(input[offset]) };
-            },
-        )?;
+        let address_space = self.resources.address_space.lock_irqsave();
+        copy_owner_memory(&address_space, guest, input.len(), |offset, address| {
+            // SAFETY: the owner is loading unpublished RAM and retains its
+            // allocation. No Rust reference to guest memory escapes this call.
+            unsafe { address.write_volatile(input[offset]) };
+        })?;
         // Images may span non-contiguous RAM; each translated page is cleaned.
         let mut offset = 0;
         while offset < input.len() {
-            let address = self
-                .resources
-                .address_space
+            let address = address_space
                 .translate(guest + offset)
                 .ok_or_else(|| ax_err_type!(InvalidInput, "unmapped guest image"))?;
             let count = (0x1000 - address.as_usize() % 0x1000).min(input.len() - offset);

@@ -258,6 +258,16 @@ pub enum DeviceError {
         /// Diagnostic detail describing the current state.
         detail: String,
     },
+    /// Width, alignment and range failures use their own variants; this one
+    /// is reserved for "the address is valid, but this caller may not touch
+    /// it".
+    #[error("device access denied for {operation}: {detail}")]
+    AccessDenied {
+        /// The rejected operation.
+        operation: &'static str,
+        /// Diagnostic detail describing the permission rule.
+        detail: String,
+    },
     /// The device does not support the requested operation.
     #[error("unsupported device operation {operation}: {detail}")]
     Unsupported {

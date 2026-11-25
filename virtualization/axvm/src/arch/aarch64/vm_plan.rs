@@ -31,12 +31,20 @@ impl Aarch64VmPlan {
 
         let shared_providers = SharedProviderBootstrap::from_config(config)?;
         nodes.extend(shared_providers.device_nodes()?);
+        let default_message_controller = match vgic.config() {
+            arm_vgic::ArmVgicConfig::V3(config) => config
+                .its()
+                .first()
+                .map(|its| (config.controller_id(), its.id())),
+            arm_vgic::ArmVgicConfig::V2(_) => None,
+        };
         crate::configured::append_configured_devices(
             config,
             &mut nodes,
             &controller_id,
             vgic.config().controller_id(),
             None,
+            default_message_controller,
         )?;
 
         let mut replacement_ranges = gic_ranges(profile)?;

@@ -213,6 +213,13 @@ impl ResolvedDeviceResources {
             .ok_or_else(|| resource_kind_error(slot, "host IRQ"))
     }
 
+    /// Iterates all resolved MSI ranges in stable slot order.
+    pub fn msi_ranges(&self) -> impl Iterator<Item = (&ResourceSlot, ResolvedMsi)> {
+        self.entries
+            .iter()
+            .filter_map(|(slot, resource)| resource.msi().map(|msi| (slot, msi)))
+    }
+
     /// Returns a resolved MSI range.
     pub fn msi(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedMsi> {
         self.resource(slot)?

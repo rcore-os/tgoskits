@@ -95,8 +95,7 @@ pub fn resolve_at_checked(
     check_search: impl Fn(&Location) -> VfsResult<()>,
 ) -> StarryResult<ResolveAtResult> {
     let check = |_: &FsContext, directory: &Location| check_search(directory);
-    resolve_at_with_search(dirfd, path, flags, Some(&check))
-        .map(|(result, _, _)| result)
+    resolve_at_with_search(dirfd, path, flags, Some(&check)).map(|(result, ..)| result)
 }
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&FsContext, &Location) -> VfsResult<()>>;
@@ -114,7 +113,11 @@ fn resolve_at_with_search(
             }
             if dirfd == AT_FDCWD {
                 return with_fs(dirfd, |fs| {
-                    Ok((ResolveAtResult::File(fs.current_dir().clone()), None, Vec::new()))
+                    Ok((
+                        ResolveAtResult::File(fs.current_dir().clone()),
+                        None,
+                        Vec::new(),
+                    ))
                 });
             }
             Ok((resolve_fd(dirfd)?, None, Vec::new()))
@@ -168,7 +171,7 @@ pub fn resolve_at_with_boundary_checked(
 }
 
 pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
-    resolve_at_with_boundary(dirfd, path, flags).map(|(result, _, _)| result)
+    resolve_at_with_boundary(dirfd, path, flags).map(|(result, ..)| result)
 }
 
 pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
@@ -229,6 +232,20 @@ impl File {
     fn is_blocking(&self) -> bool {
         self.inner.location().flags().contains(NodeFlags::BLOCKING)
     }
+
+    fn stage_packet_record(src: &mut IoSrc<'_>) -> StarryResult<Vec<u8>> {
+        let len = src.remaining();
+        if len > ax_fs_ng::file::MAX_PACKET_RECORD {
+            return Err(StarryError::InvalidInput);
+        }
+        let mut record = Vec::new();
+        record
+            .try_reserve_exact(len)
+            .map_err(|_| StarryError::NoMemory)?;
+        record.resize(len, 0);
+        src.read_exact(&mut record)?;
+        Ok(record)
+    }
 }
 
 fn path_for(loc: &Location) -> Cow<'static, str> {
@@ -266,6 +283,13 @@ impl FileLike for File {
         if self.append() {
             inner.seek(SeekFrom::End(0))?;
         }
+        let packet_record =
+            if !self.is_blocking() && inner.location().flags().contains(NodeFlags::PACKET) {
+                inner.access(FileFlags::WRITE)?;
+                Some(Self::stage_packet_record(src)?)
+            } else {
+                None
+            };
         let result: StarryResult<usize> = if likely(self.is_blocking()) {
             Ok(inner.write(src)?)
         } else {
@@ -273,7 +297,11 @@ impl FileLike for File {
             block_on_user(
                 &task,
                 poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-                    Ok(inner.write(&mut *src)?)
+                    if let Some(record) = &packet_record {
+                        Ok(inner.write(record.as_slice())?)
+                    } else {
+                        Ok(inner.write(&mut *src)?)
+                    }
                 }),
             )
             .into_result()?

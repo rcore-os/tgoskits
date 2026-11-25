@@ -1,0 +1,8 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Zephyr automatically applies this board overlay to the benchmark sample.
+ * The benchmark reuses the shared AxVisor guest profile.
+ */
+
+#include "../../common/boards/orangepi_5_plus_rk3588_axvisor.dtsi"

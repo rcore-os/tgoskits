@@ -1,0 +1,26 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-m",
+  "8g",
+  "-append",
+  "axvisor.vm_start=1,2,3",
+  "-snapshot",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "run VCpu\\[\\d+\\] get error",
+  "IVSHMEM_PCI_SUITE_FAILED",
+  "ARCEOS_IVSHMEM_PCI_FAIL",
+]
+timeout = 240
+to_bin = true
+uefi = false
+
+[axbuild]
+checks = ["tests/device.toml"]

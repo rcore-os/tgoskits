@@ -110,4 +110,18 @@ pub enum IvcMessageError {
     /// The peer explicitly aborted the active message.
     #[error("the peer aborted the active IVC message")]
     TransferAborted,
+    /// The ivshmem incarnation no longer matches the session that created this
+    /// endpoint.
+    #[error("the ivshmem message session changed")]
+    SessionLost,
+    /// An ivshmem producer/consumer cursor pair is outside one ring window.
+    #[error(
+        "ivshmem cursors producer={producer} consumer={consumer} are outside one ring capacity"
+    )]
+    CursorOutOfRange {
+        /// TX tail observed for this direction.
+        producer: u32,
+        /// RX head observed for this direction.
+        consumer: u32,
+    },
 }

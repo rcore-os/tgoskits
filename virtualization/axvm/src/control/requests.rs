@@ -134,8 +134,10 @@ impl Owner {
             GuestRequest::NestedFault { addr, access_flags } => {
                 // Linear RAM mappings are populated eagerly. A permission or
                 // missing-mapping fault cannot be repaired by granting access.
-                let mapping =
-                    NestedPageTableOps::query(self.vm.resources.address_space.page_table(), addr);
+                let mapping = NestedPageTableOps::query(
+                    self.vm.resources.address_space.lock_irqsave().page_table(),
+                    addr,
+                );
                 let result = match mapping {
                     Ok((_, flags, _)) if flags.contains(access_flags) => Ok(0),
                     _ => Err(AxVmError::memory(

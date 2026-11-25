@@ -1,6 +1,7 @@
 //! Special devices
 
 mod axivc;
+mod axivc_ivshmem;
 pub(crate) mod card0;
 #[cfg(feature = "rknpu")]
 pub(crate) mod card1;

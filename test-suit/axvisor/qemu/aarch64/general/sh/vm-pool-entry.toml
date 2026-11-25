@@ -6,37 +6,34 @@
 # produce (the shell line buffer holds 256 bytes and TOML needs one key-value
 # pair per line). The case copies it into the pool directory and starts it.
 #
-# The kernel is the ArceOS IVC publisher the `general/ivc` check already boots, and
-# the device layout mirrors its config so this entry boots under the same
-# hypervisor build.
+# The fixture boots the generic Linux image and read-only Alpine root disk already
+# used by other filesystem-backed guests in this suite. It stays alive for the
+# pool lifecycle checks without carrying an IVC application or sharing an
+# ivshmem link with the protocol test.
 [base]
 id = 5
 name = "pool-guest"
+guest_type = "virtualized"
 cpu_num = 1
 phys_cpu_ids = [0]
 
 [kernel]
 entry_point = 0x8020_0000
-kernel_path = "/guest/arceos/arceos-ivc-publisher.bin"
+kernel_path = "/guest/linux/linux-qemu"
 kernel_load_addr = 0x8020_0000
 dtb_load_addr = 0x8000_0000
+cmdline = "root=/dev/vda ro rootwait console=ttyAMA0 init=/bin/sh"
 memory_regions = [
-  [0x8000_0000, 0x4000_0000, 0x7, 1],
+  [0x8000_0000, 0x1000_0000, 0x7, 0],
 ]
 
 [devices]
-disabled = [
-  { path = "/virtio_mmio@a003000" },
-  { path = "/virtio_mmio@a003200" },
-  { path = "/virtio_mmio@a003400" },
-  { path = "/virtio_mmio@a003600" },
-  { path = "/virtio_mmio@a003800" },
-  { path = "/virtio_mmio@a003a00" },
-  { path = "/virtio_mmio@a003c00" },
-  { path = "/virtio_mmio@a003e00" },
-  { path = "/pcie@10000000" },
-]
+passthrough = []
+disabled = [{ path = "/pcie@10000000" }]
 
 [[devices.virtual]]
-id = "ivc0"
-model = "ivc-channel"
+id = "virtblk0"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-alpine-0.img"
+filesystem = "ext4"
+read_only = true

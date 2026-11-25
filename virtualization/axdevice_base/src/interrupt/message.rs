@@ -66,6 +66,13 @@ pub trait MessageInterruptController: Send + Sync {
 pub trait MessageInterruptSink: Send + Sync {
     /// Delivers one validated message to the controller.
     fn signal(&self, message: MsiMessage) -> IrqResult;
+
+    /// Validates that `address`/`data` encode `message` for this VM's
+    /// controller and injects the planned LPI.
+    ///
+    /// The controller owns the guest encoding rules; the device layer only
+    /// forwards what the guest wrote into the MSI-X table.
+    fn signal_table(&self, message: MsiMessage, address: u64, data: u32) -> IrqResult;
 }
 
 /// A device-owned connection to a message interrupt controller.
@@ -93,6 +100,17 @@ impl MsiEndpoint {
     /// Delivers the endpoint's message.
     pub fn signal(&self) -> IrqResult {
         self.sink.signal(self.message)
+    }
+
+    /// Delivers this endpoint's message only if `address`/`data` identify it
+    /// at the controller boundary; used for guest-programmed MSI-X tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IRQ error without injecting anything when the encoding
+    /// does not match this VM's controller expectations.
+    pub fn signal_table(&self, address: u64, data: u32) -> IrqResult {
+        self.sink.signal_table(self.message, address, data)
     }
 
     /// Returns the receiving controller.

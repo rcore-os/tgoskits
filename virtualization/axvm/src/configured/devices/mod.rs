@@ -2,6 +2,7 @@
 
 mod guest_cpufreq;
 mod ivc;
+mod ivshmem_pci;
 mod pci_memory_test;
 mod virtio_blk;
 pub(crate) mod virtio_net;
@@ -25,6 +26,7 @@ pub(super) fn register_devices(
     ivc::register(catalog)?;
     guest_cpufreq::register(catalog)?;
     pci_memory_test::register(catalog)?;
+    ivshmem_pci::register(catalog)?;
     virtio_blk::register(catalog)?;
     virtio_net::register(catalog)?;
     Ok(())
@@ -40,7 +42,7 @@ mod gated_visibility_tests {
 
     use super::*;
 
-    fn probe_model_is_known(model: &str) -> bool {
+    fn probe_model_is_registered(model: &str) -> bool {
         let mut catalog = crate::ConfiguredDeviceCatalog::new();
         register_devices(&mut catalog).unwrap();
         let request = VirtualDeviceRequest {
@@ -48,9 +50,12 @@ mod gated_visibility_tests {
             model: model.into(),
             options: Default::default(),
         };
-        catalog
-            .instantiate_node(&request, &crate::DeviceInstantiationContext::new())
-            .is_ok()
+        // Model-specific validation may reject this deliberately empty probe
+        // request. Only lookup failure proves that the model is unregistered.
+        !matches!(
+            catalog.instantiate_node(&request, &crate::DeviceInstantiationContext::new()),
+            Err(crate::ConfiguredDeviceError::UnknownVirtualDeviceModel { .. })
+        )
     }
 
     fn unknown_model_error(model: &str) -> crate::ConfiguredDeviceError {
@@ -69,15 +74,12 @@ mod gated_visibility_tests {
 
     #[test]
     fn configured_models_register_only_current_names() {
-        assert!(probe_model_is_known("virtual-cpufreq"));
+        assert!(probe_model_is_registered("virtual-cpufreq"));
         assert!(matches!(
             unknown_model_error("not-a-model"),
             crate::ConfiguredDeviceError::UnknownVirtualDeviceModel { .. }
         ));
-        assert!(probe_model_is_known("pci-memory-test"));
-        assert!(matches!(
-            unknown_model_error("ivshmem-pci"),
-            crate::ConfiguredDeviceError::UnknownVirtualDeviceModel { .. }
-        ));
+        assert!(probe_model_is_registered("pci-memory-test"));
+        assert!(probe_model_is_registered("ivshmem-pci"));
     }
 }

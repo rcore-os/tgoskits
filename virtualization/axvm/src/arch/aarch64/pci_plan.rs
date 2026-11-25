@@ -197,7 +197,10 @@ impl Aarch64PciPlan {
 
 #[cfg(test)]
 mod tests {
-    use axdevice_base::{Device, DeviceAccess, DeviceContext, DeviceError, DeviceResult, Resource};
+    use axdevice_base::{
+        Device, DeviceAccess, DeviceContext, DeviceError, DeviceResult, InterruptControllerId,
+        ItsId, LpiId, MsiDeviceId, MsiEventId, Resource,
+    };
     use axvm_types::GuestPhysAddr;
 
     use super::*;
@@ -209,6 +212,10 @@ mod tests {
     struct TestEndpointModel;
     struct TestAutoMmioModel {
         size: u64,
+    }
+    struct TestMsiEndpointModel {
+        device: u16,
+        its: ItsId,
     }
     struct TestFunction;
 
@@ -256,6 +263,39 @@ mod tests {
             _context: &mut DeviceBuildContext<'_>,
         ) -> DeviceManagerResult<DeviceBundle> {
             Ok(DeviceBundle::new())
+        }
+    }
+
+    impl DeviceModel for TestMsiEndpointModel {
+        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+            let function = PciFunctionRequirement::new(
+                host_key(),
+                PciEndpointIdentity::new(0x1234, self.device, PciClass::new(0x05, 0, 0)),
+            );
+            let msi = MsiResourceRequest::new(
+                InterruptControllerId::new(0),
+                self.its,
+                1,
+                ResourceRequest::Auto,
+                ResourceRequest::Auto,
+                ResourceRequest::Auto,
+            )?;
+            DeviceRequirements::new()
+                .with_pci_function(function)?
+                .with_msi(ResourceSlot::new("msi")?, msi)
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
+        }
+
+        fn build(
+            &self,
+            _context: &mut DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            let mut bundle = DeviceBundle::new();
+            bundle.add_pci_function(Arc::new(TestFunction))?;
+            Ok(bundle)
         }
     }
 
@@ -380,6 +420,88 @@ mod tests {
         )
     }
 
+    fn msi_device_plan(endpoints: &[(&str, ItsId)]) -> VmDevicePlan {
+        let config = config(true);
+        let controller = DeviceNodeId::new("vgic").unwrap();
+        let mut nodes = std::vec![DeviceNodeSpec::firmware_only(controller.clone())];
+        nodes.extend(endpoints.iter().enumerate().map(|(index, (id, its))| {
+            DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new(*id).unwrap(),
+                Arc::new(TestMsiEndpointModel {
+                    device: u16::try_from(index + 1).unwrap(),
+                    its: *its,
+                }),
+            )
+        }));
+
+        let interrupt_controller = InterruptControllerId::new(0);
+        let mut pools = super::super::resource_pools::create_auto_mmio_pools().unwrap();
+        for its in [ItsId::new(0), ItsId::new(1)] {
+            pools
+                .add_auto_msi_domain(
+                    interrupt_controller,
+                    its,
+                    MsiDeviceId::new(0)..MsiDeviceId::new(0x100),
+                    MsiEventId::new(0)..MsiEventId::new(0x100),
+                    LpiId::new(0x8000)..LpiId::new(0x8100),
+                )
+                .unwrap();
+        }
+        VmDevicePlan::with_optional_pci_host_for_vm(
+            &config,
+            nodes,
+            &[],
+            pools,
+            provider(&controller).unwrap(),
+            super::super::resource_pools::PCI_AUTO_MMIO_SEARCH_EXTENSION.clone(),
+        )
+        .unwrap()
+    }
+
+    fn two_its_profile() -> crate::machine::GuestGicProfile {
+        use crate::machine::{
+            GuestGicCpuRegion, GuestGicProfile, GuestGicRedistributorProfile, GuestItsProfile,
+            GuestMmioRegion,
+        };
+
+        GuestGicProfile {
+            compatible: "arm,gic-v3".into(),
+            node_path: "/interrupt-controller@8000000".into(),
+            node_phandle: Some(1),
+            distributor: GuestMmioRegion {
+                base: 0x0800_0000,
+                length: 0x1_0000,
+            },
+            cpu_region: GuestGicCpuRegion::Redistributors(GuestGicRedistributorProfile {
+                regions: std::vec![GuestMmioRegion {
+                    base: 0x080a_0000,
+                    length: 0x2_0000,
+                }],
+                stride: 0x2_0000,
+            }),
+            its: std::vec![
+                GuestItsProfile {
+                    id: ItsId::new(0),
+                    node_path: "/its@8080000".into(),
+                    node_phandle: Some(3),
+                    registers: GuestMmioRegion {
+                        base: 0x0808_0000,
+                        length: 0x2_0000,
+                    },
+                },
+                GuestItsProfile {
+                    id: ItsId::new(1),
+                    node_path: "/its@8082000".into(),
+                    node_phandle: Some(7),
+                    registers: GuestMmioRegion {
+                        base: 0x0808_2000,
+                        length: 0x2_0000,
+                    },
+                },
+            ],
+        }
+    }
+
     #[test]
     fn endpoint_resolves_one_generic_ecam_firmware_view_and_runtime_root() {
         let devices = device_plan(true, &[]).unwrap();
@@ -403,6 +525,44 @@ mod tests {
                 .unwrap();
         }
         runtime.finish(graph.resource_plan()).unwrap();
+    }
+
+    #[test]
+    fn pci_msi_parent_uses_resolved_endpoint_its_and_rejects_conflicts() {
+        let controller = InterruptControllerId::new(0);
+        let gic = two_its_profile();
+
+        let mut single_its = gic.clone();
+        single_its.its.truncate(1);
+        let devices = device_plan(true, &[]).unwrap();
+        assert_eq!(
+            super::super::firmware_plan::resolve_pci_msi_parent(
+                devices.graph(),
+                controller,
+                &single_its,
+            ),
+            Ok(Some(3))
+        );
+
+        let devices = device_plan(true, &[]).unwrap();
+        assert_eq!(
+            super::super::firmware_plan::resolve_pci_msi_parent(devices.graph(), controller, &gic),
+            Ok(None)
+        );
+
+        let devices = msi_device_plan(&[("endpoint0", ItsId::new(1))]);
+        assert_eq!(
+            super::super::firmware_plan::resolve_pci_msi_parent(devices.graph(), controller, &gic),
+            Ok(Some(7))
+        );
+
+        let devices =
+            msi_device_plan(&[("endpoint0", ItsId::new(0)), ("endpoint1", ItsId::new(1))]);
+        let error =
+            super::super::firmware_plan::resolve_pci_msi_parent(devices.graph(), controller, &gic)
+                .unwrap_err();
+        assert!(matches!(&error, AxVmError::ResourceConflict { .. }));
+        assert!(error.to_string().contains("generated PCI bus"));
     }
 
     #[test]

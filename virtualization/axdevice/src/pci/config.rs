@@ -3,9 +3,10 @@
 use alloc::vec::Vec;
 
 use super::{
-    PciBdf, PciCapabilityEffectRegion, PciCapabilityId, PciCapabilityLayout, PciCapabilitySnapshot,
-    PciEndpointIdentity, PciResult, ResolvedPciIntx,
+    PciBdf, PciCapabilityId, PciCapabilityLayout, PciCapabilitySnapshot, PciEndpointIdentity,
+    PciResult, ResolvedPciIntx,
     bar::{BarState, ResolvedBarPlan},
+    capability::PciCapabilityEffectMatch,
     config_layout::{
         COMMAND_BUS_MASTER_ENABLE, COMMAND_INTERRUPT_DISABLE, COMMAND_MEMORY_SPACE_ENABLE,
         CONFIG_BAR_END, CONFIG_BAR_MEMORY_ADDRESS_MASK, CONFIG_BAR_REGISTER_SIZE, CONFIG_BAR_START,
@@ -69,8 +70,9 @@ impl PowerOnConfig {
         }
         for bar in bars {
             let offset = bar.index.config_offset();
+            let attributes = if bar.prefetchable { 0x8 } else { 0 };
             bytes[offset..offset + 4].copy_from_slice(
-                &(bar.address as u32 & CONFIG_BAR_MEMORY_ADDRESS_MASK).to_le_bytes(),
+                &((bar.address as u32 & CONFIG_BAR_MEMORY_ADDRESS_MASK) | attributes).to_le_bytes(),
             );
         }
         if let Some(first) = capabilities.first() {
@@ -203,8 +205,7 @@ impl FunctionState {
     ) -> PciResult<
         Option<(
             PciCapabilityId,
-            PciCapabilityEffectRegion,
-            u8,
+            PciCapabilityEffectMatch,
             PciCapabilitySnapshot,
         )>,
     > {
@@ -212,17 +213,9 @@ impl FunctionState {
             let Some(effect) = capability.effect_for_access(offset, size, write, width)? else {
                 continue;
             };
-            let relative = offset
-                .checked_sub(usize::from(capability.offset().value()))
-                .ok_or(super::PciError::InvalidConfigAccess {
-                    offset: offset as u16,
-                    width,
-                    detail: "capability effect offset underflows",
-                })?;
             return Ok(Some((
                 capability.id(),
                 effect,
-                relative as u8,
                 capability.snapshot(&self.config),
             )));
         }
@@ -325,6 +318,8 @@ mod tests {
         let plan = ResolvedBarPlan {
             index: bar.index(),
             size: bar.size(),
+            prefetchable: false,
+            policy: super::super::PciBarDecodePolicy::RelocatableWithinHostAperture,
             address: 0x2000_0000,
         };
         let power_on = PowerOnConfig::build(identity, &[plan], &[], &[], None).unwrap();

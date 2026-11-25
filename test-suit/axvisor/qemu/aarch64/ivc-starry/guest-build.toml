@@ -1,0 +1,12 @@
+# Build the same StarryOS image for both Axvisor guests.
+#
+# AArch64 flat-target builds produce `starryos.bin` without a separate QEMU
+# run configuration. prepare-assets.sh verifies that artifact before it stages
+# the userspace initramfs.
+target = "aarch64-unknown-none-softfloat"
+features = [
+    "starry-kernel/axivc-ivshmem",
+    "ax-driver/serial",
+]
+log = "Info"
+max_cpu_num = 1

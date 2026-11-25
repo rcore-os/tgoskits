@@ -4,7 +4,11 @@ use super::{
     IvcMessageError, IvcMessageId, IvcMessageMeta, IvcSendProgress,
     frame::{FrameSpec, encode_frame},
 };
-use crate::{IVC_SLOT_FRAGMENT_CAPACITY, IVC_SLOT_SIZE, endpoint::IvcSlotProducer};
+use crate::{
+    IVC_SLOT_FRAGMENT_CAPACITY, IVC_SLOT_SIZE,
+    endpoint::{IvcSlotProducer, slot_error},
+    ring::IvcSlotError,
+};
 
 /// Stateful nonblocking sender for one direction of an IVC channel.
 ///
@@ -49,7 +53,9 @@ impl<'a> IvcMessageSender<'a> {
     /// only release more capacity. This does not start a message or guarantee
     /// that an identifier remains available. A new message of `len` bytes
     /// needs `max(1, len.div_ceil(IVC_SLOT_FRAGMENT_CAPACITY))` slots when each
-    /// call supplies a full fragment except for the last one.
+    /// call supplies a full fragment except for the last one. An ivshmem
+    /// endpoint whose session is no longer current reports zero capacity; its
+    /// next slot publication returns [`IvcMessageError::SessionLost`].
     pub fn available_slots(&self) -> usize {
         self.producer.available_slots()
     }
@@ -97,7 +103,10 @@ impl<'a> IvcMessageSender<'a> {
     /// Returns [`IvcMessageError::NoMessageInProgress`] unless
     /// [`Self::start_message`] has started a message. Returns
     /// [`IvcMessageError::InputExceedsRemaining`] without publishing input if
-    /// the supplied slice is longer than the declared unsent payload.
+    /// the supplied slice is longer than the declared unsent payload. An
+    /// ivshmem session reset returns [`IvcMessageError::SessionLost`], and an
+    /// invalid peer cursor window returns
+    /// [`IvcMessageError::CursorOutOfRange`].
     pub fn try_write(&mut self, input: &[u8]) -> Result<IvcSendProgress, IvcMessageError> {
         let SendState::Sending(mut sending) = self.state else {
             return Err(IvcMessageError::NoMessageInProgress);
@@ -124,8 +133,10 @@ impl<'a> IvcMessageSender<'a> {
             let complete = next_sent == sending.meta.len();
             let fragment = &input[consumed..consumed + fragment_len];
             let slot = encode_message_slot(sending, complete, fragment)?;
-            if self.producer.try_push_slot(&slot).is_err() {
-                break;
+            match self.producer.try_push_slot(&slot) {
+                Ok(()) => {}
+                Err(IvcSlotError::Full) => break,
+                Err(error) => return Err(slot_error(error)),
             }
 
             sending.sent = next_sent;
@@ -153,6 +164,8 @@ impl<'a> IvcMessageSender<'a> {
     /// Returns [`IvcMessageError::NoMessageInProgress`] if the sender is idle,
     /// or [`IvcMessageError::SlotFull`] if an `ABORT` slot is required but the
     /// ring is full. A full ring leaves the send active so the caller can retry.
+    /// An ivshmem session reset or invalid cursor window returns its explicit
+    /// error and also leaves the send active.
     pub fn try_abort(&mut self) -> Result<(), IvcMessageError> {
         let SendState::Sending(sending) = self.state else {
             return Err(IvcMessageError::NoMessageInProgress);
@@ -174,9 +187,7 @@ impl<'a> IvcMessageSender<'a> {
             },
             &[],
         )?;
-        self.producer
-            .try_push_slot(&slot)
-            .map_err(|_| IvcMessageError::SlotFull)?;
+        self.producer.try_push_slot(&slot).map_err(slot_error)?;
         self.state = SendState::Idle;
         Ok(())
     }
@@ -186,8 +197,10 @@ impl<'a> IvcMessageSender<'a> {
         sending: SendingMessage,
     ) -> Result<IvcSendProgress, IvcMessageError> {
         let slot = encode_message_slot(sending, true, &[])?;
-        if self.producer.try_push_slot(&slot).is_err() {
-            return Ok(IvcSendProgress::new(0, 0, false));
+        match self.producer.try_push_slot(&slot) {
+            Ok(()) => {}
+            Err(IvcSlotError::Full) => return Ok(IvcSendProgress::new(0, 0, false)),
+            Err(error) => return Err(slot_error(error)),
         }
         self.state = SendState::Idle;
         Ok(IvcSendProgress::new(0, 1, true))

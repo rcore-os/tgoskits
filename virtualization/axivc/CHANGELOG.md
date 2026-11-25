@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata, output-buffer exhaustion, and transfer aborts.
 - Added streaming, malformed-input, long-message, SPSC concurrency, and
   ArceOS full-duplex coverage.
+- Added `IvshmemMessagePort`, an owner-writable/peer-read-only ivshmem
+  transport that reuses Message V1 with incarnation-based session validation.
 
 ### Changed
 

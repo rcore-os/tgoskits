@@ -8,18 +8,20 @@ publish = false
 [features]
 default = []
 arceos = [
-  "dep:ax-mm",
   "dep:ax-std",
+  "arceos-ivshmem-pci/arceos",
   "ax-std/arceos",
   "ax-std/paging",
   "ax-std/alloc",
 ]
 
 [dependencies]
-ax-mm = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }
-axhvc = { workspace = true }
-axivc = { workspace = true }
+arceos-ivshmem-pci = { path = "../ivshmem-pci", default-features = false }
+
+[lib]
+name = "arceos_ivc_subscriber"
+path = "src/lib.rs"
 
 [package.metadata.axstd]
 features = ["log-level-info"]

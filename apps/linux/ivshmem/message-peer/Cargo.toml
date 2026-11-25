@@ -1,0 +1,20 @@
+[package]
+name = "linux-ivshmem-subscriber"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "linux-ivshmem-subscriber"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true, features = ["std"] }
+arceos-ivc-subscriber = { path = "../../../arceos/ivc_subscriber", default-features = false }
+arceos-ivshmem-pci = { path = "../../../arceos/ivshmem-pci", default-features = false }
+axivc.workspace = true
+libc.workspace = true
+
+[build-dependencies]
+cc.workspace = true

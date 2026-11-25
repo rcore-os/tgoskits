@@ -10,32 +10,16 @@ fn main() {
     publisher::run();
 }
 
-#[cfg(feature = "arceos")]
-mod demo_config {
-    pub const CHANNEL_KEY: usize = 0x4956_4301;
-    pub const CHANNEL_SIZE: usize = 0x1_0000;
-    pub const NOTIFY_IRQ: Option<usize> = Some(160);
-    pub const PUBLISHER_VM_ID: usize = 1;
-    pub const SUBSCRIBER_VM_ID: usize = 2;
-}
-
 #[cfg(not(feature = "arceos"))]
 fn main() {}
 
 #[cfg(feature = "arceos")]
 mod publisher {
-    use core::{cell::UnsafeCell, result::Result::Err, sync::atomic::AtomicU64};
-
+    use arceos_ivshmem_pci::{IvcDevice, IvcEndpoint, IvcPeerRole, MessageRecordEndpoint};
     use ax_std::{
-        os::arceos::modules::ax_hal::{
-            irq,
-            mem::{PhysAddr, VirtAddr, virt_to_phys},
-        },
-        println, thread,
-    };
-    use axhvc::ivc::{self, IvcGuestPhysAddr};
-    use axivc::{
-        IvcMessageReceiver, IvcMessageSender, IvcPeerEventWaiter, IvcRegion, record_peer_event,
+        format, println,
+        string::{String, ToString},
+        time::{Duration, Instant},
     };
 
     const ARCEOS_ACK_BODY: &[u8] = b"ack from arceos subscriber";
@@ -46,241 +30,284 @@ mod publisher {
     const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [231, 232, 233, 7424, 7484];
     const SUBSCRIBER_DATA_MESSAGE_LENGTHS: [usize; 3] = [233, 7425, 7484];
     const PUBLISH_COUNT: u64 = REQUEST_MESSAGE_LENGTHS.len() as u64;
-    static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
-
-    use crate::demo_config;
+    const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+    const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
 
     pub fn run() {
-        let shm_base_gpa = HyperCallOutputValue::new(0);
-        let shm_size = HyperCallOutputValue::new(demo_config::CHANNEL_SIZE);
-        let shm_base_gpa_ptr = shm_base_gpa.guest_phys_addr();
-        let shm_size_ptr = shm_size.guest_phys_addr();
-
-        if let Err(err) =
-            ivc::publish_channel(demo_config::CHANNEL_KEY, shm_base_gpa_ptr, shm_size_ptr)
-        {
-            println!("ivc publish failed: {err}");
-            return;
-        }
-        let shm_base_gpa = shm_base_gpa.read();
-        let shm_size = shm_size.read();
-        if shm_size < core::mem::size_of::<IvcRegion>() {
+        println!("ivc publisher backend=IvshmemPci");
+        if let Err(error) = run_inner() {
             println!(
-                "ivc publish failed: shared page too small size={} need={}",
-                shm_size,
-                core::mem::size_of::<IvcRegion>()
+                "ivc session failed backend=ivshmem-pci role={}: {error}",
+                IvcPeerRole::Publisher.as_str()
             );
-            return;
-        }
-
-        println!("ivc publish ok base={shm_base_gpa:#x} size={shm_size}");
-        let Some(region) = shared_region(shm_base_gpa, shm_size) else {
-            println!("ivc publish failed: map shared page base={shm_base_gpa:#x}");
-            return;
-        };
-        // SAFETY: publish_channel created fresh backing whose full range was
-        // zeroed and whose host header was installed before publication. This
-        // demo publisher is the unique initializer and has created no endpoint.
-        // A subscriber may poll the atomic protocol header, but attaches only
-        // after the final magic is published by this call.
-        unsafe { region.initialize() };
-        // SAFETY: initialization completed above. This app creates the unique
-        // publisher role once, keeps the mapping valid until both tasks finish,
-        // and never resets the region during this run.
-        let (publish_producer, publish_consumer) =
-            unsafe { region.publisher_endpoints() }.into_parts();
-        let irq_enabled = register_notify_irq();
-
-        // Each task owns its waiter: `IvcPeerEventWaiter` tracks the observed
-        // event count internally, so sharing one waiter would let one task
-        // consume IRQ observations meant to wake the other.
-        let sender = thread::spawn(move || {
-            let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
-            sender_task(publish_producer, &waiter);
-        });
-        let receiver = thread::spawn(move || {
-            let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
-            receiver_task(publish_consumer, &waiter);
-        });
-
-        sender.join().expect("sender thread panicked");
-        receiver.join().expect("receiver thread panicked");
-
-        println!("ivc full-duplex demo complete");
-    }
-
-    /// Sends messages spanning one-slot, fragment-boundary, ring-boundary, and
-    /// backpressured lengths without waiting for individual acknowledgements.
-    fn sender_task(mut sender: IvcMessageSender<'_>, waiter: &IvcPeerEventWaiter<'_>) {
-        let mut payload = [0u8; APP_MAX_MESSAGE_LEN];
-        let mut subscriber_ready = false;
-        for (index, &message_len) in REQUEST_MESSAGE_LENGTHS.iter().enumerate() {
-            let sequence = index as u64 + 1;
-            let message = &mut payload[..message_len];
-            if !encode_pattern_message(message, AppMessageKind::Request, sequence) {
-                println!("ivc validation failed: cannot encode request seq={sequence}");
-                return;
-            }
-            if !send_payload(&mut sender, message, waiter, &mut subscriber_ready) {
-                return;
-            }
-            println!("ivc send seq={sequence} len={message_len}");
         }
     }
 
-    /// Receives independently sequenced Data and Ack messages and rejects any
-    /// duplicate, gap, reorder, length mismatch, or body corruption.
-    fn receiver_task(mut receiver: IvcMessageReceiver<'_>, waiter: &IvcPeerEventWaiter<'_>) {
-        let mut payload = [0u8; APP_MAX_MESSAGE_LEN];
-        let mut received = 0;
-        let mut expected_ack_sequence = 1u64;
-        let mut expected_data_sequence = 1u64;
-        loop {
-            if received == 0 {
-                match receiver.peek_message_meta() {
-                    Ok(Some(meta)) if message_fits(meta.len(), payload.len()) => {}
-                    Ok(Some(meta)) => {
-                        println!("ivc recv error oversized message len={}", meta.len());
-                        return;
-                    }
-                    Ok(None) => {
-                        waiter.wait_for_peer_event();
-                        continue;
-                    }
-                    Err(err) => {
-                        println!("ivc recv error {err:?}");
-                        return;
-                    }
+    fn run_inner() -> Result<(), String> {
+        let mut device = IvcDevice::open(IvcPeerRole::Publisher).map_err(stringify)?;
+        let device_info = device.info();
+        println!(
+            "ivc publisher backend=ivshmem-pci peer={} max_peers={} event_mode=event-status-poll \
+             msi_x=unavailable",
+            device_info.peer_id(),
+            device_info.max_peers()
+        );
+
+        let pending = device.open_endpoint().map_err(stringify)?;
+        let pending_info = pending.info();
+        println!(
+            "ivc session marker=waiting backend=ivshmem-pci role=publisher peer={} \
+             local_incarnation={} phase=before-peer",
+            pending_info.device().peer_id(),
+            pending_info.local_incarnation()
+        );
+
+        let mut endpoint = pending.wait_ready(SESSION_TIMEOUT).map_err(stringify)?;
+        let ready = endpoint.info();
+        println!(
+            "ivc session marker=ready backend=ivshmem-pci role=publisher peer={} \
+             local_incarnation={} peer_incarnation={}",
+            ready.device().peer_id(),
+            ready.local_incarnation(),
+            ready.peer_incarnation()
+        );
+        let mut event_observed = ready.observed_event();
+        if event_observed {
+            println!("ivc session event backend=ivshmem-pci source=event-status");
+        }
+
+        let mut sender = RequestSender::new();
+        let mut receiver = ResponseReceiver::new();
+        let started = Instant::now();
+
+        while !sender.is_complete() || !receiver.is_complete() {
+            let sent = sender.poll(&mut endpoint)?;
+            let received = receiver.poll(&mut endpoint)?;
+            if !sent && !received {
+                let observed = endpoint.wait_for_progress().map_err(stringify)?;
+                if observed && !event_observed {
+                    println!("ivc session event backend=ivshmem-pci source=event-status");
+                }
+                event_observed |= observed;
+            }
+            if sender.is_complete() && receiver.is_complete() {
+                break;
+            }
+            if started.elapsed() >= TRANSFER_TIMEOUT {
+                return Err(format!(
+                    "full-duplex exchange timed out sent={} received_acks={} received_data={}",
+                    sender.sent_count(),
+                    receiver.ack_count(),
+                    receiver.data_count()
+                ));
+            }
+        }
+
+        println!(
+            "ivc session marker=complete backend=ivshmem-pci role=publisher peer={}",
+            ready.device().peer_id()
+        );
+        println!("ivc full-duplex demo complete backend=ivshmem-pci");
+        Ok(())
+    }
+
+    struct RequestSender {
+        payload: [u8; APP_MAX_MESSAGE_LEN],
+        next_request: usize,
+        active_len: usize,
+        consumed: usize,
+    }
+
+    impl RequestSender {
+        fn new() -> Self {
+            Self {
+                payload: [0; APP_MAX_MESSAGE_LEN],
+                next_request: 0,
+                active_len: 0,
+                consumed: 0,
+            }
+        }
+
+        fn poll(&mut self, endpoint: &mut IvcEndpoint<'_>) -> Result<bool, String> {
+            if self.is_complete() {
+                return Ok(false);
+            }
+            if self.active_len == 0 {
+                self.start_next(endpoint)?;
+            }
+
+            let mut wrote = false;
+            loop {
+                let progress = endpoint
+                    .write_record(&self.payload[self.consumed..self.active_len])
+                    .map_err(stringify)?;
+                self.consumed += progress.transferred();
+                wrote |= progress.progressed();
+                if progress.is_complete() {
+                    let sequence = self.next_request as u64 + 1;
+                    println!("ivc send seq={sequence} len={}", self.active_len);
+                    self.next_request += 1;
+                    self.active_len = 0;
+                    self.consumed = 0;
+                    return Ok(true);
+                }
+                if !progress.progressed() {
+                    return Ok(wrote);
                 }
             }
+        }
 
-            match receiver.try_read(&mut payload[received..]) {
-                Ok(progress) => {
-                    received += progress.written();
-                    if progress.consumed_slots() > 0 {
-                        notify_subscriber();
-                    }
-                    if progress.is_complete() {
-                        let Some(message) = decode_app_message(&payload[..received]) else {
-                            println!("ivc recv error malformed application payload");
-                            return;
-                        };
-                        match message.kind {
-                            AppMessageKind::Ack => {
-                                if message.sequence != expected_ack_sequence
-                                    || (message.body != ARCEOS_ACK_BODY
-                                        && message.body != LINUX_ACK_BODY)
-                                {
-                                    println!(
-                                        "ivc validation failed: ack expected={} actual={} len={}",
-                                        expected_ack_sequence,
-                                        message.sequence,
-                                        message.body.len()
-                                    );
-                                    return;
-                                }
-                                if expected_ack_sequence == PUBLISH_COUNT
-                                    && expected_data_sequence
-                                        != SUBSCRIBER_DATA_MESSAGE_LENGTHS.len() as u64 + 1
-                                {
-                                    println!(
-                                        "ivc validation failed: missing subscriber data \
-                                         expected={}",
-                                        expected_data_sequence
-                                    );
-                                    return;
-                                }
-                                let text =
-                                    core::str::from_utf8(message.body).unwrap_or("<non-utf8>");
-                                println!("ivc ack seq={} msg={text}", message.sequence);
-                                expected_ack_sequence += 1;
-                                if expected_ack_sequence == PUBLISH_COUNT + 1 {
-                                    return;
-                                }
-                            }
-                            AppMessageKind::Data => {
-                                let Some(&expected_len) = SUBSCRIBER_DATA_MESSAGE_LENGTHS
-                                    .get((expected_data_sequence - 1) as usize)
-                                else {
-                                    println!(
-                                        "ivc validation failed: unexpected subscriber data seq={}",
-                                        message.sequence
-                                    );
-                                    return;
-                                };
-                                if !validate_pattern_message(
-                                    &message,
-                                    AppMessageKind::Data,
-                                    expected_data_sequence,
-                                    expected_len,
-                                ) {
-                                    println!(
-                                        "ivc validation failed: subscriber data expected={} \
-                                         actual={} len={}",
-                                        expected_data_sequence, message.sequence, received
-                                    );
-                                    return;
-                                }
-                                let text =
-                                    core::str::from_utf8(message.body).unwrap_or("<non-utf8>");
-                                println!(
-                                    "ivc recv data seq={} len={received} msg={text}",
-                                    message.sequence
-                                );
-                                expected_data_sequence += 1;
-                            }
-                            AppMessageKind::Request => {
-                                println!("ivc validation failed: unexpected Request on reply ring");
-                                return;
-                            }
+        fn start_next(&mut self, endpoint: &mut IvcEndpoint<'_>) -> Result<(), String> {
+            let sequence = self.next_request as u64 + 1;
+            let message_len = REQUEST_MESSAGE_LENGTHS[self.next_request];
+            if !encode_pattern_message(
+                &mut self.payload[..message_len],
+                AppMessageKind::Request,
+                sequence,
+            ) {
+                return Err(format!("cannot encode request seq={sequence}"));
+            }
+            endpoint
+                .start_record(message_len as u64)
+                .map_err(stringify)?;
+            self.active_len = message_len;
+            self.consumed = 0;
+            Ok(())
+        }
+
+        const fn is_complete(&self) -> bool {
+            self.next_request == REQUEST_MESSAGE_LENGTHS.len()
+        }
+
+        const fn sent_count(&self) -> usize {
+            self.next_request
+        }
+    }
+
+    struct ResponseReceiver {
+        payload: [u8; APP_MAX_MESSAGE_LEN],
+        received: usize,
+        expected_ack_sequence: u64,
+        expected_data_sequence: u64,
+        complete: bool,
+    }
+
+    impl ResponseReceiver {
+        fn new() -> Self {
+            Self {
+                payload: [0; APP_MAX_MESSAGE_LEN],
+                received: 0,
+                expected_ack_sequence: 1,
+                expected_data_sequence: 1,
+                complete: false,
+            }
+        }
+
+        fn poll(&mut self, endpoint: &mut IvcEndpoint<'_>) -> Result<bool, String> {
+            if self.complete {
+                return Ok(false);
+            }
+            let mut progressed = false;
+            loop {
+                if self.received == 0 {
+                    match endpoint.peek_record_len().map_err(stringify)? {
+                        Some(message_len) if message_fits(message_len, self.payload.len()) => {}
+                        Some(message_len) => {
+                            return Err(format!("oversized reply message len={message_len}"));
                         }
-                        received = 0;
-                    } else if progress.consumed_slots() == 0 {
-                        waiter.wait_for_peer_event();
+                        None => return Ok(progressed),
                     }
                 }
-                Err(err) => {
-                    println!("ivc recv ack error {err:?}");
-                    return;
+
+                let progress = endpoint
+                    .read_record(&mut self.payload[self.received..])
+                    .map_err(stringify)?;
+                self.received += progress.transferred();
+                progressed |= progress.progressed();
+                if progress.is_complete() {
+                    self.validate_message()?;
+                    self.received = 0;
+                    if self.complete {
+                        return Ok(true);
+                    }
+                } else if !progress.progressed() {
+                    return Ok(progressed);
                 }
             }
         }
-    }
 
-    fn send_payload(
-        sender: &mut IvcMessageSender<'_>,
-        payload: &[u8],
-        waiter: &IvcPeerEventWaiter<'_>,
-        peer_ready: &mut bool,
-    ) -> bool {
-        if let Err(err) = sender.start_message(payload.len() as u64) {
-            println!("ivc send error {err:?}");
-            return false;
-        }
-
-        let mut consumed = 0;
-        loop {
-            match sender.try_write(&payload[consumed..]) {
-                Ok(progress) => {
-                    consumed += progress.consumed();
-                    if progress.published_slots() > 0 {
-                        if *peer_ready {
-                            notify_subscriber();
-                        }
-                        *peer_ready = true;
+        fn validate_message(&mut self) -> Result<(), String> {
+            let message = decode_app_message(&self.payload[..self.received])
+                .ok_or("malformed application reply payload")?;
+            match message.kind {
+                AppMessageKind::Ack => {
+                    if message.sequence != self.expected_ack_sequence
+                        || (message.body != ARCEOS_ACK_BODY && message.body != LINUX_ACK_BODY)
+                    {
+                        return Err(format!(
+                            "ack expected={} actual={} len={}",
+                            self.expected_ack_sequence,
+                            message.sequence,
+                            message.body.len()
+                        ));
                     }
-                    if progress.is_complete() {
-                        return true;
+                    if self.expected_ack_sequence == PUBLISH_COUNT
+                        && self.expected_data_sequence
+                            != SUBSCRIBER_DATA_MESSAGE_LENGTHS.len() as u64 + 1
+                    {
+                        return Err(format!(
+                            "missing subscriber data expected={}",
+                            self.expected_data_sequence
+                        ));
                     }
-                    if progress.published_slots() == 0 {
-                        waiter.wait_for_peer_event();
+                    let text = core::str::from_utf8(message.body).unwrap_or("<non-utf8>");
+                    println!("ivc ack seq={} msg={text}", message.sequence);
+                    self.expected_ack_sequence += 1;
+                    if self.expected_ack_sequence == PUBLISH_COUNT + 1 {
+                        self.complete = true;
                     }
                 }
-                Err(err) => {
-                    println!("ivc send error {err:?}");
-                    return false;
+                AppMessageKind::Data => {
+                    let expected_len = *SUBSCRIBER_DATA_MESSAGE_LENGTHS
+                        .get((self.expected_data_sequence - 1) as usize)
+                        .ok_or_else(|| {
+                            format!("unexpected subscriber data seq={}", message.sequence)
+                        })?;
+                    if !validate_pattern_message(
+                        &message,
+                        AppMessageKind::Data,
+                        self.expected_data_sequence,
+                        expected_len,
+                    ) {
+                        return Err(format!(
+                            "subscriber data expected={} actual={} len={}",
+                            self.expected_data_sequence, message.sequence, self.received
+                        ));
+                    }
+                    let text = core::str::from_utf8(message.body).unwrap_or("<non-utf8>");
+                    println!(
+                        "ivc recv data seq={} len={} msg={text}",
+                        message.sequence, self.received
+                    );
+                    self.expected_data_sequence += 1;
+                }
+                AppMessageKind::Request => {
+                    return Err("unexpected Request on reply ring".into());
                 }
             }
+            Ok(())
+        }
+
+        const fn is_complete(&self) -> bool {
+            self.complete
+        }
+
+        const fn ack_count(&self) -> u64 {
+            self.expected_ack_sequence - 1
+        }
+
+        const fn data_count(&self) -> u64 {
+            self.expected_data_sequence - 1
         }
     }
 
@@ -370,84 +397,7 @@ mod publisher {
         body: &'a [u8],
     }
 
-    fn notify_subscriber() {
-        if let Err(err) = ivc::notify_channel(
-            demo_config::PUBLISHER_VM_ID,
-            demo_config::CHANNEL_KEY,
-            demo_config::SUBSCRIBER_VM_ID,
-        ) {
-            println!("ivc notify warning: {err}");
-        }
-    }
-
-    fn register_notify_irq() -> bool {
-        let Some(raw_irq) = demo_config::NOTIFY_IRQ else {
-            return false;
-        };
-        match notify_irq_id(raw_irq)
-            .and_then(|irq_id| irq::request_shared_irq(irq_id, notify_irq_handler).map(|_| irq_id))
-        {
-            Ok(irq_id) => {
-                println!("ivc notify irq enabled irq={irq_id:?}");
-                true
-            }
-            Err(err) => {
-                println!("ivc notify irq disabled raw={raw_irq} err={err:?}");
-                false
-            }
-        }
-    }
-
-    fn notify_irq_handler(_ctx: irq::IrqContext) -> irq::IrqReturn {
-        record_peer_event(&NOTIFY_IRQ_COUNT);
-        irq::IrqReturn::Handled
-    }
-
-    fn notify_irq_id(raw_irq: usize) -> Result<irq::IrqId, irq::IrqError> {
-        #[cfg(target_arch = "aarch64")]
-        {
-            let gsi = u32::try_from(raw_irq).map_err(|_| irq::IrqError::InvalidIrq)?;
-            irq::resolve_irq_source(irq::IrqSource::AcpiGsi(gsi))
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            irq::try_legacy_irq(raw_irq)
-        }
-    }
-
-    struct HyperCallOutputValue {
-        value: UnsafeCell<usize>,
-    }
-
-    impl HyperCallOutputValue {
-        const fn new(value: usize) -> Self {
-            Self {
-                value: UnsafeCell::new(value),
-            }
-        }
-
-        fn guest_phys_addr(&self) -> IvcGuestPhysAddr {
-            let vaddr = VirtAddr::from_usize(self.value.get().addr());
-            IvcGuestPhysAddr::new(virt_to_phys(vaddr).as_usize())
-        }
-
-        fn read(&self) -> usize {
-            unsafe {
-                // Axvisor writes this value through the guest physical address
-                // passed to the hypercall; use a volatile read to observe it.
-                core::ptr::read_volatile(self.value.get())
-            }
-        }
-    }
-
-    fn shared_region(shm_base_gpa: usize, shm_size: usize) -> Option<&'static IvcRegion> {
-        let vaddr = ax_mm::iomap(PhysAddr::from_usize(shm_base_gpa), shm_size).ok()?;
-        // SAFETY: the HVC mapping is valid and page-aligned, and `run` checked
-        // that its size covers `IvcRegion`. Axvisor zeroed the entire fresh
-        // backing before writing the publisher_id/key host header, so every
-        // field has a valid initial bit pattern. The host header is not changed
-        // after publication, and the mapping remains valid for this run. Shared
-        // access is required so peers may poll atomic protocol metadata.
-        unsafe { Some(&*(vaddr.as_ptr() as *const IvcRegion)) }
+    fn stringify(error: impl ToString) -> String {
+        error.to_string()
     }
 }

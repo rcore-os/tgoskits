@@ -74,7 +74,17 @@ impl X86_64Arch {
                     std::sync::Arc::clone(&binding),
                 )))
             })?;
-            resources.prepare_guest_address_space(vm_id, config, &ARCH_OWNED_REGIONS)?;
+            resources.prepare_guest_address_space(
+                vm_id,
+                config,
+                &ARCH_OWNED_REGIONS,
+                &devices
+                    .devices()
+                    .direct_mappings()
+                    .iter()
+                    .map(|(_, mapping)| *mapping)
+                    .collect::<std::vec::Vec<_>>(),
+            )?;
             resources.map_arch_address_space()?;
             let intercepted_ports = resources.resolved_port_intercepts()?;
             let intercepted_mmio = resources.resolved_mmio_intercepts()?;
@@ -177,6 +187,7 @@ fn plan_devices(
         &controller_id,
         axdevice_base::InterruptControllerId::new(0),
         Some(super::pci_config::host_key()),
+        None,
     )?;
     Ok(SimpleVmPlan::new(VmDevicePlan::with_pci_host_for_vm(
         config,
@@ -256,6 +267,7 @@ impl AxVMResources {
         if x86_requires_apic_access_page()? {
             let gpa = x86_apic_access_page_gpa()?;
             self.address_space
+                .lock_irqsave()
                 .map_linear(
                     gpa,
                     x86_apic_access_page_addr()?,

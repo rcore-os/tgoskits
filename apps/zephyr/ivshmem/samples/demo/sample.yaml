@@ -1,0 +1,6 @@
+sample:
+  name: TGOS IVC functional demo
+tests:
+  sample.tgos_ivc.demo:
+    tags: ivc
+    platform_allow: orangepi_5_plus_rk3588

@@ -10,507 +10,135 @@ fn main() {
     subscriber::run();
 }
 
-#[cfg(feature = "arceos")]
-mod demo_config {
-    pub const CHANNEL_KEY: usize = 0x4956_4301;
-    pub const NOTIFY_IRQ: Option<usize> = Some(160);
-    pub const PUBLISHER_VM_ID: usize = 1;
-    pub const SUBSCRIBER_VM_ID: usize = 2;
-}
-
 #[cfg(not(feature = "arceos"))]
 fn main() {}
 
 #[cfg(feature = "arceos")]
 mod subscriber {
-    use core::{
-        cell::UnsafeCell,
-        option::Option::{None, Some},
-        result::Result::{Err, Ok},
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
+    use arceos_ivc_subscriber::{MessageDemoEvent, MessageDemoSubscriber};
+    use arceos_ivshmem_pci::{IvcDevice, IvcPeerRole};
     use ax_std::{
-        os::arceos::modules::ax_hal::{
-            irq,
-            mem::{PhysAddr, VirtAddr, virt_to_phys},
-        },
-        println, thread,
+        format, println,
+        string::{String, ToString},
         time::{Duration, Instant},
-    };
-    use axhvc::ivc::{self, IvcGuestPhysAddr};
-    use axivc::{
-        IvcMessageReceiver, IvcMessageSender, IvcPeerEventWaiter, IvcRegion, record_peer_event,
     };
 
     const ACK_BODY: &[u8] = b"ack from arceos subscriber";
-    const APP_HEADER_LEN: usize = 11;
-    // Exercise single-fragment and full-ring payload boundaries.
-    const APP_MAX_MESSAGE_LEN: usize = 7484;
-    const ACK_MESSAGE_LEN: usize = APP_HEADER_LEN + ACK_BODY.len();
-    const DATA_MESSAGE_LENGTHS: [usize; 3] = [233, 7425, 7484];
-    const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [231, 232, 233, 7424, 7484];
-    const CHANNEL_READY_TIMEOUT: Duration = Duration::from_secs(30);
-    const CHANNEL_RETRY_DELAY: Duration = Duration::from_millis(100);
-    const PUBLISH_COUNT: u64 = REQUEST_MESSAGE_LENGTHS.len() as u64;
-    const SUBSCRIBE_DATA_COUNT: u64 = DATA_MESSAGE_LENGTHS.len() as u64;
-    static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
-    /// Highest publisher sequence received so far. Publisher sequences are
-    /// contiguous, so one monotonic counter covers every pending ack.
-    static HIGHEST_RECV_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    use crate::demo_config;
+    const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+    const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
 
     pub fn run() {
-        let irq_enabled = register_notify_irq();
-        let Some((shm_base_gpa, shm_size)) = subscribe_with_retry() else {
-            println!("ivc subscribe failed: timed out waiting for publisher channel");
-            return;
-        };
+        if let Err(error) = run_inner() {
+            println!(
+                "ivc session failed backend=ivshmem-pci role={}: {error}",
+                IvcPeerRole::Subscriber.as_str()
+            );
+        }
+    }
+
+    fn run_inner() -> Result<(), String> {
+        let mut device = IvcDevice::open(IvcPeerRole::Subscriber).map_err(stringify)?;
+        let device_info = device.info();
+        println!(
+            "ivc subscriber backend=ivshmem-pci peer={} max_peers={} event_mode=event-status-poll \
+             msi_x=unavailable",
+            device_info.peer_id(),
+            device_info.max_peers()
+        );
+
+        let pending = device.open_endpoint().map_err(stringify)?;
+        let pending_info = pending.info();
+        println!(
+            "ivc session marker=waiting backend=ivshmem-pci role=subscriber peer={} \
+             local_incarnation={} phase=after-publisher",
+            pending_info.device().peer_id(),
+            pending_info.local_incarnation()
+        );
+
+        let endpoint = pending.wait_ready(SESSION_TIMEOUT).map_err(stringify)?;
+        let ready = endpoint.info();
+        println!(
+            "ivc session marker=ready backend=ivshmem-pci role=subscriber peer={} \
+             local_incarnation={} peer_incarnation={}",
+            ready.device().peer_id(),
+            ready.local_incarnation(),
+            ready.peer_incarnation()
+        );
+        let mut event_observed = ready.observed_event();
+        if event_observed {
+            println!("ivc session event backend=ivshmem-pci source=event-status");
+        }
+
+        let mut subscriber = MessageDemoSubscriber::new(endpoint, ACK_BODY).map_err(stringify)?;
+        let started = Instant::now();
+
+        while !subscriber.is_complete() {
+            let outcome = subscriber.poll(print_event).map_err(stringify)?;
+            if !outcome.progressed() {
+                let observed = subscriber.wait_for_progress().map_err(stringify)?;
+                if observed && !event_observed {
+                    println!("ivc session event backend=ivshmem-pci source=event-status");
+                }
+                event_observed |= observed;
+            }
+
+            if outcome.is_complete() {
+                break;
+            }
+            if started.elapsed() >= TRANSFER_TIMEOUT {
+                return Err(format!(
+                    "full-duplex exchange timed out sent_data={} acked={} received_requests={}",
+                    subscriber.data_count(),
+                    subscriber.ack_count(),
+                    subscriber.request_count()
+                ));
+            }
+        }
+
+        while !subscriber.outbound_drained().map_err(stringify)? {
+            if started.elapsed() >= TRANSFER_TIMEOUT {
+                return Err(format!(
+                    "ACK delivery timed out sent_data={} acked={} received_requests={}",
+                    subscriber.data_count(),
+                    subscriber.ack_count(),
+                    subscriber.request_count()
+                ));
+            }
+            let observed = subscriber.wait_for_progress().map_err(stringify)?;
+            if observed && !event_observed {
+                println!("ivc session event backend=ivshmem-pci source=event-status");
+            }
+            event_observed |= observed;
+        }
 
         println!(
-            "ivc subscribe ok subscriber={} base={shm_base_gpa:#x} size={shm_size}",
-            demo_config::SUBSCRIBER_VM_ID
+            "ivc session marker=complete backend=ivshmem-pci role=subscriber peer={}",
+            ready.device().peer_id()
         );
-        if shm_size < core::mem::size_of::<IvcRegion>() {
-            println!(
-                "ivc subscribe failed: shared page too small size={} need={}",
-                shm_size,
-                core::mem::size_of::<IvcRegion>()
-            );
-            return;
-        }
-
-        let Some(region) = shared_region(shm_base_gpa, shm_size) else {
-            println!("ivc subscribe failed: map shared page base={shm_base_gpa:#x}");
-            return;
-        };
-        if !region.channel_header_matches(demo_config::PUBLISHER_VM_ID, demo_config::CHANNEL_KEY) {
-            println!(
-                "ivc subscribe failed: unexpected header publisher/key for base={shm_base_gpa:#x}"
-            );
-            return;
-        }
-        if !wait_for_protocol_header(region) {
-            println!("ivc subscribe failed: unsupported Message V1 protocol header");
-            return;
-        }
-
-        let region: &'static IvcRegion = region;
-        // SAFETY: wait_for_protocol_header observed the matching header with
-        // Acquire. The publisher initializes this fresh channel once and never
-        // resets it during the demo; this app is the unique subscriber. The
-        // mapping stays valid and both endpoints remain until their tasks join.
-        let (reply_producer, request_consumer) =
-            unsafe { region.subscriber_endpoints() }.into_parts();
-
-        // Each task owns its waiter: `IvcPeerEventWaiter` tracks the observed
-        // event count internally, so sharing one waiter would let one task
-        // consume IRQ observations meant to wake the other.
-        let sender = thread::spawn(move || {
-            let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
-            sender_task(reply_producer, &waiter);
-        });
-        let receiver = thread::spawn(move || {
-            let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
-            receiver_task(request_consumer, &waiter);
-        });
-
-        sender.join().expect("sender thread panicked");
-        receiver.join().expect("receiver thread panicked");
-
-        println!("ivc subscriber full-duplex demo complete");
+        println!("ivc subscriber full-duplex demo complete backend=ivshmem-pci");
+        Ok(())
     }
 
-    /// Waits for protocol initialization after the channel becomes subscribable.
-    /// `protocol_header_matches` pairs its Acquire observation with publication.
-    fn wait_for_protocol_header(region: &IvcRegion) -> bool {
-        let started = Instant::now();
-        loop {
-            if region.protocol_header_matches() {
-                return true;
+    fn print_event(event: MessageDemoEvent<'_>) {
+        match event {
+            MessageDemoEvent::RequestReceived {
+                sequence,
+                len,
+                body,
+            } => {
+                let text = core::str::from_utf8(body).unwrap_or("<non-utf8>");
+                println!("ivc recv request seq={sequence} len={len} msg={text}");
             }
-            if started.elapsed() >= CHANNEL_READY_TIMEOUT {
-                return false;
+            MessageDemoEvent::DataSent { sequence, len } => {
+                println!("ivc send data seq={sequence} len={len}");
             }
-            thread::sleep(CHANNEL_RETRY_DELAY);
-        }
-    }
-
-    fn subscribe_with_retry() -> Option<(usize, usize)> {
-        let started = Instant::now();
-        for attempt in 1.. {
-            let shm_base_gpa = HyperCallOutputValue::new(0);
-            let shm_size = HyperCallOutputValue::new(0);
-            let shm_base_gpa_ptr = shm_base_gpa.guest_phys_addr();
-            let shm_size_ptr = shm_size.guest_phys_addr();
-
-            match ivc::subscribe_channel(
-                demo_config::PUBLISHER_VM_ID,
-                demo_config::CHANNEL_KEY,
-                shm_base_gpa_ptr,
-                shm_size_ptr,
-            ) {
-                Ok(()) => return Some((shm_base_gpa.read(), shm_size.read())),
-                Err(err) => {
-                    if attempt == 1 || attempt % 10 == 0 {
-                        println!("ivc subscribe retry attempt={attempt} err={err}");
-                    }
-                    if started.elapsed() >= CHANNEL_READY_TIMEOUT {
-                        break;
-                    }
-                    thread::sleep(CHANNEL_RETRY_DELAY);
-                }
-            }
-        }
-        None
-    }
-
-    /// Sends independently sequenced Data and Ack messages on one Message V1
-    /// direction without interleaving their fragments.
-    fn sender_task(mut sender: IvcMessageSender<'_>, waiter: &IvcPeerEventWaiter<'_>) {
-        let mut data_payload = [0u8; APP_MAX_MESSAGE_LEN];
-        let mut sent_data = 0u64;
-        let mut last_acked_sequence = 0u64;
-        let mut publisher_ready = false;
-
-        loop {
-            if sent_data < SUBSCRIBE_DATA_COUNT {
-                let sequence = sent_data + 1;
-                let message_len = DATA_MESSAGE_LENGTHS[sent_data as usize];
-                let payload = &mut data_payload[..message_len];
-                if !encode_pattern_message(payload, AppMessageKind::Data, sequence) {
-                    println!("ivc validation failed: cannot encode data seq={sequence}");
-                    return;
-                }
-                if !send_payload(&mut sender, payload, waiter, &mut publisher_ready) {
-                    return;
-                }
-                sent_data = sequence;
-                println!("ivc send data seq={sent_data} len={message_len}");
-            }
-
-            let highest = HIGHEST_RECV_SEQ.load(Ordering::Acquire);
-            // The publisher treats the final ACK as completion of all Data.
-            let ready_ack = if sent_data < SUBSCRIBE_DATA_COUNT {
-                highest.min(PUBLISH_COUNT - 1)
-            } else {
-                highest
-            };
-            while last_acked_sequence < ready_ack {
-                let sequence = last_acked_sequence + 1;
-                let payload = encode_ack(sequence);
-                if !send_payload(&mut sender, &payload, waiter, &mut publisher_ready) {
-                    return;
-                }
-                last_acked_sequence = sequence;
-                println!("ivc ack pub seq={last_acked_sequence}");
-            }
-
-            if sent_data == SUBSCRIBE_DATA_COUNT && last_acked_sequence == PUBLISH_COUNT {
-                return;
-            }
-            waiter.wait_for_peer_event();
-        }
-    }
-
-    /// Receives publisher Requests and rejects any duplicate, gap, reorder,
-    /// length mismatch, kind mismatch, or body corruption.
-    fn receiver_task(mut receiver: IvcMessageReceiver<'_>, waiter: &IvcPeerEventWaiter<'_>) {
-        let mut payload = [0u8; APP_MAX_MESSAGE_LEN];
-        let mut received = 0;
-        let mut expected_sequence = 1u64;
-        loop {
-            if received == 0 {
-                match receiver.peek_message_meta() {
-                    Ok(Some(meta)) if message_fits(meta.len(), payload.len()) => {}
-                    Ok(Some(meta)) => {
-                        println!("ivc recv error oversized message len={}", meta.len());
-                        return;
-                    }
-                    Ok(None) => {
-                        waiter.wait_for_peer_event();
-                        continue;
-                    }
-                    Err(err) => {
-                        println!("ivc recv error {err:?}");
-                        return;
-                    }
-                }
-            }
-
-            match receiver.try_read(&mut payload[received..]) {
-                Ok(progress) => {
-                    received += progress.written();
-                    if progress.consumed_slots() > 0 {
-                        notify_publisher();
-                    }
-                    if progress.is_complete() {
-                        let Some(message) = decode_app_message(&payload[..received]) else {
-                            println!("ivc recv error malformed application payload");
-                            return;
-                        };
-                        let Some(&expected_len) =
-                            REQUEST_MESSAGE_LENGTHS.get((expected_sequence - 1) as usize)
-                        else {
-                            println!(
-                                "ivc validation failed: unexpected request seq={}",
-                                message.sequence
-                            );
-                            return;
-                        };
-                        if !validate_pattern_message(
-                            &message,
-                            AppMessageKind::Request,
-                            expected_sequence,
-                            expected_len,
-                        ) {
-                            println!(
-                                "ivc validation failed: request expected={} actual={} len={}",
-                                expected_sequence, message.sequence, received
-                            );
-                            return;
-                        }
-                        let text = core::str::from_utf8(message.body).unwrap_or("<non-utf8>");
-                        println!(
-                            "ivc recv request seq={} len={received} msg={text}",
-                            message.sequence
-                        );
-                        HIGHEST_RECV_SEQ.store(expected_sequence, Ordering::Release);
-                        expected_sequence += 1;
-                        if expected_sequence == PUBLISH_COUNT + 1 {
-                            return;
-                        }
-                        received = 0;
-                    } else if progress.consumed_slots() == 0 {
-                        waiter.wait_for_peer_event();
-                    }
-                }
-                Err(err) => {
-                    println!("ivc recv error {err:?}");
-                    return;
-                }
+            MessageDemoEvent::AckSent { sequence } => {
+                println!("ivc ack pub seq={sequence}");
             }
         }
     }
 
-    fn send_payload(
-        sender: &mut IvcMessageSender<'_>,
-        payload: &[u8],
-        waiter: &IvcPeerEventWaiter<'_>,
-        peer_ready: &mut bool,
-    ) -> bool {
-        if let Err(err) = sender.start_message(payload.len() as u64) {
-            println!("ivc send error {err:?}");
-            return false;
-        }
-
-        let mut consumed = 0;
-        loop {
-            match sender.try_write(&payload[consumed..]) {
-                Ok(progress) => {
-                    consumed += progress.consumed();
-                    if progress.published_slots() > 0 {
-                        if *peer_ready {
-                            notify_publisher();
-                        }
-                        *peer_ready = true;
-                    }
-                    if progress.is_complete() {
-                        return true;
-                    }
-                    if progress.published_slots() == 0 {
-                        waiter.wait_for_peer_event();
-                    }
-                }
-                Err(err) => {
-                    println!("ivc send error {err:?}");
-                    return false;
-                }
-            }
-        }
-    }
-
-    fn encode_pattern_message(payload: &mut [u8], kind: AppMessageKind, sequence: u64) -> bool {
-        let Some(body_len) = payload.len().checked_sub(APP_HEADER_LEN) else {
-            return false;
-        };
-        let Ok(body_len) = u16::try_from(body_len) else {
-            return false;
-        };
-        encode_app_header(payload, kind, sequence, body_len);
-        for (index, byte) in payload[APP_HEADER_LEN..].iter_mut().enumerate() {
-            *byte = pattern_byte(kind, sequence, index);
-        }
-        true
-    }
-
-    fn validate_pattern_message(
-        message: &AppMessage<'_>,
-        expected_kind: AppMessageKind,
-        expected_sequence: u64,
-        expected_len: usize,
-    ) -> bool {
-        message.kind == expected_kind
-            && message.sequence == expected_sequence
-            && APP_HEADER_LEN + message.body.len() == expected_len
-            && message
-                .body
-                .iter()
-                .enumerate()
-                .all(|(index, &byte)| byte == pattern_byte(expected_kind, expected_sequence, index))
-    }
-
-    fn pattern_byte(kind: AppMessageKind, sequence: u64, index: usize) -> u8 {
-        let pattern_index = (index as u8)
-            .wrapping_add(sequence as u8)
-            .wrapping_add((kind as u8).wrapping_mul(7));
-        b'a' + pattern_index % 26
-    }
-
-    fn encode_ack(sequence: u64) -> [u8; ACK_MESSAGE_LEN] {
-        let mut payload = [0u8; ACK_MESSAGE_LEN];
-        encode_app_header(
-            &mut payload,
-            AppMessageKind::Ack,
-            sequence,
-            ACK_BODY.len() as u16,
-        );
-        payload[APP_HEADER_LEN..].copy_from_slice(ACK_BODY);
-        payload
-    }
-
-    fn encode_app_header(payload: &mut [u8], kind: AppMessageKind, sequence: u64, body_len: u16) {
-        payload[0] = kind as u8;
-        payload[1..9].copy_from_slice(&sequence.to_le_bytes());
-        payload[9..APP_HEADER_LEN].copy_from_slice(&body_len.to_le_bytes());
-    }
-
-    fn message_fits(message_len: u64, capacity: usize) -> bool {
-        usize::try_from(message_len).is_ok_and(|len| len <= capacity)
-    }
-
-    fn decode_app_message(payload: &[u8]) -> Option<AppMessage<'_>> {
-        if payload.len() < APP_HEADER_LEN {
-            return None;
-        }
-        let kind = AppMessageKind::from_raw(payload[0])?;
-        let sequence = u64::from_le_bytes(payload[1..9].try_into().ok()?);
-        let body_len = u16::from_le_bytes(payload[9..APP_HEADER_LEN].try_into().ok()?) as usize;
-        let body_end = APP_HEADER_LEN.checked_add(body_len)?;
-        if body_end != payload.len() {
-            return None;
-        }
-        Some(AppMessage {
-            kind,
-            sequence,
-            body: &payload[APP_HEADER_LEN..body_end],
-        })
-    }
-
-    #[derive(Clone, Copy, Eq, PartialEq)]
-    #[repr(u8)]
-    enum AppMessageKind {
-        Request = 1,
-        Ack     = 2,
-        Data    = 3,
-    }
-
-    impl AppMessageKind {
-        const fn from_raw(raw: u8) -> Option<Self> {
-            match raw {
-                1 => Some(Self::Request),
-                2 => Some(Self::Ack),
-                3 => Some(Self::Data),
-                _ => None,
-            }
-        }
-    }
-
-    struct AppMessage<'a> {
-        kind: AppMessageKind,
-        sequence: u64,
-        body: &'a [u8],
-    }
-
-    fn notify_publisher() {
-        if let Err(err) = ivc::notify_channel(
-            demo_config::PUBLISHER_VM_ID,
-            demo_config::CHANNEL_KEY,
-            demo_config::PUBLISHER_VM_ID,
-        ) {
-            println!("ivc notify warning: {err}");
-        }
-    }
-
-    fn register_notify_irq() -> bool {
-        let Some(raw_irq) = demo_config::NOTIFY_IRQ else {
-            return false;
-        };
-        match notify_irq_id(raw_irq)
-            .and_then(|irq_id| irq::request_shared_irq(irq_id, notify_irq_handler).map(|_| irq_id))
-        {
-            Ok(irq_id) => {
-                println!("ivc notify irq enabled irq={irq_id:?}");
-                true
-            }
-            Err(err) => {
-                println!("ivc notify irq disabled raw={raw_irq} err={err:?}");
-                false
-            }
-        }
-    }
-
-    fn notify_irq_handler(_ctx: irq::IrqContext) -> irq::IrqReturn {
-        record_peer_event(&NOTIFY_IRQ_COUNT);
-        irq::IrqReturn::Handled
-    }
-
-    fn notify_irq_id(raw_irq: usize) -> Result<irq::IrqId, irq::IrqError> {
-        #[cfg(target_arch = "aarch64")]
-        {
-            let gsi = u32::try_from(raw_irq).map_err(|_| irq::IrqError::InvalidIrq)?;
-            irq::resolve_irq_source(irq::IrqSource::AcpiGsi(gsi))
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            irq::try_legacy_irq(raw_irq)
-        }
-    }
-
-    struct HyperCallOutputValue {
-        value: UnsafeCell<usize>,
-    }
-
-    impl HyperCallOutputValue {
-        const fn new(value: usize) -> Self {
-            Self {
-                value: UnsafeCell::new(value),
-            }
-        }
-
-        fn guest_phys_addr(&self) -> IvcGuestPhysAddr {
-            let vaddr = VirtAddr::from_usize(self.value.get().addr());
-            IvcGuestPhysAddr::new(virt_to_phys(vaddr).as_usize())
-        }
-
-        fn read(&self) -> usize {
-            unsafe {
-                // Axvisor writes this value through the guest physical address
-                // passed to the hypercall; use a volatile read to observe it.
-                core::ptr::read_volatile(self.value.get())
-            }
-        }
-    }
-
-    fn shared_region(shm_base_gpa: usize, shm_size: usize) -> Option<&'static IvcRegion> {
-        let vaddr = ax_mm::iomap(PhysAddr::from_usize(shm_base_gpa), shm_size).ok()?;
-        // SAFETY: the HVC mapping is valid and page-aligned, and `run` checked
-        // that its size covers `IvcRegion`. Axvisor zeroed the entire fresh
-        // backing before writing the publisher_id/key host header, so every
-        // field has a valid initial bit pattern. The host header is not changed
-        // after publication, and the mapping remains valid for this run. A
-        // shared reference permits readiness polling before attachment.
-        unsafe { Some(&*(vaddr.as_ptr() as *const IvcRegion)) }
+    fn stringify(error: impl ToString) -> String {
+        error.to_string()
     }
 }

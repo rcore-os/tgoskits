@@ -22,6 +22,8 @@ one IVC channel into a publisher and a subscriber. It provides:
 - fixed-size opaque slot rings with Release/Acquire publication;
 - Message V1 framing, validation, fragmentation, reassembly, and aborts;
 - nonblocking partial-progress APIs for messages larger than the whole ring;
+- owner-only ivshmem output-region transport with per-session incarnation
+  handshakes;
 - peer-event helpers for IRQ wakeup with bounded fallback polling.
 
 Hypercalls, GPA mapping, IRQ registration, blocking waits, notifications, and
@@ -35,11 +37,48 @@ fields.
 application payload (RPC, request/ack, file chunk, ...)
 IvcMessageSender / IvcMessageReceiver (Message V1 slots)
 opaque SPSC rings in IvcRegion
+IvshmemMessagePort (owner-writable TX / peer-read-only RX regions)
 AxVisor HVC mapping and guest notify glue
 ```
 
 The ring never interprets a slot. Message framing never invokes a hypercall or
 runtime service.
+
+# ivshmem Output Regions
+
+Each ivshmem peer supplies its own writable output section and maps the peer's
+output section read-only. The first 8448 bytes of each section use the Message
+V1 slot size and capacity: a 256-byte atomic header followed by 32
+256-byte-aligned slots. The owner writes its TX tail, RX head, and slots in its
+own section; reads of the peer section are restricted to its corresponding
+atomic fields and slots.
+
+```rust
+# use axivc::{IvshmemMessageError, IvshmemMessagePort};
+unsafe fn connect<'a>(
+    local_output: *mut u8,
+    local_len: usize,
+    peer_output: *const u8,
+    peer_len: usize,
+) -> Result<axivc::IvcEndpoints<'a>, IvshmemMessageError> {
+    // SAFETY: the device layer supplies coherent, non-overlapping mappings and
+    // this peer is the sole writer of `local_output`.
+    let mut port = IvshmemMessagePort::attach(local_output, local_len, peer_output, peer_len)?;
+    // SAFETY: this function's caller guarantees no endpoint from an older
+    // generation remains live.
+    unsafe { port.begin_session() }?;
+    port.try_connect()
+}
+```
+
+`begin_session` publishes a nonzero incarnation, incrementing the persisted
+value and refusing wrap to zero. Each side acknowledges a stable peer
+incarnation before `try_connect` returns Message V1 endpoints. Endpoints check
+both incarnations and reciprocal acknowledgements before every producer or
+consumer operation; a restarted peer therefore yields
+`IvcMessageError::SessionLost` instead of reusing old cursors or slots. PCI
+discovery, BAR mapping, doorbells, State transitions, and non-coherent cache
+maintenance remain device/OS responsibilities.
 
 # Message V1
 
@@ -148,8 +187,11 @@ consumers on `UnsafeCell` slot bytes.
 - Message V1 does not interleave messages, retransmit, reorder, or allocate.
 - Peers must use the same region layout and slot parameters; matching region
   versions alone does not guarantee compatibility.
-- ivshmem, PCI BARs, doorbells, MSI-X, and owner-RW/peer-RO sections are outside
-  this protocol revision.
+- ivshmem message layout version 1 supports one SPSC lane per peer output pair.
+  Its read-only peer view requires 32-bit atomics and the documented
+  read-only-memory guarantee for small Relaxed atomic loads; Acquire loads use
+  a Relaxed load followed by an Acquire fence. PCI BARs, doorbells, MSI-X,
+  mapping, and State lifecycle are outside this protocol revision.
 
 # Development
 

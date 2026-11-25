@@ -1,0 +1,9 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Zephyr automatically applies this board overlay to the demo sample.
+ * Keep the actual AxVisor guest description in the shared DTSI so the demo
+ * and benchmark cannot drift into different ECAM, aperture, or ITS layouts.
+ */
+
+#include "../../common/boards/orangepi_5_plus_rk3588_axvisor.dtsi"

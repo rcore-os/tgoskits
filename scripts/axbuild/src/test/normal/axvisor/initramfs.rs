@@ -12,11 +12,41 @@ use std::{
 
 use anyhow::{Context, bail, ensure};
 use flate2::Compression;
+use ostool::build::config::Cargo;
 
 use crate::{axvisor::rootfs, context::ResolvedAxvisorRequest, rootfs::inject::read_binary_file};
 
 const OUTPUT_ENV: &str = "AXVISOR_TEST_BUSYBOX_INITRAMFS";
 const OVMF_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_OVMF_OUTPUT";
+const ROOTFS_IMAGE_ENV: &str = "AXVISOR_TEST_ROOTFS_IMAGE";
+
+pub(super) fn configured_rootfs_image_path(
+    cargo: &Cargo,
+    workspace_root: &Path,
+    target_dir: &Path,
+    arch: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    cargo
+        .env
+        .get(ROOTFS_IMAGE_ENV)
+        .map(|image| {
+            ensure!(
+                Path::new(image).components().count() == 1
+                    && Path::new(image)
+                        .components()
+                        .all(|part| matches!(part, Component::Normal(_))),
+                "{ROOTFS_IMAGE_ENV} must name one managed rootfs image"
+            );
+            crate::image::storage::resolve_rootfs_path(
+                workspace_root,
+                target_dir,
+                arch,
+                PathBuf::from(image),
+            )
+        })
+        .transpose()
+}
+
 const BUSYBOX_PATH: &str = "/bin/busybox";
 // These bounds are the fixed Q35 guest aperture used by the x86 AxVM provider;
 // the end bound is exclusive.
@@ -343,8 +373,171 @@ run_x86_pci_block_check() {
   fi
 }
 
+validate_ivshmem_capability() {
+  config_path=$1
+  status_low=$(read_config_byte "$config_path" 6) || return 1
+  [ $((0x$status_low & 0x10)) -ne 0 ] || return 1
+  pointer_hex=$(read_config_byte "$config_path" 52) || return 1
+  pointer=$((0x$pointer_hex))
+  count=0
+  seen=:
+  while [ "$pointer" -ne 0 ] && [ "$count" -lt 8 ]; do
+    case ":$seen:" in
+      *":$pointer:"*) return 1 ;;
+    esac
+    seen="$seen:$pointer"
+    if [ "$pointer" -lt 64 ] || [ "$pointer" -gt 252 ] || [ $((pointer % 4)) -ne 0 ]; then
+      return 1
+    fi
+    id=$(read_config_byte "$config_path" "$pointer") || return 1
+    if [ "$((0x$id))" -eq 9 ]; then
+      cap_len=$(read_config_byte "$config_path" "$((pointer + 2))") || return 1
+      cap_version=$(read_config_byte "$config_path" "$((pointer + 3))") || return 1
+      magic=$(read_config_le32 "$config_path" "$((pointer + 4))") || return 1
+      protocol=$(read_config_le16 "$config_path" "$((pointer + 8))") || return 1
+      features=$(read_config_le32 "$config_path" "$((pointer + 12))") || return 1
+      epoch_offset=$(read_config_le32 "$config_path" "$((pointer + 16))") || return 1
+      epoch_stride=$(read_config_le32 "$config_path" "$((pointer + 20))") || return 1
+      [ "$((0x$cap_len))" -eq 36 ] &&
+        [ "$((0x$cap_version))" -eq 1 ] &&
+        [ "$magic" = "0x56495841" ] &&
+        [ "$protocol" = "0x4000" ] &&
+        [ $((features & 1)) -eq 1 ] &&
+        [ "$epoch_offset" = "0x00000100" ] &&
+        [ "$epoch_stride" = "0x00000008" ]
+      return
+    fi
+    next_hex=$(read_config_byte "$config_path" "$((pointer + 1))") || return 1
+    pointer=$((0x$next_hex & 0xfc))
+    count=$((count + 1))
+  done
+  return 1
+}
+
+find_ivshmem_endpoint() {
+  ivshmem_bdf=
+  ivshmem_alias_count=0
+  ivshmem_profile_count=0
+  for candidate in /sys/bus/pci/devices/*; do
+    [ -d "$candidate" ] || continue
+    [ "$(/bin/busybox cat "$candidate/vendor")" = "0x1af4" ] || continue
+    [ "$(/bin/busybox cat "$candidate/device")" = "0x1110" ] || continue
+    ivshmem_alias_count=$((ivshmem_alias_count + 1))
+    class=$(read_config_le24 "$candidate/config" 9 2>/dev/null) || continue
+    revision=$(read_config_byte "$candidate/config" 8 2>/dev/null) || continue
+    [ "$class" = "0xff0000" ] && [ "$((0x$revision))" -eq 1 ] || continue
+    validate_ivshmem_capability "$candidate/config" || continue
+    ivshmem_profile_count=$((ivshmem_profile_count + 1))
+    ivshmem_bdf=${candidate##*/}
+  done
+  if [ "$ivshmem_alias_count" -ne 1 ]; then
+    echo "expected exactly one 1af4:1110 alias, found $ivshmem_alias_count"
+    return 1
+  fi
+  if [ "$ivshmem_profile_count" -ne 1 ]; then
+    echo "expected exactly one AxVisor class/version/capability profile, found $ivshmem_profile_count"
+    return 1
+  fi
+  return 0
+}
+
+load_ivshmem_uio() {
+  find_ivshmem_endpoint || return 1
+  if ! /bin/busybox insmod /lib/modules/axvisor.ko; then
+    echo "ivshmem module load failed: axvisor.ko"
+    return 1
+  fi
+  driver_root=/sys/bus/pci/drivers/uio_ivshmem
+  if [ ! -d "$driver_root" ]; then
+    echo "uio_ivshmem driver is missing after module load"
+    return 1
+  fi
+  endpoint=/sys/bus/pci/devices/$ivshmem_bdf
+  driver_link=$(/bin/busybox readlink "$endpoint/driver" 2>/dev/null)
+  driver_name=${driver_link##*/}
+  if [ -n "$driver_link" ] && [ "$driver_name" != "uio_ivshmem" ]; then
+    if ! printf '%s\n' "$ivshmem_bdf" > "/sys/bus/pci/drivers/$driver_name/unbind"; then
+      echo "cannot unbind $ivshmem_bdf from $driver_name"
+      return 1
+    fi
+    driver_link=
+  fi
+  if [ -z "$driver_link" ]; then
+    if ! printf '%s\n' "$ivshmem_bdf" > "$driver_root/bind"; then
+      echo "cannot bind $ivshmem_bdf to uio_ivshmem"
+      return 1
+    fi
+  fi
+  case "$(/bin/busybox readlink "$endpoint/driver" 2>/dev/null)" in
+    */uio_ivshmem) ;;
+    *) echo "ivshmem PCI function did not bind uio_ivshmem"; return 1 ;;
+  esac
+  for uio in "$endpoint"/uio/uio*; do
+    [ -d "$uio" ] || continue
+    if [ "$(/bin/busybox cat "$uio/name")" = "uio_ivshmem" ] && [ -c "/dev/${uio##*/}" ]; then
+      return 0
+    fi
+  done
+  echo "ivshmem UIO character device is missing"
+  return 1
+}
+
+run_linux_ivshmem_subscriber() {
+  if [ ! -x /bin/linux-ivshmem-subscriber ]; then
+    echo "linux ivshmem subscriber binary is missing"
+    return 1
+  fi
+  load_ivshmem_uio || return 1
+  /bin/linux-ivshmem-subscriber
+}
+
+run_ivshmem_suite() {
+  role=$1
+  case "$role" in
+    linux)
+      /bin/ivshmem-pci-suite --suite-role linux-polling || return 1
+      load_ivshmem_uio || return 1
+      /bin/ivshmem-pci-suite --suite-role linux-interrupt ;;
+    portable) /bin/ivshmem-pci-suite --suite-role portable-peer ;;
+  esac
+}
+
 cmdline=$(/bin/busybox cat /proc/cmdline)
 case "$cmdline" in
+  *axvisor.pci_case=ivshmem-suite-linux*)
+    run_ivshmem_suite linux || echo "IVSHMEM_PCI_SUITE_FAILED peer=0 role=linux phase=init step=run"
+    exec /bin/busybox sh -i ;;
+  *axvisor.pci_case=ivshmem-suite-portable*)
+    run_ivshmem_suite portable || echo "IVSHMEM_PCI_SUITE_FAILED peer=2 role=portable phase=init step=run"
+    exec /bin/busybox sh -i ;;
+  *axvisor.pci_case=ivshmem-polling-peers*)
+    /bin/ivshmem-bar2-smoke --backend polling --cross-peer || echo "IVSHMEM_POLLING_FAILED"
+    exec /bin/busybox sh -i ;;
+  *axvisor.pci_case=ivshmem-three-peers*)
+    /bin/ivshmem-bar2-smoke --backend polling --three-peer || echo "IVSHMEM_POLLING_FAILED"
+    exec /bin/busybox sh -i ;;
+  *axvisor.pci_case=ivshmem-polling*)
+    /bin/ivshmem-bar2-smoke --backend polling || echo "IVSHMEM_POLLING_FAILED"
+    exec /bin/busybox sh -i ;;
+  *axvisor.pci_case=ivshmem-interrupt-peers*)
+    if load_ivshmem_uio; then
+      /bin/ivshmem-bar2-smoke --backend interrupt --cross-peer || echo "IVSHMEM_INTERRUPT_FAILED"
+    else
+      echo "IVSHMEM_INTERRUPT_FAILED"
+    fi
+    exec /bin/busybox sh -i ;;
+  *axvisor.pci_case=ivshmem-interrupt*)
+    if load_ivshmem_uio; then
+      /bin/ivshmem-bar2-smoke --backend interrupt || echo "IVSHMEM_INTERRUPT_FAILED"
+    else
+      echo "IVSHMEM_INTERRUPT_FAILED"
+    fi
+    exec /bin/busybox sh -i ;;
+  *axvisor.ivc_case=linux-message-subscriber*)
+    if ! run_linux_ivshmem_subscriber; then
+      echo "linux ivc demo failed backend=ivshmem-pci"
+    fi
+    exec /bin/busybox sh -i ;;
   *axvisor.acpi_case=direct*) run_x86_acpi_check AXVISOR_X86_DIRECT_ACPI_PASSED; exec /bin/busybox sh -i ;;
   *axvisor.acpi_case=ovmf*) run_x86_acpi_check AXVISOR_X86_OVMF_ACPI_PASSED; exec /bin/busybox sh -i ;;
   *axvisor.pci_case=enumeration*) run_pci_enumeration_check AXVISOR_X86_VPCI_ENUMERATION_PASSED; exec /bin/busybox sh -i ;;
@@ -686,19 +879,63 @@ fn init_script() -> Vec<u8> {
 pub(crate) async fn prepare_configured_busybox_initramfs(
     request: &ResolvedAxvisorRequest,
     inputs: &crate::axvisor::bundle::ResourceInputs,
+    cargo: &Cargo,
     workspace_root: &Path,
     target_dir: &Path,
 ) -> anyhow::Result<()> {
+    let ivshmem_smoke = inputs.ivshmem_smoke;
+    let linux_ivshmem_subscriber = inputs.linux_ivshmem_subscriber;
+    ensure!(
+        !(ivshmem_smoke && linux_ivshmem_subscriber),
+        "ivshmem_smoke and linux_ivshmem_subscriber are mutually exclusive in host-initramfs.toml"
+    );
+    ensure!(
+        !(ivshmem_smoke || linux_ivshmem_subscriber) || inputs.busybox_initramfs.is_some(),
+        "selected ivshmem guest binaries require busybox_initramfs in host-initramfs.toml"
+    );
     if let Some(configured_output) = inputs.busybox_initramfs.as_deref() {
         let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
-        // Diskless AxVisor cases still derive their guest initramfs from the
-        // managed rootfs. Prepare it here as well as in the host-root path so
-        // a fresh runner cannot silently read a stale or missing image.
-        rootfs::ensure_qemu_assets_ready(request, workspace_root, target_dir, None).await?;
-        let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, target_dir, None)?;
-        if let Err(first_error) =
-            prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)
-        {
+        let rootfs_path =
+            match configured_rootfs_image_path(cargo, workspace_root, target_dir, &request.arch)? {
+                Some(path) => path,
+                None => {
+                    // Diskless AxVisor cases still derive their guest initramfs
+                    // from the managed rootfs.
+                    rootfs::ensure_qemu_assets_ready(request, workspace_root, target_dir, None)
+                        .await?;
+                    rootfs::qemu_rootfs_path(request, workspace_root, target_dir, None)?
+                }
+            };
+        let guest_binaries = if ivshmem_smoke {
+            Some(super::ivshmem_smoke::GuestBinaries::Smoke(
+                super::ivshmem_smoke::build_smoke_binaries(
+                    workspace_root,
+                    target_dir,
+                    &request.arch,
+                )?,
+            ))
+        } else if linux_ivshmem_subscriber {
+            Some(super::ivshmem_smoke::GuestBinaries::LinuxSubscriber(
+                super::ivshmem_smoke::build_linux_subscriber(
+                    workspace_root,
+                    target_dir,
+                    &request.arch,
+                )?,
+            ))
+        } else {
+            None
+        };
+        let module = guest_binaries
+            .as_ref()
+            .map(|_| required_rootfs_file(&rootfs_path, super::ivshmem_smoke::MODULE_ROOTFS_PATH))
+            .transpose()?;
+        if let Err(first_error) = prepare_busybox_initramfs(
+            &rootfs_path,
+            &output_path,
+            &request.arch,
+            guest_binaries.as_ref(),
+            module.as_deref(),
+        ) {
             // A managed image may have been left partially extracted by an
             // interrupted runner. Rebuild only that owned path; never remove
             // an explicit user supplied rootfs.
@@ -714,15 +951,20 @@ pub(crate) async fn prepare_configured_busybox_initramfs(
                 )
             })?;
             rootfs::ensure_qemu_assets_ready(request, workspace_root, target_dir, None).await?;
-            prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch).with_context(
-                || {
-                    format!(
-                        "managed rootfs {} remained invalid after re-extraction (initial error: \
-                         {first_error:#})",
-                        rootfs_path.display()
-                    )
-                },
-            )?;
+            prepare_busybox_initramfs(
+                &rootfs_path,
+                &output_path,
+                &request.arch,
+                guest_binaries.as_ref(),
+                module.as_deref(),
+            )
+            .with_context(|| {
+                format!(
+                    "managed rootfs {} remained invalid after re-extraction (initial error: \
+                     {first_error:#})",
+                    rootfs_path.display()
+                )
+            })?;
         }
         println!(
             "prepared Axvisor QEMU test initramfs: {}",
@@ -761,11 +1003,13 @@ fn prepare_busybox_initramfs(
     rootfs_path: &Path,
     output_path: &Path,
     arch: &str,
+    guest_binaries: Option<&super::ivshmem_smoke::GuestBinaries>,
+    module: Option<&[u8]>,
 ) -> anyhow::Result<()> {
     let busybox = required_rootfs_file(rootfs_path, BUSYBOX_PATH)?;
     let loader_path = musl_loader_path(arch)?;
     let loader = required_rootfs_file(rootfs_path, loader_path)?;
-    let archive = build_busybox_initramfs(&busybox, loader_path, &loader)?;
+    let archive = build_busybox_initramfs(&busybox, loader_path, &loader, guest_binaries, module)?;
     let output_parent = output_path.parent().with_context(|| {
         format!(
             "initramfs output path has no parent: {}",
@@ -819,6 +1063,8 @@ fn build_busybox_initramfs(
     busybox: &[u8],
     loader_path: &str,
     loader: &[u8],
+    guest_binaries: Option<&super::ivshmem_smoke::GuestBinaries>,
+    module: Option<&[u8]>,
 ) -> anyhow::Result<Vec<u8>> {
     let init_script = init_script();
     let loader_archive_path = loader_path
@@ -843,6 +1089,33 @@ fn build_busybox_initramfs(
     }
     archive.add_file("bin/busybox", busybox, 0o755)?;
     archive.add_file(loader_archive_path, loader, 0o755)?;
+    if let Some(guest_binaries) = guest_binaries {
+        match guest_binaries {
+            super::ivshmem_smoke::GuestBinaries::Smoke(smoke) => {
+                archive.add_file(
+                    super::ivshmem_smoke::SMOKE_ARCHIVE_PATH,
+                    &smoke.smoke,
+                    0o755,
+                )?;
+                archive.add_file(
+                    super::ivshmem_smoke::SUITE_ARCHIVE_PATH,
+                    &smoke.suite,
+                    0o755,
+                )?;
+            }
+            super::ivshmem_smoke::GuestBinaries::LinuxSubscriber(peer) => {
+                archive.add_file(
+                    super::ivshmem_smoke::LINUX_SUBSCRIBER_ARCHIVE_PATH,
+                    &peer.binary,
+                    0o755,
+                )?;
+            }
+        }
+    }
+    if let Some(module) = module {
+        archive.add_directory("lib/modules", 0o755)?;
+        archive.add_file(super::ivshmem_smoke::MODULE_ARCHIVE_PATH, module, 0o644)?;
+    }
     archive.add_file("init", &init_script, 0o755)?;
     for applet in [
         "awk", "cat", "cmp", "date", "dd", "dmesg", "grep", "mount", "od", "sed", "sh", "sleep",
@@ -880,7 +1153,8 @@ mod tests {
     #[test]
     fn generated_archive_packs_busybox_loader_and_applet_links() {
         let compressed =
-            build_busybox_initramfs(b"busybox", "/lib/ld-musl-test.so.1", b"loader").unwrap();
+            build_busybox_initramfs(b"busybox", "/lib/ld-musl-test.so.1", b"loader", None, None)
+                .unwrap();
         let mut archive = Vec::new();
         GzDecoder::new(compressed.as_slice())
             .read_to_end(&mut archive)
@@ -892,6 +1166,86 @@ mod tests {
         let init = entries.get("init").unwrap();
         assert!(init.starts_with(b"#!/bin/busybox sh"));
         assert_eq!(entries.get("bin/sh").unwrap(), b"busybox");
+        assert!(!entries.contains_key(super::super::ivshmem_smoke::MODULE_ARCHIVE_PATH));
+
+        let smoke = super::super::ivshmem_smoke::GuestBinaries::Smoke(
+            super::super::ivshmem_smoke::SmokeBinaries {
+                smoke: b"polling".to_vec(),
+                suite: b"suite".to_vec(),
+            },
+        );
+        let compressed = build_busybox_initramfs(
+            b"busybox",
+            "/lib/ld-musl-test.so.1",
+            b"loader",
+            Some(&smoke),
+            Some(b"axvisor-module"),
+        )
+        .unwrap();
+        let mut archive = Vec::new();
+        GzDecoder::new(compressed.as_slice())
+            .read_to_end(&mut archive)
+            .unwrap();
+        let entries = parse_newc_entries(&archive);
+        assert_eq!(
+            entries
+                .get(super::super::ivshmem_smoke::SMOKE_ARCHIVE_PATH)
+                .unwrap(),
+            b"polling"
+        );
+        assert_eq!(
+            entries
+                .get(super::super::ivshmem_smoke::SUITE_ARCHIVE_PATH)
+                .unwrap(),
+            b"suite"
+        );
+        assert_eq!(
+            entries
+                .get(super::super::ivshmem_smoke::MODULE_ARCHIVE_PATH)
+                .unwrap(),
+            b"axvisor-module"
+        );
+        assert!(
+            String::from_utf8_lossy(entries.get("init").unwrap())
+                .contains("insmod /lib/modules/axvisor.ko")
+        );
+
+        let subscriber = super::super::ivshmem_smoke::GuestBinaries::LinuxSubscriber(
+            super::super::ivshmem_smoke::LinuxSubscriberBinary {
+                binary: b"linux-peer".to_vec(),
+            },
+        );
+        let compressed = build_busybox_initramfs(
+            b"busybox",
+            "/lib/ld-musl-test.so.1",
+            b"loader",
+            Some(&subscriber),
+            Some(b"axvisor-module"),
+        )
+        .unwrap();
+        let mut archive = Vec::new();
+        GzDecoder::new(compressed.as_slice())
+            .read_to_end(&mut archive)
+            .unwrap();
+        let entries = parse_newc_entries(&archive);
+        assert_eq!(
+            entries
+                .get(super::super::ivshmem_smoke::LINUX_SUBSCRIBER_ARCHIVE_PATH)
+                .unwrap(),
+            b"linux-peer"
+        );
+        assert!(!entries.contains_key(super::super::ivshmem_smoke::SMOKE_ARCHIVE_PATH));
+        assert!(!entries.contains_key(super::super::ivshmem_smoke::SUITE_ARCHIVE_PATH));
+        assert_eq!(
+            entries
+                .get(super::super::ivshmem_smoke::MODULE_ARCHIVE_PATH)
+                .unwrap(),
+            b"axvisor-module"
+        );
+        assert!(
+            String::from_utf8_lossy(entries.get("init").unwrap())
+                .contains("/bin/linux-ivshmem-subscriber")
+        );
     }
 
     #[cfg(unix)]

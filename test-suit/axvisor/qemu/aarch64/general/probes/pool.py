@@ -126,7 +126,7 @@ phys_cpu_ids = [1]
 
 [kernel]
 entry_point = 0x8020_0000
-kernel_path = "/guest/arceos/arceos-ivc-publisher.bin"
+kernel_path = "/guest/arceos/arceos-qemu"
 kernel_load_addr = 0x8020_0000
 dtb_load_addr = 0x8000_0000
 memory_regions = [[0x8000_0000, 0x1000000, 0x7, 0]]

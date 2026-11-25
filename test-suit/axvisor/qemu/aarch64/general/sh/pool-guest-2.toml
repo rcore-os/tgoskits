@@ -3,37 +3,35 @@
 # build config). The pool directory in this case *is* that directory, so the
 # file is a candidate exactly as written.
 #
-# All three entries share the guest physical layout and the ArceOS kernel the
-# `general/ivc` check boots; only id, name and pinned host CPU differ, so the case
-# can start them side by side on one machine.
+# Each entry boots the generic Linux image and read-only Alpine root disk already
+# used by the filesystem-backed guests elsewhere in this suite. The disk is
+# mounted read-only because the hypervisor roots from the same managed image.
+# Only id, name and pinned host CPU differ, so the case can start them side by
+# side on one machine without carrying an IVC application as a pool fixture.
 [base]
 id = 13
 name = "pool-guest-2"
+guest_type = "virtualized"
 cpu_num = 1
 phys_cpu_ids = [2]
 
 [kernel]
 entry_point = 0x8020_0000
-kernel_path = "/guest/arceos/arceos-ivc-publisher.bin"
+kernel_path = "/guest/linux/linux-qemu"
 kernel_load_addr = 0x8020_0000
 dtb_load_addr = 0x8000_0000
+cmdline = "root=/dev/vda ro rootwait console=ttyAMA0 init=/bin/sh"
 memory_regions = [
   [0x8000_0000, 0x1000_0000, 0x7, 0],
 ]
 
 [devices]
-disabled = [
-  { path = "/virtio_mmio@a003000" },
-  { path = "/virtio_mmio@a003200" },
-  { path = "/virtio_mmio@a003400" },
-  { path = "/virtio_mmio@a003600" },
-  { path = "/virtio_mmio@a003800" },
-  { path = "/virtio_mmio@a003a00" },
-  { path = "/virtio_mmio@a003c00" },
-  { path = "/virtio_mmio@a003e00" },
-  { path = "/pcie@10000000" },
-]
+passthrough = []
+disabled = [{ path = "/pcie@10000000" }]
 
 [[devices.virtual]]
-id = "ivc0"
-model = "ivc-channel"
+id = "virtblk0"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-alpine-1.img"
+filesystem = "ext4"
+read_only = true

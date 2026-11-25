@@ -1162,13 +1162,14 @@ impl MappingOperation {
                 }
                 maximum
             }
-            MappingOperationKind::Linear(_) => current,
+            MappingOperationKind::Linear(linear) => linear.maximum_mapping_flags(current),
         }
     }
 
     pub(crate) fn check_mprotect_flags(&self, flags: MappingFlags) -> StarryResult {
         match &self.kind {
             MappingOperationKind::File(file) => file.check_flags(flags),
+            MappingOperationKind::Linear(linear) => linear.check_mprotect_flags(flags),
             _ => Ok(()),
         }
     }
@@ -1435,6 +1436,9 @@ impl MappingOperation {
         let mut operation = match &self.kind {
             MappingOperationKind::Cow(cb) => Self::from_cow(cb.with_start(adjusted)?),
             MappingOperationKind::Shared(sb) => Self::from_shared(sb.with_start(adjusted)),
+            // Linear device mappings are eager and may carry a persistent
+            // access policy. Moving them is unsupported so mremap cannot drop
+            // that policy by constructing an unrestricted backend.
             MappingOperationKind::Linear(_) => return Err(StarryError::OperationNotSupported),
             MappingOperationKind::File(fb) => Self::from_file(fb.with_start(adjusted)?),
         };

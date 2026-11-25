@@ -1920,10 +1920,18 @@ node_version = "latest"
                     selection.command,
                 )
 
-    def test_ivc_input_changes_select_their_qemu_cases(self) -> None:
+    def test_ci_owned_app_inputs_select_their_qemu_cases(self) -> None:
         scenarios = (
             ("apps/arceos/ivc_publisher/src/main.rs", {"qemu/aarch64/ivc-local"}),
             ("apps/arceos/ivc_subscriber/src/main.rs", {"qemu/aarch64/ivc-arceos"}),
+            (
+                "apps/arceos/ivshmem-pci/src/main.rs",
+                {"qemu/aarch64/ivshmem-pci"},
+            ),
+            (
+                "apps/linux/ivshmem/suite/main.c",
+                {"qemu/aarch64/ivshmem-pci"},
+            ),
             (
                 "virtualization/axivc/src/message/receiver.rs",
                 {"qemu/aarch64/ivc-local", "qemu/aarch64/ivc-arceos"},

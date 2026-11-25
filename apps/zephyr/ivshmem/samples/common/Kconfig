@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# GICv3 ITS starts LPI INTIDs at 8192. The sample uses one dynamic MSI-X
+# LPI, so Orange Pi's zero-based IRQ table needs 8193 entries.
+configdefault NUM_IRQS
+	default 8193 if BOARD_ORANGEPI_5_PLUS_RK3588 && TGOS_IVC
+
+source "Kconfig.zephyr"

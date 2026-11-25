@@ -1,6 +1,6 @@
-timeout = 900
 args = [
     "-nographic",
+    "-snapshot",
     "-cpu",
     "cortex-a72",
     "-machine",
@@ -11,22 +11,20 @@ args = [
     "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive",
     "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
-    "-device",
-    "virtio-blk-device,drive=guestdisk",
-    "-drive",
-    "id=guestdisk,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
     "-append",
     "root=/dev/nvme0n1 rw init=/bin/sh axvisor.vm_start=1,2",
     "-m",
     "8g",
 ]
+timeout = 300
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)kernel panic",
     "(?i)unhandled page fault",
     "(?i)page fault",
-    "ivc publish failed",
-    "(?m)^linux ivc demo failed\\s*$",
+    "ivc session failed",
+    "VM\\[\\d+\\] boot failed",
+    "linux ivc demo failed",
 ]
 to_bin = true
 uefi = false

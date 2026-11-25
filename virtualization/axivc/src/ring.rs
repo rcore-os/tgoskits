@@ -18,6 +18,8 @@ pub enum IvcRingDirection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IvcSlotError {
     Full,
+    SessionLost,
+    CursorOutOfRange { producer: u32, consumer: u32 },
 }
 
 /// Single-producer, single-consumer opaque-slot ring.

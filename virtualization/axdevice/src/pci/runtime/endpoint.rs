@@ -1,4 +1,4 @@
-use alloc::{format, sync::Arc};
+use alloc::{format, sync::Arc, vec::Vec};
 
 use axdevice_base::{
     Device, DeviceContext, DeviceError, DeviceId, DeviceResult, IrqLine, RoutedDeviceGrant,
@@ -385,6 +385,36 @@ impl PciEndpointContext for OwnerPciEndpointContext {
     }
 }
 
+/// One resolved BAR handed to an endpoint at bind time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BarAssignment {
+    bar: PciBarIndex,
+    gpa: u64,
+    size: u64,
+}
+
+impl BarAssignment {
+    /// Assembles one assignment from the resolved BAR plan.
+    pub const fn new(bar: PciBarIndex, gpa: u64, size: u64) -> Self {
+        Self { bar, gpa, size }
+    }
+
+    /// Returns the BAR slot.
+    pub const fn bar(self) -> PciBarIndex {
+        self.bar
+    }
+
+    /// Returns the assigned guest-physical address.
+    pub const fn gpa(self) -> u64 {
+        self.gpa
+    }
+
+    /// Returns the fixed BAR size in bytes.
+    pub const fn size(self) -> u64 {
+        self.size
+    }
+}
+
 /// Endpoint-owned behavior reached after authenticated PCI routing.
 ///
 /// # Device context contract
@@ -460,6 +490,40 @@ pub trait PciFunction: Device {
         _context: &mut dyn PciEndpointContext,
     ) -> DeviceResult {
         Ok(())
+    }
+
+    /// Observes the resolved BAR table once the endpoint route is published.
+    ///
+    /// Endpoints that map BAR ranges directly into the guest stage-2 must
+    /// override this, derive their per-section mappings, and expose them via
+    /// [`direct_mappings`](Self::direct_mappings). The callback runs without
+    /// the root state lock held, so implementations may take the stage-2
+    /// update lock.
+    ///
+    /// # Errors
+    ///
+    /// A failing endpoint rolls the whole bind back.
+    fn notify_bar_assignment(&self, bars: &[BarAssignment]) -> DeviceResult {
+        let _ = bars;
+        Ok(())
+    }
+
+    /// Observes an accepted guest BAR relocation.
+    ///
+    /// Endpoints with direct mappings must re-derive their plan and resubmit
+    /// it through the stage-2 update port. BAR probe writes never trigger
+    /// this notification. The callback runs without the root state lock held.
+    fn notify_bar_relocated(&self, bar: PciBarIndex, new_gpa: u64) -> DeviceResult {
+        let _ = (bar, new_gpa);
+        Ok(())
+    }
+
+    /// Returns the direct mappings currently derived from the BAR table.
+    ///
+    /// The runtime aggregates these after a successful bind so the VM
+    /// address-space build can reserve the mapped GPA ranges.
+    fn direct_mappings(&self) -> Vec<crate::DirectMapping> {
+        Vec::new()
     }
 
     /// Resets endpoint-owned state after the PCI root has restored its

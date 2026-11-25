@@ -1,0 +1,6 @@
+vm_configs = [
+    "test-suit/axvisor/qemu/aarch64/ivc-local/configs/arceos-ivc-publisher.toml",
+    "test-suit/axvisor/qemu/aarch64/ivc-local/configs/linux-ivc-subscriber.toml",
+]
+busybox_initramfs = "tmp/axbuild/axvisor/qemu/aarch64/ivc-local/initramfs-aarch64.cpio.gz"
+linux_ivshmem_subscriber = true

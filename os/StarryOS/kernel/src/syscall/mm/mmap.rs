@@ -7,6 +7,8 @@ use ax_runtime::hal::paging::MappingFlags;
 use linux_raw_sys::general::*;
 
 use super::placement::find_mapping_start;
+#[cfg(feature = "axivc-ivshmem")]
+use crate::pseudofs::DeviceMmapAccess;
 use crate::{
     StarryError, StarryResult,
     file::get_file_like,
@@ -85,6 +87,21 @@ fn reported_mapping_flags_from_prot(value: MmapProt) -> MappingFlags {
     flags
 }
 
+#[cfg(feature = "axivc-ivshmem")]
+fn check_restricted_device_mapping_access(
+    protection: MmapProt,
+    access: DeviceMmapAccess,
+) -> StarryResult<()> {
+    let forbidden = match access {
+        DeviceMmapAccess::ReadOnly => protection & (MmapProt::WRITE | MmapProt::EXEC),
+        DeviceMmapAccess::ReadWrite => protection & MmapProt::EXEC,
+    };
+    if !forbidden.is_empty() {
+        return Err(StarryError::PermissionDenied);
+    }
+    Ok(())
+}
+
 /// Derive the immutable permission envelope from the mapping source rather
 /// than from its initial `PROT_*` value.
 ///
@@ -93,8 +110,9 @@ fn reported_mapping_flags_from_prot(value: MmapProt) -> MappingFlags {
 /// initial empty PTE flags as `VM_MAY* == 0` makes that valid transition fail
 /// with `EACCES`.  Anonymous and private COW mappings may acquire any ordinary
 /// user permission later; shared file mappings may acquire write permission
-/// only when the file was opened writable.  Linear device mappings keep their
-/// driver-selected envelope unchanged.
+/// only when the file was opened writable. Unrestricted linear device
+/// mappings keep their driver-selected envelope; data-only device mappings
+/// retain their explicit read/write and no-execute ceiling.
 fn maximum_mapping_flags_for_backend(
     backend: &MappingOperation,
     current: MappingFlags,
@@ -325,6 +343,8 @@ pub fn sys_mmap(
                     Ok(DeviceMmap::Physical(..))
                     | Ok(DeviceMmap::PhysicalResolved(..))
                     | Ok(DeviceMmap::PhysicalCachedResolved(..)) => false,
+                    #[cfg(feature = "axivc-ivshmem")]
+                    Ok(DeviceMmap::PhysicalResolvedRestricted(..)) => false,
                     #[cfg(feature = "rknpu")]
                     Ok(DeviceMmap::PhysicalResolvedPageCapped(..))
                     | Ok(DeviceMmap::PhysicalCachedResolvedPageCapped(..)) => false,
@@ -512,6 +532,33 @@ pub fn sys_mmap(
                             None => MappingOperation::new_linear(start, range.start, true),
                         }
                     }
+                    #[cfg(feature = "axivc-ivshmem")]
+                    Ok(DeviceMmap::PhysicalResolvedRestricted(range, retain, access)) => {
+                        check_restricted_device_mapping_access(permission_flags, access)?;
+                        mapping_flags |= MappingFlags::UNCACHED;
+                        if range.is_empty() {
+                            return Err(StarryError::InvalidInput);
+                        }
+                        length = device_map_len(length, range.size(), page_size)?;
+                        match access {
+                            DeviceMmapAccess::ReadOnly => {
+                                MappingOperation::new_linear_anchored_device_read_only(
+                                    start,
+                                    range.start,
+                                    true,
+                                    retain,
+                                )
+                            }
+                            DeviceMmapAccess::ReadWrite => {
+                                MappingOperation::new_linear_anchored_device_read_write(
+                                    start,
+                                    range.start,
+                                    true,
+                                    retain,
+                                )
+                            }
+                        }
+                    }
                     #[cfg(feature = "rknpu")]
                     Ok(DeviceMmap::PhysicalResolvedPageCapped(range, retain)) => {
                         if range.is_empty() {
@@ -647,6 +694,40 @@ pub fn sys_mmap(
                                                 range.start,
                                                 true,
                                             ),
+                                        }
+                                    }
+                                    #[cfg(feature = "axivc-ivshmem")]
+                                    DeviceMmap::PhysicalResolvedRestricted(
+                                        range,
+                                        retain,
+                                        access,
+                                    ) => {
+                                        check_restricted_device_mapping_access(
+                                            permission_flags,
+                                            access,
+                                        )?;
+                                        mapping_flags |= MappingFlags::UNCACHED;
+                                        if range.is_empty() {
+                                            return Err(StarryError::InvalidInput);
+                                        }
+                                        length = device_map_len(length, range.size(), page_size)?;
+                                        match access {
+                                            DeviceMmapAccess::ReadOnly => {
+                                                MappingOperation::new_linear_anchored_device_read_only(
+                                                    start,
+                                                    range.start,
+                                                    true,
+                                                    retain,
+                                                )
+                                            }
+                                            DeviceMmapAccess::ReadWrite => {
+                                                MappingOperation::new_linear_anchored_device_read_write(
+                                                    start,
+                                                    range.start,
+                                                    true,
+                                                    retain,
+                                                )
+                                            }
                                         }
                                     }
                                     DeviceMmap::PhysicalCachedResolved(range, retain) => {
