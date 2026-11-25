@@ -3,8 +3,8 @@ use core::time::Duration;
 
 use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{
-    FileRangeOperation, Metadata, MetadataUpdate, NodePermission, NodeType, PathHandle,
-    PreallocationMode, VfsError, VfsResult,
+    FileRangeOperation, Metadata, MetadataChange, NodePermission, NodeType, PathHandle,
+    PreallocationMode, TimeChange, VfsError, VfsResult,
 };
 
 use crate::{
@@ -244,17 +244,24 @@ impl File {
     }
 
     /// Updates the access and modification times selected by non-`None` values.
+    /// Uses this call's identity and the current inode metadata for authority.
     ///
     /// # Errors
     ///
-    /// Returns the underlying filesystem error when metadata cannot be updated.
-    pub fn set_times(&self, atime: Option<Duration>, mtime: Option<Duration>) -> VfsResult {
-        self.inner.location().update_metadata(MetadataUpdate {
-            atime,
-            mtime,
-            ..MetadataUpdate::default()
-        })?;
-        Ok(())
+    /// Returns authorization, mount-admission, and backend-completion errors.
+    pub fn set_times(
+        &self,
+        atime: Option<Duration>,
+        mtime: Option<Duration>,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult {
+        self.inner.location().change_metadata(
+            MetadataChange::Times {
+                atime: atime.map_or(TimeChange::Keep, TimeChange::Set),
+                mtime: mtime.map_or(TimeChange::Keep, TimeChange::Set),
+            },
+            credentials,
+        )
     }
 }
 
@@ -433,6 +440,74 @@ impl FileAttrExt for FileAttr {
 
     fn blocks(&self) -> u64 {
         self.blocks
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use axfs_ng_vfs::{Mountpoint, MutationCredentials, NativeLinkCaller};
+
+    use super::*;
+
+    #[test]
+    fn file_times_use_current_authority_and_mount_admission() {
+        let root = MutationCredentials::root();
+        let filesystem = crate::MemoryFs::new();
+        let directory = Mountpoint::new_root(&filesystem).root_location();
+        let location = directory
+            .create(
+                "times",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o600),
+                0,
+                0,
+                &root,
+            )
+            .unwrap();
+        let context =
+            crate::FsContext::from_tree(directory.mountpoint().clone(), directory.clone()).unwrap();
+        let caller_view = NativeLinkCaller::new(root);
+        let view = crate::FsView::native(context, &caller_view);
+        let file = File {
+            inner: CoreOpenOptions::new()
+                .read(true)
+                .open(&view, "times")
+                .and_then(OpenResult::into_file)
+                .unwrap(),
+        };
+        let caller = MutationCredentials {
+            fsuid: 1000,
+            fsgid: 1000,
+            supplementary_gids: &[],
+            cap_dac_override: false,
+            cap_dac_read_search: false,
+            cap_fowner: false,
+            cap_mknod: false,
+            cap_chown: false,
+            cap_fsetid: false,
+        };
+        let before = file.get_attr().unwrap();
+        let changed = Duration::from_secs(123);
+        assert_eq!(
+            file.set_times(None, Some(changed), &caller),
+            Err(VfsError::OperationNotPermitted)
+        );
+        assert_eq!(file.get_attr().unwrap().mtime, before.mtime);
+        // Metadata changes do not require a writable data description.
+        file.set_times(None, Some(changed), &root).unwrap();
+        let accepted = file.get_attr().unwrap();
+        assert_eq!(accepted.mtime, changed);
+        assert_eq!(accepted.atime, before.atime);
+
+        location.mountpoint().set_readonly(true).unwrap();
+        assert_eq!(
+            file.set_times(None, Some(Duration::from_secs(456)), &root),
+            Err(VfsError::ReadOnlyFilesystem)
+        );
+        assert_eq!(file.set_times(None, None, &root), Ok(()));
+        let unchanged = file.get_attr().unwrap();
+        assert_eq!(unchanged.mtime, accepted.mtime);
+        assert_eq!(unchanged.atime, accepted.atime);
     }
 }
 

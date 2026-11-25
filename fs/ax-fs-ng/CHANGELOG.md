@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- [**breaking**] `fops::File::set_times` 接收逐次调用身份并提交 `MetadataChange::Times`，
+  使用实际 inode 的授权与完成协议；省略的字段保持不变。
+
 ## [0.11.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.11.1...ax-fs-ng-v0.11.2) - 2026-09-22
 
 ### Added

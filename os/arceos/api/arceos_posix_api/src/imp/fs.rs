@@ -401,7 +401,8 @@ pub unsafe fn sys_futimens(fd: c_int, times: *const ctypes::timespec) -> c_int {
         if atime.is_none() && mtime.is_none() {
             return Ok(0);
         }
-        file.inner.lock().set_times(atime, mtime)?;
+        let credentials = ax_fs_ng::MutationCredentials::root();
+        file.inner.lock().set_times(atime, mtime, &credentials)?;
         Ok(0)
     })
 }
