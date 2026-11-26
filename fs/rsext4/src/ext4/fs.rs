@@ -1,3 +1,5 @@
+use ::alloc::collections::BTreeSet;
+
 use super::*;
 use crate::blockdev::TransactionCredits;
 
@@ -36,6 +38,13 @@ pub struct Ext4FileSystem {
     pub journal_sb_block_start: Option<AbsoluteBN>,
     /// Immutable index of filesystem metadata blocks protected from file mappings.
     pub(crate) system_zones: SystemZoneMap,
+    /// Inodes whose shrink published its new size and orphan record but has
+    /// not yet zeroed the old EOF tail and detached every block past it.
+    ///
+    /// Membership is in-memory only: orphan recovery finishes these shrinks
+    /// at the next mount. Removing an inode from the orphan chain removes it
+    /// here too, and metadata transaction rollback restores both together.
+    pub(crate) pending_shrinks: BTreeSet<InodeNumber>,
 }
 
 /// In-memory filesystem metadata restored when one journal handle aborts.
@@ -52,6 +61,7 @@ struct MetadataTransactionSnapshot {
     bitmap_cache: BitmapCache,
     inodetable_cache: InodeCache,
     datablock_cache: DataBlockCache,
+    pending_shrinks: BTreeSet<InodeNumber>,
 }
 
 impl MetadataTransactionSnapshot {
@@ -64,6 +74,7 @@ impl MetadataTransactionSnapshot {
             bitmap_cache: filesystem.bitmap_cache.clone(),
             inodetable_cache: filesystem.inodetable_cache.clone(),
             datablock_cache: filesystem.datablock_cache.clone(),
+            pending_shrinks: filesystem.pending_shrinks.clone(),
         }
     }
 
@@ -77,6 +88,7 @@ impl MetadataTransactionSnapshot {
             .inodetable_cache
             .restore_snapshot(self.inodetable_cache);
         filesystem.datablock_cache = self.datablock_cache;
+        filesystem.pending_shrinks = self.pending_shrinks;
     }
 }
 
