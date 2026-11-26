@@ -1,6 +1,3 @@
-mod ivshmem;
-mod record;
-
 use std::{
     process::ExitCode,
     time::{Duration, Instant},
@@ -8,8 +5,7 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use arceos_ivc_subscriber::{MessageDemoEvent, MessageDemoSubscriber};
-
-use crate::ivshmem::ExclusiveDevice;
+use linux_ivc::ivshmem::ExclusiveDevice;
 
 const ACK_BODY: &[u8] = b"ack from linux subscriber";
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30);

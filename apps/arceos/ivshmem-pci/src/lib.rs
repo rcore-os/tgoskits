@@ -21,6 +21,7 @@ pub use arceos::{
 };
 #[cfg(feature = "arceos")]
 pub use ivc::{
-    IvcDevice, IvcDeviceError, IvcDeviceInfo, IvcEndpoint, IvcEndpointInfo, IvcPeerRole,
-    IvcPendingEndpoint, IvcPendingInfo,
+    IVC_MAX_RECORD_BYTES, IVC_MAX_TIMEOUT_MS, IvcDevice, IvcDeviceError, IvcDeviceInfo,
+    IvcEndpoint, IvcEndpointInfo, IvcError, IvcPeerRole, IvcPendingEndpoint, IvcPendingInfo,
+    IvcSession, ivc_close, ivc_open, ivc_recv, ivc_send,
 };

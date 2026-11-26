@@ -18,7 +18,7 @@ use super::{
         CONFIG_SUBSYSTEM_VENDOR_ID_OFFSET, CONFIG_VENDOR_ID_OFFSET, STATUS_CAPABILITIES_LIST,
     },
     function::PciConfigByte,
-    runtime::{PciCommandRevision, PciCommandState},
+    runtime::{PciBarRevision, PciCommandRevision, PciCommandState},
 };
 
 #[derive(Clone)]
@@ -105,6 +105,7 @@ pub(crate) struct FunctionState {
     config: [u8; CONFIG_SPACE_SIZE],
     bars: Vec<BarState>,
     command_revision: PciCommandRevision,
+    bar_revision: PciBarRevision,
 }
 
 pub(crate) enum BarWriteAction {
@@ -126,6 +127,7 @@ impl FunctionState {
             power_on,
             bars: bars.iter().copied().map(BarState::new).collect(),
             command_revision: PciCommandRevision::initial(),
+            bar_revision: PciBarRevision::initial(),
         }
     }
 
@@ -182,6 +184,11 @@ impl FunctionState {
     pub(crate) fn bump_command_revision(&mut self) -> PciResult {
         self.command_revision = self.command_revision.next()?;
         Ok(())
+    }
+
+    pub(crate) fn next_bar_revision(&mut self) -> PciResult<PciBarRevision> {
+        self.bar_revision = self.bar_revision.next()?;
+        Ok(self.bar_revision)
     }
 
     pub(crate) fn bars(&self) -> &[BarState] {

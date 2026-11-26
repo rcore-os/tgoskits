@@ -76,12 +76,12 @@ pub use graph::{
 };
 pub use interrupt::{ControllerRegistration, InterruptRegistrationError};
 pub use ivshmem::{
-    BackingAllocation, Bar2Section, COMMON_SIZE_OFFSET, DOORBELL_OFFSET, Doorbell, DoorbellEvent,
-    EVENT_STATUS_OFFSET, ID_OFFSET, INTERRUPT_CONTROL_OFFSET, IvshmemDirectPlan, IvshmemError,
-    IvshmemEventSink, IvshmemLink, IvshmemLinkRegistry, IvshmemMemoryLayout, IvshmemRegisters,
-    LinkGeneration, LinkId, LinkProfile, MAX_PEERS_LIMIT, MAXIMUM_PEERS_OFFSET, OUTPUT_SIZE_OFFSET,
-    PeerAttachment, PeerId, PeerReservation, REGISTER_PAGE_SIZE, SHARED_MEMORY_SIZE, STATE_OFFSET,
-    SectionDesc, SharedBackingAllocator, SharedBarBacking,
+    BackingAllocation, Bar2CachePolicy, Bar2Section, COMMON_SIZE_OFFSET, DOORBELL_OFFSET, Doorbell,
+    DoorbellEvent, EVENT_STATUS_OFFSET, ID_OFFSET, INTERRUPT_CONTROL_OFFSET, IvshmemDirectPlan,
+    IvshmemError, IvshmemEventSink, IvshmemLink, IvshmemLinkRegistry, IvshmemMemoryLayout,
+    IvshmemRegisters, LinkGeneration, LinkId, LinkProfile, MAX_PEERS_LIMIT, MAXIMUM_PEERS_OFFSET,
+    OUTPUT_SIZE_OFFSET, PeerAttachment, PeerId, PeerReservation, REGISTER_PAGE_SIZE,
+    SHARED_MEMORY_SIZE, STATE_OFFSET, SectionDesc, SharedBackingAllocator, SharedBarBacking,
 };
 #[cfg(target_arch = "loongarch64")]
 // Reusable LoongArch device models. These are target-gated device packages,
@@ -99,15 +99,15 @@ pub use pci::{
     BarAssignment, ConfigOffset, EndpointIrqTransitionPermit, MSIX_BAR_INDEX, MSIX_BAR_SIZE,
     MSIX_CAPABILITY_ID, MSIX_MESSAGE_CONTROL_ENABLE, MSIX_MESSAGE_CONTROL_FUNCTION_MASK,
     MSIX_PBA_OFFSET, MSIX_TABLE_ENTRY_SIZE, MSIX_TABLE_OFFSET, MsixState, MsixTableEntry,
-    PciBarAccess, PciBarDecodePolicy, PciBarIndex, PciBarRoute, PciBdf, PciCapabilityByteMode,
-    PciCapabilityEffectAccess, PciCapabilityEffectRegion, PciCapabilityId, PciCapabilityLayout,
-    PciCapabilitySnapshot, PciCapabilitySpec, PciClass, PciCommandRevision, PciCommandState,
-    PciConfigEffectId, PciConfigReadEffect, PciConfigWriteEffect, PciEcamConfigFrontend,
-    PciEndpointContext, PciEndpointIdentity, PciError, PciFunction, PciFunctionRequirement,
-    PciFunctionSpec, PciHostKey, PciHostProvider, PciIntxPin, PciIntxRequirement, PciIntxRouter,
-    PciMemoryApertureDevice, PciMemoryBar, PciResult, PciRootBinding, PciRootBindingKey,
-    PciRootLifecycle, PciRootState, PciSegment, ResolvedPciBar, ResolvedPciFunction,
-    ResolvedPciIntx, ResolvedPciTopology, msix_capability_spec,
+    PciBarAccess, PciBarDecodePolicy, PciBarIndex, PciBarRevision, PciBarRoute, PciBdf,
+    PciCapabilityByteMode, PciCapabilityEffectAccess, PciCapabilityEffectRegion, PciCapabilityId,
+    PciCapabilityLayout, PciCapabilitySnapshot, PciCapabilitySpec, PciClass, PciCommandRevision,
+    PciCommandState, PciConfigEffectId, PciConfigReadEffect, PciConfigWriteEffect,
+    PciEcamConfigFrontend, PciEndpointContext, PciEndpointIdentity, PciError, PciFunction,
+    PciFunctionRequirement, PciFunctionSpec, PciHostKey, PciHostProvider, PciIntxPin,
+    PciIntxRequirement, PciIntxRouter, PciMemoryApertureDevice, PciMemoryBar, PciResult,
+    PciRootBinding, PciRootBindingKey, PciRootLifecycle, PciRootState, PciSegment, ResolvedPciBar,
+    ResolvedPciFunction, ResolvedPciIntx, ResolvedPciTopology, msix_capability_spec,
 };
 #[cfg(target_arch = "x86_64")]
 pub(crate) use pci::{all_ones, read_bytes};

@@ -1,0 +1,37 @@
+board_type = "OrangePi-5-Plus"
+cmdline = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 axvisor.vm_start=1,2"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "Failed to initialize guest VM",
+  "Failed to start VM",
+  "AXIVC Zephyr-Starry benchmark failed",
+  "AXIVC_ZEPHYR_BENCH_FAIL",
+  "FAR_ELn:",
+  "AXIVC Starry benchmark send failed",
+  "AXIVC Starry benchmark recv failed",
+  "(?m)^(?:\\[VM \\d+\\] )?AXIVC_STARRY_INIT FAIL reason=[^\\r\\n ]+\\s*$",
+  "(?m)^(?:\\[VM \\d+\\] )?AXVISOR_IVC_BENCH_FAIL .*$",
+  "(?m)^(?:\\[VM \\d+\\] )?AXVISOR_IVC_BENCH_RESULT=FAIL .*$",
+]
+timeout = 850
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = ["Attached VM\\[2\\] console"]
+timeout = 35
+
+[[shell_check_steps]]
+shell_prefix = "AXIVC Zephyr benchmark producer pass"
+shell_cmd = "\u0018h"
+success_regex = ["[Dd]etached VM\\[2\\] console"]
+timeout = 20
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+  "(?m)^(?:\\[VM \\d+\\] )?AXVISOR_IVC_BENCH_RESULT=PASS cases=4 testTime=100 bytes=1232076800 chunks=400\\s*$",
+]
+timeout = 20

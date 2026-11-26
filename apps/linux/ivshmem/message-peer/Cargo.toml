@@ -5,6 +5,10 @@ edition.workspace = true
 publish = false
 build = "build.rs"
 
+[lib]
+name = "linux_ivc"
+crate-type = ["rlib", "staticlib"]
+
 [[bin]]
 name = "linux-ivshmem-subscriber"
 path = "src/main.rs"

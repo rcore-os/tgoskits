@@ -48,7 +48,7 @@ pub use msix::{
 pub use root::{PciBarRoute, PciRootState};
 pub(crate) use runtime::PciBindingLease;
 pub use runtime::{
-    BarAssignment, EndpointIrqTransitionPermit, EndpointRouteToken, PciBarAccess,
+    BarAssignment, EndpointIrqTransitionPermit, EndpointRouteToken, PciBarAccess, PciBarRevision,
     PciCommandRevision, PciCommandState, PciConfigReadEffect, PciConfigWriteEffect,
     PciEndpointContext, PciFunction, PciRootBinding, PciRootBindingKey,
 };

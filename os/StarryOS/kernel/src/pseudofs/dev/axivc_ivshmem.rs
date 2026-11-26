@@ -17,7 +17,7 @@ use alloc::sync::Arc;
 use core::{mem::size_of, ops::Range, sync::atomic};
 
 #[cfg(feature = "axivc-ivshmem")]
-use ax_driver::pci::ivshmem::{IvshmemPciEndpoint, take_single_endpoint};
+use ax_driver::pci::ivshmem::{IvshmemBar2Policy, IvshmemPciEndpoint, take_single_endpoint};
 #[cfg(feature = "axivc-ivshmem")]
 use ax_hal::mem::PhysAddr;
 #[cfg(feature = "axivc-ivshmem")]
@@ -171,16 +171,23 @@ struct MappedRegion {
 }
 
 #[cfg(feature = "axivc-ivshmem")]
+#[derive(Clone, Copy)]
+enum MappedRegionKind {
+    Device,
+    Shared(IvshmemBar2Policy),
+}
+
+#[cfg(feature = "axivc-ivshmem")]
 impl MappedRegion {
     fn device(range: Range<usize>) -> VfsResult<Self> {
-        Self::map(range, true)
+        Self::map(range, MappedRegionKind::Device)
     }
 
-    fn uncached(range: Range<usize>) -> VfsResult<Self> {
-        Self::map(range, false)
+    fn shared(range: Range<usize>, policy: IvshmemBar2Policy) -> VfsResult<Self> {
+        Self::map(range, MappedRegionKind::Shared(policy))
     }
 
-    fn map(range: Range<usize>, device: bool) -> VfsResult<Self> {
+    fn map(range: Range<usize>, kind: MappedRegionKind) -> VfsResult<Self> {
         let len = range
             .end
             .checked_sub(range.start)
@@ -190,10 +197,14 @@ impl MappedRegion {
             return Err(VfsError::InvalidInput);
         }
         let phys = PhysAddr::from_usize(range.start);
-        let mapped = if device {
-            ax_mm::iomap(phys, len)
-        } else {
-            ax_mm::iomap_uncached(phys, len)
+        let mapped = match kind {
+            MappedRegionKind::Device => ax_mm::iomap(phys, len),
+            MappedRegionKind::Shared(IvshmemBar2Policy::NormalNonCacheable) => {
+                ax_mm::iomap_uncached(phys, len)
+            }
+            MappedRegionKind::Shared(IvshmemBar2Policy::NormalWriteBackInnerShareable) => {
+                ax_mm::iomap_cached(phys, len)
+            }
         }
         .map_err(|_| VfsError::NoMemory)?;
         if mapped.as_usize() == 0 {
@@ -240,9 +251,9 @@ impl MappedRegion {
     fn read_u64_acquire(&self, offset: usize) -> VfsResult<u64> {
         let address = self.checked_address(offset, size_of::<u64>())?;
         // SAFETY: `checked_address` proves the aligned eight-byte access is
-        // inside the live Normal non-cacheable BAR2 mapping. The host publishes
-        // this little-endian epoch with release semantics and never requires a
-        // guest read-modify-write.
+        // inside the live Normal BAR2 mapping selected by the transport
+        // capability. The host publishes this little-endian epoch with release
+        // semantics and never requires a guest read-modify-write.
         let value =
             unsafe { (*(address as *const atomic::AtomicU64)).load(atomic::Ordering::Acquire) };
         Ok(u64::from_le(value))
@@ -277,15 +288,17 @@ impl MappedRegion {
 
 /// One validated ivshmem function and its permanent kernel mappings.
 ///
-/// BAR0 is mapped as Device memory. BAR2 is mapped Normal non-cacheable because
-/// it is CPU-owned shared RAM consumed through the Message V1 atomics. Explicit
-/// teardown rewrites only the local output section; the peer output section is
-/// never writable by this endpoint.
+/// BAR0 is mapped as Device memory. BAR2 is mapped with the Normal cache policy
+/// selected by the PCI transport capability because it is CPU-owned shared RAM
+/// consumed through the Message V1 atomics. Explicit teardown rewrites only the
+/// local output section; the peer output section is never writable by this
+/// endpoint.
 #[cfg(feature = "axivc-ivshmem")]
 pub(super) struct IvshmemAttachment {
     peer_id: u32,
     common_size: usize,
     output_size: usize,
+    bar2_policy: IvshmemBar2Policy,
     registers: MappedRegion,
     shared: MappedRegion,
     endpoint: Mutex<IvshmemPciEndpoint>,
@@ -311,8 +324,9 @@ impl IvshmemAttachment {
         })?;
         let register_range = endpoint.registers();
         let shared_range = endpoint.shared();
+        let bar2_policy = endpoint.bar2_policy();
         let registers = MappedRegion::device(register_range)?;
-        let shared = MappedRegion::uncached(shared_range)?;
+        let shared = MappedRegion::shared(shared_range, bar2_policy)?;
         if registers.len < OUTPUT_SIZE_OFFSET + size_of::<u32>() {
             return Err(VfsError::InvalidInput);
         }
@@ -329,9 +343,14 @@ impl IvshmemAttachment {
             .map_err(|_| VfsError::InvalidInput)?;
         let output_size = usize::try_from(registers.read_u32(OUTPUT_SIZE_OFFSET)?)
             .map_err(|_| VfsError::InvalidInput)?;
+        let common_size_valid = common_size.is_multiple_of(PAGE_SIZE)
+            && match bar2_policy {
+                IvshmemBar2Policy::NormalNonCacheable => true,
+                IvshmemBar2Policy::NormalWriteBackInnerShareable => common_size == 0,
+            };
         if max_peers != REQUIRED_PEERS
             || peer_id >= REQUIRED_PEERS
-            || !common_size.is_multiple_of(PAGE_SIZE)
+            || !common_size_valid
             || output_size == 0
             || !output_size.is_multiple_of(PAGE_SIZE)
             || output_size < PAYLOAD_OFFSET + PAGE_SIZE
@@ -355,6 +374,7 @@ impl IvshmemAttachment {
             peer_id,
             common_size,
             output_size,
+            bar2_policy,
             registers,
             shared,
             endpoint: Mutex::new(endpoint),
@@ -363,6 +383,10 @@ impl IvshmemAttachment {
 
     pub(super) const fn role_matches(&self, publisher: bool) -> bool {
         self.peer_id == if publisher { 0 } else { 1 }
+    }
+
+    pub(super) const fn bar2_policy(&self) -> IvshmemBar2Policy {
+        self.bar2_policy
     }
 
     pub(super) fn irq_binding(&self) -> VfsResult<ax_driver::BindingIrq> {
@@ -468,10 +492,10 @@ impl IvshmemAttachment {
         let local = self.output_address(local_peer)?;
         let peer = self.output_address(peer)?;
         // SAFETY: both page-aligned output ranges were checked against the
-        // live Normal non-cacheable BAR2 mapping, local protocol ownership is
-        // serialized by the session mutex, and the peer range is passed
-        // read-only. The kernel mapping is never unmapped while the registry
-        // exists, satisfying the port's lifetime requirement.
+        // live BAR2 mapping selected by the transport capability, local
+        // protocol ownership is serialized by the session mutex, and the peer
+        // range is passed read-only. The kernel mapping is never unmapped while
+        // the registry exists, satisfying the port's lifetime requirement.
         unsafe {
             IvshmemMessagePort::attach(
                 local as *mut u8,

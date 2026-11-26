@@ -1,5 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
+#[cfg(feature = "axivc-ivshmem")]
+use ax_driver::pci::ivshmem::IvshmemBar2Policy;
 use ax_fs_ng::vfs::{FileBackend, FileFlags};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_2M, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_memory_set::MappingError;
@@ -100,6 +102,18 @@ fn check_restricted_device_mapping_access(
         return Err(StarryError::PermissionDenied);
     }
     Ok(())
+}
+
+#[cfg(feature = "axivc-ivshmem")]
+fn apply_ivshmem_bar2_policy(flags: &mut MappingFlags, policy: IvshmemBar2Policy) {
+    match policy {
+        IvshmemBar2Policy::NormalNonCacheable => *flags |= MappingFlags::UNCACHED,
+        IvshmemBar2Policy::NormalWriteBackInnerShareable => {}
+    }
+}
+
+fn mapping_attributes(flags: MappingFlags) -> MappingFlags {
+    flags & (MappingFlags::DEVICE | MappingFlags::UNCACHED)
 }
 
 /// Derive the immutable permission envelope from the mapping source rather
@@ -533,9 +547,9 @@ pub fn sys_mmap(
                         }
                     }
                     #[cfg(feature = "axivc-ivshmem")]
-                    Ok(DeviceMmap::PhysicalResolvedRestricted(range, retain, access)) => {
+                    Ok(DeviceMmap::PhysicalResolvedRestricted(range, retain, policy, access)) => {
                         check_restricted_device_mapping_access(permission_flags, access)?;
-                        mapping_flags |= MappingFlags::UNCACHED;
+                        apply_ivshmem_bar2_policy(&mut mapping_flags, policy);
                         if range.is_empty() {
                             return Err(StarryError::InvalidInput);
                         }
@@ -700,13 +714,14 @@ pub fn sys_mmap(
                                     DeviceMmap::PhysicalResolvedRestricted(
                                         range,
                                         retain,
+                                        policy,
                                         access,
                                     ) => {
                                         check_restricted_device_mapping_access(
                                             permission_flags,
                                             access,
                                         )?;
-                                        mapping_flags |= MappingFlags::UNCACHED;
+                                        apply_ivshmem_bar2_policy(&mut mapping_flags, policy);
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
                                         }
@@ -987,13 +1002,18 @@ pub fn sys_mprotect(
         }
         let fragment_start = fragment.range.start;
         let fragment_size = fragment.range.size();
+        let retained_attributes = aspace
+            .find_area_snapshot(fragment_start)
+            .ok_or(StarryError::BadState)?
+            .flags();
+        let fragment_flags = new_flags | mapping_attributes(retained_attributes);
         if permission_flags.contains(MmapProt::WRITE) {
             // Capability and seal checks precede this fragment's receipt, but
             // do not roll back already committed Linux-visible prefixes.
             for file in aspace.validate_mprotect_mapping_capabilities(
                 fragment_start,
                 fragment_size,
-                new_flags,
+                fragment_flags,
             )? {
                 memfd_check_write_seal_for_shared_file_backend(&file)?;
             }
@@ -1001,7 +1021,7 @@ pub fn sys_mprotect(
         aspace.protect_with_reported_flags(
             fragment_start,
             fragment_size,
-            new_flags,
+            fragment_flags,
             reported_flags,
         )?;
         cursor = fragment.range.end;

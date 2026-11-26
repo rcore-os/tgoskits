@@ -7,6 +7,8 @@ if(CONFIG_TGOS_IVC)
 
   get_filename_component(TGOSKITS_ROOT
     "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+  set(TGOS_IVC_COMMON_INCLUDE_DIR
+    "${TGOSKITS_ROOT}/apps/common/ivc/include")
   set(TGOS_IVC_RUST_MANIFEST
     "${CMAKE_CURRENT_LIST_DIR}/rust/Cargo.toml")
   set(TGOS_IVC_RUST_TARGET "aarch64-unknown-none-softfloat")
@@ -47,9 +49,13 @@ if(CONFIG_TGOS_IVC)
     DEPENDS "${TGOS_IVC_RUST_LIB}")
 
   zephyr_library()
-  zephyr_library_sources(src/tgos_ivc_zephyr.c)
-  zephyr_library_include_directories(include)
-  zephyr_include_directories(include)
+  zephyr_library_sources(src/tgos_ivc_zephyr.c src/ivc_zephyr.c)
+  zephyr_library_include_directories(
+    include
+    "${TGOS_IVC_COMMON_INCLUDE_DIR}")
+  zephyr_include_directories(
+    include
+    "${TGOS_IVC_COMMON_INCLUDE_DIR}")
   zephyr_library_add_dependencies(tgos_ivc_rust_build)
 
   add_library(tgos_ivc_rust STATIC IMPORTED GLOBAL)

@@ -21,13 +21,15 @@
 
 #define TGOS_IVC_VENDOR_ID			0x1af4U
 #define TGOS_IVC_DEVICE_ID			0x1110U
-#define TGOS_IVC_CLASS_REVISION			0xff000001U
+#define TGOS_IVC_CLASS_REVISION_NC		0xff000001U
+#define TGOS_IVC_CLASS_REVISION_WB		0xff000002U
 
 #define TGOS_IVC_AXVISOR_CAP_ID			0x09U
 #define TGOS_IVC_AXVISOR_CAP_LENGTH		36U
 #define TGOS_IVC_AXVISOR_CAP_VERSION		1U
 #define TGOS_IVC_AXVISOR_CAP_MAGIC		0x56495841U
-#define TGOS_IVC_AXVISOR_PROTOCOL		0x4000U
+#define TGOS_IVC_AXVISOR_PROTOCOL_NC		0x4000U
+#define TGOS_IVC_AXVISOR_PROTOCOL_WB		0x4001U
 #define TGOS_IVC_AXVISOR_FEATURE_PEER_EPOCH	BIT(0)
 #define TGOS_IVC_AXVISOR_EPOCH_OFFSET		0x100U
 #define TGOS_IVC_AXVISOR_EPOCH_STRIDE		8U
@@ -77,6 +79,7 @@ struct tgos_ivc_capability {
 	uint32_t output_size;
 	uint32_t epoch_offset;
 	uint32_t epoch_stride;
+	uint32_t bar2_flags;
 };
 
 struct tgos_ivc_scan_result {
@@ -100,7 +103,24 @@ static bool prepared;
 static bool attempted;
 static int prepare_error;
 
-static int read_axvisor_capability(pcie_bdf_t bdf,
+static bool decode_transport_policy(uint32_t class_revision,
+				    uint32_t protocol, uint32_t *bar2_flags)
+{
+	if (class_revision == TGOS_IVC_CLASS_REVISION_NC &&
+	    (protocol & 0xffffU) == TGOS_IVC_AXVISOR_PROTOCOL_NC) {
+		*bar2_flags = K_MEM_ARM_NORMAL_NC;
+		return true;
+	}
+	if (class_revision == TGOS_IVC_CLASS_REVISION_WB &&
+	    (protocol & 0xffffU) == TGOS_IVC_AXVISOR_PROTOCOL_WB) {
+		*bar2_flags = K_MEM_CACHE_WB;
+		return true;
+	}
+
+	return false;
+}
+
+static int read_axvisor_capability(pcie_bdf_t bdf, uint32_t class_revision,
 				   struct tgos_ivc_capability *result)
 {
 	uint32_t command = pcie_conf_read(bdf, PCIE_CONF_CMDSTAT);
@@ -137,6 +157,7 @@ static int read_axvisor_capability(pcie_bdf_t bdf,
 			uint32_t common_size;
 			uint32_t advertised_output_size;
 			uint32_t max_peers;
+			uint32_t bar2_flags;
 
 			if (version != TGOS_IVC_AXVISOR_CAP_VERSION ||
 			    length != TGOS_IVC_AXVISOR_CAP_LENGTH ||
@@ -155,14 +176,18 @@ static int read_axvisor_capability(pcie_bdf_t bdf,
 				pcie_conf_read(bdf, pointer + 7U);
 			max_peers = pcie_conf_read(bdf, pointer + 8U);
 
+			if (!decode_transport_policy(class_revision, protocol,
+						     &bar2_flags)) {
+				return -EPROTO;
+			}
 			if (magic != TGOS_IVC_AXVISOR_CAP_MAGIC ||
-			    (protocol & 0xffffU) !=
-				    TGOS_IVC_AXVISOR_PROTOCOL ||
 			    (features &
 			     TGOS_IVC_AXVISOR_FEATURE_PEER_EPOCH) == 0U ||
 			    epoch_offset != TGOS_IVC_AXVISOR_EPOCH_OFFSET ||
 			    epoch_stride != TGOS_IVC_AXVISOR_EPOCH_STRIDE ||
 			    (common_size % TGOS_IVC_PAGE_SIZE) != 0U ||
+			    (bar2_flags == K_MEM_CACHE_WB &&
+			     common_size != 0U) ||
 			    advertised_output_size == 0U ||
 			    (advertised_output_size % TGOS_IVC_PAGE_SIZE) !=
 				    0U ||
@@ -174,6 +199,7 @@ static int read_axvisor_capability(pcie_bdf_t bdf,
 			result->output_size = advertised_output_size;
 			result->epoch_offset = epoch_offset;
 			result->epoch_stride = epoch_stride;
+			result->bar2_flags = bar2_flags;
 			return 0;
 		}
 
@@ -271,14 +297,10 @@ static int validate_msix_bar(pcie_bdf_t bdf)
 static int read_strict_profile(pcie_bdf_t bdf,
 			       struct tgos_ivc_capability *capability)
 {
+	uint32_t class_revision = pcie_conf_read(bdf, PCIE_CONF_CLASSREV);
 	int result;
 
-	if (pcie_conf_read(bdf, PCIE_CONF_CLASSREV) !=
-	    TGOS_IVC_CLASS_REVISION) {
-		return -ENODEV;
-	}
-
-	result = read_axvisor_capability(bdf, capability);
+	result = read_axvisor_capability(bdf, class_revision, capability);
 	if (result != 0) {
 		return result;
 	}
@@ -487,22 +509,23 @@ static int prepare_once(void)
 		goto disable_decode;
 	}
 
-	/* BAR2 is CPU-owned shared RAM: no Device alias and no writable peer
-	 * alias is created. Only this peer's output section gets RW.
+	/* BAR2 is CPU-owned shared RAM. Apply the capability-selected cache
+	 * policy to every alias. No Device alias or writable peer alias is
+	 * created; only this peer's output section gets RW.
 	 */
 	result = map_region(state_physical, TGOS_IVC_STATE_TABLE_SIZE,
-			    K_MEM_ARM_NORMAL_NC, &state_table);
+			    transport.bar2_flags, &state_table);
 	if (result != 0) {
 		goto disable_decode;
 	}
 	result = map_region(local_physical, output_size,
-			    K_MEM_ARM_NORMAL_NC | K_MEM_PERM_RW,
+			    transport.bar2_flags | K_MEM_PERM_RW,
 			    &local_output);
 	if (result != 0) {
 		goto disable_decode;
 	}
 	result = map_region(peer_physical, output_size,
-			    K_MEM_ARM_NORMAL_NC, &peer_output);
+			    transport.bar2_flags, &peer_output);
 	if (result != 0) {
 		goto disable_decode;
 	}

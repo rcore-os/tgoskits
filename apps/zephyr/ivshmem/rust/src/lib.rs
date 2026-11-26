@@ -28,6 +28,7 @@ const EOVERFLOW: c_int = 75;
 const EMSGSIZE: c_int = 90;
 
 const MAX_RECORD_BYTES: usize = 48;
+const MAX_TIMEOUT_MS: i32 = 60_000;
 const MESSAGE_CHANNEL_BYTES: usize = 0x2100;
 const PAYLOAD_OFFSET: usize = 0x3000;
 const PAGE_SIZE: usize = 0x1000;
@@ -51,6 +52,30 @@ impl PlatformView {
             peer_epoch: 0,
             output_size: 0,
         }
+    }
+}
+
+/// Copy CPU-owned Normal RAM payload bytes.
+///
+/// # Safety
+///
+/// When `len` is nonzero, `source` must point to `len` readable bytes and
+/// `destination` to `len` writable bytes in CPU-owned Normal RAM. Both ranges
+/// must remain valid for the duration of the call, without concurrent access
+/// except by this copy.
+unsafe fn copy_payload_bytes(source: *const u8, destination: *mut u8, len: usize) {
+    if len == 0 {
+        return;
+    }
+
+    if source.addr().abs_diff(destination.addr()) >= len {
+        // SAFETY: the caller provides two valid byte ranges of `len`, and their
+        // starting addresses differ by at least `len`, so they do not overlap.
+        unsafe { ptr::copy_nonoverlapping(source, destination, len) };
+    } else {
+        // SAFETY: the caller provides two valid byte ranges of `len`; the
+        // overlapping copy preserves the previous application-buffer semantics.
+        unsafe { ptr::copy(source, destination, len) };
     }
 }
 
@@ -283,7 +308,13 @@ impl Session {
         }
     }
 
-    fn receive(&mut self, data: *mut u8, cap: usize, timeout_ms: i32) -> c_int {
+    fn receive(
+        &mut self,
+        data: *mut u8,
+        cap: usize,
+        timeout_ms: i32,
+        minimum_record_bytes: usize,
+    ) -> c_int {
         let deadline = deadline_from(timeout_ms);
         let result = self.ensure_ready(deadline);
         if result != 0 {
@@ -313,6 +344,9 @@ impl Session {
                             Ok(true) => match receiver.peek_message_meta() {
                                 Ok(Some(meta)) => match usize::try_from(meta.len()) {
                                     Err(_) => ReceiveStep::Failed,
+                                    Ok(length) if length < minimum_record_bytes => {
+                                        ReceiveStep::Immediate(-EMSGSIZE)
+                                    }
                                     Ok(length) if length > MAX_RECORD_BYTES => {
                                         ReceiveStep::Immediate(-EMSGSIZE)
                                     }
@@ -406,16 +440,11 @@ impl Session {
         let Some(destination) = payload_start.checked_add(offset) else {
             return -EOVERFLOW;
         };
-        if len != 0 {
-            // SAFETY: the backend exposed an output-sized writable mapping at
-            // `local_output`. The checked application range ends inside the
-            // payload subrange at `PAYLOAD_OFFSET`, so the destination is
-            // within the mapping. `ptr::copy` permits an application buffer
-            // that overlaps this destination.
-            unsafe {
-                ptr::copy(data, destination as *mut u8, len);
-            }
-        }
+        // SAFETY: the backend exposed an output-sized writable mapping at
+        // `local_output`. The checked application range ends inside the payload
+        // subrange at `PAYLOAD_OFFSET`, so the destination is within the
+        // mapping. The caller-provided input satisfies the source contract.
+        unsafe { copy_payload_bytes(data, destination as *mut u8, len) };
 
         self.check_epochs()
     }
@@ -443,15 +472,11 @@ impl Session {
         let Some(source) = payload_start.checked_add(offset) else {
             return -EOVERFLOW;
         };
-        if len != 0 {
-            // SAFETY: `peer_output` starts a read-only mapping of `output_size`
-            // bytes. The checked application range ends inside the payload
-            // subrange at `PAYLOAD_OFFSET`, so the source is within that
-            // mapping, and the caller owns `len` output bytes.
-            unsafe {
-                ptr::copy(source as *const u8, data, len);
-            }
-        }
+        // SAFETY: `peer_output` starts a read-only mapping of `output_size`
+        // bytes. The checked application range ends inside the payload subrange
+        // at `PAYLOAD_OFFSET`, so the source is within that mapping, and the
+        // caller owns `len` output bytes.
+        unsafe { copy_payload_bytes(source as *const u8, data, len) };
 
         self.check_epochs()
     }
@@ -677,10 +702,10 @@ pub extern "C" fn tgos_ivc_wait_ready(timeout_ms: i32) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn tgos_ivc_close() {
+pub extern "C" fn tgos_ivc_close_result() -> c_int {
     let result = unsafe { tgos_ivc_backend_lock() };
     if result != 0 {
-        return;
+        return result;
     }
 
     // SAFETY: the backend mutex is held for the complete session teardown.
@@ -693,6 +718,12 @@ pub extern "C" fn tgos_ivc_close() {
         tgos_ivc_backend_reset_event();
         tgos_ivc_backend_unlock();
     }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn tgos_ivc_close() {
+    let _ = tgos_ivc_close_result();
 }
 
 /// Send one bounded Message V1 record.
@@ -759,7 +790,41 @@ pub unsafe extern "C" fn tgos_ivc_recv(data: *mut c_void, cap: usize, timeout_ms
     // the session state and its V1 sender/receiver pair.
     let result = unsafe {
         match (&mut *STATE.0.get()).as_mut() {
-            Some(session) => session.receive(data.cast::<u8>(), cap, timeout_ms),
+            Some(session) => session.receive(data.cast::<u8>(), cap, timeout_ms, 0),
+            None => -ENODEV,
+        }
+    };
+    unsafe { tgos_ivc_backend_unlock() };
+    result
+}
+
+/// Receive one complete record for the unified application ABI.
+///
+/// # Safety
+///
+/// `data` must point to `cap` writable bytes that stay valid until this
+/// potentially blocking call returns. The caller must not access those bytes
+/// concurrently with the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tgos_ivc_recv_record(
+    data: *mut c_void,
+    cap: usize,
+    timeout_ms: i32,
+) -> c_int {
+    if data.is_null() || cap == 0 || !(0..=MAX_TIMEOUT_MS).contains(&timeout_ms) {
+        return -EINVAL;
+    }
+
+    let result = unsafe { tgos_ivc_backend_lock() };
+    if result != 0 {
+        return result;
+    }
+
+    // SAFETY: the backend mutex is held, giving this call exclusive access to
+    // the session state and its V1 sender/receiver pair.
+    let result = unsafe {
+        match (&mut *STATE.0.get()).as_mut() {
+            Some(session) => session.receive(data.cast::<u8>(), cap, timeout_ms, 1),
             None => -ENODEV,
         }
     };

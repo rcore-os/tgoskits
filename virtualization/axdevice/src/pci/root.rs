@@ -19,8 +19,9 @@ use axdevice_base::DeviceId;
 #[cfg(target_arch = "x86_64")]
 use super::config_layout::CONFIG_SPACE_SIZE;
 use super::{
-    EndpointRouteToken, FOUR_GIB, PciBarDecodePolicy, PciBarIndex, PciBdf, PciCommandState,
-    PciConfigReadEffect, PciConfigWriteEffect, PciError, PciResult, ResolvedPciTopology,
+    EndpointRouteToken, FOUR_GIB, PciBarDecodePolicy, PciBarIndex, PciBarRevision, PciBdf,
+    PciCommandState, PciConfigReadEffect, PciConfigWriteEffect, PciError, PciResult,
+    ResolvedPciTopology,
     config::{BarWriteAction, FunctionState},
     config_layout::{
         CONFIG_COMMAND_OFFSET, CONFIG_COMMAND_SIZE, CONFIG_STATUS_OFFSET, STATUS_INTERRUPT_PENDING,
@@ -60,6 +61,8 @@ pub(crate) enum PciConfigWriteOutcome {
         token: Option<EndpointRouteToken>,
         bar: PciBarIndex,
         gpa: u64,
+        /// Root-linearized order of accepted BAR relocations.
+        revision: PciBarRevision,
     },
 }
 
@@ -374,9 +377,11 @@ impl PciRootState {
                                         candidate,
                                     ),
                             };
-                            state.functions[function_index]
-                                .finish_relocation(bar, accepted.then_some(candidate));
                             if accepted {
+                                let revision =
+                                    state.functions[function_index].next_bar_revision()?;
+                                state.functions[function_index]
+                                    .finish_relocation(bar, Some(candidate));
                                 let token = state
                                     .bindings
                                     .get(&bdf)
@@ -391,8 +396,10 @@ impl PciRootState {
                                     token,
                                     bar,
                                     gpa: candidate,
+                                    revision,
                                 });
                             }
+                            state.functions[function_index].finish_relocation(bar, None);
                         }
                     }
                     return Ok(PciConfigWriteOutcome::Complete);

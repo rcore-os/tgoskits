@@ -14,7 +14,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use axivc::{IvcEndpoints, IvshmemMessagePort, IvshmemSessionState};
 
-use crate::record::PendingEndpoint;
+use crate::record::{PendingEndpoint, session_lost};
 
 const BAR_REGISTERS: u8 = 0;
 const BAR_SHARED: u8 = 2;
@@ -25,18 +25,14 @@ const REGISTER_PAGE_SIZE: usize = 0x1000;
 const REGISTER_COMMON_SIZE: usize = 0x18;
 const REGISTER_OUTPUT_SIZE: usize = 0x1c;
 
-const EXPECTED_PEER_ID: u32 = 1;
 const EXPECTED_MAX_PEERS: u32 = 2;
-const REMOTE_PEER_ID: u16 = 0;
 const DOORBELL_VECTOR: u16 = 0;
 
 const PAGE_SIZE: usize = 0x1000;
 const STATE_TABLE_SIZE: usize = PAGE_SIZE;
 const EXPECTED_COMMON_SIZE: usize = 0;
-const EXPECTED_OUTPUT_SIZE: usize = 0x7000;
-const EXPECTED_BAR2_SIZE: usize = 0x1_0000;
 
-// This advisory lock coordinates only cooperating demo processes. The guest
+// This advisory lock coordinates every cooperating Linux writer. The guest
 // initramfs fixes /tmp, and those writers must share this exact path and mount
 // namespace; deriving it from TMPDIR would let environment differences bypass
 // the lock.
@@ -82,9 +78,9 @@ unsafe extern "C" {
 
 /// One verified ivshmem device with exclusive process-level writer ownership.
 ///
-/// The demo profile remains a two-peer IVC link with this guest as peer 1.
-/// Section boundaries use the geometry advertised by BAR0 and are checked
-/// against the explicit demo layout before the mapping is exposed.
+/// The profile is a two-peer IVC link with this guest as peer 0 or 1. Section
+/// boundaries use the geometry advertised by BAR0, while BAR2 may be larger
+/// than the exact profile requirement for fixed hardware guests.
 pub struct ExclusiveDevice {
     device: Device,
     registers: Mapping,
@@ -117,10 +113,10 @@ impl ExclusiveDevice {
             .context("ivshmem common size does not fit usize")?;
         let output_size = usize::try_from(device.read_reg32(REGISTER_OUTPUT_SIZE))
             .context("ivshmem output size does not fit usize")?;
-        if peer_id != EXPECTED_PEER_ID || max_peers != EXPECTED_MAX_PEERS {
+        if peer_id > 1 || max_peers != EXPECTED_MAX_PEERS {
             bail!(
-                "ivshmem profile mismatch: peer={peer_id} max_peers={max_peers}, expected \
-                 peer={EXPECTED_PEER_ID} max_peers={EXPECTED_MAX_PEERS}"
+                "ivshmem profile mismatch: peer={peer_id} max_peers={max_peers}, expected peer=0 \
+                 or 1 and max_peers={EXPECTED_MAX_PEERS}"
             );
         }
         if output_size == 0 {
@@ -132,11 +128,8 @@ impl ExclusiveDevice {
                  output={output_size:#x}"
             );
         }
-        if common_size != EXPECTED_COMMON_SIZE || output_size != EXPECTED_OUTPUT_SIZE {
-            bail!(
-                "ivshmem geometry mismatch: common={common_size:#x} output={output_size:#x}, \
-                 expected common={EXPECTED_COMMON_SIZE:#x} output={EXPECTED_OUTPUT_SIZE:#x}"
-            );
+        if common_size != EXPECTED_COMMON_SIZE {
+            bail!("ivshmem common size is {common_size:#x}, expected {EXPECTED_COMMON_SIZE:#x}");
         }
         let required_bar2_size = STATE_TABLE_SIZE
             .checked_add(common_size)
@@ -149,9 +142,9 @@ impl ExclusiveDevice {
             .ok_or_else(|| anyhow!("ivshmem section geometry overflows BAR2"))?;
 
         let shared = device.map_bar(BAR_SHARED)?;
-        if shared.len != EXPECTED_BAR2_SIZE {
+        if !shared.len.is_power_of_two() || !shared.len.is_multiple_of(PAGE_SIZE) {
             bail!(
-                "BAR2 is {:#x} bytes, expected {EXPECTED_BAR2_SIZE:#x}",
+                "BAR2 size {:#x} is not a page-aligned power of two",
                 shared.len
             );
         }
@@ -195,6 +188,10 @@ impl ExclusiveDevice {
         self.shared.len
     }
 
+    pub const fn remote_peer_id(&self) -> u16 {
+        if self.peer_id == 0 { 1 } else { 0 }
+    }
+
     /// Creates the process's only event backend and Message V1 port.
     pub fn take_session<'a>(&'a mut self) -> Result<MessageSession<'a>> {
         if self.session_taken {
@@ -206,10 +203,15 @@ impl ExclusiveDevice {
             device: self.device.raw,
             len: self.registers.len,
             max_peers: self.max_peers,
+            local_peer_id: u16::try_from(self.peer_id)
+                .context("ivshmem local peer does not fit u16")?,
+            remote_peer_id: self.remote_peer_id(),
             _device: PhantomData,
         };
+        let mut local_epoch = PeerEpoch::default();
+        local_epoch.observe(&registers, registers.local_peer_id)?;
         let mut remote_epoch = PeerEpoch::default();
-        remote_epoch.observe(&registers)?;
+        remote_epoch.observe(&registers, registers.remote_peer_id)?;
         let shared = SharedBar {
             base: self.shared.pointer,
             len: self.shared.len,
@@ -220,18 +222,19 @@ impl ExclusiveDevice {
             _device: PhantomData,
         };
         let backend = EventBackend::open(self)?;
-        let port = shared.attach_message_port(u32::from(REMOTE_PEER_ID))?;
+        let port = shared.attach_message_port(u32::from(self.remote_peer_id()))?;
         Ok(MessageSession {
             port,
             backend,
             registers,
+            local_epoch,
             remote_epoch,
             started: false,
         })
     }
 
-    /// Creates the process's single logical endpoint and publishes the Linux
-    /// subscriber incarnation before waiting for its asymmetric peer.
+    /// Creates the process's single logical endpoint and publishes this
+    /// Linux peer's incarnation before waiting for the other peer.
     pub fn take_endpoint(&mut self) -> Result<PendingEndpoint<'_>> {
         let mut session = self.take_session()?;
         let local_incarnation = session.begin_session()?;
@@ -248,6 +251,7 @@ pub struct MessageSession<'a> {
     port: IvshmemMessagePort<'a>,
     backend: EventBackend<'a>,
     registers: Registers<'a>,
+    local_epoch: PeerEpoch,
     remote_epoch: PeerEpoch,
     started: bool,
 }
@@ -276,12 +280,20 @@ impl<'a> MessageSession<'a> {
             .context("failed to inspect the ivshmem Message V1 state")
     }
 
-    pub(crate) fn observe_peer_epoch(&mut self) -> Result<()> {
-        self.remote_epoch.observe(&self.registers)
+    pub(crate) fn observe_epochs(&mut self) -> Result<()> {
+        self.local_epoch
+            .observe(&self.registers, self.registers.local_peer_id)?;
+        self.remote_epoch
+            .observe(&self.registers, self.registers.remote_peer_id)
     }
 
-    pub(crate) fn peer_epoch_is_current(&self) -> Result<bool> {
-        self.remote_epoch.is_current(&self.registers)
+    pub(crate) fn epochs_current(&self) -> Result<bool> {
+        Ok(self
+            .local_epoch
+            .is_current(&self.registers, self.registers.local_peer_id)?
+            && self
+                .remote_epoch
+                .is_current(&self.registers, self.registers.remote_peer_id)?)
     }
 
     pub fn try_connect(&mut self) -> Result<IvcEndpoints<'a>> {
@@ -297,6 +309,26 @@ impl<'a> MessageSession<'a> {
     pub fn wait_event(&self, timeout_ms: c_int) -> Result<WaitResult> {
         self.backend.wait_event(timeout_ms)
     }
+
+    pub fn invalidate_session(&mut self) {
+        if !self.started {
+            return;
+        }
+        // SAFETY: every endpoint derived from this port is dropped before
+        // MessageSession or LinuxMessageEndpoint invalidation runs, and the
+        // writer lock plus single-session flag keep this output exclusively
+        // owned by the process.
+        unsafe { self.port.invalidate_session() };
+        self.started = false;
+        // Best effort: wake the peer after publishing the invalid header.
+        let _ = self.registers.ring_peer();
+    }
+}
+
+impl Drop for MessageSession<'_> {
+    fn drop(&mut self) {
+        self.invalidate_session();
+    }
 }
 
 #[derive(Default)]
@@ -305,16 +337,16 @@ struct PeerEpoch {
 }
 
 impl PeerEpoch {
-    fn observe(&mut self, registers: &Registers<'_>) -> Result<()> {
-        let observed = registers.observe_peer_epoch()?;
-        // Zero means the peer has not attached and published its host epoch yet.
+    fn observe(&mut self, registers: &Registers<'_>, peer_id: u16) -> Result<()> {
+        let observed = registers.observe_epoch(peer_id)?;
+        // Zero means this peer's host epoch has not been published yet.
         if observed == 0 {
             return Ok(());
         }
         match self.baseline {
-            Some(expected) if observed != expected => {
-                bail!("ivshmem peer epoch changed from {expected:#x} to {observed:#x}")
-            }
+            Some(expected) if observed != expected => Err(session_lost(format!(
+                "ivshmem peer epoch changed from {expected:#x} to {observed:#x}"
+            ))),
             Some(_) => Ok(()),
             None => {
                 self.baseline = Some(observed);
@@ -323,8 +355,8 @@ impl PeerEpoch {
         }
     }
 
-    fn is_current(&self, registers: &Registers<'_>) -> Result<bool> {
-        let observed = registers.observe_peer_epoch()?;
+    fn is_current(&self, registers: &Registers<'_>, peer_id: u16) -> Result<bool> {
+        let observed = registers.observe_epoch(peer_id)?;
         Ok(match self.baseline {
             Some(expected) => observed == 0 || observed == expected,
             None => true,
@@ -336,23 +368,25 @@ struct Registers<'a> {
     device: NonNull<FfiDevice>,
     len: usize,
     max_peers: u32,
+    local_peer_id: u16,
+    remote_peer_id: u16,
     _device: PhantomData<&'a ExclusiveDevice>,
 }
 
 impl Registers<'_> {
-    fn observe_peer_epoch(&self) -> Result<u64> {
+    fn observe_epoch(&self, peer_id: u16) -> Result<u64> {
         let mut epoch = 0;
         // SAFETY: the device handle is live for this borrow and `epoch` is a
         // valid initialized output slot for exactly one u64 value.
         let result =
-            unsafe { ivshmem_observe_peer_epoch(self.device.as_ptr(), REMOTE_PEER_ID, &mut epoch) };
+            unsafe { ivshmem_observe_peer_epoch(self.device.as_ptr(), peer_id, &mut epoch) };
         check_adapter("observe ivshmem peer epoch", result)?;
         Ok(epoch)
     }
 
-    /// Publishes all prior shared-memory stores before ringing peer 0 vector 0.
+    /// Publishes all prior shared-memory stores before ringing the peer.
     pub fn ring_peer(&self) -> Result<()> {
-        let target = u32::from(REMOTE_PEER_ID);
+        let target = u32::from(self.remote_peer_id);
         if target >= self.max_peers || target > u32::from(u16::MAX) {
             bail!(
                 "cannot ring ivshmem peer {target} with max_peers={}",
@@ -421,8 +455,8 @@ impl<'a> SharedBar<'a> {
         }
 
         // SAFETY: `SharedBar` is created only by a verified ExclusiveDevice.
-        // Its writer lock covers every Linux subscriber in the guest profile,
-        // so peer 1's section has one protocol writer. Both page-aligned
+        // Its writer lock covers every Linux writer in the guest profile, so
+        // the local output has one protocol writer. Both page-aligned
         // ranges are checked in the live BAR2 mapping; the local range is
         // writable and the peer range is consumed through attach's read-only
         // atomic view. No endpoint from an earlier process can remain after
@@ -639,7 +673,7 @@ impl WriterLock {
                 error.raw_os_error(),
                 Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN
             ) {
-                bail!("another linux-ivshmem-subscriber owns the ivshmem writer lock");
+                return Err(WriterLockBusy.into());
             }
             return Err(error)
                 .with_context(|| format!("failed to lock ivshmem writer file {}", path.display()));
@@ -649,7 +683,7 @@ impl WriterLock {
 }
 
 #[derive(Debug)]
-struct AdapterError {
+pub(crate) struct AdapterError {
     operation: &'static str,
     code: c_int,
 }
@@ -657,6 +691,10 @@ struct AdapterError {
 impl AdapterError {
     const fn new(operation: &'static str, code: c_int) -> Self {
         Self { operation, code }
+    }
+
+    pub(crate) const fn code(&self) -> c_int {
+        self.code
     }
 }
 
@@ -684,6 +722,17 @@ impl fmt::Display for AdapterError {
 }
 
 impl std::error::Error for AdapterError {}
+
+#[derive(Debug)]
+pub(crate) struct WriterLockBusy;
+
+impl fmt::Display for WriterLockBusy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("another Linux process owns the ivshmem writer lock")
+    }
+}
+
+impl std::error::Error for WriterLockBusy {}
 
 fn check_adapter(operation: &'static str, code: c_int) -> Result<()> {
     if code == 0 {

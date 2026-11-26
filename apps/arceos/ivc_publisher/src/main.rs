@@ -15,7 +15,10 @@ fn main() {}
 
 #[cfg(feature = "arceos")]
 mod publisher {
-    use arceos_ivshmem_pci::{IvcDevice, IvcEndpoint, IvcPeerRole, MessageRecordEndpoint};
+    use arceos_ivshmem_pci::{
+        IvcDevice, IvcEndpoint, IvcError, IvcPeerRole, MessageRecordEndpoint, ivc_close, ivc_open,
+        ivc_recv, ivc_send,
+    };
     use ax_std::{
         format, println,
         string::{String, ToString},
@@ -30,10 +33,23 @@ mod publisher {
     const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [231, 232, 233, 7424, 7484];
     const SUBSCRIBER_DATA_MESSAGE_LENGTHS: [usize; 3] = [233, 7425, 7484];
     const PUBLISH_COUNT: u64 = REQUEST_MESSAGE_LENGTHS.len() as u64;
+    const LOG_BODY_LIMIT: usize = 256;
     const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
-    const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
+    const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+    const MESSAGE_SMOKE_MARKER: &str = "axvisor.ivc_case=arceos-message-smoke";
+    const MESSAGE_SMOKE_TIMEOUT_MS: i32 = 30_000;
+    const MESSAGE_SMOKE_REQUEST: [u8; 48] = smoke_payload(0x20);
+    const MESSAGE_SMOKE_RESPONSE: [u8; 48] = smoke_payload(0x80);
+    const MESSAGE_SMOKE_FINAL: [u8; 48] = smoke_payload(0xc0);
 
     pub fn run() {
+        if message_smoke_enabled() {
+            if let Err(error) = run_message_smoke() {
+                println!("ivc message smoke failed backend=ivshmem-pci role=publisher: {error}");
+            }
+            return;
+        }
+
         println!("ivc publisher backend=IvshmemPci");
         if let Err(error) = run_inner() {
             println!(
@@ -78,28 +94,31 @@ mod publisher {
 
         let mut sender = RequestSender::new();
         let mut receiver = ResponseReceiver::new();
-        let started = Instant::now();
+        let mut last_progress = Instant::now();
 
         while !sender.is_complete() || !receiver.is_complete() {
             let sent = sender.poll(&mut endpoint)?;
             let received = receiver.poll(&mut endpoint)?;
-            if !sent && !received {
-                let observed = endpoint.wait_for_progress().map_err(stringify)?;
-                if observed && !event_observed {
-                    println!("ivc session event backend=ivshmem-pci source=event-status");
-                }
-                event_observed |= observed;
+            if sent || received {
+                last_progress = Instant::now();
             }
             if sender.is_complete() && receiver.is_complete() {
                 break;
             }
-            if started.elapsed() >= TRANSFER_TIMEOUT {
+            if last_progress.elapsed() >= TRANSFER_IDLE_TIMEOUT {
                 return Err(format!(
                     "full-duplex exchange timed out sent={} received_acks={} received_data={}",
                     sender.sent_count(),
                     receiver.ack_count(),
                     receiver.data_count()
                 ));
+            }
+            if !sent && !received {
+                let observed = endpoint.wait_for_progress().map_err(stringify)?;
+                if observed && !event_observed {
+                    println!("ivc session event backend=ivshmem-pci source=event-status");
+                }
+                event_observed |= observed;
             }
         }
 
@@ -108,6 +127,64 @@ mod publisher {
             ready.device().peer_id()
         );
         println!("ivc full-duplex demo complete backend=ivshmem-pci");
+        Ok(())
+    }
+
+    fn run_message_smoke() -> Result<(), String> {
+        let mut device = IvcDevice::discover().map_err(stringify)?;
+        let info = device.info();
+        println!(
+            "ivc message smoke start backend=ivshmem-pci role={} peer={} max_peers={}",
+            info.role().as_str(),
+            info.peer_id(),
+            info.max_peers()
+        );
+
+        let mut session = ivc_open(&mut device).map_err(stringify)?;
+        ivc_send(
+            &mut session,
+            &MESSAGE_SMOKE_REQUEST,
+            MESSAGE_SMOKE_TIMEOUT_MS,
+        )
+        .map_err(stringify)?;
+
+        let mut response = [0u8; 48];
+        let response_len =
+            ivc_recv(&mut session, &mut response, MESSAGE_SMOKE_TIMEOUT_MS).map_err(stringify)?;
+        if response_len != response.len() || response != MESSAGE_SMOKE_RESPONSE {
+            return Err(format!(
+                "response mismatch len={response_len} expected_len={}",
+                MESSAGE_SMOKE_RESPONSE.len()
+            ));
+        }
+        ivc_send(&mut session, &MESSAGE_SMOKE_FINAL, MESSAGE_SMOKE_TIMEOUT_MS)
+            .map_err(stringify)?;
+
+        let mut closed = [0u8; 48];
+        match ivc_recv(&mut session, &mut closed, MESSAGE_SMOKE_TIMEOUT_MS) {
+            Err(IvcError::SessionReset) => {}
+            Ok(len) => return Err(format!("expected session close, received len={len}")),
+            Err(error) => return Err(stringify(error)),
+        }
+        match ivc_recv(&mut session, &mut closed, 0) {
+            Err(IvcError::SessionReset) => {}
+            Ok(len) => {
+                return Err(format!(
+                    "session remained usable after close, recv len={len}"
+                ));
+            }
+            Err(error) => return Err(stringify(error)),
+        }
+        ivc_close(session).map_err(stringify)?;
+        let reopened = ivc_open(&mut device).map_err(stringify)?;
+        ivc_close(reopened).map_err(stringify)?;
+
+        println!(
+            "ivc message smoke pass backend=ivshmem-pci role={} peer={} len={response_len} \
+             path=48-byte",
+            info.role().as_str(),
+            info.peer_id()
+        );
         Ok(())
     }
 
@@ -284,7 +361,7 @@ mod publisher {
                             self.expected_data_sequence, message.sequence, self.received
                         ));
                     }
-                    let text = core::str::from_utf8(message.body).unwrap_or("<non-utf8>");
+                    let text = body_for_serial_log(message.body);
                     println!(
                         "ivc recv data seq={} len={} msg={text}",
                         message.sequence, self.received
@@ -395,6 +472,29 @@ mod publisher {
         kind: AppMessageKind,
         sequence: u64,
         body: &'a [u8],
+    }
+
+    fn body_for_serial_log(body: &[u8]) -> &str {
+        if body.len() > LOG_BODY_LIMIT {
+            "<omitted>"
+        } else {
+            core::str::from_utf8(body).unwrap_or("<non-utf8>")
+        }
+    }
+
+    const fn smoke_payload(seed: u8) -> [u8; 48] {
+        let mut payload = [0u8; 48];
+        let mut index = 0;
+        while index < payload.len() {
+            payload[index] = seed.wrapping_add((index as u8).wrapping_mul(3));
+            index += 1;
+        }
+        payload
+    }
+
+    fn message_smoke_enabled() -> bool {
+        ax_std::os::arceos::modules::ax_hal::boot::bootargs()
+            .is_some_and(|bootargs| bootargs.contains(MESSAGE_SMOKE_MARKER))
     }
 
     fn stringify(error: impl ToString) -> String {

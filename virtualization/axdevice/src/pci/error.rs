@@ -38,6 +38,9 @@ pub enum PciError {
     /// A function's command snapshot revision cannot advance without wrapping.
     #[error("PCI command snapshot revision exhausted")]
     CommandRevisionExhausted,
+    /// A function's BAR relocation revision cannot advance without wrapping.
+    #[error("PCI BAR relocation revision exhausted")]
+    BarRevisionExhausted,
     /// A platform-owned config byte conflicts with core-owned state.
     #[error("invalid PCI config patch at {offset:#x}: {detail}")]
     InvalidConfigPatch {

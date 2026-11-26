@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <stdint.h>
 
+#include <ivc.h>
 #include <tgos_ivc.h>
 #include <zephyr/kernel.h>
 
@@ -43,9 +44,10 @@ static int generate_and_publish(uint32_t case_index, uint32_t iteration,
   return 0;
 }
 
-static int receive_ack(const struct tgos_ivc_frame *request) {
+static int receive_ack(struct ivc *connection,
+                       const struct tgos_ivc_frame *request) {
   struct tgos_ivc_frame ack;
-  int received = tgos_ivc_recv(&ack, sizeof(ack), TGOS_IVC_TIMEOUT_MS);
+  int received = ivc_recv(connection, &ack, sizeof(ack), TGOS_IVC_TIMEOUT_MS);
 
   if (received < 0) {
     return received;
@@ -66,10 +68,11 @@ static int receive_ack(const struct tgos_ivc_frame *request) {
 }
 
 int main(void) {
+  struct ivc *connection = NULL;
   int result;
   uint32_t completed = 0U;
 
-  result = tgos_ivc_open();
+  result = ivc_open(&connection);
   if (result != 0) {
     demo_fail("open", NULL, result);
     return 1;
@@ -77,13 +80,13 @@ int main(void) {
   result = tgos_ivc_wait_ready(TGOS_IVC_TIMEOUT_MS);
   if (result != 0) {
     demo_fail("ready", NULL, result);
-    tgos_ivc_close();
+    (void)ivc_close(connection);
     return 1;
   }
   if (tgos_ivc_payload_capacity() <
       tgos_ivc_demo_size_at(TGOS_IVC_DEMO_CASE_COUNT - 1U)) {
     demo_fail("capacity", NULL, -ENOSPC);
-    tgos_ivc_close();
+    (void)ivc_close(connection);
     return 1;
   }
 
@@ -102,12 +105,12 @@ int main(void) {
     }
     tgos_ivc_frame_init(&frame, TGOS_IVC_FRAME_DATA, case_index, 0U, len,
                         checksum, len, 0U);
-    result = tgos_ivc_send(&frame, sizeof(frame), TGOS_IVC_TIMEOUT_MS);
+    result = ivc_send(connection, &frame, sizeof(frame), TGOS_IVC_TIMEOUT_MS);
     if (result != 0) {
       demo_fail("send", &frame, result);
       goto out;
     }
-    result = receive_ack(&frame);
+    result = receive_ack(connection, &frame);
     if (result != 0) {
       demo_fail("ack", &frame, result);
       goto out;
@@ -125,6 +128,6 @@ int main(void) {
     result = -EPROTO;
   }
 out:
-  tgos_ivc_close();
+  (void)ivc_close(connection);
   return result == 0 ? 0 : 1;
 }

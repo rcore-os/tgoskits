@@ -32,15 +32,17 @@ const HOST_KEY: &str = "aarch64-ecam";
 const IVSHMEM_VENDOR_ID: u16 = 0x1af4;
 const IVSHMEM_DEVICE_ID: u16 = 0x1110;
 const IVSHMEM_CLASS: PciClass = PciClass::new(0xff, 0x00, 0x00);
-/// Revision 1 is retained for the fixed upstream `uio_ivshmem` module, whose
-/// probe requires it. The vendor-specific class and AXIV capability remain the
-/// strict AxVisor discriminators.
-const IVSHMEM_REVISION: u8 = 1;
+/// The fixed upstream `uio_ivshmem` module requires revision 1 and does not
+/// inspect the AXIV capability. Write-back therefore pairs revision 2 with its
+/// distinct protocol so the old probe fails before touching BAR2.
+const IVSHMEM_REVISION_NC: u8 = 1;
+const IVSHMEM_REVISION_WB: u8 = 2;
 const AXVISOR_TRANSPORT_CAPABILITY_ID: u8 = 0x09;
 const AXVISOR_TRANSPORT_CAPABILITY_LENGTH: u8 = 36;
 const AXVISOR_TRANSPORT_CAPABILITY_VERSION: u8 = 1;
 const AXVISOR_TRANSPORT_CAPABILITY_MAGIC: u32 = 0x5649_5841; // "AXIV"
-const AXVISOR_TRANSPORT_PROTOCOL: u16 = 0x4000;
+const AXVISOR_TRANSPORT_PROTOCOL_NC: u16 = 0x4000;
+const AXVISOR_TRANSPORT_PROTOCOL_WB: u16 = 0x4001;
 const AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH: u32 = 1 << 0;
 const AXVISOR_TRANSPORT_CAPABILITY_BODY_SIZE: usize = 34;
 /// BAR0 is the ivshmem register page. BAR1 carries the MSI-X table/PBA
@@ -62,6 +64,25 @@ fn host_key() -> PciHostKey {
     PciHostKey::new(HOST_KEY).expect("static AArch64 PCI host key is valid")
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Bar2Transport {
+    revision: u8,
+    protocol: u16,
+}
+
+const fn bar2_transport(profile: LinkProfile) -> Bar2Transport {
+    match profile.bar2_cache_policy() {
+        Bar2CachePolicy::NonCacheable => Bar2Transport {
+            revision: IVSHMEM_REVISION_NC,
+            protocol: AXVISOR_TRANSPORT_PROTOCOL_NC,
+        },
+        Bar2CachePolicy::WriteBack => Bar2Transport {
+            revision: IVSHMEM_REVISION_WB,
+            protocol: AXVISOR_TRANSPORT_PROTOCOL_WB,
+        },
+    }
+}
+
 fn axvisor_transport_capability(
     profile: LinkProfile,
     epoch_base_offset: u64,
@@ -74,11 +95,12 @@ fn axvisor_transport_capability(
     let epoch_stride = u32::try_from(epoch_stride).map_err(|_| invalid("epoch stride"))?;
     let common_size = u32::try_from(profile.common_size()).map_err(|_| invalid("common size"))?;
     let output_size = u32::try_from(profile.output_size()).map_err(|_| invalid("output size"))?;
+    let protocol = bar2_transport(profile).protocol;
     let mut body = [0u8; AXVISOR_TRANSPORT_CAPABILITY_BODY_SIZE];
     body[0] = AXVISOR_TRANSPORT_CAPABILITY_LENGTH;
     body[1] = AXVISOR_TRANSPORT_CAPABILITY_VERSION;
     body[2..6].copy_from_slice(&AXVISOR_TRANSPORT_CAPABILITY_MAGIC.to_le_bytes());
-    body[6..8].copy_from_slice(&AXVISOR_TRANSPORT_PROTOCOL.to_le_bytes());
+    body[6..8].copy_from_slice(&protocol.to_le_bytes());
     body[10..14].copy_from_slice(&AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH.to_le_bytes());
     body[14..18].copy_from_slice(&epoch_base_offset.to_le_bytes());
     body[18..22].copy_from_slice(&epoch_stride.to_le_bytes());
@@ -117,6 +139,29 @@ struct IvshmemPciOptions {
     common_size: u64,
     /// Per-peer output-section size in bytes.
     output_size: u64,
+    /// BAR2 guest cache policy. Write-back is an administrator assertion that
+    /// the host and every attached managed guest provide coherent Normal
+    /// Inner Shareable Write-Back mappings. Accepted values are
+    /// `"non-cacheable"` (the default) and `"write-back"`.
+    #[serde(default)]
+    bar2_cache: Bar2CacheOption,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Bar2CacheOption {
+    #[default]
+    NonCacheable,
+    WriteBack,
+}
+
+impl From<Bar2CacheOption> for Bar2CachePolicy {
+    fn from(option: Bar2CacheOption) -> Self {
+        match option {
+            Bar2CacheOption::NonCacheable => Self::NonCacheable,
+            Bar2CacheOption::WriteBack => Self::WriteBack,
+        }
+    }
 }
 
 fn create_device_node(
@@ -155,11 +200,19 @@ fn create_device_node(
             detail: "the message-signaled interrupt domain has no graph owner".into(),
         })?;
     let profile = LinkProfile::new(options.max_peers, options.common_size, options.output_size)
+        .and_then(|profile| profile.with_bar2_cache_policy(options.bar2_cache.into()))
         .map_err(|error| ConfiguredDeviceError::Instantiation {
             device: request.id.clone(),
             model: request.model.clone(),
             detail: error.to_string(),
         })?;
+    if options.bar2_cache == Bar2CacheOption::WriteBack && !cfg!(target_arch = "aarch64") {
+        return Err(ConfiguredDeviceError::InvalidOptions {
+            device: request.id.clone(),
+            model: request.model.clone(),
+            detail: "bar2_cache = \"write-back\" is supported only on AArch64 hosts".into(),
+        });
+    }
     let reservation = registry
         .reserve_with_profile(options.link_id, options.peer_id, profile)
         .map_err(|error| ConfiguredDeviceError::Instantiation {
@@ -189,6 +242,8 @@ struct IvshmemPciModel {
 
 impl DeviceModel for IvshmemPciModel {
     fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        let profile = self.reservation.link().profile();
+        let transport = bar2_transport(profile);
         let register_bar =
             PciMemoryBar::new(PciBarIndex::new(REGISTER_BAR_INDEX)?, REGISTER_PAGE_SIZE)?;
         let msix_bar = PciMemoryBar::new(PciBarIndex::new(MSIX_BAR_INDEX)?, MSIX_BAR_SIZE)?;
@@ -200,14 +255,14 @@ impl DeviceModel for IvshmemPciModel {
         let function = PciFunctionRequirement::new(
             host_key(),
             PciEndpointIdentity::new(IVSHMEM_VENDOR_ID, IVSHMEM_DEVICE_ID, IVSHMEM_CLASS)
-                .with_revision(IVSHMEM_REVISION),
+                .with_revision(transport.revision),
         )
         .with_bar(register_bar)?
         .with_bar(msix_bar)?
         .with_bar(shared_memory_bar)?
         .with_capability(msix_capability_spec(1, MSIX_MESSAGE_CONTROL_EFFECT)?)
         .with_capability(axvisor_transport_capability(
-            self.reservation.link().profile(),
+            profile,
             self.reservation.link().layout().peer_epoch_base_offset(),
             self.reservation.link().layout().peer_epoch_stride(),
         )?);
@@ -259,6 +314,8 @@ impl DeviceModel for IvshmemPciModel {
             msi,
             Arc::clone(&online),
         ));
+        let direct_plans =
+            DirectPlanManager::new(context.node_id(), stage2_remap, Arc::clone(&online));
         let function = IvshmemPciFunction {
             attachment,
             registers,
@@ -266,9 +323,7 @@ impl DeviceModel for IvshmemPciModel {
             event_sink: Arc::clone(&event_sink),
             online,
             stopped: AtomicBool::new(false),
-            stage2_remap,
-            owner: context.node_id(),
-            direct_plan: RawSpinLock::new(None),
+            direct_plans,
         };
         function
             .attachment
@@ -300,14 +355,157 @@ struct IvshmemPciFunction {
     online: Arc<AtomicBool>,
     /// Makes successful repeated stop calls idempotent.
     stopped: AtomicBool,
-    /// Stage-2 update port; BAR2 maps directly into the guest.
-    stage2_remap: Arc<dyn Stage2Remap>,
-    /// Graph node identity of this endpoint; direct mappings register per
-    /// owner.
+    /// Serialized ownership and revocation of this endpoint's BAR2 plan.
+    direct_plans: DirectPlanManager,
+}
+
+/// Transactional owner of one endpoint's directly mapped BAR2 plan.
+///
+/// `transition` orders complete plan replacements and final revocation. The
+/// stage-2 port is a leaf service for this lock: it performs page-table work
+/// and never calls back into the endpoint, binding lifecycle, or root. Holding
+/// the transition gate across that call therefore cannot form a callback cycle
+/// or retain a blocking host lock.
+struct DirectPlanManager {
     owner: DeviceNodeId,
-    /// Currently committed BAR2 plan, replaced on every BAR assignment or
-    /// relocation.
-    direct_plan: RawSpinLock<Option<IvshmemDirectPlan>>,
+    stage2_remap: Arc<dyn Stage2Remap>,
+    online: Arc<AtomicBool>,
+    transition: RawSpinLock<()>,
+    current: RawSpinLock<Option<IvshmemDirectPlan>>,
+    latest_revision: RawSpinLock<Option<PciBarRevision>>,
+    /// BAR2 GPA restored by a PCI lifecycle reset.
+    bound_gpa: RawSpinLock<Option<u64>>,
+}
+
+impl DirectPlanManager {
+    fn new(
+        owner: DeviceNodeId,
+        stage2_remap: Arc<dyn Stage2Remap>,
+        online: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            owner,
+            stage2_remap,
+            online,
+            transition: RawSpinLock::new(()),
+            current: RawSpinLock::new(None),
+            latest_revision: RawSpinLock::new(None),
+            bound_gpa: RawSpinLock::new(None),
+        }
+    }
+
+    /// Installs the bind-time plan and remembers its power-on BAR2 GPA.
+    fn bind(&self, new_plan: IvshmemDirectPlan) -> DeviceResult {
+        let bound_gpa = new_plan.bar2_gpa();
+        let _transition = self.transition.lock_irqsave();
+        self.commit_locked(new_plan)?;
+        *self.latest_revision.lock_irqsave() = Some(PciBarRevision::initial());
+        *self.bound_gpa.lock_irqsave() = Some(bound_gpa);
+        Ok(())
+    }
+
+    /// Commits one plan and only then publishes it as the current plan.
+    ///
+    /// A stage-2 failure leaves both the current plan and its revocation range
+    /// untouched, so a later transition still revokes the last successfully
+    /// committed GPA range.
+    fn replace(&self, new_plan: IvshmemDirectPlan) -> DeviceResult {
+        let _transition = self.transition.lock_irqsave();
+        self.commit_locked(new_plan)
+    }
+
+    fn replace_ordered(
+        &self,
+        revision: PciBarRevision,
+        new_plan: IvshmemDirectPlan,
+    ) -> DeviceResult {
+        let _transition = self.transition.lock_irqsave();
+        if self
+            .latest_revision
+            .lock_irqsave()
+            .is_some_and(|latest| revision <= latest)
+        {
+            return Ok(());
+        }
+        self.commit_locked(new_plan)?;
+        *self.latest_revision.lock_irqsave() = Some(revision);
+        Ok(())
+    }
+
+    fn commit_locked(&self, new_plan: IvshmemDirectPlan) -> DeviceResult {
+        if !self.online.load(Ordering::Acquire) {
+            return Err(DeviceError::InvalidState {
+                operation: "commit ivshmem direct mappings",
+                detail: "ivshmem endpoint is stopped".into(),
+            });
+        }
+        let (needs_update, revoke) = {
+            let current = self.current.lock_irqsave();
+            match current.as_ref() {
+                Some(plan) if plan.bar2_gpa() == new_plan.bar2_gpa() => (false, Vec::new()),
+                Some(plan) => (true, std::vec![plan.revocation_range()]),
+                None => (true, Vec::new()),
+            }
+        };
+        if needs_update {
+            self.stage2_remap
+                .update(&self.owner, &revoke, new_plan.mappings())
+                .map_err(|error| DeviceError::Backend {
+                    operation: "commit ivshmem direct mappings",
+                    detail: error.to_string(),
+                })?;
+        }
+        *self.current.lock_irqsave() = Some(new_plan);
+        Ok(())
+    }
+
+    /// Closes the endpoint and revokes its committed BAR2 mapping.
+    ///
+    /// The online gate and plan transition share this lock, so no replacement
+    /// can commit after stop has closed the endpoint. A failed stage-2 revoke
+    /// keeps the old plan recorded for lifecycle teardown to retry.
+    fn close(&self) -> DeviceResult {
+        let _transition = self.transition.lock_irqsave();
+        self.online.store(false, Ordering::Release);
+        let revoke = {
+            let current = self.current.lock_irqsave();
+            current
+                .as_ref()
+                .map(|plan| std::vec![plan.revocation_range()])
+                .unwrap_or_default()
+        };
+        if revoke.is_empty() {
+            return Ok(());
+        }
+        self.stage2_remap
+            .update(&self.owner, &revoke, &[])
+            .map_err(|error| DeviceError::Backend {
+                operation: "revoke ivshmem direct mappings",
+                detail: error.to_string(),
+            })?;
+        *self.current.lock_irqsave() = None;
+        Ok(())
+    }
+
+    fn mappings(&self) -> std::vec::Vec<DirectMapping> {
+        self.current
+            .lock_irqsave()
+            .as_ref()
+            .map(|plan| plan.mappings().to_vec())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn bar2_gpa(&self) -> Option<u64> {
+        self.current
+            .lock_irqsave()
+            .as_ref()
+            .map(IvshmemDirectPlan::bar2_gpa)
+    }
+
+    fn bound_gpa(&self) -> Option<u64> {
+        *self.bound_gpa.lock_irqsave()
+    }
 }
 
 /// Records doorbell state and injects the endpoint's planned MSI-X message.
@@ -518,17 +716,18 @@ impl IvshmemPciFunction {
     /// peer's own output read-write, other peers' outputs read-only, and the
     /// reserved tail stays unmapped so stray accesses fault.
     fn derive_plan(&self, bar2_gpa: u64) -> DeviceResult<IvshmemDirectPlan> {
-        IvshmemDirectPlan::derive(
-            self.attachment.link().layout(),
-            bar2_gpa,
+        let backing =
             self.attachment
                 .link()
                 .backing()
                 .map_err(|error| DeviceError::InvalidState {
                     operation: "derive ivshmem direct-mapping plan",
                     detail: error.to_string(),
-                })?
-                .allocation(),
+                })?;
+        IvshmemDirectPlan::derive(
+            self.attachment.link().layout(),
+            bar2_gpa,
+            backing,
             self.attachment.peer_id(),
         )
         .map_err(|error| DeviceError::InvalidState {
@@ -537,30 +736,9 @@ impl IvshmemPciFunction {
         })
     }
 
-    /// Submits one BAR2 plan through the stage-2 port and records it.
-    ///
-    /// A relocation to a different BAR2 GPA revokes the old whole-BAR2
-    /// range; re-writing the same GPA is a no-op because the committed
-    /// mappings are identical.
+    /// Submits one BAR2 plan through the transactional plan owner.
     fn replace_direct_plan(&self, new_plan: IvshmemDirectPlan) -> DeviceResult {
-        let previous = self.direct_plan.lock_irqsave().take();
-        let same_base = previous
-            .as_ref()
-            .is_some_and(|plan| plan.bar2_gpa() == new_plan.bar2_gpa());
-        if !same_base {
-            let revoke = previous
-                .iter()
-                .map(|plan| plan.revocation_range())
-                .collect::<std::vec::Vec<_>>();
-            self.stage2_remap
-                .update(&self.owner, &revoke, new_plan.mappings())
-                .map_err(|error| DeviceError::Backend {
-                    operation: "commit ivshmem direct mappings",
-                    detail: error.to_string(),
-                })?;
-        }
-        *self.direct_plan.lock_irqsave() = Some(new_plan);
-        Ok(())
+        self.direct_plans.replace(new_plan)
     }
 }
 
@@ -632,6 +810,7 @@ impl PciFunction for IvshmemPciFunction {
     }
 
     fn notify_bar_assignment(&self, bars: &[BarAssignment]) -> DeviceResult {
+        self.ensure_online("bind ivshmem BAR2 mappings")?;
         let Some(assignment) = bars
             .iter()
             .find(|bar| bar.bar().value() == SHARED_MEMORY_BAR_INDEX)
@@ -642,25 +821,27 @@ impl PciFunction for IvshmemPciFunction {
             });
         };
         let plan = self.derive_plan(assignment.gpa())?;
-        self.replace_direct_plan(plan)
+        self.direct_plans.bind(plan)
     }
 
-    fn notify_bar_relocated(&self, bar: PciBarIndex, new_gpa: u64) -> DeviceResult {
+    fn notify_bar_relocated(
+        &self,
+        bar: PciBarIndex,
+        new_gpa: u64,
+        revision: PciBarRevision,
+    ) -> DeviceResult {
         if bar.value() != SHARED_MEMORY_BAR_INDEX {
             // Only BAR2 leaves the emulated path; other relocations do not
             // affect this endpoint's mappings.
             return Ok(());
         }
+        self.ensure_online("relocate ivshmem BAR2 mappings")?;
         let plan = self.derive_plan(new_gpa)?;
-        self.replace_direct_plan(plan)
+        self.direct_plans.replace_ordered(revision, plan)
     }
 
     fn direct_mappings(&self) -> std::vec::Vec<DirectMapping> {
-        self.direct_plan
-            .lock_irqsave()
-            .as_ref()
-            .map(|plan| plan.mappings().to_vec())
-            .unwrap_or_default()
+        self.direct_plans.mappings()
     }
 
     fn read_config_effect(
@@ -840,9 +1021,22 @@ impl PciFunction for IvshmemPciFunction {
         // Endpoint reset clears the local registers, the MSI-X capability
         // state, zeroes this peer's state-table entry, and publishes a new
         // lifecycle epoch before notifying surviving peers. The rest of the
-        // shared backing stays intact for the other peers.
+        // shared backing stays intact for the other peers. The root has already
+        // restored its power-on BAR route, so the endpoint atomically restores
+        // the matching bind-time direct mapping before admissions reopen.
         self.ensure_online("reset ivshmem endpoint")?;
-        let result = self.reset_endpoint_state("reset ivshmem endpoint");
+        let result = self
+            .reset_endpoint_state("reset ivshmem endpoint")
+            .and_then(|()| {
+                let bound_gpa = self
+                    .direct_plans
+                    .bound_gpa()
+                    .ok_or(DeviceError::InvalidState {
+                        operation: "reset ivshmem direct mappings",
+                        detail: "the endpoint has no bind-time BAR2 assignment".into(),
+                    })?;
+                self.replace_direct_plan(self.derive_plan(bound_gpa)?)
+            });
         if result.is_err() {
             self.online.store(false, Ordering::Release);
         }
@@ -853,10 +1047,11 @@ impl PciFunction for IvshmemPciFunction {
         if self.stopped.load(Ordering::Acquire) {
             return Ok(());
         }
-        // Close the endpoint before any teardown step can race a draining
-        // vCPU. A failed stop leaves `stopped` clear so lifecycle teardown can
-        // retry, while every later access still fails closed through `online`.
-        self.online.store(false, Ordering::Release);
+        // Close the endpoint and revoke its direct mapping before releasing any
+        // link or backing owner. The direct-plan transition gate sets `online`
+        // false before inspecting the current plan, so an in-flight replacement
+        // completes first and a later one observes the closed endpoint.
+        self.direct_plans.close()?;
         let result = self.reset_endpoint_state("stop ivshmem endpoint");
         if result.is_ok() || !self.attachment.is_current() {
             self.stopped.store(true, Ordering::Release);
@@ -885,7 +1080,7 @@ mod tests {
     #[derive(Default)]
     struct TestBackingAllocator;
 
-    impl SharedBackingAllocator for TestBackingAllocator {
+    unsafe impl SharedBackingAllocator for TestBackingAllocator {
         fn allocate(&self, size: u64) -> Result<BackingAllocation, IvshmemError> {
             let layout = Layout::from_size_align(size as usize, 0x1000).map_err(|_| {
                 IvshmemError::AllocationFailed {
@@ -898,17 +1093,19 @@ mod tests {
                     operation: "test backing alloc",
                 });
             }
-            Ok(BackingAllocation::from_parts(
-                pointer as usize as u64,
-                size,
-                pointer,
-            ))
+            // SAFETY: `alloc_zeroed` returned the unique page-aligned
+            // allocation represented by this token.
+            Ok(
+                unsafe {
+                    BackingAllocation::from_raw_parts(pointer as usize as u64, size, pointer)
+                },
+            )
         }
 
-        fn release(&self, allocation: BackingAllocation) {
+        unsafe fn release(&self, allocation: BackingAllocation) {
             let layout = Layout::from_size_align(allocation.size() as usize, 0x1000).unwrap();
             // SAFETY: the pointer came from alloc_zeroed with the same
-            // layout and every allocation is released exactly once.
+            // layout and the move-only token is released exactly once.
             unsafe { std::alloc::dealloc(allocation.virtual_base(), layout) };
         }
     }
@@ -922,19 +1119,54 @@ mod tests {
     #[derive(Default)]
     struct TestStage2Remap {
         committed: Mutex<BTreeMap<DeviceNodeId, Vec<DirectMapping>>>,
+        updates: Mutex<Vec<TestStage2Update>>,
+        fail_next_update: AtomicBool,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct TestStage2Update {
+        revoke: Vec<GpaRange>,
+        commit: Vec<DirectMapping>,
+    }
+
+    impl TestStage2Remap {
+        fn fail_next_update(&self) {
+            self.fail_next_update.store(true, Ordering::Release);
+        }
+
+        fn updates(&self) -> Vec<TestStage2Update> {
+            self.updates.lock().unwrap().clone()
+        }
     }
 
     impl Stage2Remap for TestStage2Remap {
         fn update(
             &self,
             owner: &DeviceNodeId,
-            _revoke: &[GpaRange],
+            revoke: &[GpaRange],
             commit: &[DirectMapping],
         ) -> Result<(), DeviceError> {
-            self.committed
-                .lock()
-                .unwrap()
-                .insert(owner.clone(), commit.to_vec());
+            self.updates.lock().unwrap().push(TestStage2Update {
+                revoke: revoke.to_vec(),
+                commit: commit.to_vec(),
+            });
+            if self.fail_next_update.swap(false, Ordering::AcqRel) {
+                return Err(DeviceError::Backend {
+                    operation: "test stage-2 update",
+                    detail: "injected failure".into(),
+                });
+            }
+            let mut committed = self.committed.lock().unwrap();
+            let mut next = committed.remove(owner).unwrap_or_default();
+            next.extend_from_slice(commit);
+            next.retain(|mapping| {
+                let start = mapping.gpa_base();
+                let end = start + mapping.size();
+                !revoke
+                    .iter()
+                    .any(|range| start >= range.base() && end <= range.base() + range.size())
+            });
+            committed.insert(owner.clone(), next);
             Ok(())
         }
 
@@ -1050,7 +1282,7 @@ mod tests {
                 IVSHMEM_DEVICE_ID,
                 PciClass::new(0xff, 0, 0),
             )
-            .with_revision(IVSHMEM_REVISION),
+            .with_revision(IVSHMEM_REVISION_NC),
         )
         .with_bar(
             PciMemoryBar::new(
@@ -1094,6 +1326,47 @@ mod tests {
         assert_eq!(msi.controller(), InterruptControllerId::new(0));
         assert_eq!(msi.its(), ItsId::new(0));
         assert_eq!(msi.count(), 1);
+    }
+
+    #[test]
+    fn transport_capability_selects_cache_protocol_without_changing_v1_layout() {
+        let non_cacheable = LinkProfile::baseline();
+        let write_back = non_cacheable
+            .with_bar2_cache_policy(Bar2CachePolicy::WriteBack)
+            .unwrap();
+        let layout = IvshmemMemoryLayout::derive(non_cacheable.bar2_size(), non_cacheable).unwrap();
+        let capability = |profile| {
+            axvisor_transport_capability(
+                profile,
+                layout.peer_epoch_base_offset(),
+                layout.peer_epoch_stride(),
+            )
+            .unwrap()
+        };
+        let nc = capability(non_cacheable);
+        let wb = capability(write_back);
+        let protocol = |body: &[u8]| u16::from_le_bytes(body[6..8].try_into().unwrap());
+        let features = |body: &[u8]| u32::from_le_bytes(body[10..14].try_into().unwrap());
+
+        assert_eq!(
+            nc.id(),
+            PciCapabilityId::new(AXVISOR_TRANSPORT_CAPABILITY_ID)
+        );
+        assert_eq!(wb.id(), nc.id());
+        assert_eq!(nc.body().len(), AXVISOR_TRANSPORT_CAPABILITY_BODY_SIZE);
+        assert_eq!(wb.body().len(), nc.body().len());
+        assert_eq!(nc.body()[0], AXVISOR_TRANSPORT_CAPABILITY_LENGTH);
+        assert_eq!(wb.body()[0], nc.body()[0]);
+        assert_eq!(nc.body()[1], AXVISOR_TRANSPORT_CAPABILITY_VERSION);
+        assert_eq!(wb.body()[1], nc.body()[1]);
+        assert_eq!(&nc.body()[..6], &wb.body()[..6]);
+        assert_eq!(&nc.body()[8..], &wb.body()[8..]);
+        assert_eq!(protocol(nc.body()), 0x4000);
+        assert_eq!(protocol(wb.body()), 0x4001);
+        assert_eq!(features(nc.body()), AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH);
+        assert_eq!(features(wb.body()), AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH);
+        assert_eq!(nc.write_mask(), wb.write_mask());
+        assert!(nc.write_mask().iter().all(|byte| *byte == 0));
     }
 
     #[test]
@@ -1142,6 +1415,27 @@ mod tests {
             panic!("expected an instantiation error");
         };
         assert!(detail.contains("outside the current profile"));
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    #[test]
+    fn write_back_bar2_cache_fails_closed_off_aarch64() {
+        let registry = test_registry();
+        let catalog = registered_catalog();
+        let context = test_context(&registry);
+        let mut request = request("ivshmem0", 1, 0);
+        request.options.insert(
+            "bar2_cache".into(),
+            toml::Value::String("write-back".into()),
+        );
+
+        let Err(error) = catalog.instantiate_node(&request, &context) else {
+            panic!("write-back must not silently degrade to a cacheable mapping");
+        };
+        let ConfiguredDeviceError::InvalidOptions { detail, .. } = error else {
+            panic!("expected an options error");
+        };
+        assert!(detail.contains("AArch64"));
     }
 
     #[test]
@@ -2118,7 +2412,7 @@ mod tests {
                     AccessWidth::Dword,
                 )
                 .unwrap(),
-            u64::from(AXVISOR_TRANSPORT_PROTOCOL),
+            u64::from(AXVISOR_TRANSPORT_PROTOCOL_NC),
         );
         // Message Control: table size 0 (one vector), disabled by default.
         assert_eq!(peer0.read_msix_control(), 0);
@@ -2149,6 +2443,59 @@ mod tests {
         assert_eq!(peer0.read_msix_control(), 0x8000);
         peer0.write_msix_control(0).unwrap();
         assert_eq!(peer0.read_msix_control(), 0);
+    }
+
+    #[test]
+    fn endpoint_revision_and_protocol_are_selected_as_one_pair() {
+        let registry = test_registry();
+        let non_cacheable = LinkProfile::baseline();
+        let write_back = non_cacheable
+            .with_bar2_cache_policy(Bar2CachePolicy::WriteBack)
+            .unwrap();
+        for (node_id, link_id, profile, expected_revision, protocol) in [
+            (
+                "ivshmem-nc",
+                7,
+                non_cacheable,
+                IVSHMEM_REVISION_NC,
+                AXVISOR_TRANSPORT_PROTOCOL_NC,
+            ),
+            (
+                "ivshmem-wb",
+                8,
+                write_back,
+                IVSHMEM_REVISION_WB,
+                AXVISOR_TRANSPORT_PROTOCOL_WB,
+            ),
+        ] {
+            let endpoint = build_endpoint(
+                node_id,
+                model_for_profile(&registry, link_id, 0, profile),
+                Arc::new(TestStage2Remap::default()),
+            );
+            endpoint.enable_memory();
+
+            let identity = endpoint
+                .root
+                .read_config(
+                    endpoint.bdf,
+                    ConfigOffset::new(0x08).unwrap(),
+                    AccessWidth::Dword,
+                )
+                .unwrap();
+            assert_eq!(identity, 0xff00_0000 | u64::from(expected_revision));
+            assert_eq!(
+                endpoint
+                    .root
+                    .read_config(
+                        endpoint.bdf,
+                        ConfigOffset::new(0x54).unwrap(),
+                        AccessWidth::Dword,
+                    )
+                    .unwrap(),
+                u64::from(protocol),
+            );
+        }
     }
 
     #[test]
@@ -2301,6 +2648,93 @@ mod tests {
             .unwrap()
             .hpa_base();
         assert_eq!(hpa0, hpa1);
+    }
+
+    #[test]
+    fn failed_direct_plan_replacement_preserves_the_last_committed_plan() {
+        const INITIAL: u64 = 0x0c00_0000;
+        const FAILED: u64 = 0x0c20_0000;
+        const REPLACEMENT: u64 = 0x0c40_0000;
+
+        let profile = LinkProfile::baseline();
+        let layout = IvshmemMemoryLayout::derive(profile.bar2_size(), profile).unwrap();
+        let backing = Arc::new(
+            SharedBarBacking::try_new(SHARED_MEMORY_SIZE, Arc::new(TestBackingAllocator)).unwrap(),
+        );
+        let stage2 = Arc::new(TestStage2Remap::default());
+        let online = Arc::new(AtomicBool::new(true));
+        let direct_plans = DirectPlanManager::new(
+            id("ivshmem0"),
+            Arc::clone(&stage2) as Arc<dyn Stage2Remap>,
+            Arc::clone(&online),
+        );
+        let plan = |gpa| {
+            IvshmemDirectPlan::derive(&layout, gpa, Arc::clone(&backing), PeerId::new(0)).unwrap()
+        };
+
+        direct_plans.bind(plan(INITIAL)).unwrap();
+        assert_eq!(direct_plans.bound_gpa(), Some(INITIAL));
+        let failed_revision = PciBarRevision::initial().next().unwrap();
+        let replacement_revision = failed_revision.next().unwrap();
+        stage2.fail_next_update();
+        assert!(
+            direct_plans
+                .replace_ordered(failed_revision, plan(FAILED))
+                .is_err()
+        );
+        assert_eq!(direct_plans.bar2_gpa(), Some(INITIAL));
+
+        direct_plans
+            .replace_ordered(replacement_revision, plan(REPLACEMENT))
+            .unwrap();
+        assert_eq!(direct_plans.bar2_gpa(), Some(REPLACEMENT));
+        assert_eq!(direct_plans.bound_gpa(), Some(INITIAL));
+        let updates = stage2.updates();
+        assert_eq!(updates.len(), 3);
+        assert!(updates[0].revoke.is_empty());
+        assert_eq!(updates[1].commit[0].gpa_base(), FAILED);
+        assert_eq!(
+            updates[2].revoke,
+            vec![GpaRange::new(INITIAL, SHARED_MEMORY_SIZE)]
+        );
+        assert_eq!(updates[2].commit[0].gpa_base(), REPLACEMENT);
+        direct_plans
+            .replace_ordered(failed_revision, plan(FAILED))
+            .unwrap();
+        assert_eq!(direct_plans.bar2_gpa(), Some(REPLACEMENT));
+        assert_eq!(stage2.updates().len(), 3);
+
+        // PCI reset restores the bind-time BAR route and the same transactional
+        // path revokes the relocated mapping. Repeating that plan is a no-op.
+        direct_plans.replace(plan(INITIAL)).unwrap();
+        assert_eq!(direct_plans.bar2_gpa(), Some(INITIAL));
+        let updates = stage2.updates();
+        assert_eq!(updates.len(), 4);
+        assert_eq!(
+            updates[3].revoke,
+            vec![GpaRange::new(REPLACEMENT, SHARED_MEMORY_SIZE)]
+        );
+        assert_eq!(updates[3].commit[0].gpa_base(), INITIAL);
+        direct_plans.replace(plan(INITIAL)).unwrap();
+        assert_eq!(stage2.updates().len(), 4);
+
+        direct_plans.close().unwrap();
+        assert!(!online.load(Ordering::Acquire));
+        assert_eq!(direct_plans.bar2_gpa(), None);
+        assert!(direct_plans.mappings().is_empty());
+        let updates = stage2.updates();
+        assert_eq!(updates.len(), 5);
+        assert_eq!(
+            updates[4].revoke,
+            vec![GpaRange::new(INITIAL, SHARED_MEMORY_SIZE)]
+        );
+        assert!(updates[4].commit.is_empty());
+
+        // Repeating close with no committed plan must not issue a stage-2
+        // update, and a stopped endpoint must reject a later relocation.
+        direct_plans.close().unwrap();
+        assert_eq!(stage2.updates().len(), 5);
+        assert!(direct_plans.replace(plan(INITIAL)).is_err());
     }
 
     #[test]

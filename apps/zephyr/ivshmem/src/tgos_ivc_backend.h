@@ -33,6 +33,13 @@ int64_t tgos_ivc_backend_now_ms(void);
 int tgos_ivc_backend_epochs(uint64_t *local, uint64_t *peer);
 int tgos_ivc_backend_ring_peer(void);
 
+/*
+ * Private Rust entry points used by the unified C application ABI. They share
+ * the single session state and backend serialization with tgos_ivc_*.
+ */
+int tgos_ivc_recv_record(void *data, size_t cap, int32_t timeout_ms);
+int tgos_ivc_close_result(void);
+
 __attribute__((noreturn)) void tgos_ivc_backend_abort(void);
 
 #endif /* TGOS_IVC_BACKEND_H_ */

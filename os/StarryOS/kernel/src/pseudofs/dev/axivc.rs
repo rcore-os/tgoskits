@@ -146,16 +146,19 @@ impl AutoPayloadLease {
         let start = PhysAddr::from_usize(range.start);
         let range = PhysAddrRange::from_start_size(start, capacity);
         let retain: Arc<dyn Any + Send + Sync> = self.clone();
+        let policy = self.attachment.bar2_policy();
         if peer {
             Ok(DeviceMmap::PhysicalResolvedRestricted(
                 range,
                 retain,
+                policy,
                 DeviceMmapAccess::ReadOnly,
             ))
         } else {
             Ok(DeviceMmap::PhysicalResolvedRestricted(
                 range,
                 retain,
+                policy,
                 DeviceMmapAccess::ReadWrite,
             ))
         }

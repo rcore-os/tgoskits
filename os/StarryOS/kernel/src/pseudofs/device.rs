@@ -1,6 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::any::Any;
 
+#[cfg(feature = "axivc-ivshmem")]
+use ax_driver::pci::ivshmem::IvshmemBar2Policy;
 use ax_fs_ng::vfs::CachedFile;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axfs_ng_vfs::{
@@ -33,13 +35,18 @@ pub enum DeviceMmap {
     /// This is for file descriptors whose mmap offset is a selector rather than
     /// a byte offset into a linear device, such as io_uring ring offsets.
     PhysicalResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
-    /// Maps an uncached, already offset-resolved physical range with a
-    /// persistent data-only permission ceiling.
+    /// Maps an already offset-resolved physical range with the device-selected
+    /// BAR2 cache policy and a persistent data-only permission ceiling.
     ///
     /// The ceiling is retained by the VMA backend across split and fork, so
     /// `mprotect` cannot add a permission that the device did not grant.
     #[cfg(feature = "axivc-ivshmem")]
-    PhysicalResolvedRestricted(PhysAddrRange, Arc<dyn Any + Send + Sync>, DeviceMmapAccess),
+    PhysicalResolvedRestricted(
+        PhysAddrRange,
+        Arc<dyn Any + Send + Sync>,
+        IvshmemBar2Policy,
+        DeviceMmapAccess,
+    ),
     /// Cacheable counterpart of [`Self::PhysicalResolved`]: the mmap offset is
     /// a selector (the range is already resolved), but the backing is normal
     /// memory the CPU may cache. GPU host-visible shared memory (e.g. the

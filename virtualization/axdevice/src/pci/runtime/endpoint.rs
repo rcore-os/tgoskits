@@ -57,6 +57,34 @@ impl PciCommandRevision {
     }
 }
 
+/// Monotonic revision of one root-owned accepted BAR relocation.
+///
+/// The root bumps this revision while holding the config lock, before the
+/// endpoint callback runs outside that lock. An endpoint with direct mappings
+/// must ignore a callback whose revision is not newer than the last plan it
+/// accepted.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PciBarRevision(u64);
+
+impl PciBarRevision {
+    /// Returns the initial revision before any accepted relocation.
+    pub const fn initial() -> Self {
+        Self(0)
+    }
+
+    /// Advances this revision by one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PciError::BarRevisionExhausted`] at `u64::MAX`.
+    pub fn next(self) -> PciResult<Self> {
+        self.0
+            .checked_add(1)
+            .map(Self)
+            .ok_or(PciError::BarRevisionExhausted)
+    }
+}
+
 /// Immutable command-register state captured for one endpoint notification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PciCommandState {
@@ -512,9 +540,16 @@ pub trait PciFunction: Device {
     ///
     /// Endpoints with direct mappings must re-derive their plan and resubmit
     /// it through the stage-2 update port. BAR probe writes never trigger
-    /// this notification. The callback runs without the root state lock held.
-    fn notify_bar_relocated(&self, bar: PciBarIndex, new_gpa: u64) -> DeviceResult {
-        let _ = (bar, new_gpa);
+    /// this notification. The callback runs without the root state lock held;
+    /// `revision` is the root's accepted-relocation order and implementations
+    /// must ignore stale callbacks that arrive after a newer revision.
+    fn notify_bar_relocated(
+        &self,
+        bar: PciBarIndex,
+        new_gpa: u64,
+        revision: PciBarRevision,
+    ) -> DeviceResult {
+        let _ = (bar, new_gpa, revision);
         Ok(())
     }
 

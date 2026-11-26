@@ -94,6 +94,69 @@ fn message_v1_flows_full_duplex_with_backpressure_and_wrap() {
 }
 
 #[test]
+fn abort_after_partial_publication_allows_a_fragmented_follow_up_record() {
+    let mut left_output = TestOutput::new();
+    let mut right_output = TestOutput::new();
+    let left_address = left_output.address();
+    let right_address = right_output.address();
+    // SAFETY: both test outputs live through every derived port and endpoint,
+    // and each output has one writer.
+    let (mut left_port, mut right_port) = unsafe { attach_pair(left_address, right_address) };
+    let (left_endpoints, right_endpoints) = start_and_connect(&mut left_port, &mut right_port);
+    let (mut left_sender, _left_receiver) = left_endpoints.into_parts();
+    let (_right_sender, mut right_receiver) = right_endpoints.into_parts();
+
+    let cancelled: Vec<u8> = (0..IVC_SLOT_FRAGMENT_CAPACITY + 1)
+        .map(|index| (index as u8).wrapping_mul(29))
+        .collect();
+    left_sender.start_message(cancelled.len() as u64).unwrap();
+    let first = left_sender
+        .try_write(&cancelled[..IVC_SLOT_FRAGMENT_CAPACITY])
+        .unwrap();
+    assert_eq!(first.published_slots(), 1);
+    assert_eq!(first.consumed(), IVC_SLOT_FRAGMENT_CAPACITY);
+    assert!(!first.is_complete());
+    assert_eq!(left_sender.available_slots(), IVC_RING_CAPACITY - 1);
+
+    left_sender.try_abort().unwrap();
+    assert_eq!(left_sender.available_slots(), IVC_RING_CAPACITY - 2);
+
+    let follow_up: Vec<u8> = (0..IVC_SLOT_FRAGMENT_CAPACITY + 1)
+        .map(|index| (index as u8).wrapping_mul(53))
+        .collect();
+    left_sender.start_message(follow_up.len() as u64).unwrap();
+    let published = left_sender.try_write(&follow_up).unwrap();
+    assert_eq!(published.published_slots(), 2);
+    assert_eq!(published.consumed(), follow_up.len());
+    assert!(published.is_complete());
+
+    let mut output = [0u8; IVC_SLOT_FRAGMENT_CAPACITY + 1];
+    let partial = right_receiver.try_read(&mut output).unwrap();
+    assert_eq!(partial.consumed_slots(), 1);
+    assert_eq!(partial.written(), IVC_SLOT_FRAGMENT_CAPACITY);
+    assert!(!partial.is_complete());
+    assert_eq!(
+        &output[..partial.written()],
+        &cancelled[..IVC_SLOT_FRAGMENT_CAPACITY]
+    );
+    assert!(right_receiver.can_receive());
+
+    assert_eq!(
+        right_receiver.try_read(&mut output),
+        Err(IvcMessageError::TransferAborted)
+    );
+    assert!(right_receiver.can_receive());
+
+    let complete = right_receiver.try_read(&mut output).unwrap();
+    assert_eq!(complete.consumed_slots(), 2);
+    assert_eq!(complete.written(), follow_up.len());
+    assert!(complete.is_complete());
+    assert_eq!(&output[..complete.written()], follow_up);
+    assert!(!right_receiver.can_receive());
+    assert_eq!(left_sender.available_slots(), IVC_RING_CAPACITY);
+}
+
+#[test]
 fn peer_restart_rejects_old_data_and_allows_a_new_session() {
     let mut left_output = TestOutput::new();
     let mut right_output = TestOutput::new();

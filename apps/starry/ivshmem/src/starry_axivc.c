@@ -6,40 +6,79 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
-static int starry_wait_fd(int fd, short events, int32_t timeout_ms) {
+#define TGOS_STARRY_AXIVC_PAYLOAD_INFO_VERSION 1ULL
+
+struct starry_axivc_payload_info {
+  uint64_t version;
+  uint64_t generation;
+  uint64_t local_offset;
+  uint64_t peer_offset;
+  uint64_t payload_size;
+};
+
+#define TGOS_STARRY_AXIVC_PAYLOAD_INFO                                         \
+  _IOR(0x49, 0x06, struct starry_axivc_payload_info)
+
+_Static_assert(sizeof(struct starry_axivc_payload_info) == 0x28,
+               "payload info ABI must remain 40 bytes");
+_Static_assert((uint32_t)TGOS_STARRY_AXIVC_PAYLOAD_INFO == 0x80284906U,
+               "payload info ioctl must remain _IOR(0x49, 6, payload_info)");
+
+struct ivc {
+  int fd;
+  int failed;
+  size_t capacity;
+  struct starry_axivc_payload_info info;
+  uint8_t *local_payload;
+  const uint8_t *peer_payload;
+};
+
+static int starry_error_from_errno(struct ivc *connection, int error) {
+  if (error == EAGAIN || error == EWOULDBLOCK) {
+    return -EAGAIN;
+  }
+  if (error == EIO || error == EPIPE || error == ENODEV) {
+    connection->failed = 1;
+    return -EPIPE;
+  }
+  return -error;
+}
+
+static int starry_wait_fd(struct ivc *connection, short events,
+                          int32_t timeout_ms) {
   struct pollfd pfd = {
-      .fd = fd,
+      .fd = connection->fd,
       .events = events,
   };
-  int result;
+  int result = poll(&pfd, 1, timeout_ms);
 
-  do {
-    result = poll(&pfd, 1, timeout_ms);
-  } while (result < 0 && errno == EINTR);
   if (result == 0) {
-    return -ETIMEDOUT;
+    return -EAGAIN;
   }
   if (result < 0) {
-    return -errno;
+    return starry_error_from_errno(connection, errno);
   }
   if ((pfd.revents & POLLNVAL) != 0) {
     return -EBADF;
   }
-  if ((pfd.revents & POLLERR) != 0) {
-    return -EIO;
-  }
-  if ((pfd.revents & POLLHUP) != 0 && (pfd.revents & events) == 0) {
+  if ((pfd.revents & (POLLERR | POLLHUP)) != 0) {
+    connection->failed = 1;
     return -EPIPE;
+  }
+  if ((pfd.revents & events) == 0) {
+    return -EAGAIN;
   }
   return 0;
 }
 
-static int starry_deadline_remaining_us(uint64_t deadline) {
+static int32_t starry_deadline_remaining_ms(uint64_t deadline) {
   uint64_t now = starry_now_us();
 
   if (now >= deadline) {
@@ -48,34 +87,70 @@ static int starry_deadline_remaining_us(uint64_t deadline) {
   if (deadline - now > (uint64_t)INT32_MAX * 1000ULL) {
     return INT32_MAX;
   }
-  return (int)((deadline - now + 999ULL) / 1000ULL);
+  return (int32_t)((deadline - now + 999ULL) / 1000ULL);
 }
 
-int starry_axivc_open(struct starry_axivc *ivc, size_t minimum_capacity) {
-  struct starry_axivc_payload_info info;
-  long page_size;
+static int starry_timeout_valid(int32_t timeout_ms) {
+  return timeout_ms >= 0 && timeout_ms <= IVC_MAX_TIMEOUT_MS;
+}
+
+int ivc_open(struct ivc **out) {
+  struct ivc *connection;
   int fd;
 
-  if (ivc == NULL || minimum_capacity == 0U) {
+  if (out == NULL) {
     return -EINVAL;
   }
-  memset(ivc, 0, sizeof(*ivc));
-  ivc->fd = -1;
+  *out = NULL;
 
-  fd = open(TGOS_STARRY_AXIVC_DEVICE, O_RDWR | O_CLOEXEC);
+  fd = open(TGOS_STARRY_AXIVC_DEVICE, O_RDWR | O_CLOEXEC | O_NONBLOCK);
   if (fd < 0) {
     return -errno;
   }
+  connection = calloc(1U, sizeof(*connection));
+  if (connection == NULL) {
+    close(fd);
+    return -ENOMEM;
+  }
+  connection->fd = fd;
+  *out = connection;
+  return 0;
+}
+
+int starry_axivc_payload_get(struct ivc *connection,
+                             size_t minimum_capacity,
+                             struct starry_axivc_payload_view *view) {
+  struct starry_axivc_payload_info info;
+  long page_size;
+
+  if (connection == NULL || view == NULL || minimum_capacity == 0U) {
+    return -EINVAL;
+  }
+  memset(view, 0, sizeof(*view));
+  if (connection->failed) {
+    return -EPIPE;
+  }
+  if (connection->capacity != 0U) {
+    if (connection->capacity < minimum_capacity) {
+      return -ENOSPC;
+    }
+    view->generation = connection->info.generation;
+    view->local_offset = connection->info.local_offset;
+    view->peer_offset = connection->info.peer_offset;
+    view->capacity = connection->capacity;
+    view->local_payload = connection->local_payload;
+    view->peer_payload = connection->peer_payload;
+    return 0;
+  }
+
   memset(&info, 0, sizeof(info));
   /*
    * musl declares the request parameter as int while Linux consumes the
    * unsigned 32-bit ioctl encoding. Preserve those low 32 request bits.
    */
-  if (ioctl(fd, (int)(uint32_t)TGOS_STARRY_AXIVC_PAYLOAD_INFO, &info) != 0) {
-    int error = errno;
-
-    close(fd);
-    return -error;
+  if (ioctl(connection->fd, (int)(uint32_t)TGOS_STARRY_AXIVC_PAYLOAD_INFO,
+            &info) != 0) {
+    return starry_error_from_errno(connection, errno);
   }
   page_size = sysconf(_SC_PAGESIZE);
   if (info.version != TGOS_STARRY_AXIVC_PAYLOAD_INFO_VERSION ||
@@ -85,13 +160,9 @@ int starry_axivc_open(struct starry_axivc *ivc, size_t minimum_capacity) {
       info.local_offset == info.peer_offset || page_size <= 0 ||
       info.local_offset % (uint64_t)page_size != 0U ||
       info.peer_offset % (uint64_t)page_size != 0U) {
-    close(fd);
     return -EPROTO;
   }
-  ivc->info = info;
-  ivc->capacity = (size_t)info.payload_size;
-  if (ivc->capacity < minimum_capacity) {
-    close(fd);
+  if ((size_t)info.payload_size < minimum_capacity) {
     return -ENOSPC;
   }
 
@@ -100,114 +171,197 @@ int starry_axivc_open(struct starry_axivc *ivc, size_t minimum_capacity) {
    * constrains the file offset, which was checked above, so map the returned
    * capacity verbatim instead of rounding or consulting file metadata.
    */
-  ivc->local_payload = mmap(NULL, ivc->capacity, PROT_READ | PROT_WRITE,
-                            MAP_SHARED, fd, (off_t)info.local_offset);
-  if (ivc->local_payload == MAP_FAILED) {
+  connection->local_payload =
+      mmap(NULL, (size_t)info.payload_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+           connection->fd, (off_t)info.local_offset);
+  if (connection->local_payload == MAP_FAILED) {
+    connection->local_payload = NULL;
+    return -errno;
+  }
+  connection->peer_payload =
+      mmap(NULL, (size_t)info.payload_size, PROT_READ, MAP_SHARED,
+           connection->fd, (off_t)info.peer_offset);
+  if (connection->peer_payload == MAP_FAILED) {
     int error = errno;
 
-    ivc->local_payload = NULL;
-    close(fd);
+    connection->peer_payload = NULL;
+    munmap(connection->local_payload, (size_t)info.payload_size);
+    connection->local_payload = NULL;
     return -error;
   }
-  ivc->peer_payload = mmap(NULL, ivc->capacity, PROT_READ, MAP_SHARED, fd,
-                           (off_t)info.peer_offset);
-  if (ivc->peer_payload == MAP_FAILED) {
-    int error = errno;
-
-    ivc->peer_payload = NULL;
-    munmap(ivc->local_payload, ivc->capacity);
-    ivc->local_payload = NULL;
-    close(fd);
-    return -error;
-  }
-  ivc->fd = fd;
+  connection->info = info;
+  connection->capacity = (size_t)info.payload_size;
+  view->generation = info.generation;
+  view->local_offset = info.local_offset;
+  view->peer_offset = info.peer_offset;
+  view->capacity = connection->capacity;
+  view->local_payload = connection->local_payload;
+  view->peer_payload = connection->peer_payload;
   return 0;
 }
 
-void starry_axivc_close(struct starry_axivc *ivc) {
-  if (ivc == NULL) {
-    return;
+int ivc_close(struct ivc *connection) {
+  int error = 0;
+
+  if (connection == NULL) {
+    return -EINVAL;
   }
-  if (ivc->peer_payload != NULL) {
-    munmap((void *)ivc->peer_payload, ivc->capacity);
+  if (connection->peer_payload != NULL &&
+      munmap((void *)connection->peer_payload, connection->capacity) != 0) {
+    error = -errno;
   }
-  if (ivc->local_payload != NULL) {
-    munmap(ivc->local_payload, ivc->capacity);
+  if (connection->local_payload != NULL &&
+      munmap(connection->local_payload, connection->capacity) != 0 &&
+      error == 0) {
+    error = -errno;
   }
-  if (ivc->fd >= 0) {
-    close(ivc->fd);
+  if (connection->fd >= 0 && close(connection->fd) != 0 && error == 0) {
+    error = -errno;
   }
-  memset(ivc, 0, sizeof(*ivc));
-  ivc->fd = -1;
+  free(connection);
+  return error;
 }
 
-int starry_axivc_send_frame(struct starry_axivc *ivc,
-                            const struct tgos_ivc_frame *frame,
-                            int32_t timeout_ms) {
+int ivc_send(struct ivc *connection, const void *data, size_t len,
+             int32_t timeout_ms) {
   uint64_t deadline;
 
-  if (ivc == NULL || frame == NULL || ivc->fd < 0 || timeout_ms < 0) {
+  if (connection == NULL || data == NULL || len == 0U) {
     return -EINVAL;
+  }
+  if (len > IVC_MAX_RECORD_BYTES) {
+    return -EMSGSIZE;
+  }
+  if (!starry_timeout_valid(timeout_ms)) {
+    return -EINVAL;
+  }
+  if (connection->failed) {
+    return -EPIPE;
   }
   deadline = starry_now_us() + (uint64_t)timeout_ms * 1000ULL;
 
   for (;;) {
-    ssize_t written = write(ivc->fd, frame, sizeof(*frame));
-    int remaining;
+    ssize_t written = write(connection->fd, data, len);
+    int32_t remaining;
+    int error;
 
-    if (written == (ssize_t)sizeof(*frame)) {
+    if (written == (ssize_t)len) {
       return 0;
     }
-    if (written >= 0) {
-      fprintf(stderr, "AXIVC Starry short frame write bytes=%zd expected=%zu\n",
-              written, sizeof(*frame));
-      return -EMSGSIZE;
+    if (written > 0) {
+      return -EIO;
     }
-    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-      return -errno;
+    if (written == 0) {
+      if (timeout_ms == 0) {
+        return -EAGAIN;
+      }
+    } else {
+      if (errno == EINTR) {
+        if (timeout_ms == 0) {
+          return -EINTR;
+        }
+        remaining = starry_deadline_remaining_ms(deadline);
+        if (remaining == 0) {
+          return -EAGAIN;
+        }
+        continue;
+      }
+      if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        return starry_error_from_errno(connection, errno);
+      }
+      if (timeout_ms == 0) {
+        return -EAGAIN;
+      }
     }
-    remaining = starry_deadline_remaining_us(deadline);
+    remaining = starry_deadline_remaining_ms(deadline);
     if (remaining == 0) {
-      return -ETIMEDOUT;
+      return -EAGAIN;
     }
-    int error = starry_wait_fd(ivc->fd, POLLOUT, remaining);
-
+    error = starry_wait_fd(connection, POLLOUT, remaining);
+    if (error == -EINTR) {
+      remaining = starry_deadline_remaining_ms(deadline);
+      if (remaining == 0) {
+        return -EAGAIN;
+      }
+      continue;
+    }
     if (error != 0) {
       return error;
     }
   }
 }
 
-int starry_axivc_recv_frame(struct starry_axivc *ivc,
-                            struct tgos_ivc_frame *frame, int32_t timeout_ms) {
+int ivc_recv(struct ivc *connection, void *buffer, size_t cap,
+             int32_t timeout_ms) {
   uint64_t deadline;
 
-  if (ivc == NULL || frame == NULL || ivc->fd < 0 || timeout_ms < 0) {
+  if (connection == NULL || buffer == NULL || cap == 0U) {
     return -EINVAL;
+  }
+  if (!starry_timeout_valid(timeout_ms)) {
+    return -EINVAL;
+  }
+  if (connection->failed) {
+    return -EPIPE;
   }
   deadline = starry_now_us() + (uint64_t)timeout_ms * 1000ULL;
 
   for (;;) {
-    ssize_t received = read(ivc->fd, frame, sizeof(*frame));
-    int remaining;
+    int32_t remaining;
+    int error;
+    ssize_t received;
 
-    if (received == (ssize_t)sizeof(*frame)) {
-      return 0;
+    received = read(connection->fd, buffer, cap);
+
+    if (received > 0) {
+      if ((size_t)received > IVC_MAX_RECORD_BYTES) {
+        return -EMSGSIZE;
+      }
+      return (int)received;
     }
-    if (received >= 0) {
-      fprintf(stderr, "AXIVC Starry short frame read bytes=%zd expected=%zu\n",
-              received, sizeof(*frame));
-      return received == 0 ? -EPIPE : -EMSGSIZE;
+    if (received == 0) {
+      connection->failed = 1;
+      return -EPIPE;
     }
-    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-      return -errno;
+    if (errno == EINVAL) {
+      /*
+       * Starry rejects a legal packet that is larger than the caller's buffer
+       * without consuming it. At the maximum record size, EINVAL cannot mean a
+       * legal short-buffer failure and is therefore a wire protocol anomaly.
+       */
+      if (cap >= IVC_MAX_RECORD_BYTES) {
+        return -EMSGSIZE;
+      }
+      return -ENOSPC;
     }
-    remaining = starry_deadline_remaining_us(deadline);
+    if (errno == EINTR) {
+      if (timeout_ms == 0) {
+        return -EINTR;
+      }
+      remaining = starry_deadline_remaining_ms(deadline);
+      if (remaining == 0) {
+        return -EAGAIN;
+      }
+      continue;
+    }
+    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+      return starry_error_from_errno(connection, errno);
+    }
+    if (timeout_ms == 0) {
+      return -EAGAIN;
+    }
+    remaining = starry_deadline_remaining_ms(deadline);
     if (remaining == 0) {
-      return -ETIMEDOUT;
+      return -EAGAIN;
     }
-    int error = starry_wait_fd(ivc->fd, POLLIN, remaining);
-
+    error = starry_wait_fd(connection, POLLIN, remaining);
+    if (error == -EINTR) {
+      remaining = starry_deadline_remaining_ms(deadline);
+      if (remaining == 0) {
+        return -EAGAIN;
+      }
+      continue;
+    }
     if (error != 0) {
       return error;
     }
@@ -234,6 +388,8 @@ const char *starry_error_name(int error) {
     return "short-frame";
   case ETIMEDOUT:
     return "timeout";
+  case EINVAL:
+    return "invalid-argument";
   case EPIPE:
     return "peer-closed";
   case ENOSPC:

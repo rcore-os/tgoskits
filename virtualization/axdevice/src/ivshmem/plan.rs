@@ -6,10 +6,10 @@
 //! reserved tail is deliberately left unmapped so stray accesses fault
 //! instead of silently succeeding.
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{format, string::String, sync::Arc, vec::Vec};
 
 use super::{
-    backing::BackingAllocation,
+    backing::SharedBarBacking,
     error::IvshmemError,
     layout::{Bar2Section, IvshmemMemoryLayout},
     link::PeerId,
@@ -21,6 +21,8 @@ pub struct IvshmemDirectPlan {
     bar2_gpa: u64,
     bar2_size: u64,
     mappings: Vec<DirectMapping>,
+    /// Retains the mapped host allocation until this plan is revoked/dropped.
+    _backing: Arc<SharedBarBacking>,
 }
 
 impl IvshmemDirectPlan {
@@ -39,7 +41,7 @@ impl IvshmemDirectPlan {
     pub fn derive(
         layout: &IvshmemMemoryLayout,
         bar2_gpa: u64,
-        backing: &BackingAllocation,
+        backing: Arc<SharedBarBacking>,
         peer: PeerId,
     ) -> Result<Self, IvshmemError> {
         const PAGE: u64 = 0x1000;
@@ -92,6 +94,7 @@ impl IvshmemDirectPlan {
             bar2_gpa,
             bar2_size: layout.bar2_size(),
             mappings,
+            _backing: backing,
         })
     }
 
@@ -114,25 +117,30 @@ impl IvshmemDirectPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ivshmem::{SHARED_MEMORY_SIZE, link::LinkProfile};
+    use crate::ivshmem::{
+        SHARED_MEMORY_SIZE,
+        backing::{SharedBarBacking, test_allocator},
+        link::LinkProfile,
+    };
 
     fn layout() -> IvshmemMemoryLayout {
         IvshmemMemoryLayout::derive(SHARED_MEMORY_SIZE, LinkProfile::baseline()).unwrap()
     }
 
-    fn backing() -> BackingAllocation {
-        // Test-only allocation shell: the plan reads the base address and
-        // never dereferences the virtual pointer.
-        BackingAllocation::from_parts(0x8_0000_0000, SHARED_MEMORY_SIZE, core::ptr::null_mut())
+    fn backing() -> Arc<SharedBarBacking> {
+        Arc::new(SharedBarBacking::try_new(SHARED_MEMORY_SIZE, test_allocator()).unwrap())
     }
 
     #[test]
     fn owner_and_visitor_views_differ_only_in_output_writability() {
         let layout = layout();
+        let backing = backing();
+        let hpa = backing.hpa_base();
         let owner =
-            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, &backing(), PeerId::new(0)).unwrap();
+            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, Arc::clone(&backing), PeerId::new(0))
+                .unwrap();
         let visitor =
-            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, &backing(), PeerId::new(1)).unwrap();
+            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, backing, PeerId::new(1)).unwrap();
 
         // Both views carry state table + two outputs; the reserved tail is
         // absent from both, and the section sequence is identical.
@@ -152,7 +160,7 @@ mod tests {
         // The state table is read-only in every view.
         assert!(!owner.mappings()[0].writable());
         assert_eq!(owner.mappings()[0].gpa_base(), 0x0c00_0000);
-        assert_eq!(owner.mappings()[0].hpa_base(), 0x8_0000_0000);
+        assert_eq!(owner.mappings()[0].hpa_base(), hpa);
         // Peer 0's own output is writable, peer 1's is read-only.
         assert!(owner.mappings()[1].writable());
         assert!(!owner.mappings()[2].writable());
@@ -165,7 +173,7 @@ mod tests {
     fn mappings_cover_the_layout_sections_exactly() {
         let layout = layout();
         let plan =
-            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, &backing(), PeerId::new(0)).unwrap();
+            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, backing(), PeerId::new(0)).unwrap();
         let outputs = layout.outputs();
         assert_eq!(
             plan.mappings()[1].gpa_base(),
@@ -183,7 +191,7 @@ mod tests {
     fn revocation_covers_the_whole_bar2() {
         let layout = layout();
         let plan =
-            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, &backing(), PeerId::new(1)).unwrap();
+            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, backing(), PeerId::new(1)).unwrap();
         assert_eq!(plan.bar2_gpa(), 0x0c00_0000);
         let range = plan.revocation_range();
         assert_eq!(range.base(), 0x0c00_0000);
@@ -194,13 +202,7 @@ mod tests {
     fn rejects_misaligned_addresses() {
         let layout = layout();
         assert!(
-            IvshmemDirectPlan::derive(&layout, 0x0c00_0800, &backing(), PeerId::new(0)).is_err()
-        );
-        let unaligned_backing =
-            BackingAllocation::from_parts(0x8_0000_0800, SHARED_MEMORY_SIZE, core::ptr::null_mut());
-        assert!(
-            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, &unaligned_backing, PeerId::new(0))
-                .is_err()
+            IvshmemDirectPlan::derive(&layout, 0x0c00_0800, backing(), PeerId::new(0)).is_err()
         );
     }
 
@@ -211,7 +213,7 @@ mod tests {
         let profile = LinkProfile::new(2, 0, 0x1000).unwrap();
         let layout = IvshmemMemoryLayout::derive(0x3000, profile).unwrap();
         let plan =
-            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, &backing(), PeerId::new(0)).unwrap();
+            IvshmemDirectPlan::derive(&layout, 0x0c00_0000, backing(), PeerId::new(0)).unwrap();
         assert_eq!(plan.mappings().len(), 3);
     }
 }

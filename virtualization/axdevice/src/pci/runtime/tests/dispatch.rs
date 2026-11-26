@@ -9,7 +9,7 @@ use std::{
 use axdevice_base::{Device, DeviceAccess, DeviceContext, DeviceError, Resource};
 
 use super::*;
-use crate::{PciBarDecodePolicy, PciBarIndex, PciMemoryBar};
+use crate::{PciBarDecodePolicy, PciBarIndex, PciBarRevision, PciMemoryBar};
 
 struct ReverseCommandFunction {
     first_entered: Arc<Barrier>,
@@ -583,7 +583,12 @@ impl PciFunction for BarWatchFunction {
         Ok(())
     }
 
-    fn notify_bar_relocated(&self, bar: PciBarIndex, new_gpa: u64) -> DeviceResult {
+    fn notify_bar_relocated(
+        &self,
+        bar: PciBarIndex,
+        new_gpa: u64,
+        _revision: PciBarRevision,
+    ) -> DeviceResult {
         self.relocations.lock_irqsave().push((bar, new_gpa));
         Ok(())
     }

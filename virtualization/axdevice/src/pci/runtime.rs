@@ -26,8 +26,8 @@ mod routing;
 pub(crate) use cleanup::PciBindingLease;
 pub use cleanup::PciRootBindingKey;
 pub use endpoint::{
-    BarAssignment, EndpointIrqTransitionPermit, PciBarAccess, PciCommandRevision, PciCommandState,
-    PciConfigReadEffect, PciConfigWriteEffect, PciEndpointContext, PciFunction,
+    BarAssignment, EndpointIrqTransitionPermit, PciBarAccess, PciBarRevision, PciCommandRevision,
+    PciCommandState, PciConfigReadEffect, PciConfigWriteEffect, PciEndpointContext, PciFunction,
 };
 pub use lifecycle::PciRootBinding;
 use lifecycle::PendingIrqWithdrawal;

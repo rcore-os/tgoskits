@@ -1,0 +1,14 @@
+features = [
+  "ax-driver/rk3588-cpufreq",
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rk3588-pcie",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+# Keep the standard logical target path. axbuild remaps this prefix to the
+# configured Cargo target directory when it resolves VM configurations.
+vm_configs = [
+  "target/axbuild/axvisor/board/orangepi-5-plus/ivc-benchmark-native/guest-starry.toml",
+  "target/axbuild/axvisor/board/orangepi-5-plus/ivc-benchmark-native/guest-zephyr.toml",
+]

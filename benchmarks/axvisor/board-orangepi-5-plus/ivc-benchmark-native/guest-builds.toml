@@ -1,0 +1,7 @@
+# Stage the benchmark guests before axbuild packages them into the host
+# initramfs. The script consumes a tgosimages artifact directory or builds one
+# from a local tgosimages checkout.
+host_prepare = [
+  "/bin/sh",
+  "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark-native/prepare-assets.sh",
+]

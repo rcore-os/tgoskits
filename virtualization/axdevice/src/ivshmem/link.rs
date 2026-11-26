@@ -86,6 +86,18 @@ pub const MAX_PEERS_LIMIT: u16 = 15;
 /// leaving room for BAR0 and the MSI-X BAR of this function.
 const MAX_BAR2_SIZE: u64 = 0x0200_0000;
 
+/// Guest cache policy of the BAR2 shared-memory transport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Bar2CachePolicy {
+    /// Legacy Normal Non-cacheable guest mappings over the shared backing.
+    NonCacheable,
+    /// Opt-in Normal Inner Shareable Write-Back guest mappings.
+    ///
+    /// The host administrator must provision a cache-coherent host and only
+    /// attach managed guests that use compatible Normal Write-Back mappings.
+    WriteBack,
+}
+
 /// Layout parameters of one link, identical across all its reservations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LinkProfile {
@@ -93,17 +105,20 @@ pub struct LinkProfile {
     common_size: u64,
     output_size: u64,
     bar2_size: u64,
+    bar2_cache_policy: Bar2CachePolicy,
 }
 
 impl LinkProfile {
     /// The frozen double-peer baseline of F2–F7: two peers, no common
-    /// section, one 28 KiB output page-range per peer.
+    /// section, one 28 KiB output page-range per peer, and the legacy
+    /// non-cacheable BAR2 policy.
     pub const fn baseline() -> Self {
         Self {
             max_peers: 2,
             common_size: 0,
             output_size: 0x7000,
             bar2_size: 0x1_0000,
+            bar2_cache_policy: Bar2CachePolicy::NonCacheable,
         }
     }
 
@@ -114,7 +129,9 @@ impl LinkProfile {
     /// power-of-two BAR2 size is derived here so all link lifecycles use one
     /// checked result, with the historical 64 KiB size as its floor. The
     /// 32 MiB ceiling leaves the other half of the 64 MiB guest PCI memory
-    /// aperture available for BAR0, MSI-X and placement.
+    /// aperture available for BAR0, MSI-X and placement. New profiles use the
+    /// legacy non-cacheable BAR2 policy until [`Self::with_bar2_cache_policy`]
+    /// explicitly selects another policy.
     ///
     /// # Errors
     ///
@@ -156,7 +173,47 @@ impl LinkProfile {
             common_size,
             output_size,
             bar2_size,
+            bar2_cache_policy: Bar2CachePolicy::NonCacheable,
         })
+    }
+
+    /// Selects the BAR2 guest cache policy for this profile.
+    ///
+    /// Write-back is currently limited to exactly two peers and no common
+    /// section. The host administrator is responsible for provisioning a
+    /// coherent host and managed guests with compatible Normal Inner
+    /// Shareable Write-Back mappings; this device boundary has no reliable
+    /// host-coherence query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IvshmemError::InvalidProfile`] when the requested policy
+    /// violates those write-back constraints.
+    pub fn with_bar2_cache_policy(
+        mut self,
+        bar2_cache_policy: Bar2CachePolicy,
+    ) -> Result<Self, IvshmemError> {
+        if bar2_cache_policy == Bar2CachePolicy::WriteBack {
+            if self.max_peers != 2 {
+                return Err(IvshmemError::InvalidProfile {
+                    detail: alloc::format!(
+                        "write-back BAR2 requires exactly 2 peers, but the profile has {}",
+                        self.max_peers
+                    ),
+                });
+            }
+            if self.common_size != 0 {
+                return Err(IvshmemError::InvalidProfile {
+                    detail: alloc::format!(
+                        "write-back BAR2 requires no common section, but the profile has {:#x} \
+                         bytes",
+                        self.common_size
+                    ),
+                });
+            }
+        }
+        self.bar2_cache_policy = bar2_cache_policy;
+        Ok(self)
     }
 
     /// Returns the configured peer count.
@@ -177,6 +234,11 @@ impl LinkProfile {
     /// Returns the power-of-two BAR2 size derived from this profile.
     pub const fn bar2_size(self) -> u64 {
         self.bar2_size
+    }
+
+    /// Returns the BAR2 guest cache policy.
+    pub const fn bar2_cache_policy(self) -> Bar2CachePolicy {
+        self.bar2_cache_policy
     }
 }
 
@@ -402,7 +464,7 @@ impl IvshmemLink {
             .layout
             .state_entry_offset(peer, self.profile.max_peers())?;
         let backing = self.backing()?;
-        backing.write_bytes(offset, &value.to_le_bytes())
+        backing.write_u32_release(offset, value)
     }
 
     /// Clears the peer's state-table entry; called from endpoint reset.
@@ -441,7 +503,7 @@ impl IvshmemLink {
             let state_offset = self
                 .layout
                 .state_entry_offset(peer, self.profile.max_peers())?;
-            backing.write_bytes(state_offset, &0u32.to_le_bytes())?;
+            backing.write_u32_release(state_offset, 0)?;
             let epoch = self.advance_epoch(peer)?;
             let epoch_offset = self
                 .layout
@@ -707,7 +769,7 @@ impl IvshmemLink {
                 match self
                     .layout
                     .state_entry_offset(peer, self.profile.max_peers())
-                    .and_then(|offset| backing.write_bytes(offset, &0u32.to_le_bytes()))
+                    .and_then(|offset| backing.write_u32_release(offset, 0))
                 {
                     Ok(()) => {}
                     Err(error) => warn!(
@@ -768,7 +830,7 @@ impl IvshmemLink {
                 match self
                     .layout
                     .state_entry_offset(peer, self.profile.max_peers())
-                    .and_then(|offset| backing.write_bytes(offset, &0u32.to_le_bytes()))
+                    .and_then(|offset| backing.write_u32_release(offset, 0))
                 {
                     Ok(()) => {}
                     Err(error) => warn!(
@@ -1846,6 +1908,27 @@ mod tests {
         assert_eq!(LinkProfile::baseline().max_peers(), 2);
         assert_eq!(LinkProfile::baseline().common_size(), 0);
         assert_eq!(LinkProfile::baseline().bar2_size(), SHARED_MEMORY_SIZE);
+        assert_eq!(
+            LinkProfile::baseline().bar2_cache_policy(),
+            Bar2CachePolicy::NonCacheable
+        );
+
+        let write_back = LinkProfile::baseline()
+            .with_bar2_cache_policy(Bar2CachePolicy::WriteBack)
+            .unwrap();
+        assert_eq!(write_back.bar2_cache_policy(), Bar2CachePolicy::WriteBack);
+        assert!(
+            LinkProfile::new(3, 0, 0x1000)
+                .unwrap()
+                .with_bar2_cache_policy(Bar2CachePolicy::WriteBack)
+                .is_err()
+        );
+        assert!(
+            LinkProfile::new(2, 0x1000, 0x1000)
+                .unwrap()
+                .with_bar2_cache_policy(Bar2CachePolicy::WriteBack)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1938,6 +2021,19 @@ mod tests {
         registry
             .reserve_with_profile(1, 1, LinkProfile::new(3, 0x1000, 0x2000).unwrap())
             .unwrap();
+
+        let write_back = LinkProfile::baseline()
+            .with_bar2_cache_policy(Bar2CachePolicy::WriteBack)
+            .unwrap();
+        let _wb_peer0 = registry.reserve_with_profile(2, 0, write_back).unwrap();
+        let error = registry
+            .reserve_with_profile(2, 1, LinkProfile::baseline())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            IvshmemError::LinkProfileMismatch { link: 2, .. }
+        ));
+        registry.reserve_with_profile(2, 1, write_back).unwrap();
     }
 
     #[test]

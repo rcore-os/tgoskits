@@ -12,7 +12,7 @@ use core::sync::atomic::AtomicBool;
 use core::{
     mem::{align_of, size_of},
     ops::Range,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use ax_sync::RawSpinLock;
@@ -24,7 +24,6 @@ use super::error::IvshmemError;
 /// The allocation is physically contiguous and carries a permanent
 /// hypervisor virtual mapping, so trap-side writes (state table publish)
 /// keep working while guests map the HPA directly into stage-2.
-#[derive(Clone, Copy)]
 pub struct BackingAllocation {
     hpa_base: u64,
     size: u64,
@@ -32,11 +31,19 @@ pub struct BackingAllocation {
 }
 
 impl BackingAllocation {
-    /// Creates an allocation handle from its parts.
+    /// Creates a move-only allocation handle from its parts.
     ///
     /// Implementors of [`SharedBackingAllocator`] assemble the handle after
-    /// reserving the frames; tests may use it to feed pure derivation paths.
-    pub const fn from_parts(hpa_base: u64, size: u64, virtual_base: *mut u8) -> Self {
+    /// reserving the frames.
+    ///
+    /// # Safety
+    ///
+    /// `virtual_base` must be a non-null, writable, permanent hypervisor
+    /// mapping of `size` physically contiguous, 4 KiB aligned, guest-mappable
+    /// bytes. `hpa_base` must be the host-physical base of that exact
+    /// allocation. The caller must transfer the only ownership of those frames
+    /// to the returned value; no other owner may free or remap them.
+    pub unsafe fn from_raw_parts(hpa_base: u64, size: u64, virtual_base: *mut u8) -> Self {
         Self {
             hpa_base,
             size,
@@ -54,21 +61,28 @@ impl BackingAllocation {
         self.size
     }
 
-    /// Returns the hypervisor virtual base of the allocation.
+    /// Returns the hypervisor virtual base owned by this token.
     ///
-    /// # Safety contract
-    ///
-    /// The pointer is valid, dereferenceable for `size` bytes and exclusively
-    /// owned by this allocation until it is released. Aliasing is serialized
-    /// by `SharedBarBacking`'s lock; no other hypervisor component may write
-    /// through it.
+    /// The pointer remains valid until the token is passed to its allocator's
+    /// [`SharedBackingAllocator::release`](crate::SharedBackingAllocator::release).
+    /// Dereferencing it requires the caller to uphold the token's allocation
+    /// range and exclusive ownership.
     pub const fn virtual_base(&self) -> *mut u8 {
         self.virtual_base
     }
 }
 
 /// Host memory provider for link backing, injected at registry creation.
-pub trait SharedBackingAllocator: Send + Sync {
+///
+/// # Safety
+///
+/// Every returned [`BackingAllocation`] must own a unique physically
+/// contiguous RAM allocation that is 4 KiB aligned, guest-mappable, and
+/// backed by a permanent writable hypervisor virtual mapping for exactly
+/// `size` bytes. The allocation must remain live until [`Self::release`] is
+/// called with that exact token after all host and guest accesses have ceased.
+/// Implementations must not return aliases of the same allocation.
+pub unsafe trait SharedBackingAllocator: Send + Sync {
     /// Allocates `size` bytes of physically contiguous, guest-mappable RAM
     /// with a permanent hypervisor virtual mapping. The memory is not
     /// guaranteed zeroed; callers clear it through the virtual view.
@@ -79,9 +93,15 @@ pub trait SharedBackingAllocator: Send + Sync {
     /// satisfied or `size` is not 4 KiB aligned.
     fn allocate(&self, size: u64) -> Result<BackingAllocation, IvshmemError>;
 
-    /// Releases a previously returned allocation. Passing an allocation of
-    /// another allocator is a contract violation.
-    fn release(&self, allocation: BackingAllocation);
+    /// Releases a previously returned allocation.
+    ///
+    /// # Safety
+    ///
+    /// `allocation` must be the exact move-only token returned by this
+    /// allocator, must still be live, and must not have any outstanding host
+    /// or guest access. This method consumes the token and must be called at
+    /// most once for it.
+    unsafe fn release(&self, allocation: BackingAllocation);
 }
 
 /// Shared BAR2 backing behind every peer BAR2 of one link.
@@ -91,14 +111,20 @@ pub trait SharedBackingAllocator: Send + Sync {
 /// an implementation detail of this lock.
 pub struct SharedBarBacking {
     size: u64,
-    allocation: BackingAllocation,
+    allocation: Option<BackingAllocation>,
     allocator: Arc<dyn SharedBackingAllocator>,
+    /// Serializes hypervisor-side multi-byte accesses. Guest accesses are
+    /// outside this lock and follow the section/protocol ownership rules.
     lock: RawSpinLock<()>,
 }
 
-// SAFETY: the allocation's virtual pointer is exclusively owned by the
-// backing and every dereference happens under the backing lock; `Send` moves
-// the whole backing (pointer included), `Sync` shares it behind that lock.
+// SAFETY: the move-only allocation token is the unique owner of the mapped
+// frames. No method creates a Rust reference into the shared memory: exact
+// ranges are accessed through raw volatile pointers, and host-owned words are
+// atomic. The host lock only orders hypervisor accesses; guest direct accesses
+// are external MMU accesses to the section-mapped ranges, so no Rust `&mut`
+// alias is claimed over them. Teardown revokes direct mappings before the
+// endpoint releases its final plan/backing reference.
 unsafe impl Send for SharedBarBacking {}
 unsafe impl Sync for SharedBarBacking {}
 
@@ -113,31 +139,39 @@ impl SharedBarBacking {
         size: u64,
         allocator: Arc<dyn SharedBackingAllocator>,
     ) -> Result<Self, IvshmemError> {
-        if !size.is_multiple_of(0x1000) {
+        if size == 0 || !size.is_multiple_of(0x1000) || usize::try_from(size).is_err() {
             return Err(IvshmemError::AllocationFailed {
-                operation: "allocate ivshmem shared memory (size is not 4 KiB aligned)",
+                operation: "allocate ivshmem shared memory (size must be a non-zero, addressable \
+                            4 KiB multiple)",
             });
         }
         let allocation = allocator.allocate(size)?;
         // Clear the freshly reserved frames through the permanent virtual
-        // view so the shared region starts zeroed.
+        // view so the shared region starts zeroed. No guest mapping can exist
+        // before this allocation is attached to a link, so a raw bulk zero is
+        // both alias-safe and substantially faster for large BAR2 profiles.
         // SAFETY: the allocation contract guarantees the pointer is valid and
-        // dereferenceable for exactly `size` bytes; the backing exclusively
-        // owns it until release.
-        unsafe {
-            core::ptr::write_bytes(allocation.virtual_base(), 0, size as usize);
-        }
+        // writable for exactly `size` bytes; the backing exclusively owns it
+        // until release and has not published it to a guest yet.
+        let base = allocation.virtual_base();
+        unsafe { core::ptr::write_bytes(base, 0, size as usize) };
         Ok(Self {
             size,
-            allocation,
+            allocation: Some(allocation),
             allocator,
             lock: RawSpinLock::new(()),
         })
     }
 
-    /// Returns the underlying allocation (HPA and virtual view).
-    pub const fn allocation(&self) -> &BackingAllocation {
-        &self.allocation
+    /// Returns the host-physical base of the backing.
+    pub fn hpa_base(&self) -> u64 {
+        self.allocation().hpa_base()
+    }
+
+    fn allocation(&self) -> &BackingAllocation {
+        self.allocation
+            .as_ref()
+            .expect("shared backing allocation exists until drop")
     }
 
     /// Clears every byte of the backing through the permanent virtual view.
@@ -150,15 +184,15 @@ impl SharedBarBacking {
     pub fn zero(&self) {
         const PAGE_SIZE: usize = 0x1000;
         debug_assert!(self.size.is_multiple_of(PAGE_SIZE as u64));
-        let base = self.allocation.virtual_base();
+        let base = self.allocation().virtual_base();
         for offset in (0..self.size as usize).step_by(PAGE_SIZE) {
             let _lock = self.lock.lock_irqsave();
-            // SAFETY: `try_new` validated that `size` is page aligned, and the
-            // loop advances in whole pages without leaving the allocation.
-            // The backing lock serializes this page with all host reads and
-            // writes, including those through previously cloned `Arc`s.
-            unsafe {
-                core::ptr::write_bytes(base.add(offset), 0, PAGE_SIZE);
+            // SAFETY: `try_new` validated the complete allocation extent and
+            // the loop advances in whole pages without leaving it. Volatile
+            // byte stores avoid forming a Rust slice while guest mappings are
+            // being retired; the host lock orders other host-side accesses.
+            for byte in offset..offset + PAGE_SIZE {
+                unsafe { base.add(byte).write_volatile(0) };
             }
         }
     }
@@ -192,25 +226,33 @@ impl SharedBarBacking {
         Ok(())
     }
 
-    /// Privileged byte access for link-managed regions (state table).
+    /// Publishes one aligned, little-endian host-owned dword with release
+    /// ordering.
     ///
-    /// Guests reach the same bytes only through their BAR access path; this
-    /// entry point exists so the link can publish state without going
-    /// through a width-encoded BAR write.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IvshmemError::SharedMemoryOutOfRange`] when `offset +
-    /// bytes.len()` leaves the region.
-    pub(crate) fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), IvshmemError> {
-        let range = self.byte_range(offset, bytes.len() as u64)?;
+    /// State-table entries use this path so a guest observing the published
+    /// value also observes the payload writes that preceded it.
+    pub(crate) fn write_u32_release(&self, offset: u64, value: u32) -> Result<(), IvshmemError> {
+        let range = self.byte_range(offset, size_of::<u32>() as u64)?;
+        if !offset.is_multiple_of(align_of::<u32>() as u64) {
+            return Err(IvshmemError::UnalignedSharedMemoryAccess {
+                offset,
+                width: size_of::<u32>(),
+            });
+        }
         let _lock = self.lock.lock_irqsave();
-        // SAFETY: the virtual view is valid for `size` bytes and this thread
-        // holds the backing lock, so the exclusive-access contract holds.
-        let view = unsafe {
-            core::slice::from_raw_parts_mut(self.allocation.virtual_base(), self.size as usize)
+        // SAFETY: `byte_range` proved the dword extent and `offset` was
+        // checked for atomic alignment. The allocation base is page aligned.
+        // Host-owned state words are only written atomically; the volatile
+        // guest readers are external to the Rust alias model.
+        let state = unsafe {
+            AtomicU32::from_ptr(
+                self.allocation()
+                    .virtual_base()
+                    .add(range.start)
+                    .cast::<u32>(),
+            )
         };
-        view[range].copy_from_slice(bytes);
+        state.store(value.to_le(), Ordering::Release);
         Ok(())
     }
 
@@ -234,7 +276,7 @@ impl SharedBarBacking {
         // word while the release store executes.
         let epoch = unsafe {
             AtomicU64::from_ptr(
-                self.allocation
+                self.allocation()
                     .virtual_base()
                     .add(range.start)
                     .cast::<u64>(),
@@ -259,7 +301,7 @@ impl SharedBarBacking {
         // release store applies; this path only observes the atomic word.
         let epoch = unsafe {
             AtomicU64::from_ptr(
-                self.allocation
+                self.allocation()
                     .virtual_base()
                     .add(range.start)
                     .cast::<u64>(),
@@ -279,17 +321,22 @@ impl SharedBarBacking {
     ) -> Result<[u8; 8], IvshmemError> {
         let mut buffer = [0u8; 8];
         let _lock = self.lock.lock_irqsave();
-        // SAFETY: the virtual view is valid for `size` bytes and this thread
-        // holds the backing lock, so the exclusive-access contract holds.
-        let view = unsafe {
-            core::slice::from_raw_parts_mut(self.allocation.virtual_base(), self.size as usize)
-        };
+        let base = self.allocation().virtual_base();
         if WRITE {
             let byte_count = range.len();
             buffer[..byte_count].copy_from_slice(&value.unwrap_or(0).to_le_bytes()[..byte_count]);
-            view[range].copy_from_slice(&buffer[..byte_count]);
+            // SAFETY: `access_range` proved the exact range fits the live
+            // allocation. Raw volatile stores avoid a Rust alias over the
+            // guest-visible BAR.
+            for (index, byte) in buffer[..byte_count].iter().enumerate() {
+                unsafe { base.add(range.start + index).write_volatile(*byte) };
+            }
         } else {
-            buffer[..range.len()].copy_from_slice(&view[range]);
+            // SAFETY: the same extent proof applies; each byte is read with a
+            // volatile raw load rather than through a shared Rust slice.
+            for (index, byte) in buffer[..range.len()].iter_mut().enumerate() {
+                *byte = unsafe { base.add(range.start + index).read_volatile() };
+            }
         }
         Ok(buffer)
     }
@@ -321,7 +368,15 @@ impl Drop for SharedBarBacking {
         // The whole link is going away: the frames return to the platform
         // allocator, and guests lose access because their stage-2 mappings
         // are torn down with the VM.
-        self.allocator.release(self.allocation);
+        let allocation = self
+            .allocation
+            .take()
+            .expect("shared backing allocation is released exactly once");
+        // SAFETY: this object owns the exact token returned by the allocator
+        // stored beside it, and dropping the backing transfers the final host
+        // access. The endpoint revokes its direct plan during stop and VM reset
+        // clears stage-2 before returning the device runtime for release.
+        unsafe { self.allocator.release(allocation) };
     }
 }
 
@@ -347,7 +402,7 @@ impl TestAllocator {
 }
 
 #[cfg(test)]
-impl SharedBackingAllocator for TestAllocator {
+unsafe impl SharedBackingAllocator for TestAllocator {
     fn allocate(&self, size: u64) -> Result<BackingAllocation, IvshmemError> {
         if self.fail_next.swap(false, Ordering::AcqRel) {
             return Err(IvshmemError::AllocationFailed {
@@ -367,14 +422,12 @@ impl SharedBackingAllocator for TestAllocator {
         }
         self.live.lock_irqsave().push(pointer as usize);
         self.requested_sizes.lock_irqsave().push(size);
-        Ok(BackingAllocation::from_parts(
-            pointer as usize as u64,
-            size,
-            pointer,
-        ))
+        // SAFETY: `alloc_zeroed` returned the unique allocation represented by
+        // this token, with the requested size and page alignment.
+        Ok(unsafe { BackingAllocation::from_raw_parts(pointer as usize as u64, size, pointer) })
     }
 
-    fn release(&self, allocation: BackingAllocation) {
+    unsafe fn release(&self, allocation: BackingAllocation) {
         let layout =
             core::alloc::Layout::from_size_align(allocation.size() as usize, 0x1000).unwrap();
         let live = self.live.lock_irqsave();
@@ -420,12 +473,13 @@ mod tests {
     #[test]
     fn exposes_the_allocation_base() {
         let backing = backing();
-        assert!(backing.allocation().hpa_base() != 0);
-        assert_eq!(backing.allocation().size(), 0x1000);
+        assert!(backing.hpa_base() != 0);
+        assert_eq!(backing.size(), 0x1000);
     }
 
     #[test]
     fn rejects_unaligned_sizes() {
+        assert!(SharedBarBacking::try_new(0, test_allocator()).is_err());
         assert!(SharedBarBacking::try_new(0x180, test_allocator()).is_err());
     }
 
@@ -487,12 +541,10 @@ mod tests {
     #[test]
     fn privileged_writes_reach_the_shared_bytes() {
         let backing = backing();
-        backing
-            .write_bytes(0, &0x1234_5678u32.to_le_bytes())
-            .unwrap();
+        backing.write_u32_release(0, 0x1234_5678).unwrap();
         assert_eq!(backing.read(0, 4).unwrap(), 0x1234_5678);
         // Out-of-range privileged writes fail without corrupting memory.
-        assert!(backing.write_bytes(0xffd, &[0xaa; 4]).is_err());
+        assert!(backing.write_u32_release(0x1000, 0xaaaa_aaaa).is_err());
         assert_eq!(backing.read(0, 4).unwrap(), 0x1234_5678);
     }
 

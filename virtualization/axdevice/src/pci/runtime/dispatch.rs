@@ -553,12 +553,17 @@ impl PciRootBinding {
                     endpoint.command_changed(command, context)
                 })
             }
-            PciConfigWriteOutcome::BarRelocated { token, bar, gpa } => {
+            PciConfigWriteOutcome::BarRelocated {
+                token,
+                bar,
+                gpa,
+                revision,
+            } => {
                 let Some(token) = token else {
                     return Ok(());
                 };
                 self.dispatch_legacy(&token, false, |endpoint, _context| {
-                    endpoint.notify_bar_relocated(bar, gpa)
+                    endpoint.notify_bar_relocated(bar, gpa, revision)
                 })
             }
         }
@@ -655,12 +660,17 @@ impl PciRootBinding {
                     |endpoint, context| endpoint.command_changed(command, context),
                 )
             }
-            PciConfigWriteOutcome::BarRelocated { token, bar, gpa } => {
+            PciConfigWriteOutcome::BarRelocated {
+                token,
+                bar,
+                gpa,
+                revision,
+            } => {
                 let Some(token) = token else {
                     return Ok(());
                 };
                 self.dispatch_with_context(&token, false, context, |endpoint, _context| {
-                    endpoint.notify_bar_relocated(bar, gpa)
+                    endpoint.notify_bar_relocated(bar, gpa, revision)
                 })
             }
         }

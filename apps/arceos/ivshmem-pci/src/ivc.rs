@@ -1,4 +1,4 @@
-use core::{cell::Cell, num::NonZeroU32};
+use core::{cell::Cell, cmp, mem, num::NonZeroU32};
 
 use ax_std::{
     thread,
@@ -22,7 +22,18 @@ const DOORBELL_VECTOR: u16 = 0;
 const HANDSHAKE_POLL_DELAY: Duration = Duration::from_millis(1);
 const RECORD_POLL_DELAY: Duration = Duration::from_millis(1);
 
-/// Asymmetric role selected by the configured ArceOS guest.
+/// Maximum payload carried by one unified IVC message.
+pub const IVC_MAX_RECORD_BYTES: usize = 48;
+/// Maximum accepted timeout for a unified IVC operation.
+pub const IVC_MAX_TIMEOUT_MS: i32 = 60_000;
+
+const _: () = assert!(IVC_MAX_RECORD_BYTES <= axivc::IVC_SLOT_FRAGMENT_CAPACITY);
+
+/// Logical role associated with one peer id.
+///
+/// The unified message API derives this value from discovery. The explicit
+/// constructor remains available for the controlled publisher/subscriber
+/// fragment regression.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IvcPeerRole {
     /// Request producer at peer slot zero.
@@ -51,6 +62,14 @@ impl IvcPeerRole {
         match self {
             Self::Publisher => "publisher",
             Self::Subscriber => "subscriber",
+        }
+    }
+
+    const fn from_peer_id(peer_id: u32) -> Self {
+        if peer_id == SUBSCRIBER_PEER_ID {
+            Self::Subscriber
+        } else {
+            Self::Publisher
         }
     }
 }
@@ -90,6 +109,10 @@ impl<'a> SessionLease<'a> {
     fn mark_published(&self) {
         self.state.set(SessionState::Published);
     }
+
+    fn mark_reusable(&self) {
+        self.state.set(SessionState::Unused);
+    }
 }
 
 impl Drop for SessionLease<'_> {
@@ -103,12 +126,12 @@ impl Drop for SessionLease<'_> {
 }
 
 /// Message V1 port plus the device-session ownership lease.
-struct IvcSession<'a> {
+struct IvcPortSession<'a> {
     port: IvshmemMessagePort<'a>,
     _lease: SessionLease<'a>,
 }
 
-impl<'a> IvcSession<'a> {
+impl<'a> IvcPortSession<'a> {
     const fn new(port: IvshmemMessagePort<'a>, lease: SessionLease<'a>) -> Self {
         Self {
             port,
@@ -116,7 +139,7 @@ impl<'a> IvcSession<'a> {
         }
     }
 
-    fn port(&self) -> &IvshmemMessagePort<'a> {
+    fn port(&self) -> &IvshmemMessagePort<'_> {
         &self.port
     }
 
@@ -127,7 +150,7 @@ impl<'a> IvcSession<'a> {
 
 /// Observes the host-owned peer epoch while tolerating a peer that has not
 /// attached yet.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct PeerEpoch {
     baseline: Option<u64>,
 }
@@ -163,7 +186,7 @@ impl PeerEpoch {
     }
 }
 
-/// Configured ArceOS guest device for one IVC role.
+/// Configured ArceOS guest device for one IVC peer.
 pub struct IvcDevice {
     device: IvshmemDevice,
     role: IvcPeerRole,
@@ -171,18 +194,24 @@ pub struct IvcDevice {
 }
 
 impl IvcDevice {
+    /// Discovers the configured two-peer ivshmem endpoint and derives the
+    /// logical role from the hardware-assigned peer id.
+    pub fn discover() -> Result<Self, IvcDeviceError> {
+        let device = Self::discover_two_peer()?;
+        let role = IvcPeerRole::from_peer_id(device.peer_id());
+        Ok(Self {
+            device,
+            role,
+            session_state: Cell::new(SessionState::Unused),
+        })
+    }
+
     /// Discovers the configured two-peer ivshmem endpoint for `role`.
     ///
     /// The adapter validates the hardware peer assignment, so applications do
     /// not select or interpret raw peer slots.
     pub fn open(role: IvcPeerRole) -> Result<Self, IvcDeviceError> {
-        let device = IvshmemDevice::discover(IvshmemLayout::two_peer())?;
-        if device.max_peers() != EXPECTED_MAX_PEERS {
-            return Err(IvcDeviceError::UnexpectedPeerCount {
-                expected: EXPECTED_MAX_PEERS,
-                actual: device.max_peers(),
-            });
-        }
+        let device = Self::discover_two_peer()?;
         if device.peer_id() != role.peer_id() {
             return Err(IvcDeviceError::RoleMismatch {
                 role,
@@ -197,6 +226,17 @@ impl IvcDevice {
         })
     }
 
+    fn discover_two_peer() -> Result<IvshmemDevice, IvcDeviceError> {
+        let device = IvshmemDevice::discover(IvshmemLayout::two_peer())?;
+        if device.max_peers() != EXPECTED_MAX_PEERS {
+            return Err(IvcDeviceError::UnexpectedPeerCount {
+                expected: EXPECTED_MAX_PEERS,
+                actual: device.max_peers(),
+            });
+        }
+        Ok(device)
+    }
+
     /// Returns the configured logical device profile.
     pub const fn info(&self) -> IvcDeviceInfo {
         IvcDeviceInfo {
@@ -208,7 +248,7 @@ impl IvcDevice {
 
     /// Creates the device's single Message V1 endpoint and publishes its
     /// incarnation.
-    pub fn open_endpoint<'a>(&'a mut self) -> Result<IvcPendingEndpoint<'a>, IvcDeviceError> {
+    pub fn open_endpoint(&mut self) -> Result<IvcPendingEndpoint<'_>, IvcDeviceError> {
         let lease = SessionLease::acquire(&self.session_state)?;
 
         let local_output = self.device.own_output()?;
@@ -232,10 +272,11 @@ impl IvcDevice {
         lease.mark_published();
         Ok(IvcPendingEndpoint {
             device: self,
-            session: IvcSession::new(port, lease),
+            session: Some(IvcPortSession::new(port, lease)),
             local_incarnation,
             observed_event: false,
             peer_epoch: PeerEpoch::default(),
+            previous_state: None,
         })
     }
 
@@ -331,10 +372,11 @@ impl IvcEndpointInfo {
 /// Message V1 endpoint carrying one in-progress incarnation handshake.
 pub struct IvcPendingEndpoint<'a> {
     device: &'a IvcDevice,
-    session: IvcSession<'a>,
+    session: Option<IvcPortSession<'a>>,
     local_incarnation: NonZeroU32,
     observed_event: bool,
     peer_epoch: PeerEpoch,
+    previous_state: Option<IvshmemSessionState>,
 }
 
 impl<'a> IvcPendingEndpoint<'a> {
@@ -350,50 +392,86 @@ impl<'a> IvcPendingEndpoint<'a> {
     /// share a ready session or `timeout` expires.
     pub fn wait_ready(mut self, timeout: Duration) -> Result<IvcEndpoint<'a>, IvcDeviceError> {
         let started = Instant::now();
-        let mut previous_state = None;
         loop {
-            self.peer_epoch.observe(self.device)?;
-            let state = self.session.port_mut().poll_handshake()?;
-            self.peer_epoch.observe(self.device)?;
-            match state {
-                IvshmemSessionState::Ready { local, peer } => {
-                    if local != self.local_incarnation {
-                        return Err(IvcDeviceError::IncarnationMismatch {
-                            expected: self.local_incarnation,
-                            actual: local,
-                        });
-                    }
-                    let endpoints = self.session.port_mut().try_connect()?;
-                    let (sender, receiver) = endpoints.into_parts();
-                    return Ok(IvcEndpoint::new(
-                        self.device,
-                        self.session,
-                        sender,
-                        receiver,
-                        IvcEndpointInfo {
-                            device: self.device.info(),
-                            local_incarnation: local,
-                            peer_incarnation: peer,
-                            observed_event: self.observed_event,
-                        },
-                        self.peer_epoch,
-                    ));
-                }
-                IvshmemSessionState::WaitingForPeer { .. }
-                | IvshmemSessionState::WaitingForPeerAcknowledgement { .. } => {}
-                state => return Err(IvcDeviceError::UnexpectedSessionState { state }),
+            if let Some(endpoint) = self.poll_ready_once()? {
+                return Ok(endpoint);
             }
-
-            if previous_state != Some(state) {
-                self.device.ring_peer()?;
-                previous_state = Some(state);
-            }
-            self.observed_event |= self.device.take_events(EVENT_VECTOR_0)? != 0;
             if started.elapsed() >= timeout {
                 return Err(IvcDeviceError::SessionTimeout);
             }
             thread::sleep(HANDSHAKE_POLL_DELAY);
         }
+    }
+
+    fn poll_ready_once(&mut self) -> Result<Option<IvcEndpoint<'a>>, IvcDeviceError> {
+        self.peer_epoch.observe(self.device)?;
+        let state = self.port_mut()?.poll_handshake()?;
+        self.peer_epoch.observe(self.device)?;
+        match state {
+            IvshmemSessionState::Ready { local, peer } => {
+                if local != self.local_incarnation {
+                    return Err(IvcDeviceError::IncarnationMismatch {
+                        expected: self.local_incarnation,
+                        actual: local,
+                    });
+                }
+                let mut session = self.session.take().ok_or(IvcDeviceError::SessionReset)?;
+                let endpoints = match session.port_mut().try_connect() {
+                    Ok(endpoints) => endpoints,
+                    Err(error) => {
+                        // SAFETY: no Message V1 endpoint was created, and this
+                        // pending session still owns the sole local port.
+                        unsafe { session.port_mut().invalidate_session() };
+                        session._lease.mark_reusable();
+                        let _ = self.device.ring_peer();
+                        return Err(error.into());
+                    }
+                };
+                let (sender, receiver) = endpoints.into_parts();
+                Ok(Some(IvcEndpoint::new(
+                    self.device,
+                    session,
+                    sender,
+                    receiver,
+                    IvcEndpointInfo {
+                        device: self.device.info(),
+                        local_incarnation: local,
+                        peer_incarnation: peer,
+                        observed_event: self.observed_event,
+                    },
+                    self.peer_epoch,
+                )))
+            }
+            IvshmemSessionState::WaitingForPeer { .. }
+            | IvshmemSessionState::WaitingForPeerAcknowledgement { .. } => {
+                if self.previous_state != Some(state) {
+                    self.device.ring_peer()?;
+                    self.previous_state = Some(state);
+                }
+                self.observed_event |= self.device.take_events(EVENT_VECTOR_0)? != 0;
+                Ok(None)
+            }
+            state => Err(IvcDeviceError::UnexpectedSessionState { state }),
+        }
+    }
+
+    fn close_session(mut self) -> Result<(), IvcDeviceError> {
+        let Some(mut session) = self.session.take() else {
+            return Ok(());
+        };
+        // SAFETY: a pending session has not created any Message V1 endpoint,
+        // and `close_session` consumes its sole local protocol handle.
+        unsafe { session.port_mut().invalidate_session() };
+        session._lease.mark_reusable();
+        self.device.ring_peer()?;
+        Ok(())
+    }
+
+    fn port_mut(&mut self) -> Result<&mut IvshmemMessagePort<'a>, IvcDeviceError> {
+        self.session
+            .as_mut()
+            .map(IvcPortSession::port_mut)
+            .ok_or(IvcDeviceError::SessionReset)
     }
 }
 
@@ -403,9 +481,9 @@ impl<'a> IvcPendingEndpoint<'a> {
 /// released before the session lease. The lease closes the device slot without
 /// invalidating the shared channel, allowing the peer to consume the last ACK.
 pub struct IvcEndpoint<'a> {
-    sender: IvcMessageSender<'a>,
-    receiver: IvcMessageReceiver<'a>,
-    session: IvcSession<'a>,
+    sender: Option<IvcMessageSender<'a>>,
+    receiver: Option<IvcMessageReceiver<'a>>,
+    session: IvcPortSession<'a>,
     device: &'a IvcDevice,
     info: IvcEndpointInfo,
     peer_epoch: PeerEpoch,
@@ -414,15 +492,15 @@ pub struct IvcEndpoint<'a> {
 impl<'a> IvcEndpoint<'a> {
     const fn new(
         device: &'a IvcDevice,
-        session: IvcSession<'a>,
+        session: IvcPortSession<'a>,
         sender: IvcMessageSender<'a>,
         receiver: IvcMessageReceiver<'a>,
         info: IvcEndpointInfo,
         peer_epoch: PeerEpoch,
     ) -> Self {
         Self {
-            sender,
-            receiver,
+            sender: Some(sender),
+            receiver: Some(receiver),
             session,
             device,
             info,
@@ -443,6 +521,105 @@ impl<'a> IvcEndpoint<'a> {
     fn observe_event(&self) -> Result<bool, IvcDeviceError> {
         Ok(self.device.take_events(EVENT_VECTOR_0)? != 0)
     }
+
+    fn ensure_session_current(&mut self) -> Result<(), IvcDeviceError> {
+        self.peer_epoch.observe(self.device)?;
+        if !self.session.port().is_session_current() {
+            return Err(IvcDeviceError::SessionReset);
+        }
+        self.peer_epoch.observe(self.device)
+    }
+
+    fn try_send_complete(&mut self, input: &[u8]) -> Result<bool, IvcError> {
+        self.ensure_session_current().map_err(map_device_error)?;
+        let sender = self.sender.as_mut().ok_or(IvcError::SessionReset)?;
+        // The compile-time limit above keeps every unified message within one
+        // slot. Checking capacity before start_message means a timeout cannot
+        // leave a partial logical record behind for the next send.
+        if sender.available_slots() == 0 {
+            return Ok(false);
+        }
+
+        if let Err(error) = sender.start_message(input.len() as u64) {
+            let _ = sender.try_abort();
+            return Err(map_message_error(error));
+        }
+        let progress = match sender.try_write(input) {
+            Ok(progress) => progress,
+            Err(IvcMessageError::SlotFull) => {
+                let _ = sender.try_abort();
+                return Ok(false);
+            }
+            Err(error) => {
+                let _ = sender.try_abort();
+                return Err(map_message_error(error));
+            }
+        };
+        if !progress.is_complete() || progress.consumed() != input.len() {
+            let _ = sender.try_abort();
+            return Err(IvcError::SessionReset);
+        }
+        self.wake_peer().map_err(map_device_error)?;
+        Ok(true)
+    }
+
+    fn try_receive_complete(&mut self, output: &mut [u8]) -> Result<Option<usize>, IvcError> {
+        self.ensure_session_current().map_err(map_device_error)?;
+        let Some(message_len) = self
+            .receiver
+            .as_mut()
+            .ok_or(IvcError::SessionReset)?
+            .peek_message_meta()
+            .map_err(map_message_error)?
+            .map(|meta| meta.len())
+        else {
+            return Ok(None);
+        };
+        if message_len > IVC_MAX_RECORD_BYTES as u64 {
+            return Err(IvcError::MessageTooLarge { len: message_len });
+        }
+        if message_len == 0 {
+            return Err(IvcError::InvalidMessageLength { len: 0 });
+        }
+        let message_len = usize::try_from(message_len)
+            .map_err(|_| IvcError::MessageTooLarge { len: message_len })?;
+        if message_len > output.len() {
+            return Err(IvcError::BufferTooSmall {
+                required: message_len,
+                available: output.len(),
+            });
+        }
+
+        let progress = self
+            .receiver
+            .as_mut()
+            .ok_or(IvcError::SessionReset)?
+            .try_read(&mut output[..message_len])
+            .map_err(map_message_error)?;
+        if !progress.is_complete() || progress.written() != message_len {
+            return Err(IvcError::SessionReset);
+        }
+
+        if progress.consumed_slots() > 0
+            && matches!(self.peer_epoch.is_current(self.device), Ok(true))
+            && let Err(wake_error) = self.wake_peer()
+            && matches!(self.peer_epoch.is_current(self.device), Ok(true))
+        {
+            return Err(map_device_error(wake_error));
+        }
+        Ok(Some(message_len))
+    }
+
+    fn close_session(mut self) -> Result<(), IvcDeviceError> {
+        self.sender = None;
+        self.receiver = None;
+        // SAFETY: both Message V1 endpoints derived from this port were dropped
+        // above, and the session owns the sole local protocol handle. No safe
+        // borrow of this endpoint remains because `close_session` consumes it.
+        unsafe { self.session.port_mut().invalidate_session() };
+        self.session._lease.mark_reusable();
+        self.wake_peer()
+    }
 }
 
 impl MessageRecordEndpoint for IvcEndpoint<'_> {
@@ -450,13 +627,20 @@ impl MessageRecordEndpoint for IvcEndpoint<'_> {
 
     fn start_record(&mut self, record_len: u64) -> Result<(), Self::Error> {
         self.peer_epoch.observe(self.device)?;
-        self.sender.start_message(record_len)?;
+        self.sender
+            .as_mut()
+            .ok_or(IvcDeviceError::SessionReset)?
+            .start_message(record_len)?;
         Ok(())
     }
 
     fn write_record(&mut self, input: &[u8]) -> Result<RecordProgress, Self::Error> {
         self.peer_epoch.observe(self.device)?;
-        let progress = self.sender.try_write(input)?;
+        let progress = self
+            .sender
+            .as_mut()
+            .ok_or(IvcDeviceError::SessionReset)?
+            .try_write(input)?;
         self.peer_epoch.observe(self.device)?;
         let progressed = progress.published_slots() > 0;
         if progressed {
@@ -471,14 +655,23 @@ impl MessageRecordEndpoint for IvcEndpoint<'_> {
 
     fn peek_record_len(&mut self) -> Result<Option<u64>, Self::Error> {
         self.peer_epoch.observe(self.device)?;
-        let record_len = self.receiver.peek_message_meta()?.map(|meta| meta.len());
+        let record_len = self
+            .receiver
+            .as_mut()
+            .ok_or(IvcDeviceError::SessionReset)?
+            .peek_message_meta()?
+            .map(|meta| meta.len());
         self.peer_epoch.observe(self.device)?;
         Ok(record_len)
     }
 
     fn read_record(&mut self, output: &mut [u8]) -> Result<RecordProgress, Self::Error> {
         self.peer_epoch.observe(self.device)?;
-        let progress = self.receiver.try_read(output)?;
+        let progress = self
+            .receiver
+            .as_mut()
+            .ok_or(IvcDeviceError::SessionReset)?
+            .try_read(output)?;
         let progressed = progress.consumed_slots() > 0;
         // A successful read has already copied and released its slots. If the
         // peer stops after publishing that credit, the read linearizes before
@@ -499,7 +692,13 @@ impl MessageRecordEndpoint for IvcEndpoint<'_> {
     }
 
     fn outbound_drained(&mut self) -> Result<bool, Self::Error> {
-        if self.sender.available_slots() == IVC_RING_CAPACITY {
+        if self
+            .sender
+            .as_ref()
+            .ok_or(IvcDeviceError::SessionReset)?
+            .available_slots()
+            == IVC_RING_CAPACITY
+        {
             // Recovered credit is the delivery linearization point. A peer may
             // stop immediately after its final read, so this evidence outranks
             // a later epoch change.
@@ -521,6 +720,217 @@ impl MessageRecordEndpoint for IvcEndpoint<'_> {
         thread::sleep(RECORD_POLL_DELAY);
         self.peer_epoch.observe(self.device)?;
         Ok(observed)
+    }
+}
+
+/// Opaque unified IVC session.
+///
+/// The session owns either the in-progress handshake or the connected Message
+/// V1 endpoint. Methods requiring `&mut self` serialize all calls on the
+/// session. The device must outlive the session; `ivc_close` consumes the
+/// session by value.
+pub struct IvcSession<'a> {
+    state: SessionProgress<'a>,
+    failed: bool,
+}
+
+enum SessionProgress<'a> {
+    Pending(IvcPendingEndpoint<'a>),
+    Ready(IvcEndpoint<'a>),
+    Reset,
+}
+
+impl<'a> IvcSession<'a> {
+    fn ensure_ready(&mut self, deadline: OperationDeadline) -> Result<(), IvcError> {
+        if self.failed {
+            return Err(IvcError::SessionReset);
+        }
+        loop {
+            let state = mem::replace(&mut self.state, SessionProgress::Reset);
+            match state {
+                SessionProgress::Reset => {
+                    self.failed = true;
+                    return Err(IvcError::SessionReset);
+                }
+                SessionProgress::Pending(mut pending) => match pending.poll_ready_once() {
+                    Ok(None) => {
+                        self.state = SessionProgress::Pending(pending);
+                    }
+                    Ok(Some(endpoint)) => {
+                        self.state = SessionProgress::Ready(endpoint);
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        let error = map_device_error(error);
+                        let _ = pending.close_session();
+                        self.failed = true;
+                        self.state = SessionProgress::Reset;
+                        return Err(error);
+                    }
+                },
+                SessionProgress::Ready(mut endpoint) => {
+                    let current = endpoint.ensure_session_current();
+                    self.state = SessionProgress::Ready(endpoint);
+                    match current {
+                        Ok(()) => return Ok(()),
+                        Err(error) if is_session_reset(&error) => {
+                            self.failed = true;
+                            return Err(IvcError::SessionReset);
+                        }
+                        Err(error) => return Err(IvcError::Device(error)),
+                    }
+                }
+            }
+
+            let remaining = deadline.remaining();
+            if remaining.is_zero() {
+                return Err(IvcError::TimedOut);
+            }
+            thread::sleep(cmp::min(remaining, HANDSHAKE_POLL_DELAY));
+        }
+    }
+
+    fn endpoint_mut(&mut self) -> Result<&mut IvcEndpoint<'a>, IvcError> {
+        if self.failed {
+            return Err(IvcError::SessionReset);
+        }
+        match &mut self.state {
+            SessionProgress::Ready(endpoint) => Ok(endpoint),
+            SessionProgress::Pending(_) | SessionProgress::Reset => Err(IvcError::SessionReset),
+        }
+    }
+
+    fn record_error(&mut self, error: IvcError) -> IvcError {
+        if matches!(&error, IvcError::SessionReset) {
+            self.failed = true;
+        }
+        error
+    }
+
+    fn close(self) -> Result<(), IvcError> {
+        match self.state {
+            SessionProgress::Pending(pending) => pending.close_session().map_err(map_device_error),
+            SessionProgress::Ready(endpoint) => endpoint.close_session().map_err(map_device_error),
+            SessionProgress::Reset => Ok(()),
+        }
+    }
+}
+
+/// Opens the single unified message session without waiting for the peer.
+///
+/// The returned pending session completes its handshake during the first
+/// `ivc_send` or `ivc_recv` call. A zero timeout performs one nonblocking
+/// progress attempt; a positive timeout is bounded and preserves the pending
+/// handshake when it expires.
+pub fn ivc_open(device: &mut IvcDevice) -> Result<IvcSession<'_>, IvcError> {
+    let pending = device.open_endpoint().map_err(map_device_error)?;
+    Ok(IvcSession {
+        state: SessionProgress::Pending(pending),
+        failed: false,
+    })
+}
+
+/// Sends one complete 1..=48-byte message.
+///
+/// `timeout_ms` includes handshake and outbound ring-capacity waits. The call
+/// never leaves a partial record active after returning `TimedOut`.
+pub fn ivc_send(
+    session: &mut IvcSession<'_>,
+    message: &[u8],
+    timeout_ms: i32,
+) -> Result<(), IvcError> {
+    if message.is_empty() {
+        return Err(IvcError::InvalidArgument {
+            argument: "empty outgoing message",
+        });
+    }
+    if message.len() > IVC_MAX_RECORD_BYTES {
+        return Err(IvcError::MessageTooLarge {
+            len: message.len() as u64,
+        });
+    }
+    let deadline = OperationDeadline::new(timeout_ms)?;
+    session.ensure_ready(deadline)?;
+
+    loop {
+        let outcome = session.endpoint_mut()?.try_send_complete(message);
+        match outcome {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => return Err(session.record_error(error)),
+        }
+        if deadline.remaining().is_zero() {
+            return Err(IvcError::TimedOut);
+        }
+        let wait = session.endpoint_mut()?.wait_for_progress();
+        if let Err(error) = wait {
+            return Err(session.record_error(map_device_error(error)));
+        }
+    }
+}
+
+/// Receives one complete 1..=48-byte message.
+///
+/// The buffer may be larger than 48 bytes. An oversized inbound record or a
+/// record that does not fit the buffer is left at the receive head.
+pub fn ivc_recv(
+    session: &mut IvcSession<'_>,
+    output: &mut [u8],
+    timeout_ms: i32,
+) -> Result<usize, IvcError> {
+    if output.is_empty() {
+        return Err(IvcError::InvalidArgument {
+            argument: "empty receive buffer",
+        });
+    }
+    let deadline = OperationDeadline::new(timeout_ms)?;
+    session.ensure_ready(deadline)?;
+
+    loop {
+        let outcome = session.endpoint_mut()?.try_receive_complete(output);
+        match outcome {
+            Ok(Some(message_len)) => return Ok(message_len),
+            Ok(None) if deadline.remaining().is_zero() => return Err(IvcError::TimedOut),
+            Ok(None) => {
+                let wait = session.endpoint_mut()?.wait_for_progress();
+                if let Err(error) = wait {
+                    return Err(session.record_error(map_device_error(error)));
+                }
+            }
+            Err(error) => return Err(session.record_error(error)),
+        }
+    }
+}
+
+/// Closes and consumes one unified IVC session.
+///
+/// Safe Rust makes a null or reused handle unrepresentable. The consumed
+/// endpoint invalidates the shared session and releases the device slot for a
+/// later open. A doorbell failure is reported after the handle is consumed.
+pub fn ivc_close(session: IvcSession<'_>) -> Result<(), IvcError> {
+    session.close()
+}
+
+#[derive(Clone, Copy)]
+struct OperationDeadline {
+    end: Instant,
+}
+
+impl OperationDeadline {
+    fn new(timeout_ms: i32) -> Result<Self, IvcError> {
+        if !(0..=IVC_MAX_TIMEOUT_MS).contains(&timeout_ms) {
+            return Err(IvcError::InvalidArgument {
+                argument: "timeout outside 0..=60000 ms",
+            });
+        }
+        Ok(Self {
+            end: Instant::now() + Duration::from_millis(timeout_ms as u64),
+        })
+    }
+
+    fn remaining(self) -> Duration {
+        // ArceOS `Instant::duration_since` saturates to zero for future instants.
+        self.end.duration_since(Instant::now())
     }
 }
 
@@ -561,6 +971,9 @@ pub enum IvcDeviceError {
     /// session, so this device instance cannot start another session.
     #[error("the configured ivshmem endpoint is closed")]
     SessionClosed,
+    /// The shared Message V1 incarnation no longer belongs to this endpoint.
+    #[error("the configured ivshmem endpoint session was reset")]
+    SessionReset,
     /// The peer did not join before the session timeout.
     #[error("peer did not join the ivshmem Message V1 session")]
     SessionTimeout,
@@ -586,4 +999,84 @@ pub enum IvcDeviceError {
         /// Later observed peer epoch.
         observed: u64,
     },
+}
+
+/// Typed failures from the unified IVC message interface.
+#[derive(Debug, Error)]
+pub enum IvcError {
+    /// An argument violates the IVC message contract (C `EINVAL`).
+    #[error("invalid IVC argument: {argument}")]
+    InvalidArgument {
+        /// Rejected argument.
+        argument: &'static str,
+    },
+    /// A record exceeds the unified message limit (C `EMSGSIZE`).
+    #[error("IVC message length {len} exceeds {IVC_MAX_RECORD_BYTES} bytes")]
+    MessageTooLarge {
+        /// Declared or supplied record length.
+        len: u64,
+    },
+    /// An inbound record does not fit the caller's receive buffer (C `ENOSPC`).
+    #[error("IVC receive buffer has {available} bytes but the record requires {required}")]
+    BufferTooSmall {
+        /// Number of bytes required by the next record.
+        required: usize,
+        /// Number of writable bytes supplied by the caller.
+        available: usize,
+    },
+    /// The next inbound record is empty, outside the 1..=48-byte contract.
+    #[error("invalid IVC message length {len}")]
+    InvalidMessageLength {
+        /// Declared complete-message length.
+        len: u64,
+    },
+    /// The peer or ring capacity was unavailable before timeout (C `EAGAIN`).
+    #[error("IVC operation timed out")]
+    TimedOut,
+    /// The session incarnation changed and must be closed before reopening
+    /// (C `EPIPE`).
+    #[error("IVC session was reset")]
+    SessionReset,
+    /// This device already owns an open session (C `EBUSY`).
+    #[error("IVC session is already open")]
+    SessionAlreadyOpen,
+    /// Device discovery, BAR access, or doorbell operation failed.
+    #[error(transparent)]
+    Device(#[from] IvcDeviceError),
+    /// Message V1 framing or transport state failed.
+    #[error(transparent)]
+    Message(#[from] IvcMessageError),
+}
+
+fn is_session_reset(error: &IvcDeviceError) -> bool {
+    matches!(
+        error,
+        IvcDeviceError::SessionClosed
+            | IvcDeviceError::SessionReset
+            | IvcDeviceError::PeerEpochChanged { .. }
+            | IvcDeviceError::Message(
+                IvcMessageError::SessionLost | IvcMessageError::CursorOutOfRange { .. }
+            )
+    )
+}
+
+fn map_device_error(error: IvcDeviceError) -> IvcError {
+    if is_session_reset(&error) {
+        IvcError::SessionReset
+    } else {
+        match error {
+            IvcDeviceError::SessionAlreadyOpen => IvcError::SessionAlreadyOpen,
+            IvcDeviceError::SessionTimeout => IvcError::TimedOut,
+            error => IvcError::Device(error),
+        }
+    }
+}
+
+fn map_message_error(error: IvcMessageError) -> IvcError {
+    match error {
+        IvcMessageError::SessionLost | IvcMessageError::CursorOutOfRange { .. } => {
+            IvcError::SessionReset
+        }
+        error => IvcError::Message(error),
+    }
 }

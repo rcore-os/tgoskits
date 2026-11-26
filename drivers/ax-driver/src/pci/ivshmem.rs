@@ -22,14 +22,18 @@ use super::PciIrqLease;
 
 const VENDOR_ID: u16 = 0x1af4;
 const DEVICE_ID: u16 = 0x1110;
-// The prebuilt upstream uio_ivshmem module requires revision 1. The
-// vendor-specific class and AXIV capability keep AxVisor distinguishable.
-const CLASS_REVISION: u32 = 0xff00_0001;
+// Both transports expose the same vendor-specific PCI class. Revision 1 is
+// paired only with the existing Normal-NC protocol so old UIO auto-binds do
+// not claim the coherent profile; the coherent profile uses revision 2.
+const IVSHMEM_CLASS_CODE: u32 = 0xff00_0000;
+const NORMAL_NC_CLASS_REVISION: u32 = IVSHMEM_CLASS_CODE | 1;
+const NORMAL_WB_CLASS_REVISION: u32 = IVSHMEM_CLASS_CODE | 2;
 const AXVISOR_CAPABILITY_ID: u8 = 0x09;
 const AXVISOR_CAPABILITY_LENGTH: u8 = 36;
 const AXVISOR_CAPABILITY_VERSION: u8 = 1;
 const AXVISOR_CAPABILITY_MAGIC: u32 = 0x5649_5841; // "AXIV"
-const AXVISOR_TRANSPORT_PROTOCOL: u16 = 0x4000;
+const AXVISOR_TRANSPORT_PROTOCOL_NC: u16 = 0x4000;
+const AXVISOR_TRANSPORT_PROTOCOL_WB: u16 = 0x4001;
 const AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH: u32 = 1 << 0;
 const MAX_PEERS_LIMIT: u32 = 15;
 /// BAR2-relative base of the host-owned per-peer reset/detach epoch table.
@@ -50,10 +54,20 @@ crate::model_register!(
     }],
 );
 
+/// Cache and shareability policy for the BAR2 CPU-owned RAM alias.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IvshmemBar2Policy {
+    /// Existing transport policy: Normal Inner Shareable non-cacheable RAM.
+    NormalNonCacheable,
+    /// Coherent transport policy: Normal Inner Shareable write-back RAM.
+    NormalWriteBackInnerShareable,
+}
+
 /// One probed ivshmem function and its disabled MSI-X allocation.
 pub struct IvshmemPciEndpoint {
     registers: Range<usize>,
     shared: Range<usize>,
+    bar2_policy: IvshmemBar2Policy,
     irq: PciIrqLease,
     // Fields drop in declaration order. Tear down MSI-X while memory decode is
     // still enabled, then let the config owner disable the BAR aperture.
@@ -69,6 +83,13 @@ impl IvshmemPciEndpoint {
     /// BAR2 guest CPU-physical range containing the link's shared memory.
     pub fn shared(&self) -> Range<usize> {
         self.shared.clone()
+    }
+
+    /// The cache policy selected by the AxVisor transport capability.
+    ///
+    /// Every CPU alias of [`Self::shared`] must use this policy.
+    pub const fn bar2_policy(&self) -> IvshmemBar2Policy {
+        self.bar2_policy
     }
 
     /// The single MSI-X vector owned by this endpoint, initially disabled.
@@ -175,14 +196,17 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         | (u32::from(class.sub_class) << 16)
         | (u32::from(class.interface) << 8)
         | u32::from(class.revision_id);
-    if class_revision != CLASS_REVISION {
+    let protocol = parse_axvisor_transport_capability(endpoint)?;
+    let Some(bar2_policy) = policy_for_profile(class_revision, protocol) else {
         return Err(OnProbeError::other(format!(
-            "ivshmem PCI endpoint {} has class/revision {class_revision:#010x}, expected \
-             {CLASS_REVISION:#010x}",
-            endpoint.address()
+            "ivshmem PCI endpoint {} has unsupported class/revision {class_revision:#010x} and \
+             AxVisor protocol {:#06x}; expected {NORMAL_NC_CLASS_REVISION:#010x} with \
+             {AXVISOR_TRANSPORT_PROTOCOL_NC:#06x}, or {NORMAL_WB_CLASS_REVISION:#010x} with \
+             {AXVISOR_TRANSPORT_PROTOCOL_WB:#06x}",
+            endpoint.address(),
+            protocol
         )));
-    }
-    verify_axvisor_capability(endpoint)?;
+    };
 
     if let Some(device) = rdrive::get_one::<IvshmemRegistration>() {
         if let Ok(mut registration) = device.lock() {
@@ -203,6 +227,7 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
                 .register(IvshmemRegistration::new(IvshmemPciEndpoint {
                     registers,
                     shared,
+                    bar2_policy,
                     irq,
                     _owner: owner,
                 }));
@@ -218,7 +243,7 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     }
 }
 
-fn verify_axvisor_capability(endpoint: &Endpoint) -> Result<(), OnProbeError> {
+fn parse_axvisor_transport_capability(endpoint: &Endpoint) -> Result<u16, OnProbeError> {
     for capability in endpoint.capabilities() {
         let PciCapability::Vendor(address) = capability else {
             continue;
@@ -230,6 +255,16 @@ fn verify_axvisor_capability(endpoint: &Endpoint) -> Result<(), OnProbeError> {
         }
         let length = (header >> 16) as u8;
         let version = (header >> 24) as u8;
+        let malformed = || {
+            OnProbeError::other(format!(
+                "ivshmem PCI endpoint {} has a malformed AxVisor transport capability at config \
+                 offset {offset:#x}",
+                endpoint.address()
+            ))
+        };
+        if length != AXVISOR_CAPABILITY_LENGTH || version != AXVISOR_CAPABILITY_VERSION {
+            return Err(malformed());
+        }
         let magic = endpoint.read(offset + 4);
         let protocol_and_padding = endpoint.read(offset + 8);
         let features = endpoint.read(offset + 12);
@@ -238,30 +273,58 @@ fn verify_axvisor_capability(endpoint: &Endpoint) -> Result<(), OnProbeError> {
         let common_size = endpoint.read(offset + 24);
         let output_size = endpoint.read(offset + 28);
         let max_peers = endpoint.read(offset + 32);
-        if length == AXVISOR_CAPABILITY_LENGTH
-            && version == AXVISOR_CAPABILITY_VERSION
-            && magic == AXVISOR_CAPABILITY_MAGIC
-            && protocol_and_padding as u16 == AXVISOR_TRANSPORT_PROTOCOL
+        if protocol_and_padding >> 16 != 0 {
+            return Err(malformed());
+        }
+        let policy = transport_policy(protocol_and_padding as u16).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "ivshmem PCI endpoint {} has unknown AxVisor transport protocol {:#06x} at config \
+                 offset {offset:#x}",
+                endpoint.address(),
+                protocol_and_padding as u16
+            ))
+        })?;
+        let peer_geometry_valid = match policy {
+            IvshmemBar2Policy::NormalNonCacheable => (1..=MAX_PEERS_LIMIT).contains(&max_peers),
+            IvshmemBar2Policy::NormalWriteBackInnerShareable => max_peers == 2 && common_size == 0,
+        };
+        if magic == AXVISOR_CAPABILITY_MAGIC
             && features & AXVISOR_TRANSPORT_FEATURE_PEER_EPOCH != 0
             && epoch_offset == STATE_EPOCH_OFFSET as u32
             && epoch_stride == STATE_EPOCH_STRIDE as u32
             && common_size.is_multiple_of(0x1000)
             && output_size != 0
             && output_size.is_multiple_of(0x1000)
-            && (1..=MAX_PEERS_LIMIT).contains(&max_peers)
+            && peer_geometry_valid
         {
-            return Ok(());
+            return Ok(protocol_and_padding as u16);
         }
-        return Err(OnProbeError::other(format!(
-            "ivshmem PCI endpoint {} has a malformed AxVisor transport capability at config \
-             offset {offset:#x}",
-            endpoint.address()
-        )));
+        return Err(malformed());
     }
     Err(OnProbeError::other(format!(
         "ivshmem PCI endpoint {} is missing the AxVisor 0x09 transport capability",
         endpoint.address()
     )))
+}
+
+const fn transport_policy(protocol: u16) -> Option<IvshmemBar2Policy> {
+    match protocol {
+        AXVISOR_TRANSPORT_PROTOCOL_NC => Some(IvshmemBar2Policy::NormalNonCacheable),
+        AXVISOR_TRANSPORT_PROTOCOL_WB => Some(IvshmemBar2Policy::NormalWriteBackInnerShareable),
+        _ => None,
+    }
+}
+
+const fn policy_for_profile(class_revision: u32, protocol: u16) -> Option<IvshmemBar2Policy> {
+    match (class_revision, protocol) {
+        (NORMAL_NC_CLASS_REVISION, AXVISOR_TRANSPORT_PROTOCOL_NC) => {
+            Some(IvshmemBar2Policy::NormalNonCacheable)
+        }
+        (NORMAL_WB_CLASS_REVISION, AXVISOR_TRANSPORT_PROTOCOL_WB) => {
+            Some(IvshmemBar2Policy::NormalWriteBackInnerShareable)
+        }
+        _ => None,
+    }
 }
 
 fn configure(
@@ -431,4 +494,40 @@ fn memory_bar(
         .checked_add(size)
         .ok_or_else(|| OnProbeError::other(format!("ivshmem {name} range overflows usize")))?;
     Ok(start..end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_policy_requires_the_exact_class_revision_protocol_pair() {
+        assert_eq!(
+            policy_for_profile(NORMAL_NC_CLASS_REVISION, AXVISOR_TRANSPORT_PROTOCOL_NC),
+            Some(IvshmemBar2Policy::NormalNonCacheable)
+        );
+        assert_eq!(
+            policy_for_profile(NORMAL_WB_CLASS_REVISION, AXVISOR_TRANSPORT_PROTOCOL_WB),
+            Some(IvshmemBar2Policy::NormalWriteBackInnerShareable)
+        );
+        assert_eq!(
+            policy_for_profile(NORMAL_NC_CLASS_REVISION, AXVISOR_TRANSPORT_PROTOCOL_WB),
+            None
+        );
+        assert_eq!(
+            policy_for_profile(NORMAL_WB_CLASS_REVISION, AXVISOR_TRANSPORT_PROTOCOL_NC),
+            None
+        );
+        assert_eq!(
+            policy_for_profile(IVSHMEM_CLASS_CODE, AXVISOR_TRANSPORT_PROTOCOL_NC),
+            None
+        );
+        assert_eq!(
+            policy_for_profile(
+                IVSHMEM_CLASS_CODE | 0x80_0000,
+                AXVISOR_TRANSPORT_PROTOCOL_WB
+            ),
+            None
+        );
+    }
 }

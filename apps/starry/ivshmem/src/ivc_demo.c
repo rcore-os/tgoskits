@@ -21,7 +21,7 @@ static void demo_fail(const char *reason, const struct tgos_ivc_frame *frame,
   fflush(stderr);
 }
 
-static int verify_payload(const struct starry_axivc *ivc,
+static int verify_payload(const struct starry_axivc_payload_view *payload,
                           const struct tgos_ivc_frame *frame,
                           uint32_t *mismatch_offset) {
   uint8_t expected[TGOS_IVC_CHUNK_SIZE];
@@ -35,9 +35,10 @@ static int verify_payload(const struct starry_axivc *ivc,
     if (chunk_len > TGOS_IVC_CHUNK_SIZE) {
       chunk_len = TGOS_IVC_CHUNK_SIZE;
     }
-    if (tgos_ivc_verify_chunk(ivc->peer_payload + offset, expected, chunk_len,
-                              frame->case_index, frame->iteration, offset,
-                              &actual_checksum, &expected_checksum) != 0) {
+    if (tgos_ivc_verify_chunk(payload->peer_payload + offset, expected,
+                              chunk_len, frame->case_index, frame->iteration,
+                              offset, &actual_checksum,
+                              &expected_checksum) != 0) {
       *mismatch_offset = offset;
       return -EBADMSG;
     }
@@ -51,35 +52,58 @@ static int verify_payload(const struct starry_axivc *ivc,
 }
 
 int main(void) {
-  struct starry_axivc ivc;
+  struct starry_axivc_payload_view payload;
+  struct ivc *connection = NULL;
   uint32_t next_case = 0U;
   int result;
 
   setvbuf(stdout, NULL, _IOLBF, 0);
-  result = starry_axivc_open(
-      &ivc, tgos_ivc_demo_size_at(TGOS_IVC_DEMO_CASE_COUNT - 1U));
+  result = ivc_open(&connection);
   if (result != 0) {
     demo_fail("open", NULL, result);
     return 1;
   }
+  result = starry_axivc_payload_get(
+      connection, tgos_ivc_demo_size_at(TGOS_IVC_DEMO_CASE_COUNT - 1U),
+      &payload);
+  if (result != 0) {
+    demo_fail("payload", NULL, result);
+    goto out;
+  }
 
   printf("AXIVC Starry peer ready device=%s generation=%llu capacity=%zu "
          "local_offset=%llu peer_offset=%llu\n",
-         TGOS_STARRY_AXIVC_DEVICE, (unsigned long long)ivc.info.generation,
-         ivc.capacity, (unsigned long long)ivc.info.local_offset,
-         (unsigned long long)ivc.info.peer_offset);
+         TGOS_STARRY_AXIVC_DEVICE, (unsigned long long)payload.generation,
+         payload.capacity, (unsigned long long)payload.local_offset,
+         (unsigned long long)payload.peer_offset);
 
   while (next_case < TGOS_IVC_DEMO_CASE_COUNT) {
     struct tgos_ivc_frame frame;
     struct tgos_ivc_frame ack;
+    int received;
     uint32_t mismatch_offset = 0U;
     size_t expected_len = tgos_ivc_demo_size_at(next_case);
 
-    result = starry_axivc_recv_frame(&ivc, &frame, TGOS_IVC_TIMEOUT_MS);
-    if (result != 0) {
-      demo_fail("receive", NULL, result);
+    if (next_case == 0U) {
+      uint8_t short_buffer[IVC_MAX_RECORD_BYTES - 1U];
+
+      received = ivc_recv(connection, short_buffer, sizeof(short_buffer),
+                          TGOS_IVC_TIMEOUT_MS);
+      if (received != -ENOSPC) {
+        result = received > 0 ? -EPROTO : received;
+        demo_fail("short-buffer", NULL, result);
+        goto out;
+      }
+    }
+
+    received =
+        ivc_recv(connection, &frame, sizeof(frame), TGOS_IVC_TIMEOUT_MS);
+    if (received != (int)sizeof(frame)) {
+      result = received > 0 ? -EPROTO : received;
+      demo_fail(received > 0 ? "frame-length" : "receive", NULL, result);
       goto out;
     }
+    result = 0;
     if (!tgos_ivc_frame_is_valid(&frame) || frame.type != TGOS_IVC_FRAME_DATA) {
       demo_fail("frame", &frame, -EPROTO);
       goto out;
@@ -90,7 +114,7 @@ int main(void) {
       goto out;
     }
 
-    result = verify_payload(&ivc, &frame, &mismatch_offset);
+    result = verify_payload(&payload, &frame, &mismatch_offset);
     if (result != 0) {
       fprintf(stderr,
               "AXIVC Starry payload mismatch case=%u iteration=%u "
@@ -101,7 +125,7 @@ int main(void) {
     }
 
     tgos_ivc_ack_init(&ack, &frame);
-    result = starry_axivc_send_frame(&ivc, &ack, TGOS_IVC_TIMEOUT_MS);
+    result = ivc_send(connection, &ack, sizeof(ack), TGOS_IVC_TIMEOUT_MS);
     if (result != 0) {
       demo_fail("ack", &frame, result);
       goto out;
@@ -114,6 +138,13 @@ int main(void) {
 
   printf("AXIVC Starry peer pass\n");
 out:
-  starry_axivc_close(&ivc);
+  {
+    int close_result = ivc_close(connection);
+
+    if (close_result != 0 && result == 0) {
+      result = close_result;
+      demo_fail("close", NULL, result);
+    }
+  }
   return result == 0 ? 0 : 1;
 }
