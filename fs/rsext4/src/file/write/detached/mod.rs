@@ -16,6 +16,7 @@ pub(crate) struct PreparedFileWrite {
 pub(crate) struct CompletedFileWrite {
     metadata: WriteMetadata,
     result: Ext4Result<()>,
+    failed_cleanup: Option<crate::InodeResize>,
 }
 
 struct WriteMetadata {
@@ -77,6 +78,7 @@ impl PreparedFileWrite {
         CompletedFileWrite {
             metadata: self.metadata,
             result,
+            failed_cleanup: None,
         }
     }
 
@@ -84,6 +86,7 @@ impl PreparedFileWrite {
         CompletedFileWrite {
             metadata: self.metadata,
             result: Err(Ext4Error::busy().with_operation("write:cancelled")),
+            failed_cleanup: None,
         }
     }
 }
@@ -98,7 +101,17 @@ impl CompletedFileWrite {
         device: &mut Jbd2Dev<B>,
         fs: &mut Ext4FileSystem,
     ) -> Ext4Result<()> {
-        self.result?;
+        if let Err(cause) = self.result {
+            return match self.cleanup_failed_extension(device, fs) {
+                Ok(()) => Err(cause),
+                Err(error) if error.requires_journal_progress() => Err(error),
+                Err(error) => {
+                    // Linux's extension cleanup does not replace the data error.
+                    log::error!("ext4 failed-write allocation cleanup: {error}");
+                    Err(cause)
+                }
+            };
+        }
         device.discard_detached_data_image()?;
         if let Some(unwritten) = &mut self.metadata.unwritten {
             return unwritten.finish_detached(device, fs, self.metadata.end);
@@ -115,5 +128,24 @@ impl CompletedFileWrite {
             &mut inode,
             Ext4InodeMetadataUpdate::write_access(),
         )
+    }
+
+    fn cleanup_failed_extension<B: BlockIo>(
+        &mut self,
+        device: &mut Jbd2Dev<B>,
+        fs: &mut Ext4FileSystem,
+    ) -> Ext4Result<()> {
+        device.discard_detached_data_image()?;
+        let inode = fs.get_inode_by_num(device, self.metadata.inode)?;
+        if self.failed_cleanup.is_none() && self.metadata.end <= inode.size() {
+            return Ok(());
+        }
+        // The mapping lease excludes size changes. Use the accepted EOF and
+        // the normal truncate rules, including inode metadata and orphan work.
+        self.failed_cleanup
+            .get_or_insert_with(|| {
+                crate::InodeResize::for_failed_write(self.metadata.inode, inode.size())
+            })
+            .resume(device, fs)
     }
 }

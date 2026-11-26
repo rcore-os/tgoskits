@@ -201,6 +201,7 @@ fn data_failure_never_initializes_extents_and_preserves_its_cause() {
 
     for input_failure in [false, true] {
         let (mut mount, number) = shared_file();
+        let before = mount.inode(number).unwrap();
         let bytes = alloc::vec![0x57; 128 * 1024];
         let cause = Ext4Error::io().with_operation(if input_failure {
             "test:detached_input_copy"
@@ -229,7 +230,12 @@ fn data_failure_never_initializes_extents_and_preserves_its_cause() {
         drop(probe);
         assert_eq!(mount.finish_inode_write(&mut completed), Err(cause));
         assert!(!completed.needs_publication());
-        assert_eq!(mount.inode(number).unwrap().size, 0);
+        let after = mount.inode(number).unwrap();
+        assert_eq!(after.size, 0);
+        assert_eq!(
+            after.blocks, before.blocks,
+            "failed extension must release unused blocks"
+        );
         mount.truncate_inode(number, bytes.len() as u64).unwrap();
         assert_contents(&mut mount, number, &alloc::vec![0; bytes.len()]);
 
@@ -266,36 +272,46 @@ fn partial_home_read_failure_does_not_replace_old_bytes() {
 
 #[test]
 fn checkpoint_progress_retries_metadata_without_replaying_data() {
-    let (mut mount, number) = shared_file();
-    let prepared = mount
-        .prepare_inode_write(number, 0, b"checkpoint".len())
-        .unwrap()
-        .unwrap();
-    // A prepared data owner holds no finish reservation: checkpoint may seal
-    // its still-unwritten metadata while its physical targets remain leased.
-    let batch = mount.prepare_writeback_progress_for_checkpoint().unwrap();
-    let mut completed = prepared.execute(FileWriteInput::Resident(b"checkpoint"));
-    assert!(
-        mount
-            .finish_inode_write(&mut completed)
-            .unwrap_err()
-            .requires_journal_progress()
-    );
-    assert!(completed.needs_publication());
-    let mut receipt = batch.execute();
-    mount.finish_sync(&mut receipt).unwrap();
-    let mut checkpoint = mount.prepare_writeback_checkpoint().unwrap().execute();
-    mount.finish_sync(&mut checkpoint).unwrap();
-    let probe = watch(
-        Some(Ext4Error::io().with_operation("test:no_data_replay")),
-        None,
-    );
-    // Root-resident conversion only publishes cached inode metadata here;
-    // it must not call the physical data writer again.
-    mount.finish_inode_write(&mut completed).unwrap();
-    DATA_IO.with_borrow(|probe| assert!(probe.as_ref().unwrap().writes.is_empty()));
-    drop(probe);
-    assert_contents(&mut mount, number, b"checkpoint");
+    let cause = Ext4Error::io().with_operation("test:detached_data_write");
+    for data_error in [None, Some(cause)] {
+        let (mut mount, number) = shared_file();
+        let prepared = mount
+            .prepare_inode_write(number, 0, b"checkpoint".len())
+            .unwrap()
+            .unwrap();
+        // Checkpoint seals the unwritten mapping while data targets stay leased.
+        let batch = mount.prepare_writeback_progress_for_checkpoint().unwrap();
+        let probe = watch(data_error, None);
+        let mut completed = prepared.execute(FileWriteInput::Resident(b"checkpoint"));
+        drop(probe);
+        assert!(
+            mount
+                .finish_inode_write(&mut completed)
+                .unwrap_err()
+                .requires_journal_progress()
+        );
+        assert!(completed.needs_publication());
+        let mut receipt = batch.execute();
+        mount.finish_sync(&mut receipt).unwrap();
+        let mut checkpoint = mount.prepare_writeback_checkpoint().unwrap().execute();
+        mount.finish_sync(&mut checkpoint).unwrap();
+        let probe = watch(
+            Some(Ext4Error::io().with_operation("test:no_data_replay")),
+            None,
+        );
+        let result = mount.finish_inode_write(&mut completed);
+        DATA_IO.with_borrow(|probe| assert!(probe.as_ref().unwrap().writes.is_empty()));
+        drop(probe);
+        assert!(!completed.needs_publication());
+        if let Some(error) = data_error {
+            assert_eq!(result, Err(error));
+            let inode = mount.inode(number).unwrap();
+            assert_eq!((inode.size, inode.blocks), (0, 0));
+        } else {
+            result.unwrap();
+            assert_contents(&mut mount, number, b"checkpoint");
+        }
+    }
 }
 
 #[test]

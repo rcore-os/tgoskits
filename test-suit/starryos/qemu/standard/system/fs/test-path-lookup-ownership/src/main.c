@@ -1152,6 +1152,7 @@ static void native_direct_write_progress(void)
     REQUIRE(fstat(file, &status) == 0);
     CHECK(status.st_size == 0,
           "native direct positioned input failure preserves accepted length");
+    CHECK(status.st_blocks == 0, "native direct write failure releases unused allocation");
     CHECK(syscall(SYS_lseek, file, (off_t)0, SEEK_CUR) == 0,
           "native direct positioned write preserves description position");
     close_fd(file);
@@ -1166,6 +1167,7 @@ static void native_direct_write_progress(void)
     REQUIRE(fstat(file, &status) == 0);
     CHECK(status.st_size == 0,
           "native direct append input failure preserves accepted length");
+    CHECK(status.st_blocks == 0, "native direct append failure releases unused allocation");
     CHECK(syscall(SYS_lseek, file, (off_t)0, SEEK_CUR) == 0,
           "native direct append input failure preserves description position");
     REQUIRE(syscall(SYS_ftruncate, file, (off_t)0) == 0);

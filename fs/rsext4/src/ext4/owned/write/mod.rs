@@ -161,10 +161,12 @@ where
         let completed = receipt.completed.as_mut().ok_or_else(|| {
             Ext4Error::invalid_input().with_operation("inode:consumed_write_receipt")
         })?;
-        let result = completed.io_result().and_then(|()| {
-            self.ensure_writable("inode:finish_write")?;
-            completed.finish(&mut self.device, &mut self.filesystem)
-        });
+        let result = match self.ensure_writable("inode:finish_write") {
+            Ok(()) => completed.finish(&mut self.device, &mut self.filesystem),
+            // Failed data still owns allocation cleanup after checkpoint progress.
+            Err(error) if error.requires_journal_progress() => Err(error),
+            Err(error) => completed.io_result().and(Err(error)),
+        };
         if !result
             .as_ref()
             .is_err_and(|error| error.requires_journal_progress())

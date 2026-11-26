@@ -11,6 +11,7 @@ categories = ["filesystem"]
 license = "Apache-2.0"
 
 [dependencies]
+log.workspace = true
 bitflags = "2.10"
 spinning_top.workspace = true
 thiserror.workspace = true
