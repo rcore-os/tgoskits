@@ -609,7 +609,7 @@ fn builder(fs: SimpleFsContext, root_mount_device: u64) -> VfsResult<DirMaker> {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 2),
-            Arc::new(tty::Ptmx::new(fs.clone(), Arc::downgrade(&pts_instance))),
+            Arc::new(tty::Ptmx::Devfs),
         )?,
     );
     root.add(

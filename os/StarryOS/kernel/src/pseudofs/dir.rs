@@ -151,6 +151,10 @@ impl<O: SimpleDirOps> SimpleDir<O> {
         Arc::new(Self { node, this, ops })
     }
 
+    pub(super) fn operations(&self) -> &O {
+        &self.ops
+    }
+
     /// Create a [`DirMaker`] from given directory operations.
     pub fn new_maker(context: SimpleFsContext, ops: Arc<O>) -> VfsResult<DirMaker> {
         let inode = context.allocate_inode(

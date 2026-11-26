@@ -1,32 +1,47 @@
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
 
-use axfs_ng_vfs::VfsResult;
+use axfs_ng_vfs::{Location, PathHandle, VfsResult};
 
 use crate::{
-    StarryResult,
-    pseudofs::{DeviceOps, SimpleFsContext, dev::tty::pts::PtsInstance},
+    StarryError, StarryResult,
+    pseudofs::{
+        DeviceOps, SimpleDir,
+        dev::tty::pts::{PtsDir, PtsInstance},
+    },
 };
 
-pub struct Ptmx {
-    fs: SimpleFsContext,
-    instance: Weak<PtsInstance>,
+pub(crate) enum Ptmx {
+    Devfs,
+    Devpts(Weak<PtsInstance>),
 }
 
 impl Ptmx {
-    pub(crate) fn new(fs: SimpleFsContext, instance: Weak<PtsInstance>) -> Self {
-        Self { fs, instance }
-    }
-
-    pub fn create_pty(&self, uid: u32) -> StarryResult<Arc<dyn DeviceOps>> {
-        let instance = self
-            .instance
-            .upgrade()
-            .ok_or(crate::StarryError::BadState)?;
-        let (master, slave, link) = super::pty::create_pty_pair();
-        let pty_number = instance.add_slave(self.fs.clone(), slave, uid)?;
-        link.bind(&instance, pty_number);
-        Ok(master)
+    pub(crate) fn create_pty(
+        &self,
+        location: &Location,
+        uid: u32,
+    ) -> StarryResult<Arc<dyn DeviceOps>> {
+        match self {
+            Self::Devfs => {
+                // Linux devpts_acquire selects the sibling mount of this open.
+                let pts = location
+                    .parent()
+                    .ok_or(StarryError::NoSuchDevice)?
+                    .lookup_no_follow("pts")?;
+                let pts = PathHandle::acquire(pts)?;
+                let directory = pts
+                    .location()
+                    .entry()
+                    .downcast::<SimpleDir<PtsDir>>()
+                    .map_err(|_| StarryError::NoSuchDevice)?;
+                directory.operations().create_pty(uid)
+            }
+            Self::Devpts(instance) => instance
+                .upgrade()
+                .ok_or(StarryError::NoSuchDevice)?
+                .create_pty(uid),
+        }
     }
 }
 

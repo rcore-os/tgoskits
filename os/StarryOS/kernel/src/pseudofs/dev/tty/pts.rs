@@ -13,7 +13,7 @@ use flatten_objects::FlattenObjects;
 use crate::{
     StarryError, StarryResult,
     pseudofs::{
-        DeviceBacking, NodeOpsMux, SimpleDirOps, SimpleFsContext,
+        DeviceBacking, DeviceOps, NodeOpsMux, SimpleDirOps, SimpleFsContext,
         dev::tty::{Ptmx, pty::PtyDriver},
     },
     sync::RawSpinLock,
@@ -52,6 +52,7 @@ const PTY_SLOTS: usize = 16;
 
 /// PTY index space and mount options owned by one devpts filesystem instance.
 pub(crate) struct PtsInstance {
+    context: SimpleFsContext,
     options: DevPtsOptions,
     table: RawSpinLock<FlattenObjects<Arc<DeviceBacking>, PTY_SLOTS>>,
     ptmx: Arc<DeviceBacking>,
@@ -64,13 +65,14 @@ impl PtsInstance {
     pub(crate) fn new(context: SimpleFsContext, options: DevPtsOptions) -> VfsResult<Arc<Self>> {
         let inode = context.allocate_inode(NodeType::CharacterDevice, options.ptmx_mode)?;
         Ok(Arc::new_cyclic(|instance: &Weak<Self>| Self {
+            context,
             options,
             table: RawSpinLock::new(FlattenObjects::new()),
             hidden: RawSpinLock::new([false; PTY_SLOTS]),
             ptmx: DeviceBacking::from_inode(
                 inode,
                 DeviceId::new(5, 2),
-                Arc::new(Ptmx::new(context, instance.clone())),
+                Arc::new(Ptmx::Devpts(instance.clone())),
             ),
         }))
     }
@@ -99,15 +101,22 @@ impl PtsInstance {
         drop(removed);
     }
 
-    pub(crate) fn add_slave(
-        &self,
-        fs: SimpleFsContext,
-        pty: Arc<PtyDriver>,
-        uid: u32,
-    ) -> StarryResult<u32> {
+    pub(super) fn create_pty(self: &Arc<Self>, uid: u32) -> StarryResult<Arc<dyn DeviceOps>> {
+        let (master, slave, link) = super::pty::create_pty_pair();
+        let number = self.add_slave(slave, uid)?;
+        link.bind(self, number);
+        Ok(master)
+    }
+
+    fn add_slave(&self, pty: Arc<PtyDriver>, uid: u32) -> StarryResult<u32> {
         let options = self.options;
         let terminal = pty.terminal.clone();
-        let device = DeviceBacking::new(fs, NodeType::CharacterDevice, DeviceId::default(), pty)?;
+        let device = DeviceBacking::new(
+            self.context.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::default(),
+            pty,
+        )?;
         device.initialize_metadata(MetadataUpdate {
             mode: Some(options.slave_mode),
             owner: Some((uid, options.slave_gid)),
@@ -140,6 +149,10 @@ pub struct PtsDir {
 impl PtsDir {
     pub(crate) fn new(instance: Arc<PtsInstance>) -> Self {
         Self { instance }
+    }
+
+    pub(super) fn create_pty(&self, uid: u32) -> StarryResult<Arc<dyn DeviceOps>> {
+        self.instance.create_pty(uid)
     }
 }
 

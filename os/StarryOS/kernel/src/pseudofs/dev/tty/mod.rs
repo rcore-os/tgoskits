@@ -20,14 +20,16 @@ use axfs_ng_vfs::{DeviceId, Location, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use starry_signal::{SignalInfo, Signo};
 
-pub(crate) use self::pts::{DevPtsOptions, PtsInstance};
 use self::terminal::{
     Terminal, WindowSize,
     ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite, write_output_bytes},
     termios::{Termios, Termios2},
 };
-pub use self::{
+pub(crate) use self::{
     ptm::Ptmx,
+    pts::{DevPtsOptions, PtsInstance},
+};
+pub use self::{
     pts::PtsDir,
     pty::PtyDriver,
     serial::{arm_console_irq, console_device, serial_tty_entries},

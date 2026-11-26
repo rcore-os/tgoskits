@@ -166,7 +166,7 @@ fn add_to_fd(
                     // Linux ptmx_open retains filp->f_path. Only this open's
                     // terminal I/O state is new; its attributes remain the ptmx inode's.
                     let uid = current.as_thread().cred().fsuid;
-                    let master = device.with_open_ops(ptmx.create_pty(uid)?);
+                    let master = device.with_open_ops(ptmx.create_pty(file.location(), uid)?);
                     let original = file.location();
                     let entry = DirEntry::new_file(
                         FileNode::new(master),
