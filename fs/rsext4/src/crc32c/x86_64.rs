@@ -9,7 +9,9 @@ use core::arch::asm;
 ///
 /// # Safety
 ///
-/// The current CPU must advertise SSE4.2 through CPUID leaf 1 ECX bit 20.
+/// Every CPU that may execute this call must advertise SSE4.2 through CPUID
+/// leaf 1 ECX bit 20. Checking only the CPU that makes the call is not enough:
+/// the thread may move to another CPU while the call runs.
 pub(crate) unsafe fn crc32c_hardware(mut crc: u32, data: &[u8]) -> u32 {
     let (chunks, remainder) = data.as_chunks::<8>();
     for chunk in chunks {
