@@ -168,6 +168,10 @@ LTP 分组还安装 `ltp-isolation-exit-fs`，在 native 阶段验证活跃 cwd 
 体系结构专有项分别核对对应目标的原始日志，不参加四架构共同集求交。
 system runner 即使使用 `--capture-failures`，也会回放 LTP 阶段成功用例的输出，
 使四架构共同集生成器能够核对 `TPASS` 完成数量；原生 C 阶段仍只回放失败输出。
+`redirect_output` 和 `replay_output` 通过同一匿名 memfd 保存和回放输出，避免
+捕获文件的写入权阻止测试将 `/tmp` 重新挂载为只读。`run_isolated_case` 在创建
+命名空间前清空输出并回绕偏移，防止启动失败时混入前一程序的日志；创建、重置或
+回放失败均使运行器返回错误。
 
 system runner 固定分成两个顺序阶段：先按名称执行剩余的原生 C binary，再执行所有
 `ltp-syscalls-*` wrapper。两个阶段仍对每个 binary 分配独立 PID/mount namespace，日志用
