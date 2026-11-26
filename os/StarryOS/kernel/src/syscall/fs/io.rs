@@ -878,27 +878,28 @@ pub fn sys_sendfile(
         !offset.is_null(),
         len
     );
-    let out_file = get_file_like(out_fd)?;
+    let position = if offset.is_null() {
+        None
+    } else {
+        Some(offset.vm_read(current)?)
+    };
+    let input = get_file_like(in_fd)?;
+    let file = File::from_file_like(&input)?;
+    file.inner().access(FileFlags::READ)?;
+    let src = match position {
+        Some(pos) if pos > u32::MAX as u64 => return Err(StarryError::InvalidInput),
+        Some(pos) => SendFileSource::Offset(file, offset, pos),
+        None => SendFileSource::Direct(input),
+    };
+
+    let output = get_file_like(out_fd)?;
+    output.validate_write_access()?;
     // Pipe output follows the splice-to-pipe path, which accepts O_APPEND.
-    if !out_file.is::<Pipe>() && out_file.append() {
+    if !output.is::<Pipe>() && output.append() {
         return Err(StarryError::InvalidInput);
     }
 
-    let src: SendFileSource = if !offset.is_null() {
-        let pos = offset.vm_read(current)?;
-
-        if pos > u32::MAX as u64 {
-            return Err(StarryError::InvalidInput);
-        }
-
-        SendFileSource::Offset(File::from_fd(in_fd)?, offset, pos)
-    } else {
-        // 拒绝 pipe 输入：File::from_fd 对 pipe 会失败，但 get_file_like 会成功，后续 read 会返回 EPIPE。Linux sendfile 对 pipe 输入也是 EPIPE。
-        let _in_file = File::from_fd(in_fd)?;
-        SendFileSource::Direct(get_file_like(in_fd)?)
-    };
-
-    let dst: SendFileDestination = SendFileDestination::Direct(out_file);
+    let dst = SendFileDestination::Direct(output);
 
     do_send(current, src, dst, len, false).map(|n: usize| n as _)
 }

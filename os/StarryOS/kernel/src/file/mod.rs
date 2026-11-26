@@ -326,7 +326,7 @@ pub trait FileLike: Pollable + DowncastSync {
 
     /// Reports the live append state of this description.
     fn append(&self) -> bool {
-        self.open_flags() & linux_raw_sys::general::O_APPEND != 0
+        false
     }
 
     fn set_append(&self, _append: bool) -> StarryResult {

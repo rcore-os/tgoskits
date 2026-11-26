@@ -2,14 +2,14 @@ use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::c_int,
     hint::likely,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
 use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
-    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_EXCL},
+    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
     ioctl::TIOCSCTTY,
 };
 
@@ -199,6 +199,28 @@ pub struct File {
 }
 
 impl File {
+    pub(crate) fn from_file_like(any: &Arc<dyn FileLike>) -> StarryResult<Arc<Self>> {
+        if let Ok(file) = any.clone().downcast_arc::<File>() {
+            return Ok(file);
+        }
+        // Memfd wraps a regular File and is meant to behave as one for
+        // every read-data / size-changing syscall (lseek, fallocate,
+        // sendfile, pread, pwrite, ...). Hand back the inner File so
+        // those paths don't trip on the wrapper. Seal-aware ftruncate
+        // already takes a separate Memfd::from_fd branch upstream.
+        if let Some(memfd) = any.downcast_ref::<crate::file::memfd::Memfd>() {
+            return Ok(memfd.inner().clone());
+        }
+        if let Some(mount_table) = any.downcast_ref::<crate::file::MountTableFile>() {
+            return Ok(mount_table.inner().clone());
+        }
+        Err(if any.is::<Directory>() {
+            StarryError::IsADirectory
+        } else {
+            StarryError::InvalidInput
+        })
+    }
+
     pub fn new(inner: ax_fs_ng::File, open_flags: u32) -> Self {
         Self {
             inner,
@@ -350,26 +372,7 @@ impl FileLike for File {
     where
         Self: Sized + 'static,
     {
-        let any = get_file_like(fd)?;
-        if let Ok(file) = any.clone().downcast_arc::<File>() {
-            return Ok(file);
-        }
-        // Memfd wraps a regular File and is meant to behave as one for
-        // every read-data / size-changing syscall (lseek, fallocate,
-        // sendfile, pread, pwrite, ...). Hand back the inner File so
-        // those paths don't trip on the wrapper. Seal-aware ftruncate
-        // already takes a separate Memfd::from_fd branch upstream.
-        if let Ok(memfd) = any.clone().downcast_arc::<crate::file::memfd::Memfd>() {
-            return Ok(memfd.inner().clone());
-        }
-        if let Ok(mount_table) = any.clone().downcast_arc::<crate::file::MountTableFile>() {
-            return Ok(mount_table.inner().clone());
-        }
-        Err(if any.is::<Directory>() {
-            StarryError::IsADirectory
-        } else {
-            StarryError::InvalidInput
-        })
+        Self::from_file_like(&get_file_like(fd)?)
     }
 }
 impl Pollable for File {
@@ -401,10 +404,9 @@ pub struct Directory {
     // description. This is a sleepable mutex because filesystem reads may
     // block; dup/fork share the Directory and therefore this position.
     pub(crate) position: Mutex<DirectoryPosition>,
-    /// Original open flags (used by fd_is_path / sys_fchmodat to detect
-    /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
-    /// must reject fchmod just like O_PATH on a regular file).
-    open_flags: u32,
+    /// Open flags including the live append bit shared by dup and fork.
+    /// Updating O_APPEND does not publish any other state.
+    open_flags: AtomicU32,
     /// Whether this is the original handle returned by fsmount(2).
     /// Reopening it as a normal directory deliberately drops this authority.
     detached_mount_handle: bool,
@@ -423,7 +425,7 @@ impl Directory {
                 cursor: DirectoryCursor::START,
                 read_state: None,
             }),
-            open_flags,
+            open_flags: AtomicU32::new(open_flags),
             detached_mount_handle: false,
         }
     }
@@ -435,7 +437,7 @@ impl Directory {
                 cursor: DirectoryCursor::START,
                 read_state: None,
             }),
-            open_flags,
+            open_flags: AtomicU32::new(open_flags),
             detached_mount_handle: true,
         }
     }
@@ -479,7 +481,20 @@ impl FileLike for Directory {
     }
 
     fn open_flags(&self) -> u32 {
-        self.open_flags
+        self.open_flags.load(Ordering::Relaxed)
+    }
+
+    fn append(&self) -> bool {
+        self.open_flags() & O_APPEND != 0
+    }
+
+    fn set_append(&self, append: bool) -> StarryResult {
+        if append {
+            self.open_flags.fetch_or(O_APPEND, Ordering::Relaxed);
+        } else {
+            self.open_flags.fetch_and(!O_APPEND, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     fn path(&self) -> Cow<'_, str> {

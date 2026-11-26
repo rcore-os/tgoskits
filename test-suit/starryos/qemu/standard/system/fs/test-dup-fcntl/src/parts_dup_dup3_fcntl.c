@@ -178,6 +178,27 @@ int parts_dup_dup3_fcntl(void)
 
     CHECK_RET(fcntl(fd, F_SETFL, O_APPEND), 0, "F_SETFL -> O_APPEND: 设置成功");
 
+    CHECK_ERR(syscall(SYS_sendfile, fd, -1, NULL, 1), EBADF,
+              "sendfile 先拒绝无效输入 fd");
+    CHECK_ERR(syscall(SYS_sendfile, fd, -1, (void *)1, 1), EFAULT,
+              "sendfile 先读取用户偏移");
+
+    int write_only_input = open(TMPFILE, O_WRONLY);
+    CHECK(write_only_input >= 0, "打开只写 sendfile 输入文件");
+    if (write_only_input >= 0) {
+        CHECK_ERR(syscall(SYS_sendfile, fd, write_only_input, NULL, 1), EBADF,
+                  "sendfile 先拒绝只写输入 fd");
+        close(write_only_input);
+    }
+
+    int read_only_output = open(TMPFILE, O_RDONLY | O_APPEND);
+    CHECK(read_only_output >= 0, "打开只读 sendfile 输出文件");
+    if (read_only_output >= 0) {
+        CHECK_ERR(syscall(SYS_sendfile, read_only_output, fd, NULL, 1), EBADF,
+                  "sendfile 先拒绝只读输出 fd");
+        close(read_only_output);
+    }
+
     CHECK_RET(lseek(fd, 1, SEEK_SET), 1, "设置追加写入前的偏移");
     CHECK_RET(write(fd, "", 0), 0, "空追加写入成功");
     CHECK_RET(lseek(fd, 0, SEEK_CUR), 1, "空追加写入保留偏移");
@@ -242,6 +263,25 @@ int parts_dup_dup3_fcntl(void)
     CHECK((fl_complete & O_NONBLOCK) != 0, "F_GETFL: O_NONBLOCK 已设置");
 
     close(fd);
+
+    int directory = open("/tmp", O_RDONLY | O_DIRECTORY | O_APPEND);
+    CHECK(directory >= 0, "以 O_APPEND 打开目录");
+    if (directory >= 0) {
+        int other = dup(directory);
+        CHECK(other >= 0, "复制目录描述符");
+        int flags = fcntl(directory, F_GETFL);
+        CHECK(flags >= 0 && (flags & O_APPEND) != 0, "目录报告初始 O_APPEND");
+        if (other >= 0) {
+            CHECK_RET(fcntl(other, F_SETFL, 0), 0, "通过副本清除目录 O_APPEND");
+            flags = fcntl(directory, F_GETFL);
+            CHECK(flags >= 0 && (flags & O_APPEND) == 0, "目录报告清除后的状态");
+            CHECK_RET(fcntl(directory, F_SETFL, O_APPEND), 0, "重新设置目录 O_APPEND");
+            flags = fcntl(other, F_GETFL);
+            CHECK(flags >= 0 && (flags & O_APPEND) != 0, "副本共享目录追加状态");
+            close(other);
+        }
+        close(directory);
+    }
 
     /* PART 18: fcntl F_GETFL 基础验证 */
 
