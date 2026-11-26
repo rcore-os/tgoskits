@@ -143,6 +143,7 @@ fn prepare_extent_mapping_removal_chunk<B: BlockIo>(
     let mut tree = ExtentTree::with_filesystem(&mut inode_copy, fs, inode_num);
     let depth = usize::from(tree.load_root_from_inode()?.header().eh_depth);
     let extents = tree.all_extents(device)?;
+    let node_blocks = tree.external_node_blocks(device)?;
 
     for extent in extents {
         let extent_start = u64::from(extent.ee_block);
@@ -177,7 +178,8 @@ fn prepare_extent_mapping_removal_chunk<B: BlockIo>(
         }
         let segment_len =
             u32::try_from(segment_end - segment_start).map_err(|_| Ext4Error::overflow())?;
-        let credits = extent_removal_chunk_credits(fs, depth, physical_start, segment_len)?;
+        let credits =
+            extent_removal_chunk_credits(fs, depth, &node_blocks, physical_start, segment_len)?;
         if device.transaction_credit_cost(credits)? > credit_limit {
             return Err(Ext4Error::no_space().with_operation("extent:restart_credits"));
         }
@@ -200,18 +202,33 @@ fn prepare_extent_mapping_removal_chunk<B: BlockIo>(
 fn extent_removal_chunk_credits(
     fs: &Ext4FileSystem,
     depth: usize,
+    node_blocks: &[AbsoluteBN],
     physical_start: AbsoluteBN,
     len: u32,
 ) -> Ext4Result<TransactionCredits> {
-    let data_groups = extent_allocation_groups(fs, &[(physical_start, len)], &[], &[])?.len();
     // One removal step can dirty one extent node per tree level and detach at
-    // most one node per level. Every released data or metadata block can dirty
-    // one block bitmap and one group descriptor; the inode-table block and
-    // superblock consume the final two credits. A detached node is either
-    // already one of the touched extent nodes or consumes its reserved depth
-    // credit as a revoke, so no additional per-level term is required here.
+    // most one node per level. When the step leaves the root with a single
+    // child, that child is folded into the inode and detached as well, so an
+    // external tree can release one node more than its depth. A detached node
+    // is either already one of the touched extent nodes or consumes its
+    // reserved credit as a revoke, so no additional per-level term is required
+    // for the nodes themselves.
+    let released_nodes = if depth == 0 {
+        0
+    } else {
+        depth.checked_add(1).ok_or_else(Ext4Error::overflow)?
+    };
+    // Every released data or metadata block can dirty one block bitmap and
+    // one group descriptor. A step's data lies in one group. Its released
+    // nodes lie in the groups that hold the tree's nodes, and there are at most
+    // `released_nodes` of them, so the smaller count bounds the groups they
+    // add. Neither count depends on where the step's data lies, and removal
+    // only shrinks the tree, so no later step needs more than the first. The
+    // inode-table block and superblock consume the final two credits.
+    let data_groups = extent_allocation_groups(fs, &[(physical_start, len)], &[], &[])?.len();
+    let node_groups = extent_allocation_groups(fs, &[], node_blocks, &[])?.len();
     let allocation_groups = data_groups
-        .checked_add(depth)
+        .checked_add(core::cmp::min(node_groups, released_nodes))
         .ok_or_else(Ext4Error::overflow)?;
     let metadata_credits = depth
         .checked_add(
@@ -223,7 +240,7 @@ fn extent_removal_chunk_credits(
         .ok_or_else(Ext4Error::overflow)?;
     Ok(TransactionCredits::metadata_with_revokes(
         metadata_credits,
-        depth,
+        released_nodes,
     ))
 }
 
