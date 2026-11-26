@@ -214,8 +214,13 @@ pub struct EioIntcCpuInterface<A: IocsrAccess> {
 }
 
 impl<A: IocsrAccess> EioIntcCpuInterface<A> {
-    /// Claims the lowest pending EIOINTC vector without taking a controller
-    /// lock.
+    /// Claims and acknowledges the lowest pending EIOINTC vector.
+    ///
+    /// The selected ISR bit is cleared before returning, so a later pulse from
+    /// the same source remains pending while its device handler runs. There is
+    /// no deferred completion step. Other pending vectors remain untouched.
+    /// Callers keep this bounded transaction on one CPU and serialize claims
+    /// with that CPU's interrupt dispatch; no controller lock is acquired.
     pub fn claim(&self) -> Option<EioVector> {
         for group in 0..self.config.vector_count.div_ceil(VECTORS_PER_U64) {
             let first_vector = group * VECTORS_PER_U64;
@@ -228,28 +233,12 @@ impl<A: IocsrAccess> EioIntcCpuInterface<A> {
                 continue;
             }
             let raw = first_vector + pending.trailing_zeros() as usize;
-            return EioVector::new(raw).ok();
+            let vector = EioVector::new(raw).ok()?;
+            self.access
+                .write_u64(REG_ISR + group * 8, 1u64 << (raw % VECTORS_PER_U64));
+            return Some(vector);
         }
         None
-    }
-
-    /// Completes one vector with the EIOINTC ISR write-one-to-clear protocol.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IntcError::OutsideConfiguredRange`] for a vector not owned by
-    /// this controller instance.
-    pub fn complete(&self, vector: EioVector) -> Result<(), IntcError> {
-        if vector.raw() >= self.config.vector_count {
-            return Err(IntcError::OutsideConfiguredRange {
-                kind: "EIOINTC vector",
-                index: vector.raw(),
-                count: self.config.vector_count,
-            });
-        }
-        let (offset, bit) = eio_register_bit(vector);
-        self.access.write_u64(REG_ISR + offset, bit);
-        Ok(())
     }
 
     /// Returns the configured vector count.

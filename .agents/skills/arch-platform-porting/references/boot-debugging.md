@@ -365,6 +365,8 @@ cargo xtask starry board \
 
 ## LoongArch 经验
 
+- EIOINTC 在 `EioIntcCpuInterface::claim()` 内先确认返回的锁存事件，再交给设备处理器。平台 `ActiveIrq` 不再持有 EIO 延后清除责任；设备处理期间同来源的新 pending 必须留给下一次 claim。宿主回归的 IOCSR 后端必须模拟 W1 清零，不能把 ISR 写入当成普通赋值；复用 EIO 功能旅程验证同来源再次到达、相邻 vector 保留和最终排空，再执行原始 LoongArch QEMU 检查。不要把旧实现的偶发通过或带调试选项的通过认作修复证明。
+
 - LoongArch QEMU virt 的 PCI I/O aperture 为 `0x1800_0000..0x1801_0000`，必须与 ECAM、memory aperture 一同由设备图封存并发布到 FDT／ACPI。仅支持 memory BAR 的 root 对未实现的 I/O 设备返回 open bus、忽略写；只有设备实际接管访问后才提交指令推进，不能跳过未处理的 MMIO fault。宿主物理 IRQ 使用 ACPI GSI，客户机 PCH-PIC 使用 input，两者通过 VM 资源计划中的不可变路由关联；全虚拟化设备不据固件默认 UART／PCI INTx 注册宿主物理来源。
 
 - Linux 客户机不经过 UEFI 固件、由虚拟机监控器直接装载时，仍需遵守 LoongArch Linux 的直接启动 ABI：`a0 = 1` 表示 EFI boot，`a1` 指向命令行，`a2` 指向最小 EFI system table；配置表至少提供 Linux EFI boot memory map 和设备树指针，没有初始内存文件系统时省略 initrd media 表与设备树的 `linux,initrd-*` 属性。这里的 EFI system table 是 Linux 启动参数，不表示执行了 UEFI 固件。`axvm::arch::loongarch64::boot::linux` 在客户机高端 RAM 起点 `0x8000_0000` 构造启动信息，避免与 FDT、内核和 initramfs 装载区间重叠；`a1`、`a2` 和 EFI 配置表内部指针必须使用搬移后的客户机物理地址，不能改用 UHI 的 `a0 = -2`、`a1 = fdt` 约定。

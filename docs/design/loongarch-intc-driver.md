@@ -152,9 +152,29 @@ let EioIntcParts {
 } = EioIntcParts::new(iocsr, EioIntcConfig::new(vector_count)?)?;
 ```
 
-controller 拥有 init/enable/disable；CPU interface 拥有 pending claim 与 W1
-complete。两端持有同一个 caller-supplied IOCSR capability 的副本，但不共享
+controller 拥有 init/enable/disable；CPU interface 的
+`EioIntcCpuInterface::claim()` 负责取得并确认一个 pending vector。
+两端持有同一个 caller-supplied IOCSR capability 的副本，但不共享
 controller lock。当前硬件与平台仍只启用 CPU0/单节点路由。
+
+W1 确认合入 `claim()`，使返回的 vector 已完成本次事件确认。
+旧的 `somehal::ActiveIrq` 在设备处理完成后才清除 EIO pending；若同一来源
+在处理期间再次到达，迟到清除会覆盖新的 pending。
+[Linux v7.1 的 EIOINTC 派发](https://github.com/torvalds/linux/blob/v7.1/drivers/irqchip/irq-loongson-eiointc.c)
+同样先清除观察到的 pending，再调用设备处理器。本实现每次只清除实际返回的
+一位，保留其他 vector，后续到达的同来源事件也留给下一次 `claim()`。
+
+只提前移动平台层的 `complete()` 调用可以缩小变更，但仍将必要硬件顺序留给
+每个消费者，并允许返回后再次清除。方案因此删除 EIO 的独立 `complete()`，
+同步迁移唯一生产消费者 `somehal`，不增加兼容入口或第二个清除点。LIO 的
+电平来源及完成协议独立，不受这项迁移影响。CPU interface 的调用保持在同一
+处理器、不可重入的硬中断边界内；不增加锁、分配、寄存器写入次数或后台任务。
+
+确定性证明复用现有 EIO 功能测试：后端按真实 W1 语义模拟 pending，先确认
+取走的事件已被清除，再在处理窗口发布同来源事件，验证它与相邻 vector 均能
+继续交付。该证明只覆盖寄存器协议；LoongArch 原始 QEMU 行负责验证真实装配，
+不能用单次通过归因间歇性控制台失败。回滚须同时恢复驱动和 `somehal` 消费者，
+不涉及持久状态迁移；合入前仍需中断与平台领域的独立审查。
 
 ### PCH-PIC
 
@@ -255,19 +275,17 @@ PCH 本地步骤失败时，glue 把已经转换的父 EIO vector 回滚到原�
 最低层 host 测试覆盖：
 
 - EIO：MISC、NODEMAP、IPMAP、ROUTE、BOUNCE 初始化，enable bitmap，pending
-  claim 与 W1 complete；
+  claim 内的 W1 确认、处理期间再次到达的同来源事件及相邻 vector 的后续交付；
 - PCH：vector/input 边界，ACPI identity，edge/level、polarity、MASK/HTVEC；
 - LIO：parent map、route byte、初始化、enable snapshot、多 parent 同时 pending 时
   的 cascade claim 隔离、fallback parent 与无硬件 EOI；
 - RDIF：三类 controller 的合法、空、越界、domain/config mismatch 路径。
 
-集成与运行验证使用：
+提交改动后，用基准引用选择受影响的标准库测试，并通过项目入口执行静态检查和
+对应的运行验证；核对实际选中的软件包和测试，而不是把未选中项视为通过：
 
 ```bash
-cargo test -p loongarch-intc-driver
-cargo test -p loongarch-intc-driver --all-features
-cargo test -p somehal --tests
-cargo test -p rdrive --test fdt_priority_order
+cargo xtask test --since <base-ref>
 cargo fmt
 cargo xtask clippy --package loongarch-intc-driver
 cargo xtask clippy --package somehal

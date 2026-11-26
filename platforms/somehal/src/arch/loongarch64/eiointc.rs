@@ -55,15 +55,6 @@ pub fn claim_irq() -> Option<EioVector> {
     runtime().and_then(|runtime| runtime.cpu_interface.claim())
 }
 
-pub fn complete_irq(vector: EioVector) {
-    let Some(runtime) = runtime() else {
-        return;
-    };
-    if let Err(error) = runtime.cpu_interface.complete(vector) {
-        warn!("ignore invalid EIOINTC completion {vector:?}: {error}");
-    }
-}
-
 pub fn irq_id(vector: EioVector) -> Option<crate::irq::IrqId> {
     runtime().map(|runtime| {
         crate::irq::IrqId::new(runtime.domain, crate::irq::HwIrq(vector.raw() as u32))
