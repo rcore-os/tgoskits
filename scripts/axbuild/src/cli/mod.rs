@@ -136,6 +136,8 @@ mod tests {
 
     #[test]
     fn starry_qemu_requires_one_complete_run_mode() {
+        use clap::error::ErrorKind;
+
         let parse = |args: &[&str]| {
             Cli::try_parse_from(
                 ["xtask", "starry", "test", "qemu"]
@@ -143,52 +145,55 @@ mod tests {
                     .chain(args.iter().copied()),
             )
         };
+        let external = [
+            "--build-config",
+            "build.toml",
+            "--qemu-config",
+            "qemu.toml",
+            "--rootfs",
+            "rootfs.img",
+            "--fixed-elf",
+            "kernel.elf",
+        ];
+
         assert!(parse(&["--arch", "x86_64", "--list"]).is_ok());
-        assert!(
-            parse(&[
-                "--build-config",
-                "build.toml",
-                "--qemu-config",
-                "qemu.toml",
-                "--rootfs",
-                "rootfs.img",
-                "--fixed-elf",
-                "kernel.elf",
-            ])
-            .is_ok()
+        assert!(parse(&external).is_ok());
+        assert_eq!(
+            parse(&["--build-config", "build.toml", "--rootfs", "rootfs.img"])
+                .err()
+                .expect("a run with an incomplete set of external inputs must fail")
+                .kind(),
+            ErrorKind::MissingRequiredArgument,
         );
-        for args in [
-            vec!["--build-config", "build.toml", "--rootfs", "rootfs.img"],
-            vec![
-                "--arch",
-                "x86_64",
-                "--build-config",
-                "build.toml",
-                "--qemu-config",
-                "qemu.toml",
-                "--rootfs",
-                "rootfs.img",
-            ],
-            vec![
-                "--build-config",
-                "build.toml",
-                "--qemu-config",
-                "qemu.toml",
-                "--rootfs",
-                "rootfs.img",
-                "--list",
-            ],
-            vec!["--arch", "x86_64", "--list", "--fixed-elf", "kernel.elf"],
-            vec![
-                "--arch",
-                "x86_64",
-                "--test-case",
-                "synthetic-case",
-                "--fixed-elf",
-                "kernel.elf",
-            ],
+        for discovery in [
+            &["--arch", "x86_64"][..],
+            &["--target", "x86_64-unknown-none"],
+            &["--test-case", "qemu/system"],
+            &["--list"],
         ] {
-            assert!(parse(&args).is_err(), "incompatible run inputs: {args:?}");
+            let mixed: Vec<_> = external
+                .into_iter()
+                .chain(discovery.iter().copied())
+                .collect();
+            assert_eq!(
+                parse(&mixed)
+                    .err()
+                    .expect("mixed run modes must conflict")
+                    .kind(),
+                ErrorKind::ArgumentConflict,
+                "{mixed:?}",
+            );
+        }
+        for discovery in [
+            &["--arch", "x86_64", "--list"][..],
+            &["--arch", "x86_64", "--test-case", "synthetic-case"],
+        ] {
+            let incomplete: Vec<_> = discovery
+                .iter()
+                .copied()
+                .chain(["--fixed-elf", "kernel.elf"])
+                .collect();
+            assert!(parse(&incomplete).is_err(), "{incomplete:?}");
         }
     }
 }
