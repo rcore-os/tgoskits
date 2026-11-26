@@ -1032,3 +1032,32 @@ Linux v7.1 的
 本批修正 `bpf-perf-event-output` 内部共享结果的发布者，既有输出操作及并发压力继续执行，生产系统调用实现保持原源码。相同受控检查在旧结果发布行为上使程序和分组失败，修正源码在四架构原定向入口通过。固定 Linux v7.1 的 [perf_trace_run_bpf_submit](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L11361) 作为全局回调语义依据；本批没有新增 Linux 运行结果，也没有扩展前述逐入口的实现结论。
 
 原生写入时间和物理回写的完整顺序仍按原计划验收。记录键为 `perf_result_observation_20261125`，其中每个运行结果绑定实际源码及测试摘要，新提交的持续集成结果单独核对。
+
+## 29. 缓存写回错误
+
+缓存写回失败保存在真实 `CachedFile` 的共享状态中，`File` 只保存该打开描述的观察位置。独立打开分别观察，复制描述符继续共享同一 `File`；后台重试成功不会抹去尚未观察的错误。此处记录缓存路径的实现和证据边界，直接 I/O 的共同数据所有者仍在迁移。
+
+### 29.1 显式同步
+
+`File::sync()` 先执行实际后端同步，再检查并推进本描述的错误位置；即使本次同步失败也推进观察，返回时保留本次操作的原始错误。普通后端 flush 失败直接返回，不登记成缓存数据写回历史。该规则对照固定 Linux v7.1 的 `errseq_sample()`、`file_check_and_advance_wb_err()` 和 `ext4_sync_file()`。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| fsync/缓存普通文件的写回错误；x86_64 74；aarch64/riscv64/loongarch64 82 | v7.1 [do_fsync](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/sync.c#L204)、[ext4_sync_file](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/ext4/fsync.c#L180) | 对实际打开描述同步并推进写回错误观察；操作本身失败时保留该错误 | sys_fsync → file::fs::File::inner → ax_fs_ng::File::sync(false) → FileBackend::sync 与共享 CachedFile 错误状态；位置归该 File | 无法确认 | 相同组件旅程五种配置通过，覆盖独立打开、共享描述、重试与错误优先级；尚未在真实系统调用中注入数据写回失败 |
+| fdatasync/缓存普通文件的写回错误；x86_64 75；aarch64/riscv64/loongarch64 83 | v7.1 [fdatasync](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/sync.c#L219)、[ext4_sync_file](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/ext4/fsync.c#L180) | 数据同步使用实际打开描述，并按同一规则观察此前数据写回错误 | sys_fdatasync → file::fs::File::inner → ax_fs_ng::File::sync(true) → FileBackend::sync 与共享 CachedFile 错误状态 | 无法确认 | 缓存状态与描述观察由组件证明；数据同步的系统级故障注入仍待执行，不能由 fsync 的调用链推定 |
+
+`explicit_empty_sync_releases_io_and_failed_sync_releases_the_round` 增强既有完整同步旅程，没有新增测试函数。AArch64 原系统程序在生产源码 `05e3d50988` 为 339 项通过、0 失败，程序与外层任务成功；这一结果证明本次装配没有破坏原旅程，不代替表中缺少的系统级错误注入。
+
+### 29.2 写入的同步完成
+
+缓存后端原有 `WritebackPolicy::SYNCHRONOUS` 完成点现在通过实际 `File::sync()` 执行；追加和组合后端沿用同一个完成回调。原始 `FileBackend` 调用者仍使用自己的后端同步，不创建额外打开描述。此处只讨论同步 inode 的缓存写入，不据此扩大到其他写标志或未迁移的直接 I/O。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| write/同步 inode 的缓存写入；x86_64 1；aarch64/riscv64/loongarch64 64 | v7.1 [generic_write_sync](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/fs.h#L2651) | 写入的同步完成使用实际打开描述，失败后不由同一描述重复报告已经观察的历史 | sys_write → FileLike::write → file::fs::File::write → ax_fs_ng::File::write → FileBackend::write_at_with_sync 或 append_with_sync → File::sync(false) | 无法确认 | 普通与追加组件路径在旧完成行为五种配置失败，修后五种通过；系统调用级同步写回故障尚未注入 |
+| writev/同步 inode 的缓存写入；x86_64 20；aarch64/riscv64/loongarch64 66 | v7.1 [do_writev](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c)、[generic_write_sync](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/fs.h#L2651) | 向量写入的同步完成归实际输出打开描述 | sys_writev → IoVectorBuf 与驻留负载 → File::write → 缓存完成回调 → 该 File::sync(false) | 无法确认 | 共用完成点已有组件红绿证明；真实向量入口的写回故障及前端复制失败没有由该证明覆盖 |
+| pwrite64/同步 inode 的缓存定位写；x86_64 18；aarch64/riscv64/loongarch64 68 | v7.1 [ksys_pwrite64](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c)、[generic_write_sync](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/fs.h#L2651) | 定位写的同步完成使用该打开描述，不改变共享位置 | sys_pwrite64 → 定位写分派 → ax_fs_ng::File::write_at → FileBackend::write_at_with_sync → 该 File::sync(false) | 无法确认 | 完成点观察有组件证据；定位入口的系统级故障注入和全部位置后置条件仍待验收 |
+| pwritev/同步 inode 的缓存定位向量写；x86_64 296；aarch64/riscv64/loongarch64 70 | v7.1 [do_pwritev](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c)、[generic_write_sync](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/fs.h#L2651) | 定位向量的同步完成仍使用实际打开描述 | sys_pwritev → IoVectorBuf → 定位写分派 → File::write_at → 缓存完成回调 → 该 File::sync(false) | 无法确认 | 组件覆盖完成点，尚缺该向量入口的系统级写回故障证明 |
+| pwritev2/同步 inode 的缓存顺序或定位向量写；x86_64 328；aarch64/riscv64/loongarch64 287 | v7.1 [do_pwritev](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c)、[generic_write_sync](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/fs.h#L2651) | 按顺序或定位路径完成同步写，使用同一实际打开描述 | sys_pwritev2 → 顺序或定位分派 → File::write 或 write_at → 缓存完成回调 → 该 File::sync(false) | 无法确认 | 完成点有组件红绿证明；该入口的故障注入、各写标志和顺序分支仍须单独验收 |
+
+错误源仅限实际缓存数据写回 primitive 的失败，不通过错误码猜测失败阶段。纯 flush 错误不重复登记。以上各行保留缺失证据，后续直接 I/O、数据长度和映射状态的完整迁移不能由本节替代。
