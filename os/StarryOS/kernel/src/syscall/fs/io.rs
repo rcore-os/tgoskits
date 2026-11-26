@@ -879,7 +879,8 @@ pub fn sys_sendfile(
         len
     );
     let out_file = get_file_like(out_fd)?;
-    if out_file.append() {
+    // Pipe output follows the splice-to-pipe path, which accepts O_APPEND.
+    if !out_file.is::<Pipe>() && out_file.append() {
         return Err(StarryError::InvalidInput);
     }
 

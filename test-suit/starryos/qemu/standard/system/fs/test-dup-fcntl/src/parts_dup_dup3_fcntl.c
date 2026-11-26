@@ -4,12 +4,48 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/sendfile.h>
+#include <sys/syscall.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
 #ifndef F_DUPFD_CLOEXEC
 #define F_DUPFD_CLOEXEC 1030
 #endif
+
+static int check_sendfile_to_fifo_with_append(void)
+{
+    int fail = 0;
+    char directory[] = "/tmp/dup-fcntl-fifo-XXXXXX";
+    CHECK(mkdtemp(directory) != NULL, "创建 FIFO 测试目录");
+    if (fail) return fail;
+
+    int dir = open(directory, O_RDONLY | O_DIRECTORY);
+    CHECK(dir >= 0, "打开 FIFO 测试目录");
+    if (dir >= 0) {
+        CHECK_RET(mkfifoat(dir, "out", 0600), 0, "创建命名 FIFO");
+        int reader = openat(dir, "out", O_RDONLY | O_NONBLOCK);
+        int writer = openat(dir, "out", O_WRONLY | O_NONBLOCK);
+        int input = open(TMPFILE, O_RDONLY);
+        CHECK(reader >= 0 && writer >= 0 && input >= 0, "打开 FIFO 和输入文件");
+        if (reader >= 0 && writer >= 0 && input >= 0) {
+            CHECK_RET(fcntl(writer, F_SETFL, O_APPEND | O_NONBLOCK), 0,
+                      "为命名 FIFO 设置 O_APPEND");
+            CHECK_RET(syscall(SYS_sendfile, writer, input, NULL, 5), 5,
+                      "sendfile 允许写入带 O_APPEND 的命名 FIFO");
+            char data[5] = {0};
+            CHECK_RET(read(reader, data, sizeof(data)), 5, "从 FIFO 读出完整数据");
+            CHECK(memcmp(data, "start", sizeof(data)) == 0, "FIFO 收到原始文件内容");
+        }
+        if (input >= 0) close(input);
+        if (writer >= 0) close(writer);
+        if (reader >= 0) close(reader);
+        unlinkat(dir, "out", 0);
+        close(dir);
+    }
+    rmdir(directory);
+    return fail;
+}
 
 int parts_dup_dup3_fcntl(void)
 {
@@ -154,6 +190,8 @@ int parts_dup_dup3_fcntl(void)
                   "sendfile 拒绝通过 F_SETFL 启用的 O_APPEND");
         close(input);
     }
+
+    fail += check_sendfile_to_fifo_with_append();
 
     CHECK_RET(write(fd, "_middle", 7), 7, "非空追加写入成功");
     off_t pos = lseek(fd, 0, SEEK_CUR);
