@@ -11,6 +11,8 @@ mod parse;
 mod remove;
 mod root;
 mod split;
+#[cfg(kani)]
+mod verification;
 
 pub use node::ExtentNode;
 pub use parse::{ExtentBlockMapping, ExtentRun};

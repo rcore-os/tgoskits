@@ -173,6 +173,9 @@ pub fn ext4_crc32c_seed_from_superblock(sb: &Ext4Superblock) -> u32 {
     }
 }
 
+#[cfg(kani)]
+mod verification;
+
 #[cfg(test)]
 mod tests {
     use super::*;

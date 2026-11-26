@@ -14,6 +14,8 @@ pub use extent::{Ext4Extent, Ext4ExtentHeader, Ext4ExtentIdx};
 pub use inode::Ext4Inode;
 pub use time::{Ext4TimeSpec, Ext4Timestamp};
 
+#[cfg(kani)]
+mod verification;
 #[cfg(test)]
 mod tests {
     use super::*;
