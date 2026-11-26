@@ -965,14 +965,12 @@ impl CachedFile {
         if self.in_memory || !read_backing {
             page.data().fill(0);
         } else {
-            // `PageCache::new()` does not zero the freshly allocated frame, and
-            // `FileNodeOps::read_at` short-reads at EOF (rsext4/fat return only the
-            // bytes actually read, leaving the rest of the buffer untouched). Zero the
-            // tail beyond the read length so a partial last page never exposes stale
-            // physical memory past EOF — POSIX/Linux require those bytes to read as 0
-            // (e.g. an mmap of a 100-byte file must see `[100, PAGE_SIZE)` as zero).
-            let read = file.read_at(&mut page.data(), pn as u64 * PAGE_SIZE as u64)?;
-            page.data()[read..].fill(0);
+            // A positive short transfer is not EOF. Complete the retained
+            // prefix before a partial-page write can preserve or modify it.
+            let mut bytes = page.data();
+            let read =
+                backing::read_until_eof_at(file, &mut bytes, u64::from(pn) * PAGE_SIZE as u64)?;
+            bytes[read..].fill(0);
         }
         Ok(())
     }

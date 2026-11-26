@@ -227,11 +227,8 @@ impl FillOwner<'_> {
         bytes.resize(run_len, 0);
         let offset = range.start * PAGE_SIZE as u64;
         let readable = self.file_len().saturating_sub(offset).min(run_len as u64) as usize;
-        let read = file.read_at(&mut bytes[..readable], offset)?;
-        if read > readable {
-            return Err(VfsError::Io);
-        }
-        // The initialized staging buffer preserves EOF/short-read zero tails.
+        super::backing::read_until_eof_at(file, &mut bytes[..readable], offset)?;
+        // The initialized staging buffer preserves the tail beyond actual EOF.
         // Each allocated page is fully overwritten, not cleared a second time.
         let mut pages = Vec::new();
         pages

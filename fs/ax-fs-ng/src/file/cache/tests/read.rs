@@ -147,6 +147,14 @@ fn direct_backend_cursor_handles_short_reads_and_eof_incrementally() {
         backing.fail_next_read.store(true, Ordering::Release);
         assert_eq!(backend.read_buf_at(dst.unfilled(), 0), Err(VfsError::Io));
         assert_eq!(dst.filled(), b"prefixontents");
+
+        let mut buffered = [0; 8];
+        assert_eq!(cached.read_at(&mut buffered[..], 0), Ok(8));
+        assert_eq!(&buffered, b"contents");
+        cached.invalidate_clean_pages(0, 1).unwrap();
+        cached.write_at(&b"NEW"[..], 1).unwrap();
+        assert_eq!(cached.read_at(&mut buffered[..], 0), Ok(8));
+        assert_eq!(&buffered, b"cNEWents");
     });
 }
 
