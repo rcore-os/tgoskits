@@ -37,6 +37,8 @@ const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
 const APIC_BASE_MSR: u32 = 0x1b;
 const IA32_UMWAIT_CONTROL: u32 = 0xe1;
 const AMD64_DE_CFG: u32 = 0xc001_1029;
+const MTRR_CAP_MSR: u32 = 0xfe;
+const MTRR_DEF_TYPE_MSR: u32 = 0x2ff;
 
 const EFER_SVME: u64 = 1 << 12;
 const EFER_LMA: u64 = 1 << 10;
@@ -358,6 +360,17 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
                 .expect("SVM policy CPU")
                 .set_msr_write_intercept(msr, true)?;
         }
+        // MTRR memory types are not implemented. Reject every MTRR MSR access
+        // so the guest cannot modify the host's MTRRs.
+        let controls = self.cpu.svm_controls_mut().expect("SVM policy CPU");
+        for msr in [MTRR_CAP_MSR, MTRR_DEF_TYPE_MSR] {
+            controls.set_msr_read_intercept(msr, true)?;
+            controls.set_msr_write_intercept(msr, true)?;
+        }
+        for msr in 0x200..=0x26f {
+            controls.set_msr_read_intercept(msr, true)?;
+            controls.set_msr_write_intercept(msr, true)?;
+        }
         Ok(())
     }
 
@@ -628,6 +641,9 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
             Ok(SvmExitCode::CrWrite(cr @ (0 | 3 | 4))) => {
                 Some(self.handle_cr_write(cr as usize, exit_info))
             }
+            Ok(SvmExitCode::Msr) if Self::is_unsupported_mtrr_msr(self.regs().rcx as u32) => {
+                Some(self.handle_unsupported_mtrr_msr())
+            }
             Ok(SvmExitCode::Msr) if self.regs().rcx as u32 == APIC_BASE_MSR => {
                 Some(self.handle_apic_base_msr_access(exit_info))
             }
@@ -645,6 +661,17 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
             }
             _ => None,
         }
+    }
+
+    fn is_unsupported_mtrr_msr(msr: u32) -> bool {
+        msr == MTRR_CAP_MSR || msr == MTRR_DEF_TYPE_MSR || (0x200..=0x26f).contains(&msr)
+    }
+
+    fn handle_unsupported_mtrr_msr(&mut self) -> X86VcpuResult {
+        // Report #GP without retiring the MSR instruction, keeping the fault
+        // guest-local and preventing a hardware MTRR access.
+        self.queue_event(PendingEvent::exception(13, Some(0)));
+        Ok(())
     }
 
     fn handle_guest_gif_exit(&mut self, guest_gif: bool) -> X86VcpuResult {
@@ -831,6 +858,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
                 const FEATURE_PCID: u32 = 1 << 17;
                 const FEATURE_HYPERVISOR: u32 = 1 << 31;
                 const FEATURE_MCE: u32 = 1 << 7;
+                const FEATURE_MTRR: u32 = 1 << 12;
                 const FEATURE_X2APIC: u32 = 1 << 21;
                 const FEATURE_TSC_DEADLINE: u32 = 1 << 24;
                 const FEATURE_APIC: u32 = 1 << 9;
@@ -844,6 +872,8 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
                 res.ecx &= !FEATURE_TSC_DEADLINE;
                 res.ecx |= FEATURE_HYPERVISOR;
                 res.edx &= !FEATURE_MCE;
+                // Memory-type MTRRs are not virtualized; hide them from the guest.
+                res.edx &= !FEATURE_MTRR;
                 res.edx |= FEATURE_APIC;
                 res.ebx &= !(MAX_LOGICAL_PROCESSORS_MASK | INITIAL_APIC_ID_MASK);
                 res.ebx |= 1 << 16;
@@ -896,9 +926,12 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
             }
             LEAF_EXTENDED_FEATURE_INFO => {
                 const FEATURE_SVM: u32 = 1 << 2;
+                const FEATURE_EXTAPIC: u32 = 1 << 3;
+                const FEATURE_IBS: u32 = 1 << 10;
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
-                // Hide SVM support from the guest until nested SVM is implemented.
-                res.ecx &= !FEATURE_SVM;
+                // Hide SVM until nested SVM exists. EXTAPIC and IBS require
+                // APIC EILVT and IBS virtualization, which are not implemented.
+                res.ecx &= !(FEATURE_SVM | FEATURE_EXTAPIC | FEATURE_IBS);
                 res
             }
             LEAF_SVM_FEATURES => CpuIdResult {

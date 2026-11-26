@@ -1,0 +1,27 @@
+board_type = "TianHong-minipc-D3"
+cmdline = "axvisor.vm_start=1"
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+]
+timeout = 300
+
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+    "(?m)^test pass!\\s*$",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+]
+
+[axbuild]
+id = "board/tianhong-minipc-d3/linux"
+aliases = ["smoke"]

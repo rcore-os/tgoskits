@@ -372,6 +372,28 @@ kind = "axvisor-board"
 board = "asus-nuc15crh-linux"
 
 [[check]]
+id = "test-axvisor-self-hosted-board-tianhong-minipc-d3-linux"
+impact_targets = ["axvisor:x86_64"]
+name = "Board TianHong MiniPC D3 · Linux guest"
+runner = "board"
+cache_key = ""
+resource_group = "tianhong-minipc-d3"
+timeout_minutes = 45
+download_xtask_bin_artifact = true
+command = '''
+TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+STAGING_DIR="$TARGET_DIR/axbuild/board-assets/tianhong-minipc-d3-linux"
+mkdir -p "$STAGING_DIR"
+target/debug/tg-xtask image pull qemu-x86_64 --extract-dir "$STAGING_DIR"
+target/debug/tg-xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir "$STAGING_DIR"
+target/debug/tg-xtask axvisor test board --test-case board/tianhong-minipc-d3/linux --board tianhong-minipc-d3-linux
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "tianhong-minipc-d3-linux"
+
+[[check]]
 id = "test-orangepi-5-plus-robot-axvisor-guests"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
 name = "Board OrangePi 5 Plus · AxVisor Linux + StarryOS guests UVC/NPU + FT232 loopback"
