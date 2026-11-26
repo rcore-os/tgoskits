@@ -25,11 +25,7 @@ const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtes
 
 impl Starry {
     pub(crate) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
-        if args.build_config.is_some()
-            || args.qemu_config.is_some()
-            || args.rootfs.is_some()
-            || args.fixed_elf.is_some()
-        {
+        if args.build_config.is_some() || args.qemu_config.is_some() || args.rootfs.is_some() {
             return self.run_external_qemu(args).await;
         }
         let environment = RequestEnvironment::capture()?;
