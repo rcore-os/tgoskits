@@ -406,6 +406,10 @@ static int replay_output(int output_fd)
             return -1;
         }
         if (length == 0) {
+            if (fflush(stdout) == EOF) {
+                perror("flush captured system test output");
+                return -1;
+            }
             return 0;
         }
         if (fwrite(buffer, 1, (size_t)length, stdout) != (size_t)length) {
