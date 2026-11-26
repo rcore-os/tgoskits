@@ -198,7 +198,7 @@ pub(crate) fn mmu_entry() -> ! {
 }
 
 pub(super) fn is_boot_from_uefi() -> bool {
-    // The LoongArch EFI wrapper calls `kernel_entry(1, null, system_table)`.
+    // The LoongArch EFI wrapper passes one, null, and the system table.
     // U-Boot `go` may also pass `a0 == 1` as argc, so require the EFI-only
     // null second argument before treating `a2` as an EFI system table.
     unsafe { FW_ARG0 == 1 && FW_ARG1 == 0 && FW_ARG2 != 0 }

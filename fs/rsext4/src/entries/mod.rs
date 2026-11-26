@@ -5,6 +5,8 @@ mod dir_entry;
 mod disk;
 pub(crate) mod htree_dir;
 mod iterator;
+#[cfg(kani)]
+mod verification;
 
 pub use dir_entry::{Ext4DirEntry, Ext4DirEntry2, Ext4DirEntryTail, Ext4ExtentStatus};
 pub(crate) use dir_entry::{decode_directory_record_length, encode_directory_record_length};
