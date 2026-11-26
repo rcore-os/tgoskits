@@ -129,3 +129,60 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Starry { command } => Starry::new()?.execute(command).await,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starry_qemu_requires_one_complete_run_mode() {
+        use clap::error::ErrorKind;
+
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(
+                ["xtask", "starry", "test", "qemu"]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            )
+        };
+        let external = [
+            "--build-config",
+            "build.toml",
+            "--qemu-config",
+            "qemu.toml",
+            "--rootfs",
+            "rootfs.img",
+            "--fixed-elf",
+            "kernel.elf",
+        ];
+
+        assert!(parse(&["--arch", "x86_64", "--list"]).is_ok());
+        assert!(parse(&external).is_ok());
+        assert_eq!(
+            parse(&["--build-config", "build.toml", "--rootfs", "rootfs.img"])
+                .err()
+                .expect("a run with an incomplete set of external inputs must fail")
+                .kind(),
+            ErrorKind::MissingRequiredArgument,
+        );
+        for discovery in [
+            &["--arch", "x86_64"][..],
+            &["--target", "x86_64-unknown-none"],
+            &["--test-case", "qemu/system"],
+            &["--list"],
+        ] {
+            let mixed: Vec<_> = external
+                .into_iter()
+                .chain(discovery.iter().copied())
+                .collect();
+            assert_eq!(
+                parse(&mixed)
+                    .err()
+                    .expect("mixed run modes must conflict")
+                    .kind(),
+                ErrorKind::ArgumentConflict,
+                "{mixed:?}",
+            );
+        }
+    }
+}
