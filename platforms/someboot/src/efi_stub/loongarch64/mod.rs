@@ -121,7 +121,7 @@ pub(crate) fn physical_alias(address: usize) -> Option<usize> {
     }
 }
 
-pub(super) fn inherited_handoff() -> bool {
+pub(crate) fn inherited_handoff() -> bool {
     INHERITED_EFI_HANDOFF.load(Ordering::Acquire)
 }
 

@@ -255,7 +255,10 @@ impl ArchTrait for Arch {
     // Safety: `system_table` originates from the EFI entry path and follows
     // the `ArchTrait::efi_enter_kernel` contract.
     unsafe fn efi_enter_kernel(system_table: *const ::core::ffi::c_void) -> bool {
-        unsafe { crate::arch::entry::kernel_entry(1, null(), system_table) };
+        let firmware_stack = usize::from(!efi_stub::loongarch64::inherited_handoff());
+        // SAFETY: native EFI retains its identity mappings until boot services
+        // exit; inherited handoff retains its caller-owned direct mappings.
+        unsafe { crate::arch::entry::kernel_entry(1, null(), system_table, firmware_stack) };
         unreachable!()
     }
 }
