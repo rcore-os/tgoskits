@@ -3,6 +3,7 @@
 use core::cell::RefCell;
 
 use super::*;
+use crate::FileWriteInput;
 
 mod coherence;
 mod metadata;
@@ -32,12 +33,12 @@ fn detached_growth_batches_data_and_publishes_only_after_completion() {
     let (mut mount, number) = shared_file();
     let input = alloc::vec![0x47; 2 * 1024 * 1024 + 37];
     let prepared = mount
-        .prepare_inode_write(number, 0, &input)
+        .prepare_inode_write(number, 0, input.len())
         .unwrap()
         .unwrap();
     assert_eq!(mount.inode(number).unwrap().size, 0);
     let probe = watch(None, None);
-    let mut completed = prepared.execute();
+    let mut completed = prepared.execute(FileWriteInput::Resident(&input));
     DATA_IO.with_borrow(|probe| {
         let writes = &probe.as_ref().unwrap().writes;
         assert_eq!(writes.iter().sum::<usize>(), 2 * 1024 * 1024 + 4096);
@@ -65,10 +66,10 @@ fn initialized_partial_blocks_preserve_both_unmodified_edges() {
     mount.write_inode(number, 0, &expected).unwrap();
     let patch = alloc::vec![0x32; 4096 + 13];
     let mut completed = mount
-        .prepare_inode_write(number, 17, &patch)
+        .prepare_inode_write(number, 17, patch.len())
         .unwrap()
         .unwrap()
-        .execute();
+        .execute(FileWriteInput::Resident(&patch));
     mount.finish_inode_write(&mut completed).unwrap();
     expected[17..17 + patch.len()].copy_from_slice(&patch);
     assert_contents(&mut mount, number, &expected);
@@ -81,10 +82,10 @@ fn unwritten_partial_write_zero_fills_the_rest_and_keeps_sparse_holes() {
         .preallocate_inode(number, 4096, 8192, PreallocationOptions::KEEP_SIZE)
         .unwrap();
     let mut completed = mount
-        .prepare_inode_write(number, 8192 + 7, b"new")
+        .prepare_inode_write(number, 8192 + 7, b"new".len())
         .unwrap()
         .unwrap()
-        .execute();
+        .execute(FileWriteInput::Resident(b"new"));
     mount.finish_inode_write(&mut completed).unwrap();
     let mut expected = alloc::vec![0; 8192 + 10];
     expected[8192 + 7..].copy_from_slice(b"new");
@@ -94,8 +95,9 @@ fn unwritten_partial_write_zero_fills_the_rest_and_keeps_sparse_holes() {
 #[test]
 fn pending_mapping_blocks_same_inode_mutation_but_not_unrelated_work() {
     let (mut mount, number) = shared_file();
+    mount.write_inode(number, 0, b"source").unwrap();
     let prepared = mount
-        .prepare_inode_write(number, 0, b"first")
+        .prepare_inode_write(number, 6, b"first".len())
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -120,10 +122,11 @@ fn pending_mapping_blocks_same_inode_mutation_but_not_unrelated_work() {
         mount.write_inode(number, 0, b"other").unwrap_err().kind(),
         Ext4ErrorKind::Busy
     );
-    assert_eq!(
-        mount.prepare_inode_read(number, 0, 1).unwrap_err().kind(),
-        Ext4ErrorKind::Busy
-    );
+    // A source fault may read this inode while the write's mapping lease is
+    // pending. It observes the old visible contents and cannot reclaim targets.
+    let read = super::read::prepare(&mut mount, number, 6);
+    let completed = read.execute(&mut super::read::Visible(&mut mount));
+    super::read::assert_completed(&mut mount, &completed, b"source");
     assert_eq!(mount.unmount().unwrap_err().kind(), Ext4ErrorKind::Busy);
     assert_eq!(
         mount.prepare_unmount().unwrap_err().kind(),
@@ -138,9 +141,9 @@ fn pending_mapping_blocks_same_inode_mutation_but_not_unrelated_work() {
     );
     let other = another_file(&mut mount, b"other");
     mount.write_inode(other, 0, b"unrelated").unwrap();
-    let mut completed = prepared.execute();
+    let mut completed = prepared.execute(FileWriteInput::Resident(b"first"));
     mount.finish_inode_write(&mut completed).unwrap();
-    assert_contents(&mut mount, number, b"first");
+    assert_contents(&mut mount, number, b"sourcefirst");
     assert_contents(&mut mount, other, b"unrelated");
     mount.truncate_inode(number, 0).unwrap();
 }
@@ -150,7 +153,7 @@ fn unlink_and_another_orphan_survive_delayed_write_publication() {
     let (mut mount, number) = shared_file();
     let another = another_file(&mut mount, b"another");
     let prepared = mount
-        .prepare_inode_write(number, 0, b"unlinked data")
+        .prepare_inode_write(number, 0, b"unlinked data".len())
         .unwrap()
         .unwrap();
     let root = mount.root_inode();
@@ -166,7 +169,7 @@ fn unlink_and_another_orphan_survive_delayed_write_publication() {
         mount.reap_unlinked_inode(number).unwrap_err().kind(),
         Ext4ErrorKind::Busy
     );
-    let mut completed = prepared.execute();
+    let mut completed = prepared.execute(FileWriteInput::Resident(b"unlinked data"));
     mount.finish_inode_write(&mut completed).unwrap();
     assert_eq!(mount.inode(number).unwrap().links, 0);
     assert_contents(&mut mount, number, b"unlinked data");
@@ -178,21 +181,69 @@ fn unlink_and_another_orphan_survive_delayed_write_publication() {
 
 #[test]
 fn data_failure_never_initializes_extents_and_preserves_its_cause() {
-    let (mut mount, number) = shared_file();
-    let input = alloc::vec![0x57; 8192];
-    let prepared = mount
-        .prepare_inode_write(number, 0, &input)
-        .unwrap()
-        .unwrap();
-    let cause = Ext4Error::io().with_operation("test:detached_data_write");
-    let probe = watch(Some(cause), None);
-    let mut completed = prepared.execute();
-    drop(probe);
-    assert_eq!(mount.finish_inode_write(&mut completed), Err(cause));
-    assert!(!completed.needs_publication());
-    assert_eq!(mount.inode(number).unwrap().size, 0);
-    mount.truncate_inode(number, 8192).unwrap();
-    assert_contents(&mut mount, number, &alloc::vec![0; 8192]);
+    struct Input<'a> {
+        bytes: &'a [u8],
+        fail_after_first_copy: bool,
+        copies: usize,
+        cause: Ext4Error,
+    }
+
+    impl Input<'_> {
+        fn copy(&mut self, offset: usize, output: &mut [u8]) -> Ext4Result<()> {
+            if self.fail_after_first_copy && self.copies != 0 {
+                return Err(self.cause);
+            }
+            self.copies += 1;
+            output.copy_from_slice(&self.bytes[offset..offset + output.len()]);
+            Ok(())
+        }
+    }
+
+    for input_failure in [false, true] {
+        let (mut mount, number) = shared_file();
+        let bytes = alloc::vec![0x57; 128 * 1024];
+        let cause = Ext4Error::io().with_operation(if input_failure {
+            "test:detached_input_copy"
+        } else {
+            "test:detached_data_write"
+        });
+        let mut input = Input {
+            bytes: &bytes,
+            fail_after_first_copy: input_failure,
+            copies: 0,
+            cause,
+        };
+        let prepared = mount
+            .prepare_inode_write(number, 0, bytes.len())
+            .unwrap()
+            .unwrap();
+        let probe = watch((!input_failure).then_some(cause), None);
+        let mut completed = prepared.execute(FileWriteInput::Copy(&mut |offset, output| {
+            input.copy(offset, output)
+        }));
+        if input_failure {
+            DATA_IO.with_borrow(|probe| {
+                assert!(probe.as_ref().unwrap().writes.iter().sum::<usize>() > 0);
+            });
+        }
+        drop(probe);
+        assert_eq!(mount.finish_inode_write(&mut completed), Err(cause));
+        assert!(!completed.needs_publication());
+        assert_eq!(mount.inode(number).unwrap().size, 0);
+        mount.truncate_inode(number, bytes.len() as u64).unwrap();
+        assert_contents(&mut mount, number, &alloc::vec![0; bytes.len()]);
+
+        input.fail_after_first_copy = false;
+        let mut completed = mount
+            .prepare_inode_write(number, 0, bytes.len())
+            .unwrap()
+            .unwrap()
+            .execute(FileWriteInput::Copy(&mut |offset, output| {
+                input.copy(offset, output)
+            }));
+        mount.finish_inode_write(&mut completed).unwrap();
+        assert_contents(&mut mount, number, &bytes);
+    }
 }
 
 #[test]
@@ -201,12 +252,12 @@ fn partial_home_read_failure_does_not_replace_old_bytes() {
     let original = alloc::vec![0x19; 4096];
     mount.write_inode(number, 0, &original).unwrap();
     let prepared = mount
-        .prepare_inode_write(number, 13, b"patch")
+        .prepare_inode_write(number, 13, b"patch".len())
         .unwrap()
         .unwrap();
     let cause = Ext4Error::io().with_operation("test:partial_home_read");
     let probe = watch(None, Some(cause));
-    let mut completed = prepared.execute();
+    let mut completed = prepared.execute(FileWriteInput::Resident(b"patch"));
     DATA_IO.with_borrow(|probe| assert!(probe.as_ref().unwrap().writes.is_empty()));
     drop(probe);
     assert_eq!(mount.finish_inode_write(&mut completed), Err(cause));
@@ -217,13 +268,13 @@ fn partial_home_read_failure_does_not_replace_old_bytes() {
 fn checkpoint_progress_retries_metadata_without_replaying_data() {
     let (mut mount, number) = shared_file();
     let prepared = mount
-        .prepare_inode_write(number, 0, b"checkpoint")
+        .prepare_inode_write(number, 0, b"checkpoint".len())
         .unwrap()
         .unwrap();
     // A prepared data owner holds no finish reservation: checkpoint may seal
     // its still-unwritten metadata while its physical targets remain leased.
     let batch = mount.prepare_writeback_progress_for_checkpoint().unwrap();
-    let mut completed = prepared.execute();
+    let mut completed = prepared.execute(FileWriteInput::Resident(b"checkpoint"));
     assert!(
         mount
             .finish_inode_write(&mut completed)
@@ -252,7 +303,7 @@ fn foreign_receipt_is_not_consumed_and_cancellation_releases_only_its_owner() {
     let (mut mount, number) = shared_file();
     let (mut foreign, _) = shared_file();
     let prepared = mount
-        .prepare_inode_write(number, 0, b"cancel")
+        .prepare_inode_write(number, 0, b"cancel".len())
         .unwrap()
         .unwrap();
     let mut completed = prepared.cancel();
@@ -282,7 +333,7 @@ fn dropping_an_unexecuted_owner_cannot_publish_clean_unmount() {
     let (mut mount, number) = shared_file();
     drop(
         mount
-            .prepare_inode_write(number, 0, b"pending")
+            .prepare_inode_write(number, 0, b"pending".len())
             .unwrap()
             .unwrap(),
     );

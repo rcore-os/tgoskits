@@ -25,7 +25,9 @@ where
         D: ForkBlockIo,
     {
         self.ensure_mounted("inode:prepare_read")?;
-        self.writes.ensure_inode_idle(number)?;
+        // A detached write leases its targets against mapping mutation, not
+        // reads. Its adapter releases content exclusion while copying input,
+        // allowing faults from a mapping of this same file to make progress.
         if length == 0 {
             return Ok(InodeReadPreparation::Empty);
         }
@@ -59,7 +61,6 @@ where
         let Some((number, inode)) = self.finish_live_inode_record(completed)? else {
             return Ok(None);
         };
-        self.writes.ensure_inode_idle(number)?;
         if length == 0 {
             return Ok(Some(InodeReadPreparation::Empty));
         }

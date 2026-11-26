@@ -67,7 +67,7 @@ impl Inode {
             .with_writeback_progress(|state| operation(&mut state.ext4))
     }
 
-    fn finish_metadata_change(&self) -> VfsResult<()> {
+    pub(super) fn finish_metadata_change(&self) -> VfsResult<()> {
         if !self.fs().background_writeback_enabled()
             || self
                 .writeback_policy()?

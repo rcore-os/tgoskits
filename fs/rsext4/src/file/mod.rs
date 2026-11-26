@@ -60,7 +60,7 @@ pub(crate) use read_plan::{FileBlockRead, FileReadMapping, MAX_READ_BYTES};
 pub(crate) use rename::{RenameEntryRequest, rename_inode_at};
 pub use rename::{RenameOptions, RenameOutcome, rename};
 pub(crate) use write::{CompletedFileWrite, PreparedFileWrite};
-pub use write::{write_file, write_inode_data};
+pub use write::{FileWriteInput, write_file, write_inode_data};
 pub use xattr::{XattrName, XattrNamespace, XattrSetMode};
 pub(crate) use xattr::{get_inode_xattr, list_inode_xattrs, remove_inode_xattr, set_inode_xattr};
 

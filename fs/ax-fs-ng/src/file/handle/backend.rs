@@ -170,7 +170,7 @@ impl FileBackend {
     }
 
     /// Writes `src` to the file at `offset`.
-    pub fn write_at(&self, mut src: impl Read + IoBuf, mut offset: u64) -> VfsResult<usize> {
+    pub fn write_at(&self, mut src: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.write_at_with_completion(&mut src, offset, |written| {
                 Self::finish_cached_write(cached, written)
@@ -187,34 +187,11 @@ impl FileBackend {
                     src.read_exact(&mut record).map_err(io_error_to_vfs_error)?;
                     return loc.entry().as_file()?.write_at(&record, offset);
                 }
-                let mut total = 0;
-                let mut buf = [0; ax_io::DEFAULT_BUF_SIZE];
-                while !src.is_empty() {
-                    let limit = src.remaining().min(buf.len());
-                    let read = src.read(&mut buf[..limit]).map_err(io_error_to_vfs_error)?;
-                    if read == 0 {
-                        break;
-                    }
-                    let mut chunk_written = 0;
-                    while chunk_written < read {
-                        let written = match loc
-                            .entry()
-                            .as_file()?
-                            .write_at(&buf[chunk_written..read], offset)
-                        {
-                            Ok(written) => written,
-                            Err(VfsError::WouldBlock) if total > 0 => return Ok(total),
-                            Err(err) => return Err(err),
-                        };
-                        if written == 0 {
-                            return Ok(total);
-                        }
-                        offset += written as u64;
-                        total += written;
-                        chunk_written += written;
-                    }
-                }
-                Ok(total)
+                let length = src.remaining();
+                loc.entry()
+                    .as_file()?
+                    .write_iter(&mut src, length, Some(offset))
+                    .map(|(written, _)| written)
             }
         }
     }
@@ -228,37 +205,8 @@ impl FileBackend {
             Self::Layered(file) => file.native.append(src),
             Self::Direct(path) => {
                 let loc = path.location();
-                let mut total = 0;
-                let mut end = loc.entry().as_file()?.len()?;
-                while src.remaining() > 0 {
-                    let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
-                    let written = match src
-                        .write_to(&mut ax_io::write_fn(|buf| {
-                            loc.entry()
-                                .as_file()
-                                .map_err(vfs_error_to_io_error)?
-                                .append(buf)
-                                .map_err(vfs_error_to_io_error)
-                                .map(|(n, offset)| {
-                                    end = offset;
-                                    n
-                                })
-                        }))
-                        .map_err(io_error_to_vfs_error)
-                    {
-                        Ok(written) => written,
-                        Err(VfsError::WouldBlock) if total > 0 => break,
-                        Err(err) => return Err(err),
-                    };
-                    if written == 0 {
-                        break;
-                    }
-                    total += written;
-                    if written < chunk {
-                        break;
-                    }
-                }
-                Ok((total, end))
+                let length = src.remaining();
+                loc.entry().as_file()?.write_iter(&mut src, length, None)
             }
         }
     }

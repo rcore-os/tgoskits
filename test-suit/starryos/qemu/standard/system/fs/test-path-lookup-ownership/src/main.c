@@ -5,6 +5,7 @@
  */
 #define _GNU_SOURCE
 
+#include <sys/statfs.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ftw.h>
@@ -1110,6 +1111,148 @@ out:
               "unmount private tmpfs errno=%d", errno);
 }
 
+static void native_direct_write_progress(void)
+{
+    char directory[] = "/var/tmp/direct-write-progress-XXXXXX";
+    const char *leaf = "contents";
+    int root = -1, file = -1, reader = -1;
+    int created = 0, file_created = 0;
+    long page = sysconf(_SC_PAGESIZE);
+    size_t span = 0;
+    void *input = MAP_FAILED, *output = MAP_FAILED;
+    struct stat status;
+    struct statfs backend;
+
+    REQUIRE(page > 0 && (size_t)page <= SIZE_MAX / 2);
+    span = 2 * (size_t)page;
+    REQUIRE(mkdtemp(directory) != NULL);
+    created = 1;
+    root = open_at(AT_FDCWD, directory, O_RDONLY | O_DIRECTORY);
+    REQUIRE(root >= 0);
+    REQUIRE(fstatfs(root, &backend) == 0);
+    REQUIRE((unsigned long)backend.f_type == 0xef53);
+    file = open_at(root, leaf, O_CREAT | O_EXCL | O_RDWR | O_DIRECT);
+    REQUIRE(file >= 0);
+    file_created = 1;
+    input = mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(input != MAP_FAILED);
+    output = mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(output != MAP_FAILED);
+    memset(input, 0x51, (size_t)page);
+    REQUIRE(mprotect((char *)input + page, (size_t)page, PROT_NONE) == 0);
+    REQUIRE(syscall(SYS_pwrite64, file, input, (size_t)page, (off_t)0) == page);
+    REQUIRE(syscall(SYS_ftruncate, file, (off_t)0) == 0);
+    REQUIRE(syscall(SYS_fsync, file) == 0);
+
+    errno = 0;
+    long count = syscall(SYS_pwrite64, file, input, span, (off_t)0);
+    int error = errno;
+    CHECK(count == -1 && error == EFAULT,
+          "native direct positioned write reports input preparation failure");
+    REQUIRE(fstat(file, &status) == 0);
+    CHECK(status.st_size == 0,
+          "native direct positioned input failure preserves accepted length");
+    CHECK(syscall(SYS_lseek, file, (off_t)0, SEEK_CUR) == 0,
+          "native direct positioned write preserves description position");
+    close_fd(file);
+    file = open_at(root, leaf, O_RDWR | O_DIRECT | O_APPEND);
+    REQUIRE(file >= 0);
+    memset(input, 0x52, (size_t)page);
+    errno = 0;
+    count = syscall(SYS_write, file, input, span);
+    error = errno;
+    CHECK(count == -1 && error == EFAULT,
+          "native direct append reports input preparation failure");
+    REQUIRE(fstat(file, &status) == 0);
+    CHECK(status.st_size == 0,
+          "native direct append input failure preserves accepted length");
+    CHECK(syscall(SYS_lseek, file, (off_t)0, SEEK_CUR) == 0,
+          "native direct append input failure preserves description position");
+    REQUIRE(syscall(SYS_ftruncate, file, (off_t)0) == 0);
+    memset(input, 0x51, (size_t)page);
+    REQUIRE(syscall(SYS_pwrite64, file, input, (size_t)page, (off_t)0) == page);
+    memset(input, 0x52, (size_t)page);
+    REQUIRE(syscall(SYS_write, file, input, (size_t)page) == page);
+    REQUIRE(fstat(file, &status) == 0);
+    CHECK(status.st_size == (off_t)span,
+          "native direct valid writes publish accepted length after rejection");
+    REQUIRE(syscall(SYS_fsync, file) == 0);
+    reader = open_at(root, leaf, O_RDONLY | O_DIRECT);
+    REQUIRE(reader >= 0);
+    CHECK(syscall(SYS_pread64, reader, output, span, (off_t)0) == (long)span,
+          "native direct write progress remains readable after synchronization");
+    int contents_match = 1;
+    for (size_t i = 0; i < span; i++) {
+        unsigned char expected = i < (size_t)page ? 0x51 : 0x52;
+        if (((unsigned char *)output)[i] != expected) {
+            contents_match = 0;
+            break;
+        }
+    }
+    CHECK(contents_match, "native direct write progress preserves initialized contents");
+out:
+    close_fd(reader);
+    close_fd(file);
+    if (input != MAP_FAILED)
+        CHECK(munmap(input, span) == 0, "release native direct write input");
+    if (output != MAP_FAILED)
+        CHECK(munmap(output, span) == 0, "release native direct write output");
+    if (file_created)
+        CHECK(unlinkat(root, leaf, 0) == 0, "remove native direct write fixture");
+    close_fd(root);
+    if (created)
+        CHECK(rmdir(directory) == 0, "remove native direct write directory");
+}
+
+static void native_direct_write_mapped_input(void)
+{
+    char directory[] = "/var/tmp/direct-write-mapped-input-XXXXXX";
+    int root = -1, file = -1;
+    int created = 0, file_created = 0;
+    long page = sysconf(_SC_PAGESIZE);
+    size_t span = 0;
+    void *initial = NULL, *output = NULL, *mapping = MAP_FAILED;
+    struct stat status;
+    struct statfs backend;
+
+    REQUIRE(page > 0 && (size_t)page <= SIZE_MAX / 64);
+    span = 32 * (size_t)page;
+    REQUIRE(mkdtemp(directory) != NULL);
+    created = 1;
+    root = open_at(AT_FDCWD, directory, O_RDONLY | O_DIRECTORY);
+    REQUIRE(root >= 0);
+    REQUIRE(fstatfs(root, &backend) == 0);
+    REQUIRE((unsigned long)backend.f_type == 0xef53);
+    file = open_at(root, "contents", O_RDWR | O_CREAT | O_EXCL | O_DIRECT);
+    REQUIRE(file >= 0);
+    file_created = 1;
+    REQUIRE(posix_memalign(&initial, (size_t)page, span) == 0);
+    REQUIRE(posix_memalign(&output, (size_t)page, 2 * span) == 0);
+    memset(initial, 0x6d, span);
+    REQUIRE(syscall(SYS_pwrite64, file, initial, span, (off_t)0) == (long)span);
+    mapping = (void *)syscall(SYS_mmap, NULL, span, PROT_READ, MAP_PRIVATE, file, 0);
+    REQUIRE(mapping != MAP_FAILED);
+    CHECK(syscall(SYS_pwrite64, file, mapping, span, (off_t)span) == (long)span,
+          "native direct write accepts lazy input from the same file");
+    REQUIRE(syscall(SYS_fstat, file, &status) == 0);
+    CHECK(status.st_size == (off_t)(2 * span), "native mapped input publishes the complete length");
+    REQUIRE(syscall(SYS_pread64, file, output, 2 * span, (off_t)0) == (long)(2 * span));
+    CHECK(memcmp(output, initial, span) == 0, "native mapped input preserves its source contents");
+    CHECK(memcmp((char *)output + span, initial, span) == 0,
+          "native mapped input reaches the backing file");
+out:
+    if (mapping != MAP_FAILED)
+        CHECK(munmap(mapping, span) == 0, "release native mapped input");
+    free(initial);
+    free(output);
+    close_fd(file);
+    if (file_created)
+        CHECK(unlinkat(root, "contents", 0) == 0, "remove native mapped input file");
+    close_fd(root);
+    if (created)
+        CHECK(rmdir(directory) == 0, "remove native mapped input directory");
+}
+
 static int remove_entry(const char *path, const struct stat *st, int type,
                         struct FTW *walk)
 {
@@ -1137,6 +1280,8 @@ int main(void)
     rename_identity(rootfd);
     scoped_lookup(rootfd);
     mount_boundary(rootfd);
+    native_direct_write_progress();
+    native_direct_write_mapped_input();
 out:
     if (saved_cwd >= 0)
         CHECK(fchdir(saved_cwd) == 0, "restore cwd errno=%d", errno);

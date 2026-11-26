@@ -71,7 +71,7 @@ impl PreparedFileWrite {
     pub(crate) fn execute<B: BlockIo>(
         self,
         device: &mut FileDataEndpoint<B>,
-        input: &[u8],
+        input: FileWriteInput<'_>,
     ) -> CompletedFileWrite {
         let result = self.writes.execute(device, input);
         CompletedFileWrite {

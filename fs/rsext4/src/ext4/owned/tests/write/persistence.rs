@@ -7,13 +7,13 @@ fn committed_unwritten_mapping_never_exposes_unpublished_data_after_remount() {
     let (mut mount, number) = shared_file();
     let input = alloc::vec![0x49; 8192 + 7];
     let prepared = mount
-        .prepare_inode_write(number, 0, &input)
+        .prepare_inode_write(number, 0, input.len())
         .unwrap()
         .unwrap();
     mount.sync().unwrap();
     assert_hidden_after_remount(&mount, number, input.len());
 
-    let mut completed = prepared.execute();
+    let mut completed = prepared.execute(FileWriteInput::Resident(&input));
     // Commit/checkpoint may run after ordinary data completion but before its
     // conversion receipt. The persisted mapping must still read as unwritten.
     mount.sync().unwrap();
@@ -31,7 +31,7 @@ fn a_later_failed_data_run_does_not_initialize_an_earlier_successful_run() {
     let (mut mount, number) = shared_file();
     let input = alloc::vec![0x6c; 1024 * 1024 + 4096];
     let prepared = mount
-        .prepare_inode_write(number, 0, &input)
+        .prepare_inode_write(number, 0, input.len())
         .unwrap()
         .unwrap();
     let cause = Ext4Error::io().with_operation("test:second_data_run");
@@ -39,7 +39,7 @@ fn a_later_failed_data_run_does_not_initialize_an_earlier_successful_run() {
     DATA_IO.with_borrow_mut(|probe| {
         probe.as_mut().unwrap().successful_writes_before_error = 1;
     });
-    let mut completed = prepared.execute();
+    let mut completed = prepared.execute(FileWriteInput::Resident(&input));
     DATA_IO.with_borrow(|probe| assert_eq!(probe.as_ref().unwrap().writes.len(), 2));
     drop(probe);
     assert_eq!(mount.finish_inode_write(&mut completed), Err(cause));

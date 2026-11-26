@@ -8,6 +8,7 @@ extern crate std;
 mod file_io;
 mod file_open;
 mod fs;
+mod io;
 mod lookup;
 mod metadata;
 mod mount;
@@ -25,9 +26,11 @@ mod types;
 mod write_admission;
 mod writeback_policy;
 
+pub use ax_io::{IoError, Read};
 pub use file_io::{FileIoRequest, FileIoTarget};
 pub use file_open::{AuthorizedFileOpen, FileOpenRequest, LockedFileOpenAttempt};
 pub use fs::*;
+pub use io::{io_error_to_vfs_error, vfs_error_to_io_error};
 pub use lookup::{
     CachedLookup, CachedLookupContext, CachedLookupOptions, LookupPolicy, LookupRestrictions,
     LookupScope, SYMLINKS_MAX,

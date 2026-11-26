@@ -179,7 +179,7 @@ fn make_cold(mount: &mut TestMount) {
     mount.filesystem.datablock_cache.clear();
 }
 
-fn prepare(
+pub(super) fn prepare(
     mount: &mut TestMount,
     number: InodeNumber,
     length: usize,
@@ -190,7 +190,11 @@ fn prepare(
     }
 }
 
-fn assert_completed(mount: &mut TestMount, completed: &CompletedInodeRead, expected: &[u8]) {
+pub(super) fn assert_completed(
+    mount: &mut TestMount,
+    completed: &CompletedInodeRead,
+    expected: &[u8],
+) {
     let mut output = alloc::vec![0xa5; expected.len() + 3];
     let validated = mount
         .finish_inode_read(completed, output.len())
@@ -201,7 +205,7 @@ fn assert_completed(mount: &mut TestMount, completed: &CompletedInodeRead, expec
     assert_eq!(&output[expected.len()..], &[0xa5; 3]);
 }
 
-struct Visible<'a>(&'a mut TestMount);
+pub(super) struct Visible<'a>(pub(super) &'a mut TestMount);
 
 impl InodeReadCache for Visible<'_> {
     fn visible(&mut self, request: &InodeBlockRequest) -> Ext4Result<Option<Arc<Vec<u8>>>> {

@@ -4,9 +4,12 @@ use core::ops::Range;
 
 use super::*;
 
+const MAX_INPUT_STAGING_BYTES: usize = 64 * 1024;
+
 pub(super) struct FileDataWrites {
     requests: Vec<DataWrite>,
     input_length: usize,
+    block_size: usize,
 }
 
 enum DataWrite {
@@ -49,6 +52,7 @@ impl FileDataWrites {
         let mut writes = Self {
             requests: Vec::new(),
             input_length,
+            block_size,
         };
         let mut inode = fs.get_inode_by_num(device, number)?;
         let mut logical = bytes.start / block_bytes;
@@ -159,10 +163,30 @@ impl FileDataWrites {
     pub(super) fn execute<B: BlockIo>(
         self,
         device: &mut FileDataEndpoint<B>,
-        input: &[u8],
+        mut input: FileWriteInput<'_>,
     ) -> Ext4Result<()> {
-        if input.len() != self.input_length {
-            return Err(Ext4Error::invalid_input().with_operation("write:input_length"));
+        if matches!(&input, FileWriteInput::Resident(bytes) if bytes.len() != self.input_length) {
+            return Err(Ext4Error::invalid_input().with_operation("write:borrowed_length"));
+        }
+        // The independent I/O owner allocates only bounded staging, after the
+        // mounted-filesystem borrow has ended. Resident slices keep their
+        // original full-run, zero-copy submission path.
+        let mut staging = Vec::new();
+        if matches!(input, FileWriteInput::Copy(_)) {
+            let largest_run = self
+                .requests
+                .iter()
+                .filter_map(|request| match request {
+                    DataWrite::Full { source, .. } => Some(source.len()),
+                    DataWrite::Partial(_) => None,
+                })
+                .max()
+                .unwrap_or(0);
+            let capacity = largest_run.min(MAX_INPUT_STAGING_BYTES.max(self.block_size));
+            staging
+                .try_reserve_exact(capacity)
+                .map_err(|_| Ext4Error::no_memory())?;
+            staging.resize(capacity, 0);
         }
         for request in self.requests {
             match request {
@@ -170,16 +194,40 @@ impl FileDataWrites {
                     physical,
                     count,
                     source,
-                } => {
-                    device.write_blocks(&input[source], physical, count)?;
-                }
+                } => match &mut input {
+                    FileWriteInput::Resident(bytes) => {
+                        device.write_blocks(&bytes[source], physical, count)?;
+                    }
+                    FileWriteInput::Copy(copy) => {
+                        let mut copied = 0;
+                        while copied < source.len() {
+                            let bytes = (source.len() - copied).min(staging.len());
+                            copy(source.start + copied, &mut staging[..bytes])?;
+                            let block_offset = u32::try_from(copied / self.block_size)
+                                .map_err(|_| Ext4Error::overflow())?;
+                            let blocks = u32::try_from(bytes / self.block_size)
+                                .map_err(|_| Ext4Error::overflow())?;
+                            device.write_blocks(
+                                &staging[..bytes],
+                                physical.checked_add(block_offset)?,
+                                blocks,
+                            )?;
+                            copied += bytes;
+                        }
+                    }
+                },
                 DataWrite::Partial(mut partial) => {
                     if matches!(partial.original, OriginalBlock::ReadHome) {
                         device.read_blocks(&mut partial.bytes, partial.physical, 1)?;
                     }
-                    let source = &input[partial.source];
-                    let end = partial.destination + source.len();
-                    partial.bytes[partial.destination..end].copy_from_slice(source);
+                    let end = partial.destination + partial.source.len();
+                    let destination = &mut partial.bytes[partial.destination..end];
+                    match &mut input {
+                        FileWriteInput::Resident(bytes) => {
+                            destination.copy_from_slice(&bytes[partial.source]);
+                        }
+                        FileWriteInput::Copy(copy) => copy(partial.source.start, destination)?,
+                    }
                     device.write_blocks(&partial.bytes, partial.physical, 1)?;
                 }
             }
