@@ -282,22 +282,19 @@ MountUse 已有的强根保活继续使用，不给通用 `Filesystem` 新增一
 对旧 fd 的刷新。领域契约必须明确被保留的真实 owner 如何在原刷新/提交锁域中
 观察任务状态并保留未参与字段，不能用候选的整份 Metadata 覆盖旧 owner。
 
-devpts 的数字表须保留真实设备 backing，而不是每次 lookup 复制属性；
-删除从表中取出后，在表锁外释放。ptmx 是实例内持久实体，lookup 不重置 chmod，
-其属性 owner 与 per-open master I/O 状态分开。
-内置 devfs 的 `/dev/ptmx` 保持独立静态实体，`/dev/pts/ptmx` 是其内置
-`PtsInstance` 的另一个持久实体，两者在原 devfs 分配域中提供同一 PTY 实例的
-打开入口，不合并属性。新挂载的 devpts 各有自己的 context 和实例；bind
-继续保留原文件系统与实例。`Ptmx` 仅持 context 和实例 Weak，根的 `PtsDir`
-保活实际实例，数字表只持 `DeviceBacking`。打开操作沿已选中的 ptmx 保留
-路径和 inode 属性，为该描述另装 master I/O，不再查询全局 `/dev/pts`。
-此路径对应固定 Linux `ptmx_open` 保留 `filp->f_path` 的行为。
-配方不得经
-`instance → ptmx backing → Ptmx → instance` 新建另一条强环。
-当前 Legacy 共享表可能保存另一实际 FS 的 Device，不能机械把它换成当前
-lookup receiver，也不能在 Weak FS 升级失败时把仍有实体的设备说成已消失。
-迁移这部分前必须同时明确新 mount 的私有实例、bind 保留原实例及现有内置
-devfs 视图的归属；不能混用新 backing 与未处理的旧跨实例共享。
+devpts 的数字表保留真实 `DeviceBacking`，删除后在表锁外释放。每个
+`PtsInstance` 保存自己的不可变配置、编号表和 `SimpleFsContext`；实例内 ptmx
+是持久实体，重复 lookup 不重置 chmod。`PtsDir` 保活实例，实例 ptmx 的
+`Ptmx::Devpts` 只持 `Weak<PtsInstance>`，避免反向建立强引用环。
+
+内置 `/dev/ptmx` 的 `Ptmx::Devfs` 按已打开路径的父目录查询相邻 `pts`，并用
+`PathHandle` 保留实际选中的挂载后再分配终端；覆盖挂载后选择新的实例，
+不使用固定的启动实例或全局绝对路径。实例内 `/dev/pts/ptmx` 继续绑定其实际
+实例，文件 bind 也保留这份绑定。两个入口的 inode 属性相互独立。打开时沿
+原 ptmx 的路径和属性安装每个描述的 master I/O，不把新终端的编号或 slave
+属性替换进去。这对应固定 Linux 的 [`devpts_acquire`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/devpts/inode.c#L181)
+选择实例，以及 [`ptmx_open`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/tty/pty.c#L767)
+保留 `filp->f_path` 的分工。
 
 mqueue 的路径、mqd 和后续权限检查须读写同一 `MessageQueue` 属性 owner，
 不保留 `status_line` 包装中的属性副本。资源计费创建者与可修改文件属主必须分离，
@@ -4315,17 +4312,18 @@ devpts 与 cgroup2 的实例规则不同。固定 Linux 的 `devpts_get_tree` �
 拥有自己的 SimpleFs、PtsInstance 和编号表；不能把不同 FS 的 slave 节点放进
 共享的全局表，再由 lookup 返回属于另一 owner 的对象。
 
-`new_devptsfs` 直接接收不可变 DevPtsOptions，每次创建 PtsInstance。启动 devfs
-构造器只在自身内部将 Ptmx 与 PtsDir 绑定到同一实例，不保留供后续 mount
-复用的全局 initial instance。删除 Legacy/NewInstance 选择层和可变 options
-更新入口；默认 mount 与显式 newinstance 都创建私有实例。
+`new_devptsfs` 直接接收不可变 `DevPtsOptions`，每次创建 `PtsInstance`。
+默认 mount 与显式 newinstance 都创建私有实例。启动 devfs 的 `PtsDir` 拥有
+内置实例，`Ptmx::Devfs` 在打开时选择相邻挂载，不再固定绑定启动时的实例；
+实例内 `Ptmx::Devpts` 则保留实例 Weak。没有全局 initial instance、
+Legacy/NewInstance 选择层或可变 options 更新入口。
 
-原 devpts 程序同时验证编号空间、实际 slave 可见性、mode/gid 和控制终端。
+原 devpts 程序同时检查编号空间、实际 slave 可见性、mode/gid 和控制终端。
+覆盖 `/dev/pts` 后继续从 `/dev/ptmx` 打开，新增的 slave、数据通道和控制终端
+都必须属于新挂载的实例。相同 C 程序在 Linux 对照中保留 gid=5，不改判定。
 打开 slave 前通过 TIOCSPTLCK 解锁；控制终端用 foreground group 与实际 master
-收到的字节判断，不能把 /dev/tty 的元数据当成 slave inode 的元数据。Linux 对照
-因本机单 GID 映射，将测试 gid 从 5 改为 0，其他旅程保持一致；Starry 默认仍
-验证 gid=5。PTY 锁状态、创建者 fsuid、完整 remount 和其余终端语义不由本次
-实例修正推断为兼容。
+收到的字节判断，不能把 /dev/tty 的元数据当成 slave inode 的元数据。PTY 锁
+状态、创建者 fsuid、完整 remount 和其余终端语义仍须分别验证。
 
 ### 6.21 命名删除的检查顺序
 
