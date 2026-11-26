@@ -1,7 +1,10 @@
 use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::Ordering;
 
-use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodeOps, NodePermission, NodeType, VfsResult};
+use axfs_ng_vfs::{
+    DeviceId, DirEntry, FileNode, Location, MetadataUpdate, NodeOps, NodePermission, NodeType,
+    Reference, VfsResult,
+};
 use flatten_objects::FlattenObjects;
 
 use crate::{
@@ -41,19 +44,12 @@ impl DevPtsOptions {
     }
 }
 
-/// Selects whether a devpts mount reuses the initial instance or creates one.
-#[derive(Clone, Copy)]
-pub(crate) enum DevPtsMount {
-    Legacy(DevPtsOptions),
-    NewInstance(DevPtsOptions),
-}
-
 /// Indexes one devpts instance can hand out at the same time.
 const PTY_SLOTS: usize = 16;
 
 /// PTY index space and mount options owned by one devpts filesystem instance.
 pub(crate) struct PtsInstance {
-    options: RawSpinLock<DevPtsOptions>,
+    options: DevPtsOptions,
     table: RawSpinLock<FlattenObjects<Arc<Device>, PTY_SLOTS>>,
     /// Slaves that outlived their master: the node is gone, the index is not
     /// yet free.
@@ -63,14 +59,10 @@ pub(crate) struct PtsInstance {
 impl PtsInstance {
     pub(crate) fn new(options: DevPtsOptions) -> Arc<Self> {
         Arc::new(Self {
-            options: RawSpinLock::new(options),
+            options,
             table: RawSpinLock::new(FlattenObjects::new()),
             hidden: RawSpinLock::new([false; PTY_SLOTS]),
         })
-    }
-
-    pub(crate) fn update_options(&self, options: DevPtsOptions) {
-        *self.options.lock_irqsave() = options;
     }
 
     /// Linux devpts_pty_kill() removes the node when the master closes, even
@@ -94,7 +86,7 @@ impl PtsInstance {
     }
 
     pub(crate) fn add_slave(&self, fs: Arc<SimpleFs>, pty: Arc<PtyDriver>) -> StarryResult<u32> {
-        let options = *self.options.lock_irqsave();
+        let options = self.options;
         let terminal = pty.terminal.clone();
         let device = Device::new(fs, NodeType::CharacterDevice, DeviceId::default(), pty);
         device.update_metadata(MetadataUpdate {
@@ -115,13 +107,13 @@ impl PtsInstance {
         Ok(pty_number)
     }
 
-    fn ptmx(self: &Arc<Self>, fs: Arc<SimpleFs>) -> VfsResult<Arc<Device>> {
-        let options = *self.options.lock_irqsave();
+    fn ptmx(&self, fs: Arc<SimpleFs>) -> VfsResult<Arc<Device>> {
+        let options = self.options;
         let device = Device::new(
-            fs.clone(),
+            fs,
             NodeType::CharacterDevice,
             DeviceId::new(5, 2),
-            Arc::new(Ptmx::new(fs, self.clone())),
+            Arc::new(Ptmx::Devpts),
         );
         device.update_metadata(MetadataUpdate {
             mode: Some(options.ptmx_mode),
@@ -140,6 +132,24 @@ pub struct PtsDir {
 impl PtsDir {
     pub(crate) fn new(fs: Arc<SimpleFs>, instance: Arc<PtsInstance>) -> Self {
         Self { fs, instance }
+    }
+
+    pub(super) fn open_pty(&self, location: &Location) -> StarryResult<Location> {
+        let (master, slave, link) = super::pty::create_pty_pair();
+        let number = self.instance.add_slave(self.fs.clone(), slave)?;
+        link.bind(&self.instance, number);
+        let master = Device::new(
+            self.fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(128, number),
+            master,
+        );
+        let entry = DirEntry::new_file(
+            FileNode::new(master),
+            NodeType::CharacterDevice,
+            Reference::new(Some(location.entry().clone()), number.to_string()),
+        );
+        Ok(Location::new(location.mountpoint().clone(), entry))
     }
 }
 

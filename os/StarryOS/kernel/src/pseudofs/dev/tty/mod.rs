@@ -20,7 +20,7 @@ use axfs_ng_vfs::{DeviceId, Location, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use starry_signal::{SignalInfo, Signo};
 
-pub(crate) use self::pts::{DevPtsMount, DevPtsOptions, PtsInstance};
+pub(crate) use self::pts::{DevPtsOptions, PtsInstance};
 use self::terminal::{
     Terminal, WindowSize,
     ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite, write_output_bytes},
@@ -387,8 +387,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
 
                     let proc = proc_data.proc.clone();
                     let session = proc.group().session();
-                    let is_session_leader =
-                        session.sid().pid_number() == proc.pid().pid_number();
+                    let is_session_leader = session.sid().pid_number() == proc.pid().pid_number();
                     if is_session_leader {
                         if let Some(foreground) = self.terminal.job_control.foreground() {
                             let _ = send_signal_to_process_group_ref(

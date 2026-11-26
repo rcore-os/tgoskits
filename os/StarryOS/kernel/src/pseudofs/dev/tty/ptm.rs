@@ -1,34 +1,38 @@
-use alloc::sync::Arc;
 use core::any::Any;
 
-use axfs_ng_vfs::{DeviceId, NodeType, VfsResult};
+use axfs_ng_vfs::{Location, VfsResult};
 
+use super::pts::PtsDir;
 use crate::{
-    StarryResult,
-    pseudofs::{Device, DeviceOps, SimpleFs, dev::tty::pts::PtsInstance},
+    StarryError, StarryResult,
+    pseudofs::{DeviceOps, SimpleDir},
 };
 
-pub struct Ptmx {
-    fs: Arc<SimpleFs>,
-    instance: Arc<PtsInstance>,
+pub enum Ptmx {
+    /// The traditional character device, which discovers its sibling pts.
+    Devfs,
+    /// The ptmx node supplied by a specific devpts instance.
+    Devpts,
 }
 
 impl Ptmx {
-    pub(crate) fn new(fs: Arc<SimpleFs>, instance: Arc<PtsInstance>) -> Self {
-        Self { fs, instance }
-    }
-
-    pub fn create_pty(&self) -> StarryResult<(Arc<Device>, u32)> {
-        let (master, slave, link) = super::pty::create_pty_pair();
-        let pty_number = self.instance.add_slave(self.fs.clone(), slave)?;
-        link.bind(&self.instance, pty_number);
-        let device = Device::new(
-            self.fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(128, pty_number),
-            master,
-        );
-        Ok((device, pty_number))
+    pub(crate) fn open_pty(&self, location: &Location) -> StarryResult<Location> {
+        let pts = match self {
+            Self::Devfs => location
+                .parent()
+                .ok_or(StarryError::NotFound)?
+                .lookup_no_follow("pts")?,
+            Self::Devpts => {
+                // A file bind mount still refers to its original devpts node.
+                let entry = location.entry().parent().ok_or(StarryError::NoSuchDevice)?;
+                Location::new(location.mountpoint().clone(), entry)
+            }
+        };
+        let directory = pts
+            .entry()
+            .downcast::<SimpleDir<PtsDir>>()
+            .map_err(|_| StarryError::NoSuchDevice)?;
+        directory.operations().open_pty(&pts)
     }
 }
 
