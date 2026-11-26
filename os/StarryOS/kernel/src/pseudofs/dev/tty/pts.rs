@@ -1,7 +1,10 @@
 use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::Ordering;
 
-use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodeOps, NodePermission, NodeType, VfsResult};
+use axfs_ng_vfs::{
+    DeviceId, DirEntry, FileNode, Location, MetadataUpdate, NodeOps, NodePermission, NodeType,
+    Reference, VfsResult,
+};
 use flatten_objects::FlattenObjects;
 
 use crate::{
@@ -104,13 +107,13 @@ impl PtsInstance {
         Ok(pty_number)
     }
 
-    fn ptmx(self: &Arc<Self>, fs: Arc<SimpleFs>) -> VfsResult<Arc<Device>> {
+    fn ptmx(&self, fs: Arc<SimpleFs>) -> VfsResult<Arc<Device>> {
         let options = self.options;
         let device = Device::new(
-            fs.clone(),
+            fs,
             NodeType::CharacterDevice,
             DeviceId::new(5, 2),
-            Arc::new(Ptmx::new(fs, self.clone())),
+            Arc::new(Ptmx::Devpts),
         );
         device.update_metadata(MetadataUpdate {
             mode: Some(options.ptmx_mode),
@@ -129,6 +132,24 @@ pub struct PtsDir {
 impl PtsDir {
     pub(crate) fn new(fs: Arc<SimpleFs>, instance: Arc<PtsInstance>) -> Self {
         Self { fs, instance }
+    }
+
+    pub(super) fn open_pty(&self, location: &Location) -> StarryResult<Location> {
+        let (master, slave, link) = super::pty::create_pty_pair();
+        let number = self.instance.add_slave(self.fs.clone(), slave)?;
+        link.bind(&self.instance, number);
+        let master = Device::new(
+            self.fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(128, number),
+            master,
+        );
+        let entry = DirEntry::new_file(
+            FileNode::new(master),
+            NodeType::CharacterDevice,
+            Reference::new(Some(location.entry().clone()), number.to_string()),
+        );
+        Ok(Location::new(location.mountpoint().clone(), entry))
     }
 }
 

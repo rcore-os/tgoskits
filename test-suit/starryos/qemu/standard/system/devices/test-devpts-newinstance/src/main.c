@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 static int failures;
@@ -69,19 +71,11 @@ static void check_metadata(const char *path, mode_t mode, gid_t gid,
     pass(message);
 }
 
-static int allocate_pty(const char *mountpoint, unsigned int *number)
+static int open_pty(const char *path, unsigned int *number)
 {
-    char path[128];
-    int length = snprintf(path, sizeof(path), "%s/ptmx", mountpoint);
-    if (length < 0 || (size_t)length >= sizeof(path)) {
-        errno = ENAMETOOLONG;
-        fail("format ptmx path");
-        return -1;
-    }
-
     int master = open(path, O_RDWR | O_NOCTTY);
     if (master < 0) {
-        fail("open per-instance ptmx");
+        fail("open ptmx");
         return -1;
     }
     if (ioctl(master, TIOCGPTN, number) != 0) {
@@ -96,6 +90,19 @@ static int allocate_pty(const char *mountpoint, unsigned int *number)
         return -1;
     }
     return master;
+}
+
+static int allocate_pty(const char *mountpoint, unsigned int *number)
+{
+    char path[128];
+    int length = snprintf(path, sizeof(path), "%s/ptmx", mountpoint);
+    if (length < 0 || (size_t)length >= sizeof(path)) {
+        errno = ENAMETOOLONG;
+        fail("format ptmx path");
+        return -1;
+    }
+
+    return open_pty(path, number);
 }
 
 static void close_masters(int *masters, size_t count)
@@ -243,6 +250,50 @@ static void check_private_controlling_tty(const char *mountpoint,
     pass("/dev/tty reopens the private devpts controlling terminal");
 }
 
+static void check_dev_ptmx_uses_mounted_instance(void)
+{
+    if (unshare(CLONE_NEWNS) != 0 ||
+        mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0 ||
+        mount("none", "/dev/pts", "devpts", 0, "mode=0620,gid=5") != 0) {
+        fail("mount devpts over /dev/pts in a private namespace");
+        return;
+    }
+
+    unsigned int number;
+    int master = open_pty("/dev/ptmx", &number);
+    if (master >= 0) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/pts/%u", number);
+        int slave = open(path, O_RDWR | O_NOCTTY);
+        if (slave < 0) {
+            fail("/dev/ptmx creates its slave in the mounted /dev/pts");
+        } else {
+            struct termios mode;
+            struct pollfd input = { .fd = slave, .events = POLLIN };
+            char byte = 0;
+            if (tcgetattr(slave, &mode) == 0) {
+                cfmakeraw(&mode);
+                if (tcsetattr(slave, TCSANOW, &mode) == 0 &&
+                    write(master, "M", 1) == 1 &&
+                    poll(&input, 1, 5000) == 1 &&
+                    read(slave, &byte, 1) == 1 && byte == 'M') {
+                    pass("/dev/ptmx sends data to the mounted slave");
+                } else {
+                    fail("/dev/ptmx sends data to the mounted slave");
+                }
+            } else {
+                fail("read the mounted slave's terminal mode");
+            }
+            close(slave);
+            check_private_controlling_tty("/dev/pts", number, master);
+        }
+        close(master);
+    }
+    if (umount2("/dev/pts", MNT_DETACH) != 0) {
+        fail("detach the test devpts mount");
+    }
+}
+
 int main(void)
 {
     static const char first_mount[] = "/tmp/devpts-newinstance-a";
@@ -350,6 +401,7 @@ int main(void)
     rmdir(first_mount);
 
     check_default_mounts_are_private();
+    check_dev_ptmx_uses_mounted_instance();
 
     if (failures != 0) {
         printf("TEST_DEVPTS_NEWINSTANCE_FAILED failures=%d\n", failures);

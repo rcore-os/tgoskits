@@ -604,7 +604,7 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 2),
-            Arc::new(tty::Ptmx::new(fs.clone(), pts_instance.clone())),
+            Arc::new(tty::Ptmx::Devfs),
         ),
     );
     root.add(

@@ -7,7 +7,7 @@ use core::{
 
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
 use ax_memory_addr::PAGE_SIZE_4K;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
+use axfs_ng_vfs::{NodeType, VfsError};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -150,18 +150,7 @@ fn add_to_fd(
                     return add_file_like(wrapped, flags & O_CLOEXEC != 0);
                 }
                 if let Some(ptmx) = inner.downcast_ref::<tty::Ptmx>() {
-                    // Opening /dev/ptmx creates a new pseudo-terminal
-                    let (master, pty_number) = ptmx.create_pty()?;
-                    // TODO: this is cursed
-                    let pts = ax_fs_ng::vfs::current_fs_context()
-                        .lock()
-                        .resolve("/dev/pts")?;
-                    let entry = DirEntry::new_file(
-                        FileNode::new(master),
-                        NodeType::CharacterDevice,
-                        Reference::new(Some(pts.entry().clone()), pty_number.to_string()),
-                    );
-                    let loc = Location::new(file.location().mountpoint().clone(), entry);
+                    let loc = ptmx.open_pty(file.location())?;
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 } else if inner.is::<tty::CurrentTty>() {
                     // Linux tty_open_current_tty() reports ENXIO when there is none.

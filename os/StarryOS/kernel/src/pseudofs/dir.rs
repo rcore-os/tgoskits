@@ -144,6 +144,10 @@ impl<O: SimpleDirOps> SimpleDir<O> {
         Arc::new(Self { node, this, ops })
     }
 
+    pub(super) fn operations(&self) -> &O {
+        &self.ops
+    }
+
     /// Create a [`DirMaker`] from given directory operations.
     pub fn new_maker(fs: Arc<SimpleFs>, ops: Arc<O>) -> DirMaker {
         Arc::new(move |this| {
