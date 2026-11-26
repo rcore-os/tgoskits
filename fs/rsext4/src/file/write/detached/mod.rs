@@ -41,6 +41,12 @@ impl PreparedFileWrite {
         let last =
             u32::try_from(last_byte / block_bytes).map_err(|_| Ext4Error::file_too_large())?;
         let mut inode = fs.get_inode_by_num(device, number)?;
+        if bytes.end > inode.size() {
+            // As for a serialized write: finish an unfinished shrink before
+            // this write can grow the file over the bytes it left.
+            finish_pending_truncate(device, fs, number)?;
+            inode = fs.get_inode_by_num(device, number)?;
+        }
         let unwritten =
             if extent_write_needs_preparation(device, fs, number, &mut inode, start, last)? {
                 Some(PreparedUnwrittenWrite::prepare_detached(

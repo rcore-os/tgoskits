@@ -52,7 +52,9 @@ pub use io::{
     insert_range_inode, operate_inode_range, preallocate_inode, punch_hole_inode, read_file,
     read_inode_data_into, truncate, truncate_inode, zero_range_inode,
 };
-pub(crate) use io::{recover_linked_truncate_inode, truncate_inode_for_reap};
+pub(crate) use io::{
+    finish_pending_truncate, recover_linked_truncate_inode, truncate_inode_for_reap,
+};
 pub use link::link;
 pub(crate) use link::link_inode_at;
 pub use read_plan::{CompletedFileRead, PreparedFileRead};

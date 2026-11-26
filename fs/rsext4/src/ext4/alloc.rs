@@ -636,6 +636,7 @@ mod tests {
             mmp: Default::default(),
             journal_sb_block_start: None,
             system_zones: SystemZoneMap::default(),
+            pending_shrinks: ::alloc::collections::BTreeSet::new(),
         }
     }
 
@@ -686,6 +687,7 @@ mod tests {
             mmp: Default::default(),
             journal_sb_block_start: None,
             system_zones,
+            pending_shrinks: ::alloc::collections::BTreeSet::new(),
         }
     }
 
@@ -732,6 +734,7 @@ mod tests {
             mmp: Default::default(),
             journal_sb_block_start: None,
             system_zones: SystemZoneMap::default(),
+            pending_shrinks: ::alloc::collections::BTreeSet::new(),
         }
     }
 

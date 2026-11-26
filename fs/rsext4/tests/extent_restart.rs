@@ -36,6 +36,7 @@ struct PowerCutProbe {
     commits_before_cut: Cell<Option<u32>>,
     failed_commit_trigger: Cell<Option<u32>>,
     cut_before_commit_trigger: Cell<Option<u32>>,
+    failed_block_write: Cell<Option<AbsoluteBN>>,
 }
 
 impl PowerCutProbe {
@@ -45,6 +46,7 @@ impl PowerCutProbe {
         self.commits_before_cut.set(None);
         self.failed_commit_trigger.set(None);
         self.cut_before_commit_trigger.set(None);
+        self.failed_block_write.set(None);
     }
 
     fn arm_committed_transaction_power_cut(&self, occurrence: u32) {
@@ -69,10 +71,18 @@ impl PowerCutProbe {
         self.cut_before_commit_trigger.set(Some(occurrence));
     }
 
+    /// Fails the next write that covers `block` without writing it.
+    #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+    fn arm_failed_block_write(&self, block: AbsoluteBN) {
+        self.reset_observation();
+        self.failed_block_write.set(Some(block));
+    }
+
     fn disable(&self) {
         self.commit_trigger.set(None);
         self.failed_commit_trigger.set(None);
         self.cut_before_commit_trigger.set(None);
+        self.failed_block_write.set(None);
     }
 }
 
@@ -103,6 +113,14 @@ impl BlockIo for RestartDevice {
     }
 
     fn write(&mut self, buffer: &[u8], sector: SectorId, _count: u32) -> Ext4Result<()> {
+        if let Some(block) = self.power_cut.failed_block_write.get() {
+            let first = sector.as_usize()?;
+            let target = block.to_u32().expect("block number") as usize;
+            if (first..first + buffer.len() / BLOCK_SIZE).contains(&target) {
+                self.power_cut.failed_block_write.set(None);
+                return Err(Ext4Error::io());
+            }
+        }
         let is_commit = is_jbd2_commit(buffer);
         if is_commit {
             self.power_cut
@@ -811,7 +829,8 @@ fn build_restarting_legacy_tail_fixture(path: &str) -> LargeLegacyFixture {
 }
 
 /// Fails the size-and-orphan transaction that starts a restarted shrink and
-/// checks that the file keeps its old size and every byte of its EOF block.
+/// checks that the file keeps its old size and every byte of its EOF block,
+/// and that a later truncate of the same file succeeds.
 fn assert_failed_first_restart_transaction_restores_tail(
     journal: &mut Jbd2Dev<RestartDevice>,
     filesystem: &mut Ext4FileSystem,
@@ -863,6 +882,20 @@ fn assert_failed_first_restart_transaction_restores_tail(
         first_changed, None,
         "a failed truncate must leave every byte of the file as it was"
     );
+
+    // The failed transaction must not leave the shrink pending: the next
+    // truncate would then try to finish it and remove an orphan record that
+    // was never added. A truncate to the current size changes nothing else.
+    filesystem
+        .modify_inode(journal, inode_number, |inode| inode.i_dtime = 0)
+        .expect("stale orphan link repair failed");
+    truncate_inode(journal, filesystem, inode_number, original_size)
+        .expect("a later truncate must succeed after the failed one");
+    let inode = filesystem
+        .get_inode_by_num(journal, inode_number)
+        .expect("inode read after the later truncate failed");
+    assert_eq!(inode.size(), original_size);
+    assert_eq!(filesystem.superblock.s_last_orphan, 0);
 }
 
 #[test]
@@ -1063,6 +1096,163 @@ fn assert_first_restart_commit(
              was"
         );
     }
+}
+
+#[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+#[test]
+fn failed_tail_zeroing_after_first_restart_commit_keeps_old_extent_bytes_hidden() {
+    let mut fixture = build_large_extent_fixture("/restart-zeroing-extent");
+    install_small_journal(&mut fixture);
+    let retained_block = fixture.data_blocks[0];
+    let next_block = fixture.data_blocks[1];
+    assert_failed_tail_zeroing_keeps_old_bytes_hidden(
+        &fixture.power_cut,
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        fixture.inode_number,
+        retained_block,
+        next_block,
+        // The 30-block journal that forces the restart cannot hold the
+        // worst-case reservation of an extent write that allocates.
+        Some(LATER_WRITE_JOURNAL_BLOCKS),
+    );
+}
+
+#[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+#[test]
+fn failed_tail_zeroing_after_first_restart_commit_keeps_old_legacy_bytes_hidden() {
+    let mut fixture = build_restarting_legacy_tail_fixture("/restart-zeroing-legacy");
+    let retained_block = fixture.removed_blocks[0];
+    // build_restarting_legacy_tail_fixture maps this block at logical block 1.
+    let next_block = fixture.gap_blocks[0];
+    assert_failed_tail_zeroing_keeps_old_bytes_hidden(
+        &fixture.power_cut,
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        fixture.inode_number,
+        retained_block,
+        next_block,
+        None,
+    );
+}
+
+#[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+const LATER_WRITE_JOURNAL_BLOCKS: u32 = 128;
+
+/// Shrinks a file to 100 bytes on the restart path and fails the write that
+/// zeroes its EOF tail, after the first commit has published the new size.
+///
+/// The old bytes past 100 must not come back. This standalone data block
+/// cache keeps the failed block dirty, so a sync must leave the tail zero on
+/// the device. A later write on the same mount that grows the file into its
+/// second logical block must read back zero between 100 and itself, in the
+/// EOF block and in the block the shrink had not yet removed, because the
+/// write finishes the shrink first.
+/// `later_write_journal` replaces the checkpointed journal with one of that
+/// many blocks before the later write.
+#[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+fn assert_failed_tail_zeroing_keeps_old_bytes_hidden(
+    power_cut: &PowerCutProbe,
+    journal: &mut Jbd2Dev<RestartDevice>,
+    filesystem: &mut Ext4FileSystem,
+    inode_number: InodeNumber,
+    retained_block: AbsoluteBN,
+    next_block: AbsoluteBN,
+    later_write_journal: Option<u32>,
+) {
+    const NEW_SIZE: usize = 100;
+    const LATER_OFFSET: usize = BLOCK_SIZE + 500;
+    const LATER_BYTES: &[u8] = b"later";
+    for block in [retained_block, next_block] {
+        filesystem
+            .datablock_cache
+            .modify(journal, block, |data| {
+                for (index, byte) in data.iter_mut().enumerate() {
+                    *byte = (index % 251) as u8 + 1;
+                }
+            })
+            .expect("data block fill failed");
+    }
+    filesystem
+        .sync_filesystem(journal)
+        .expect("fixture sync failed");
+    journal.flush().expect("fixture checkpoint failed");
+    let mut original = vec![0u8; BLOCK_SIZE];
+    read_inode_data_into(journal, filesystem, inode_number, 0, &mut original)
+        .expect("retained block read failed");
+
+    power_cut.arm_failed_block_write(retained_block);
+    let error = truncate_inode(journal, filesystem, inode_number, NEW_SIZE as u64)
+        .expect_err("a failed tail write must fail the truncate");
+    assert_eq!(
+        error.kind(),
+        Ext4ErrorKind::Io,
+        "unexpected error {error:?}"
+    );
+    assert_eq!(
+        power_cut.failed_block_write.get(),
+        None,
+        "the truncate must have written the EOF block"
+    );
+    let inode = filesystem
+        .get_inode_by_num(journal, inode_number)
+        .expect("inode read failed");
+    assert_eq!(
+        inode.size(),
+        NEW_SIZE as u64,
+        "the first commit must have published the new size"
+    );
+    assert_eq!(
+        filesystem.superblock.s_last_orphan,
+        inode_number.raw(),
+        "the shrink must be left unfinished on its orphan record"
+    );
+
+    filesystem
+        .sync_filesystem(journal)
+        .expect("sync after the failed truncate failed");
+    let mut on_device = vec![0u8; BLOCK_SIZE];
+    journal
+        .read_blocks(&mut on_device, retained_block, 1)
+        .expect("retained block read failed");
+    assert_eq!(
+        on_device[NEW_SIZE..].iter().position(|byte| *byte != 0),
+        None,
+        "the old bytes past the committed size must not be written back"
+    );
+
+    if let Some(maxlen) = later_write_journal {
+        journal
+            .flush()
+            .expect("checkpoint before the journal swap failed");
+        install_journal_with_maxlen_raw(journal, filesystem, maxlen);
+    }
+    rsext4::write_inode_data(
+        journal,
+        filesystem,
+        inode_number,
+        LATER_OFFSET as u64,
+        LATER_BYTES,
+    )
+    .expect("a later write must finish the shrink and succeed");
+    let end = LATER_OFFSET + LATER_BYTES.len();
+    let mut data = vec![0xffu8; end];
+    let copied = read_inode_data_into(journal, filesystem, inode_number, 0, &mut data)
+        .expect("read after the later write failed");
+    assert_eq!(copied, end);
+    assert_eq!(data[..NEW_SIZE], original[..NEW_SIZE]);
+    assert_eq!(
+        data[NEW_SIZE..LATER_OFFSET]
+            .iter()
+            .position(|byte| *byte != 0),
+        None,
+        "the bytes between the committed size and the later write must read as zero"
+    );
+    assert_eq!(&data[LATER_OFFSET..], LATER_BYTES);
+    assert_eq!(
+        filesystem.superblock.s_last_orphan, 0,
+        "the later write must finish the shrink"
+    );
 }
 
 fn assert_large_extent_removal_restarts(path: &str, operation: ExtentRemovalOperation) {

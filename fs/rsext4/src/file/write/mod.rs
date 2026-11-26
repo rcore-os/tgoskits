@@ -37,15 +37,21 @@ pub fn write_inode_data<B: BlockIo>(
         return Ok(());
     }
 
-    let mut inode = fs.get_inode_by_num(device, inode_num)?;
-
-    let old_size = inode.size();
-    let block_bytes = fs.block_size() as u64;
-
     let data_len = u64::try_from(data.len()).map_err(|_| Ext4Error::overflow())?;
     let end = offset
         .checked_add(data_len)
         .ok_or_else(Ext4Error::file_too_large)?;
+
+    let mut inode = fs.get_inode_by_num(device, inode_num)?;
+    if end > inode.size() {
+        // Growing the file exposes the bytes between the old size and this
+        // write, so an unfinished shrink must zero or unmap them first.
+        finish_pending_truncate(device, fs, inode_num)?;
+        inode = fs.get_inode_by_num(device, inode_num)?;
+    }
+
+    let old_size = inode.size();
+    let block_bytes = fs.block_size() as u64;
 
     let start_lbn = offset / block_bytes;
     let end_lbn = (end - 1) / block_bytes;

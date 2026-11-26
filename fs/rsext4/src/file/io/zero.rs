@@ -62,6 +62,14 @@ fn zero_mapped_inode_block_slice<B: BlockIo>(
         .modify(device, physical, |block| block[start..end].fill(0))
 }
 
+/// Zeroes the retained EOF block's tail for good.
+///
+/// The callers zero bytes that the file has already lost or never shows: a
+/// shrink whose new size is already on disk, or an extension that publishes
+/// its larger size only after this succeeds. Nothing puts the bytes back.
+/// A failed write-through can still leave the old bytes on the device; a
+/// shrink then stays pending, and `finish_pending_truncate` zeroes them again
+/// before any later write or preallocation can grow the file over them.
 pub(super) fn zero_mapped_inode_tail<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -69,7 +77,34 @@ pub(super) fn zero_mapped_inode_tail<B: BlockIo>(
     inode: &mut Ext4Inode,
     size: u64,
 ) -> Ext4Result<()> {
-    zero_mapped_inode_tail_with_undo(device, fs, inode_num, inode, size).map(drop)
+    let Some((physical, offset)) = mapped_inode_tail(device, fs, inode_num, inode, size)? else {
+        return Ok(());
+    };
+    fs.datablock_cache
+        .modify(device, physical, |block| block[offset..].fill(0))
+}
+
+/// The physical block and the offset in it where the retained EOF block's
+/// tail starts, or `None` when `size` ends on a block boundary or in a hole.
+fn mapped_inode_tail<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    size: u64,
+) -> Ext4Result<Option<(AbsoluteBN, usize)>> {
+    let block_bytes = fs.block_size() as u64;
+    let tail_offset = size % block_bytes;
+    if tail_offset == 0 {
+        return Ok(None);
+    }
+
+    let logical = u32::try_from(size / block_bytes).map_err(|_| Ext4Error::file_too_large())?;
+    let Some(physical) = resolve_inode_block(fs, device, inode_num, inode, logical)? else {
+        return Ok(None);
+    };
+    let offset = usize::try_from(tail_offset).map_err(|_| Ext4Error::overflow())?;
+    Ok(Some((physical, offset)))
 }
 
 /// The bytes that zeroing a retained EOF block replaced.
@@ -115,6 +150,10 @@ impl ZeroedTail {
 }
 
 /// Zeroes the retained EOF block's tail and returns what it replaced.
+///
+/// Only a user shrink that commits in a single transaction uses this: until
+/// that transaction commits, the file keeps its old size, so a failure must
+/// put the bytes back.
 pub(super) fn zero_mapped_inode_tail_with_undo<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -122,18 +161,9 @@ pub(super) fn zero_mapped_inode_tail_with_undo<B: BlockIo>(
     inode: &mut Ext4Inode,
     size: u64,
 ) -> Ext4Result<Option<ZeroedTail>> {
-    let block_size = fs.block_size();
-    let block_bytes = block_size as u64;
-    let tail_offset = size % block_bytes;
-    if tail_offset == 0 {
-        return Ok(None);
-    }
-
-    let logical = u32::try_from(size / block_bytes).map_err(|_| Ext4Error::file_too_large())?;
-    let Some(physical) = resolve_inode_block(fs, device, inode_num, inode, logical)? else {
+    let Some((physical, offset)) = mapped_inode_tail(device, fs, inode_num, inode, size)? else {
         return Ok(None);
     };
-    let offset = usize::try_from(tail_offset).map_err(|_| Ext4Error::overflow())?;
     let mut bytes = Vec::new();
     let mut zeroed = false;
     let zeroing = fs.datablock_cache.modify(device, physical, |block| {
