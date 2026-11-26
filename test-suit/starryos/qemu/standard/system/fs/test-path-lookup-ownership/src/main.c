@@ -1234,7 +1234,7 @@ static void native_direct_write_mapped_input(void)
     REQUIRE(mapping != MAP_FAILED);
     CHECK(syscall(SYS_pwrite64, file, mapping, span, (off_t)span) == (long)span,
           "native direct write accepts lazy input from the same file");
-    REQUIRE(syscall(SYS_fstat, file, &status) == 0);
+    REQUIRE(fstat(file, &status) == 0);
     CHECK(status.st_size == (off_t)(2 * span), "native mapped input publishes the complete length");
     REQUIRE(syscall(SYS_pread64, file, output, 2 * span, (off_t)0) == (long)(2 * span));
     CHECK(memcmp(output, initial, span) == 0, "native mapped input preserves its source contents");
