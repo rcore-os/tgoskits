@@ -2542,6 +2542,8 @@ mod tests {
     use core::mem::zeroed;
     use std::{
         boxed::Box,
+        cell::Cell,
+        rc::Rc,
         sync::{
             Arc,
             atomic::{AtomicI64, AtomicU32, Ordering},
@@ -3163,13 +3165,49 @@ mod tests {
 
             let mut vblwait: DrmWaitVblank = core::mem::zeroed();
             (*wv_req(&mut vblwait)).r#type = _DRM_VBLANK_ABSOLUTE;
-            (*wv_req(&mut vblwait)).sequence = 5;
+            (*wv_req(&mut vblwait)).sequence = 100000;
 
-            let ret = drm_wait_vblank_ioctl(
-                dev,
-                &mut vblwait as *mut _ as *mut c_void,
-                core::ptr::null_mut(),
+            let crtc = fx.crtc(0);
+            let modeset = core::ptr::addr_of_mut!((*crtc).mutex);
+            // This fixture exclusively owns the CRTC. Initialize and retain
+            // its modeset lock through the cycle, and keep its immediate-off
+            // configuration so final put cannot arm a fixture timer.
+            crate::drm_modeset_lock_upstream::drm_modeset_lock_init(modeset);
+            assert_eq!(
+                crate::drm_modeset_lock_upstream::drm_modeset_lock(modeset, core::ptr::null_mut()),
+                0
             );
+            let config = DrmVblankCrtcConfig {
+                offdelay_ms: (*v).config.offdelay_ms,
+                disable_immediate: (*v).config.disable_immediate,
+            };
+            let transition = Rc::new(Cell::new(None));
+            let observed = transition.clone();
+            // The fixture outlives this synchronous, thread-local callback.
+            // Cycle the real vblank owner after queue registration and before
+            // its waiter can observe the disabled interval; no FIFO or device
+            // completion timing assumption is involved.
+            let ret = crate::test_support::with_wait_transition(
+                move || {
+                    // This fixture has no IRQ or worker thread; only this
+                    // thread mutates its queue before the transition below.
+                    let registered = !drm_kapi::list::list_empty(&(*v).queue.head);
+                    drm_crtc_vblank_off(crtc);
+                    let disabled = !(*v).enabled;
+                    drm_crtc_vblank_on_config(crtc, &config);
+                    let enabled = (*v).enabled;
+                    observed.set(Some((registered, disabled, enabled)));
+                },
+                || {
+                    drm_wait_vblank_ioctl(
+                        dev,
+                        &mut vblwait as *mut _ as *mut c_void,
+                        core::ptr::null_mut(),
+                    )
+                },
+            );
+            crate::drm_modeset_lock_upstream::drm_modeset_unlock(modeset);
+            assert_eq!(transition.get(), Some((true, true, true)));
             assert_eq!(ret, -EBUSY);
         }
     }

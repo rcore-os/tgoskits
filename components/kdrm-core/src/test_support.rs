@@ -30,6 +30,31 @@ std::thread_local! {
     static REJECT_ALLOCATION: std::cell::Cell<Option<Layout>> = const { std::cell::Cell::new(None) };
     static ALLOCATION_REJECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static ALLOCATION_BALANCE: std::cell::Cell<Option<isize>> = const { std::cell::Cell::new(None) };
+    static BEFORE_HOST_WAIT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs one transition at this thread's next scheduler wait boundary.
+/// Unused callbacks retire before the operation's fixture can be released.
+pub(crate) fn with_wait_transition<T>(
+    transition: impl FnOnce() + 'static,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            let retired = BEFORE_HOST_WAIT.with(|next| next.borrow_mut().take());
+            drop(retired);
+        }
+    }
+
+    let transition = Box::new(transition);
+    BEFORE_HOST_WAIT.with(|next| {
+        let mut next = next.borrow_mut();
+        assert!(next.is_none(), "one transition per host wait operation");
+        *next = Some(transition);
+    });
+    let _reset = Reset;
+    operation()
 }
 
 struct HostTestAllocator;
@@ -310,6 +335,13 @@ fn lock_host_wait_state() -> std::sync::MutexGuard<'static, u64> {
 fn host_wait_timeout_until(timeout_ns: Option<u64>, ready: &dyn Fn() -> bool) -> bool {
     let deadline =
         timeout_ns.and_then(|timeout| Instant::now().checked_add(Duration::from_nanos(timeout)));
+    // Wait entries are registered before the scheduler provider runs. Invoke
+    // the transition without its TLS borrow or the provider's mutex held, so
+    // it may wake the actual queue and reenter this provider.
+    let transition = BEFORE_HOST_WAIT.with(|next| next.borrow_mut().take());
+    if let Some(transition) = transition {
+        transition();
+    }
     loop {
         // The predicate can itself wake this provider (e.g. a DMA-fence
         // predicate drops an RCU read-side section). Never invoke it while
