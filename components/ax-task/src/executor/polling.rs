@@ -55,8 +55,15 @@ impl LocalExecutor {
             // The queue reference guarantees a valid header throughout polling.
             &(*header).state
         };
+        if state.load(Ordering::Acquire) & (POLLING | COMPLETE) == POLLING {
+            // A nested batch must leave an active future to its current poll.
+            // Keep the queue reference and RUN_QUEUED so further wakes coalesce.
+            state.fetch_or(READY_DEFERRED, Ordering::AcqRel);
+            return PollDisposition::Skipped;
+        }
+
         let dequeued_state = state.fetch_and(!RUN_QUEUED, Ordering::AcqRel);
-        let mut queue_reference = ReadyQueueReference::new(header);
+        let mut queue_reference = ReadyQueueReference::new(self, header);
         if dequeued_state & COMPLETE != 0 {
             return PollDisposition::Skipped;
         }
@@ -69,12 +76,11 @@ impl LocalExecutor {
         };
         let mut context = Context::from_waker(&waker);
         let result = unsafe {
-            // Only the owner reaches this function, and POLLING excludes a second
-            // owner poll of the same future.
+            // Only the owner polls or drops the future. Nested batches defer
+            // this node while the queue guard holds POLLING.
             CoroutineHeader::poll_raw(header, &mut context)
         };
         drop(waker);
-        queue_reference.finish_polling();
 
         match result {
             Poll::Pending => PollDisposition::Pending,

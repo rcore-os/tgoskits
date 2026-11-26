@@ -24,6 +24,8 @@ pub(super) const RUN_QUEUED: usize = 1 << 0;
 pub(super) const POLLING: usize = 1 << 1;
 pub(super) const COMPLETE: usize = 1 << 2;
 const FUTURE_EMPTY: usize = 1 << 3;
+// The owner detached the queued wake while this coroutine was still polling.
+pub(super) const READY_DEFERRED: usize = 1 << 4;
 
 const REFCOUNT_OVERFLOW_INVARIANT: u32 = 0x4558_0001;
 const EARLY_RECLAIM_INVARIANT: u32 = 0x4558_0002;

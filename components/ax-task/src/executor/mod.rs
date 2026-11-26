@@ -24,7 +24,10 @@ use core::{
 pub use coroutine::{CoroutineHeader, CoroutineId};
 
 use self::{
-    coroutine::{COMPLETE, Coroutine, POLLING, RUN_QUEUED, release_reference, retain_reference},
+    coroutine::{
+        COMPLETE, Coroutine, POLLING, READY_DEFERRED, RUN_QUEUED, release_reference,
+        retain_reference,
+    },
     inbox::{InboxKind, IntrusiveInbox},
     waker::coroutine_waker,
 };
@@ -180,19 +183,23 @@ impl LocalExecutor {
     /// Polls at most 64 ready coroutines from one queue snapshot.
     ///
     /// Wakes produced while a future is being polled are published to the next
-    /// snapshot, so a self-waking future cannot consume the current batch.
+    /// snapshot. A nested batch defers an already running future until its
+    /// current poll returns and may poll other ready futures.
     pub fn run_ready_batch(&self) -> PollBatch {
         self.assert_owner_context();
         self.shared
             .park_state
             .fetch_and(!NOTIFIED, Ordering::AcqRel);
-        let mut cursor = self.take_ready_snapshot();
+        let mut snapshot = ReadySnapshot {
+            pending: &self.ready_pending,
+            cursor: self.take_ready_snapshot(),
+        };
         let mut polled = 0;
         let mut completed = 0;
 
-        while !cursor.is_null() && polled < DEFAULT_POLL_BATCH {
-            let header = cursor;
-            cursor = unsafe {
+        while !snapshot.cursor.is_null() && polled < DEFAULT_POLL_BATCH {
+            let header = snapshot.cursor;
+            snapshot.cursor = unsafe {
                 // The ready queue reference keeps `header` alive. Only the owner
                 // consumes this detached list and may rewrite its next pointer.
                 IntrusiveInbox::take_next(header, InboxKind::Ready)
@@ -205,7 +212,7 @@ impl LocalExecutor {
             completed += usize::from(did_complete.was_completed());
         }
 
-        self.ready_pending.set(cursor);
+        drop(snapshot);
         PollBatch {
             polled,
             completed,
@@ -501,7 +508,29 @@ struct ScopedRunGuard<'executor> {
     header: *mut CoroutineHeader,
 }
 
-struct ReadyQueueReference {
+struct ReadySnapshot<'executor> {
+    pending: &'executor Cell<*mut CoroutineHeader>,
+    cursor: *mut CoroutineHeader,
+}
+
+impl Drop for ReadySnapshot<'_> {
+    fn drop(&mut self) {
+        if self.cursor.is_null() {
+            return;
+        }
+        let newer = self.pending.replace(self.cursor);
+        if !newer.is_null() {
+            unsafe {
+                // Both detached lists still own their queue references and
+                // links. Keep this older remainder ahead of nested work.
+                IntrusiveInbox::append(self.cursor, newer, InboxKind::Ready);
+            }
+        }
+    }
+}
+
+struct ReadyQueueReference<'executor> {
+    executor: &'executor LocalExecutor,
     header: *mut CoroutineHeader,
     polling: bool,
 }
@@ -531,9 +560,10 @@ impl Drop for OwnedCoroutineReference {
     }
 }
 
-impl ReadyQueueReference {
-    const fn new(header: *mut CoroutineHeader) -> Self {
+impl<'executor> ReadyQueueReference<'executor> {
+    const fn new(executor: &'executor LocalExecutor, header: *mut CoroutineHeader) -> Self {
         Self {
+            executor,
             header,
             polling: false,
         }
@@ -542,24 +572,31 @@ impl ReadyQueueReference {
     fn mark_polling(&mut self) {
         self.polling = true;
     }
-
-    fn finish_polling(&mut self) {
-        unsafe {
-            // Only the owner mutates POLLING, and the queue reference keeps the
-            // header live until this guard is dropped.
-            (*self.header).state.fetch_and(!POLLING, Ordering::AcqRel);
-        }
-        self.polling = false;
-    }
 }
 
-impl Drop for ReadyQueueReference {
+impl Drop for ReadyQueueReference<'_> {
     fn drop(&mut self) {
         if self.polling {
             unsafe {
-                // A panicking poll has fully unwound before this guard runs; clear
-                // the owner-only poll marker before scoped cancellation proceeds.
-                (*self.header).state.fetch_and(!POLLING, Ordering::AcqRel);
+                // The poll has returned or fully unwound. Only the owner
+                // changes POLLING and READY_DEFERRED, and this guard keeps
+                // the allocation live while it hands back the deferred wake.
+                let state = &(*self.header).state;
+                let previous = state.fetch_and(!(POLLING | READY_DEFERRED), Ordering::AcqRel);
+                if previous & READY_DEFERRED != 0 {
+                    if previous & COMPLETE == 0 {
+                        // The deferred reference still owns RUN_QUEUED and its
+                        // detached link. The owner is running and can consume
+                        // this node directly without another wake publication.
+                        let next = self.executor.ready_pending.replace(self.header);
+                        (*self.header)
+                            .next(InboxKind::Ready)
+                            .store(next, Ordering::Relaxed);
+                    } else {
+                        state.fetch_and(!RUN_QUEUED, Ordering::AcqRel);
+                        release_reference(self.header);
+                    }
+                }
             }
         }
         unsafe {
