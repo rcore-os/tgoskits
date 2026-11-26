@@ -13,7 +13,7 @@ use std::sync::mpsc;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, FileNodeOps, FileRangeOperation, Filesystem, FilesystemOps, Metadata,
     MetadataUpdate, Mountpoint, NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode,
-    Reference, StatFs,
+    Reference, StatFs, WritebackPolicy,
 };
 
 use super::*;
@@ -98,6 +98,7 @@ struct CacheTestFileState {
     write_calls: usize,
     write_ranges: Vec<(usize, usize)>,
     max_write: usize,
+    writeback_policy: WritebackPolicy,
 }
 
 type BeforeBackingIo = Box<dyn FnOnce() -> VfsResult<()> + Send>;
@@ -138,6 +139,7 @@ impl CacheTestFile {
                 write_calls: 0,
                 write_ranges: Vec::new(),
                 max_write: usize::MAX,
+                writeback_policy: WritebackPolicy::empty(),
             }),
             read_observer: std::sync::Mutex::new(None),
             #[cfg(feature = "vfs")]
@@ -220,6 +222,10 @@ impl NodeOps for CacheTestFile {
             before_sync()?;
         }
         Ok(())
+    }
+
+    fn writeback_policy(&self) -> VfsResult<WritebackPolicy> {
+        Ok(self.state.lock().unwrap().writeback_policy)
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

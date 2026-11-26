@@ -85,13 +85,73 @@ fn explicit_empty_sync_releases_io_and_failed_sync_releases_the_round() {
             cached.write_at(&[0x41][..], 0).unwrap();
             cached.sync(false).unwrap();
             let reader = cached.clone();
+            let opened = crate::file::File::new(
+                crate::file::FileBackend::new_cached(cached.location().clone()).unwrap(),
+                crate::file::FileFlags::READ,
+            );
             *backing.before_sync.lock().unwrap() = Some(Box::new(move || {
                 assert_read_progress(&reader);
                 Err(VfsError::Io)
             }));
             assert_eq!(run_entry(&cached, entry), Err(VfsError::Io));
             assert!(cached.shared.writeback_lock.try_lock().is_some());
-            cached.sync(false).unwrap();
+            opened.sync(false).unwrap();
+        }
+
+        // Data writeback failures belong to the mapping error history. A
+        // successful later flush must not hide them from another description.
+        let backing = Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE]));
+        let cached = reopen_cached_file(backing.clone());
+        cached.write_at(&[0x41][..], 0).unwrap();
+        let open = || {
+            crate::file::File::new(
+                crate::file::FileBackend::new_cached(cached.location().clone()).unwrap(),
+                crate::file::FileFlags::READ,
+            )
+        };
+        let first = Arc::new(open());
+        let duplicate = first.clone();
+        let second = open();
+        *backing.before_write.lock().unwrap() = Some(Box::new(|| Err(VfsError::Io)));
+        assert_eq!(cached.writeback(), Err(VfsError::Io));
+        assert!(cached.shared.writeback_lock.try_lock().is_some());
+        let opened_before_observation = open();
+        cached.writeback().unwrap();
+        assert_eq!(first.sync(false), Err(VfsError::Io));
+        assert_eq!(duplicate.sync(false), Ok(()));
+        assert_eq!(second.sync(false), Err(VfsError::Io));
+        assert_eq!(opened_before_observation.sync(false), Err(VfsError::Io));
+        let opened_after_observation = open();
+        assert_eq!(opened_after_observation.sync(false), Ok(()));
+
+        cached.write_at(&[0x52][..], 0).unwrap();
+        *backing.before_write.lock().unwrap() = Some(Box::new(|| Err(VfsError::Io)));
+        assert_eq!(first.sync(false), Err(VfsError::Io));
+        assert_eq!(duplicate.sync(false), Ok(()));
+        assert_eq!(second.sync(false), Err(VfsError::Io));
+        assert_eq!(opened_after_observation.sync(false), Err(VfsError::Io));
+        assert_eq!(opened_after_observation.sync(false), Ok(()));
+
+        // An implicit sync belongs to the description that requested the
+        // synchronous write, including the append path.
+        backing.state.lock().unwrap().writeback_policy = WritebackPolicy::SYNCHRONOUS;
+        for flags in [
+            crate::file::FileFlags::WRITE,
+            crate::file::FileFlags::WRITE | crate::file::FileFlags::APPEND,
+        ] {
+            let writer = crate::file::File::new(
+                crate::file::FileBackend::new_cached(cached.location().clone()).unwrap(),
+                flags,
+            );
+            *backing.before_write.lock().unwrap() = Some(Box::new(|| Err(VfsError::Io)));
+            assert_eq!(
+                writer
+                    .write(&[0x63][..])
+                    .map_err(crate::io_error_to_vfs_error),
+                Err(VfsError::Io)
+            );
+            assert_eq!(writer.sync(false), Ok(()));
+            assert_eq!(second.sync(false), Err(VfsError::Io));
         }
 
         static DISK_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem {

@@ -1,4 +1,6 @@
 mod backing;
+mod errors;
+pub(in crate::file) use errors::WritebackErrorCursor;
 mod fill;
 mod mapping;
 mod pages;
@@ -335,6 +337,7 @@ struct CachedFileShared {
     unlinked: AtomicBool,
     retired: AtomicBool,
     backing_persistence: persistence::BackingPersistence,
+    writeback_errors: errors::WritebackErrors,
     #[cfg(feature = "vfs")]
     background_writeback_requested: AtomicBool,
     #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -374,6 +377,7 @@ impl CachedFileShared {
             unlinked: AtomicBool::new(false),
             retired: AtomicBool::new(false),
             backing_persistence: persistence::BackingPersistence::new(),
+            writeback_errors: errors::WritebackErrors::new(),
             #[cfg(feature = "vfs")]
             background_writeback_requested: AtomicBool::new(false),
             #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -401,6 +405,7 @@ impl CachedFileShared {
             unlinked: AtomicBool::new(false),
             retired: AtomicBool::new(false),
             backing_persistence: persistence::BackingPersistence::new(),
+            writeback_errors: errors::WritebackErrors::new(),
             #[cfg(feature = "vfs")]
             background_writeback_requested: AtomicBool::new(false),
             #[cfg(all(test, feature = "ext4", feature = "vfs"))]

@@ -5242,6 +5242,14 @@ Rust 源码与 `f29130dfd3` 一致的候选完成了 x86_64 的
 
 公开文件接口、磁盘格式及用户态二进制布局保持既有约定；回滚以代码提交为单位。日志重试继续使用既有有界事务和外部进展入口，没有新增后台任务、状态登记表或兼容路径。
 
+#### 6.60.4 缓存写回错误的观察
+
+`CachedFileShared` 保存一份 `WritebackErrors`，缓存打开描述的 `File` 保存自己的 `WritebackErrorCursor`。真实数据写回失败才进入历史；无人观察时合并错误，已观察后再次失败推进序号。错误首次被观察前打开的描述仍须读到它，之后新打开的描述不追溯旧错误。复制描述继续共享同一个 `File`，对应 [Linux 7.1 的 errseq](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/lib/errseq.c#L164)。
+
+显式同步与缓存同步写入都通过实际 `File::sync()` 观察错误。`FileBackend` 继续选择既有的同步时机和真实端点，将同步执行交回该打开描述；普通写入、追加及组合端点保留同一描述。后端同步失败时也推进观察游标，并优先返回本次操作的原始错误。依据 [`generic_write_sync`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/fs.h#L2651)及 [`ext4_sync_file`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/ext4/fsync.c#L180)，一次普通设备 flush 失败直接返回，不一概写入数据错误历史。原错误旅程同时检查只读观察者、复制描述、重复数据错误、同步写入与普通 flush 的区别，没有新增测试函数、默认程序或启动。
+
+错误记录及游标锁仅保护标量，在输入、后端 I/O、回调和最后拥有者释放期间均不持有。`File::location()` 与 `path_handle()` 直接借用后端的既有路径，`WriteAccess` 自行保留其权限退休所需的逻辑与 backing 路径，打开描述不重复保存同一条路径。直接 I/O 的共同数据所有者与完成后失效仍须接入；缓存错误观察不表示整项数据所有权迁移已经完成。
+
 ### 6.61 驻留写入批次
 
 原有 FAT 后端在文件增长时同步元数据。缓存以单页逐次增长，会让一次较大输入反复进入该路径，使既有加载器的满盘旅程超过原截止时间。`ResidentWriteBuffer` 把已取得的输入按最多 16 页发布；本节保留原用例、设备配置、失败判定与截止时间，不给生产代码增加诊断输出。

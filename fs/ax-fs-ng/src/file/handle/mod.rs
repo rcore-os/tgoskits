@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use ax_io::{SeekFrom, prelude::*};
 use axfs_ng_vfs::{
     FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PathHandle,
-    PreallocationMode, VfsError, VfsResult, path::Path,
+    PreallocationMode, RawSpinLock, VfsError, VfsResult, path::Path,
 };
 use axpoll::{IoEvents, Pollable};
 
@@ -14,7 +14,9 @@ use super::{
     access::WriteAccess,
     open::{FileFlags, OpenOptions, OpenResult},
 };
-use crate::{fs_core::FsView, os::sync::Mutex, vfs_error_to_io_error};
+use crate::{
+    file::cache::WritebackErrorCursor, fs_core::FsView, os::sync::Mutex, vfs_error_to_io_error,
+};
 
 mod backend;
 pub use backend::{FileBackend, LayeredFile};
@@ -24,11 +26,11 @@ pub struct File {
     inner: FileBackend,
     flags: AtomicU8,
     position: Option<Mutex<u64>>,
+    writeback_cursor: RawSpinLock<WritebackErrorCursor>,
     access_flags: AtomicU8,
-    // Backend/cache destruction must finish before releasing writer authority.
+    // Backend/cache destruction finishes before writer authority retires.
+    // WriteAccess keeps its own logical and backing paths through that retirement.
     pub(super) write_access: Option<Arc<WriteAccess>>,
-    // Keep mount use through backend, cache, and inode writer-lease retirement.
-    path: PathHandle,
 }
 
 impl File {
@@ -38,12 +40,12 @@ impl File {
     /// operations still consult the original inode rather than a saved copy.
     pub fn path_only(path: PathHandle) -> Self {
         Self {
-            inner: FileBackend::Direct(path.clone()),
+            inner: FileBackend::Direct(path),
             flags: AtomicU8::new(FileFlags::PATH.bits()),
             position: None,
+            writeback_cursor: RawSpinLock::new(WritebackErrorCursor::default()),
             access_flags: AtomicU8::new(0),
             write_access: None,
-            path,
         }
     }
 
@@ -52,7 +54,11 @@ impl File {
     /// Use [`OpenOptions`] for ordinary opens. Anonymous pseudo files such as
     /// newly created memfds deliberately bypass executable/write exclusion.
     pub fn new(inner: FileBackend, flags: FileFlags) -> Self {
-        let path = inner.path_handle().clone();
+        let writeback_cursor = inner
+            .cached_file()
+            .map_or_else(WritebackErrorCursor::default, |cached| {
+                cached.sample_writeback_error()
+            });
         // man 2 open: "The file offset is set to the beginning of the file"
         // — initial position is always 0, regardless of O_APPEND.
         // O_APPEND only relocates the offset BEFORE EACH WRITE (handled in
@@ -69,8 +75,8 @@ impl File {
             inner,
             flags: AtomicU8::new(flags.bits()),
             position,
+            writeback_cursor: RawSpinLock::new(writeback_cursor),
             access_flags: AtomicU8::new(0),
-            path,
         }
     }
 
@@ -148,12 +154,12 @@ impl File {
 
     /// Returns a reference to the underlying [`Location`].
     pub fn location(&self) -> &Location {
-        self.path.location()
+        self.inner.location()
     }
 
     /// Borrows this description's path use, including after lazy detachment.
     pub fn path_handle(&self) -> &PathHandle {
-        &self.path
+        self.inner.path_handle()
     }
 
     /// Reads a number of bytes starting from a given offset.
@@ -163,7 +169,8 @@ impl File {
 
     /// Writes a number of bytes starting from a given offset.
     pub fn write_at(&self, mut src: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        self.access(FileFlags::WRITE)?.write_at(&mut src, offset)
+        self.access(FileFlags::WRITE)?
+            .write_at_with_sync(&mut src, offset, || self.sync(false))
     }
 
     /// Truncates or extends the file to `len` bytes.
@@ -205,7 +212,16 @@ impl File {
     /// metadata.
     pub fn sync(&self, data_only: bool) -> VfsResult<()> {
         self.access(FileFlags::empty())?;
-        self.inner.sync(data_only)
+        let result = self.inner.sync(data_only);
+        if let Some(cached) = self.inner.cached_file() {
+            // Advance even when this sync itself failed. No cursor or error
+            // state lock spans backing I/O, cache callbacks, or user memory.
+            let observed =
+                cached.check_and_advance_writeback_error(&mut self.writeback_cursor.lock());
+            result.and(observed)
+        } else {
+            result
+        }
     }
 
     /// Reads data from the current position, advancing the cursor.
@@ -235,7 +251,9 @@ impl File {
         if let Some(pos) = self.position.as_ref() {
             let mut pos = pos.lock();
             if let Ok(f) = self.access(FileFlags::APPEND) {
-                let (written, new_size) = f.append(&mut src).map_err(vfs_error_to_io_error)?;
+                let (written, new_size) = f
+                    .append_with_sync(&mut src, || self.sync(false))
+                    .map_err(vfs_error_to_io_error)?;
                 if written != 0 {
                     *pos = new_size;
                 }

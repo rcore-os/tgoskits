@@ -20,11 +20,8 @@ impl WritebackPages<'_> {
         let mut cursor = 0;
         while let Some(batch) = self.prepare_batch(&mut cursor)? {
             let _backing_change = self.shared.backing_persistence.begin()?;
-            super::super::backing::write_all_at(
-                self.shared.backing()?,
-                &batch.bytes,
-                batch.offset,
-            )?;
+            super::super::backing::write_all_at(self.shared.backing()?, &batch.bytes, batch.offset)
+                .inspect_err(|error| self.shared.writeback_errors.record(*error))?;
             self.complete_batch(&batch);
         }
         Ok(())

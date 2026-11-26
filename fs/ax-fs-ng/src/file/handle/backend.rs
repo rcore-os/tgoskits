@@ -170,12 +170,22 @@ impl FileBackend {
     }
 
     /// Writes `src` to the file at `offset`.
-    pub fn write_at(&self, mut src: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
+    pub fn write_at(&self, src: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
+        self.write_at_with_sync(src, offset, || self.sync(false))
+    }
+
+    /// Keeps synchronous completion with the description that observes errors.
+    pub(super) fn write_at_with_sync(
+        &self,
+        mut src: impl Read + IoBuf,
+        offset: u64,
+        sync: impl FnOnce() -> VfsResult<()>,
+    ) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.write_at_with_completion(&mut src, offset, |written| {
-                Self::finish_cached_write(cached, written)
+                Self::finish_cached_write(cached, written, sync)
             }),
-            Self::Layered(file) => file.native.write_at(src, offset),
+            Self::Layered(file) => file.native.write_at_with_sync(src, offset, sync),
             Self::Direct(path) => {
                 let loc = path.location();
                 if loc.flags().contains(NodeFlags::PACKET) {
@@ -197,12 +207,20 @@ impl FileBackend {
     }
 
     /// Appends `src` to the end of the file. Returns `(bytes_written, new_end)`.
-    pub fn append(&self, mut src: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
+    pub fn append(&self, src: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
+        self.append_with_sync(src, || self.sync(false))
+    }
+
+    pub(super) fn append_with_sync(
+        &self,
+        mut src: impl Read + IoBuf,
+        sync: impl FnOnce() -> VfsResult<()>,
+    ) -> VfsResult<(usize, u64)> {
         match self {
             Self::Cached(cached) => cached.append_with_completion(&mut src, |written| {
-                Self::finish_cached_write(cached, written)
+                Self::finish_cached_write(cached, written, sync)
             }),
-            Self::Layered(file) => file.native.append(src),
+            Self::Layered(file) => file.native.append_with_sync(src, sync),
             Self::Direct(path) => {
                 let loc = path.location();
                 let length = src.remaining();
@@ -211,7 +229,11 @@ impl FileBackend {
         }
     }
 
-    fn finish_cached_write(cached: &CachedFile, written: usize) -> VfsResult<()> {
+    fn finish_cached_write(
+        cached: &CachedFile,
+        written: usize,
+        sync: impl FnOnce() -> VfsResult<()>,
+    ) -> VfsResult<()> {
         if written != 0
             && matches!(
                 cached.location().node_type(),
@@ -225,7 +247,7 @@ impl FileBackend {
         {
             // Complete dirty cache pages before a write to a synchronous inode
             // is reported successful, including writes from file-backed block I/O.
-            cached.sync(false)?;
+            sync()?;
         }
         Ok(())
     }
