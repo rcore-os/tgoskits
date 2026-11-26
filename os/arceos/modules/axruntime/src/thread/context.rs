@@ -59,11 +59,10 @@ pub fn diagnose_current_stack_guard_page_fault(
         // The page-fault slow path may restore the faulting task's IRQ state.
         // Mask IRQs while borrowing current-context and stack ownership, then
         // restore them before the caller formats the owned diagnostic.
-        let irqs_enabled = ax_cpu::interrupt::irqs_enabled();
-        ax_cpu::interrupt::disable_irqs();
+        let _irq_guard = ax_task::sync::IrqSaveGuard::new();
         // SAFETY: masked local IRQs exclude migration and context reclamation.
         // Only owned addresses escape this CPU-pinned callback.
-        let diagnostic = unsafe {
+        unsafe {
             with_current_cpu_pin(|cpu_pin| {
                 let context = current_runtime_context(cpu_pin).ok()?;
                 let stack = context.stack.into_raw();
@@ -89,11 +88,7 @@ pub fn diagnose_current_stack_guard_page_fault(
                     guard: guard_start..guard_end,
                 })
             })
-        };
-        if irqs_enabled {
-            ax_cpu::interrupt::enable_irqs();
         }
-        diagnostic
     }
     #[cfg(not(feature = "paging"))]
     {

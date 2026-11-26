@@ -13,7 +13,7 @@ use std::sync::mpsc;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, FileNodeOps, FileRangeOperation, Filesystem, FilesystemOps, Metadata,
     MetadataUpdate, Mountpoint, NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode,
-    Reference, StatFs,
+    Reference, StatFs, WritebackPolicy,
 };
 
 use super::*;
@@ -58,12 +58,22 @@ where
 
 struct CacheTestFilesystem {
     name: &'static str,
+    root: Option<DirEntry>,
 }
 
-static CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "cache-test" };
-static TMPFS_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "tmpfs" };
+static CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem {
+    name: "cache-test",
+    root: None,
+};
+static TMPFS_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem {
+    name: "tmpfs",
+    root: None,
+};
 #[cfg(all(feature = "ext4", feature = "vfs"))]
-static EXT4_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "ext4" };
+static EXT4_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem {
+    name: "ext4",
+    root: None,
+};
 
 impl FilesystemOps for CacheTestFilesystem {
     fn name(&self) -> &str {
@@ -71,12 +81,7 @@ impl FilesystemOps for CacheTestFilesystem {
     }
 
     fn root_dir(&self) -> DirEntry {
-        let backing = Arc::new(CacheTestFile::new(Vec::new()));
-        DirEntry::new_file(
-            FileNode::new(backing),
-            NodeType::RegularFile,
-            Reference::root(),
-        )
+        self.root.clone().expect("a mounted fixture needs its root")
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
@@ -93,6 +98,7 @@ struct CacheTestFileState {
     write_calls: usize,
     write_ranges: Vec<(usize, usize)>,
     max_write: usize,
+    writeback_policy: WritebackPolicy,
 }
 
 type BeforeBackingIo = Box<dyn FnOnce() -> VfsResult<()> + Send>;
@@ -133,6 +139,7 @@ impl CacheTestFile {
                 write_calls: 0,
                 write_ranges: Vec::new(),
                 max_write: usize::MAX,
+                writeback_policy: WritebackPolicy::empty(),
             }),
             read_observer: std::sync::Mutex::new(None),
             #[cfg(feature = "vfs")]
@@ -215,6 +222,10 @@ impl NodeOps for CacheTestFile {
             before_sync()?;
         }
         Ok(())
+    }
+
+    fn writeback_policy(&self) -> VfsResult<WritebackPolicy> {
+        Ok(self.state.lock().unwrap().writeback_policy)
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
@@ -375,14 +386,21 @@ impl FileNodeOps for CacheTestFile {
 }
 
 fn reopen_cached_file(backing: Arc<CacheTestFile>) -> CachedFile {
+    let name = backing.filesystem.name;
     let entry = DirEntry::new_file(
         FileNode::new(backing),
         NodeType::RegularFile,
         Reference::root(),
     );
-    let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "cache-test" }));
+    let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem {
+        name,
+        root: Some(entry.clone()),
+    }));
     let mountpoint = Mountpoint::new_root(&filesystem);
-    CachedFile::get_or_create(Location::new(mountpoint, entry)).unwrap()
+    CachedFile::get_or_create(
+        axfs_ng_vfs::PathHandle::acquire(Location::new(mountpoint, entry)).unwrap(),
+    )
+    .unwrap()
 }
 
 /// Fixture for the root shutdown-order regression: a disk-backed cached file
@@ -473,7 +491,10 @@ fn filesystem_sync_does_not_visit_another_filesystems_busy_mapping() {
 #[test]
 fn cached_file_identity_follows_shared_cache_owner() {
     let first = reopen_cached_file(Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE])));
-    let reopened = CachedFile::get_or_create(first.location().clone()).unwrap();
+    let reopened = CachedFile::get_or_create(
+        axfs_ng_vfs::PathHandle::acquire(first.location().clone()).unwrap(),
+    )
+    .unwrap();
     let independent = reopen_cached_file(Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE])));
 
     assert!(first.ptr_eq(&reopened));
@@ -1337,9 +1358,15 @@ fn retirement_waits_for_periodic_writeback_before_registry_removal() {
             NodeType::RegularFile,
             Reference::root(),
         );
-        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "ext4" }));
+        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem {
+            name: "ext4",
+            root: Some(entry.clone()),
+        }));
         let mountpoint = Mountpoint::new_root(&filesystem);
-        let cached = CachedFile::get_or_create(Location::new(mountpoint, entry)).unwrap();
+        let cached = CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(Location::new(mountpoint, entry)).unwrap(),
+        )
+        .unwrap();
         let initial_data: &[u8] = &[0x81; 64];
         assert_eq!(cached.write_at(initial_data, 0), Ok(64));
 
@@ -1363,8 +1390,9 @@ fn retirement_waits_for_periodic_writeback_before_registry_removal() {
             .shared
             .set_retirement_observer(Some(Arc::new(move || attempt_tx.send(()).unwrap())));
         let retiring = cached.clone();
-        let retirement =
-            std::thread::spawn(move || retire_filesystem_cache(retiring.inner.filesystem()));
+        let retirement = std::thread::spawn(move || {
+            retire_filesystem_cache(retiring.inner.location().filesystem())
+        });
 
         let lock_attempt = attempt_rx.recv_timeout(Duration::from_secs(1));
         assert!(!cached.shared.retired.load(Ordering::Acquire));
@@ -1405,15 +1433,21 @@ fn failed_retirement_keeps_dirty_file_registered_for_retry() {
             NodeType::RegularFile,
             Reference::root(),
         );
-        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "ext4" }));
+        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem {
+            name: "ext4",
+            root: Some(entry.clone()),
+        }));
         let mountpoint = Mountpoint::new_root(&filesystem);
-        let cached = CachedFile::get_or_create(Location::new(mountpoint, entry)).unwrap();
+        let cached = CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(Location::new(mountpoint, entry)).unwrap(),
+        )
+        .unwrap();
         let data: &[u8] = &[0x91; 64];
         assert_eq!(cached.write_at(data, 0), Ok(data.len()));
         backing.fail_next_write();
 
         assert_eq!(
-            retire_filesystem_cache(cached.inner.filesystem()),
+            retire_filesystem_cache(cached.inner.location().filesystem()),
             Err(VfsError::Io)
         );
         assert!(!cached.shared.retired.load(Ordering::Acquire));
@@ -1424,7 +1458,10 @@ fn failed_retirement_keeps_dirty_file_registered_for_retry() {
                 .any(|registered| Arc::ptr_eq(registered, &cached.shared))
         );
 
-        assert_eq!(retire_filesystem_cache(cached.inner.filesystem()), Ok(()));
+        assert_eq!(
+            retire_filesystem_cache(cached.inner.location().filesystem()),
+            Ok(())
+        );
         assert!(cached.shared.retired.load(Ordering::Acquire));
         assert_eq!(cached.shared.dirty_page_count(), 0);
     });
@@ -1714,8 +1751,88 @@ fn truncate_cache_miss_does_not_expose_stale_tail_after_reopen_and_extend() {
 }
 
 #[test]
-fn extending_write_cache_miss_zeroes_gap_before_write_offset() {
+fn extending_write_preserves_progress_and_zeroes_gaps() {
     with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing);
+        let direct = crate::file::FileBackend::Direct(cached.path_handle().clone());
+        let initialized = b"initialized file contents";
+        direct.set_len(1).unwrap();
+        assert_eq!(
+            direct.write_at(initialized.as_slice(), 0).unwrap(),
+            initialized.len()
+        );
+        let retained = initialized.len() / 2;
+        direct.set_len(retained as u64).unwrap();
+        let mut bytes = vec![0; retained];
+        assert_eq!(direct.read_at(bytes.as_mut_slice(), 0).unwrap(), retained);
+        assert_eq!(
+            bytes,
+            initialized[..retained],
+            "alternating direct writes and resize changed initialized contents"
+        );
+    });
+
+    struct Input<R> {
+        reader: R,
+        remaining: usize,
+    }
+
+    impl<R: ax_io::Read> ax_io::Read for Input<R> {
+        fn read(&mut self, dst: &mut [u8]) -> ax_io::Result<usize> {
+            let read = self.reader.read(dst)?;
+            self.remaining -= read;
+            Ok(read)
+        }
+
+        fn read_buf(&mut self, mut dst: core::io::BorrowedCursor<'_, u8>) -> ax_io::Result<()> {
+            let before = dst.written();
+            let result = self.reader.read_buf(dst.reborrow());
+            self.remaining -= dst.written() - before;
+            result
+        }
+    }
+
+    impl<R> ax_io::IoBuf for Input<R> {
+        fn remaining(&self) -> usize {
+            self.remaining
+        }
+    }
+
+    struct FilledPrefix<'a>(&'a [u8]);
+
+    impl ax_io::Read for FilledPrefix<'_> {
+        fn read(&mut self, _dst: &mut [u8]) -> ax_io::Result<usize> {
+            Err(ax_io::Error::InvalidInput)
+        }
+
+        fn read_buf(&mut self, mut dst: core::io::BorrowedCursor<'_, u8>) -> ax_io::Result<()> {
+            let count = dst.capacity().min(self.0.len());
+            dst.append(&self.0[..count]);
+            self.0 = &self.0[count..];
+            if self.0.is_empty() {
+                Err(ax_io::Error::InvalidInput)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    with_test_page_provider(true, |provider| {
+        let allocation_backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let allocation_cached = reopen_cached_file(allocation_backing.clone());
+        provider.fail_after(0);
+        let failed_allocation = allocation_cached.write_at(&[0x3c][..], 0);
+        provider.fail_after(usize::MAX);
+        assert_eq!(failed_allocation, Err(VfsError::NoMemory));
+        assert_eq!(
+            allocation_cached.len(),
+            0,
+            "failed allocation cannot publish EOF"
+        );
+        assert_eq!(allocation_backing.len().unwrap(), 0);
+        drop(allocation_cached);
+
         let backing = Arc::new(CacheTestFile::new(vec![0xa5; PAGE_SIZE]));
         let old_len = PAGE_SIZE / 2;
         backing.set_len(old_len as u64).unwrap();
@@ -1727,6 +1844,63 @@ fn extending_write_cache_miss_zeroes_gap_before_write_offset() {
         assert_eq!(cached.len(), old_len as u64);
         assert_eq!(backing.len().unwrap(), old_len as u64);
         assert_eq!(backing.state.lock().unwrap().physical_data, before_empty);
+
+        let rejected = Input {
+            reader: ax_io::read_fn(|_| Err(ax_io::Error::InvalidInput)),
+            remaining: 2,
+        };
+        assert_eq!(
+            cached.write_at(rejected, write_offset as u64),
+            Err(VfsError::InvalidInput)
+        );
+        assert_eq!(cached.len(), old_len as u64);
+        assert_eq!(backing.len().unwrap(), old_len as u64);
+        assert_eq!(backing.state.lock().unwrap().physical_data, before_empty);
+
+        let same_file = Input {
+            reader: ax_io::read_fn(|dst: &mut [u8]| {
+                // Fail promptly instead of hanging if input cannot perform
+                // the actual same-file read while the writer is active.
+                let io = cached
+                    .shared
+                    .io_lock
+                    .try_lock()
+                    .ok_or(ax_io::Error::WouldBlock)?;
+                drop(io);
+                cached.read_at(dst, 0).map_err(crate::vfs_error_to_io_error)
+            }),
+            remaining: 1,
+        };
+        assert_eq!(cached.write_at(same_file, 0), Ok(1));
+        assert_eq!(cached.len(), old_len as u64);
+        assert_eq!(backing.len().unwrap(), old_len as u64);
+
+        let mut prefix = &[0x5a][..];
+        let interrupted = Input {
+            reader: ax_io::read_fn(|dst: &mut [u8]| {
+                if prefix.is_empty() {
+                    Err(ax_io::Error::InvalidInput)
+                } else {
+                    ax_io::Read::read(&mut prefix, dst)
+                }
+            }),
+            remaining: 2,
+        };
+        assert_eq!(cached.write_at(interrupted, write_offset as u64), Ok(1));
+        assert_eq!(cached.len(), (write_offset + 1) as u64);
+        assert_eq!(backing.len().unwrap(), (write_offset + 1) as u64);
+        assert_eq!(
+            cached.write_at(
+                Input {
+                    reader: FilledPrefix(&[0x5a]),
+                    remaining: 2,
+                },
+                write_offset as u64,
+            ),
+            Ok(1)
+        );
+        assert_eq!(cached.len(), (write_offset + 1) as u64);
+        assert_eq!(backing.len().unwrap(), (write_offset + 1) as u64);
         assert_eq!(
             cached.write_at(&[0x5a][..], write_offset as u64).unwrap(),
             1
@@ -1734,7 +1908,7 @@ fn extending_write_cache_miss_zeroes_gap_before_write_offset() {
         cached.writeback().unwrap();
         drop(cached);
 
-        let reopened = reopen_cached_file(backing);
+        let reopened = reopen_cached_file(backing.clone());
         let mut gap_and_byte = vec![0xff; write_offset + 1 - old_len];
         assert_eq!(
             reopened
@@ -1748,6 +1922,113 @@ fn extending_write_cache_miss_zeroes_gap_before_write_offset() {
                 .all(|byte| *byte == 0)
         );
         assert_eq!(gap_and_byte.last(), Some(&0x5a));
+
+        let filled = vec![0x6b; 2 * PAGE_SIZE + 17];
+        let filled_offset = write_offset + 1;
+        let expected_end = filled_offset + filled.len();
+        let interrupted = Input {
+            reader: FilledPrefix(&filled),
+            remaining: filled.len() + 1,
+        };
+        assert_eq!(
+            reopened.write_at(interrupted, filled_offset as u64),
+            Ok(filled.len())
+        );
+        assert_eq!(reopened.len(), expected_end as u64);
+        assert_eq!(backing.len().unwrap(), expected_end as u64);
+        reopened.writeback().unwrap();
+        drop(reopened);
+        let reopened = reopen_cached_file(backing);
+        let mut actual = vec![0; filled.len()];
+        assert_eq!(
+            reopened
+                .read_at(actual.as_mut_slice(), filled_offset as u64)
+                .unwrap(),
+            actual.len()
+        );
+        assert_eq!(actual, filled);
+    });
+}
+
+#[test]
+fn append_keeps_the_whole_input_ordered_while_staging() {
+    struct PausedInput {
+        remaining: usize,
+        staged: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl ax_io::Read for PausedInput {
+        fn read(&mut self, dst: &mut [u8]) -> ax_io::Result<usize> {
+            if dst.is_empty() {
+                return Ok(0);
+            }
+            if self.remaining == PAGE_SIZE {
+                self.staged.send(()).unwrap();
+                self.release.recv().unwrap();
+            }
+            // Deliver one source chunk per call regardless of requested capacity.
+            let count = dst.len().min(self.remaining).min(PAGE_SIZE);
+            dst[..count].fill(0x31);
+            self.remaining -= count;
+            Ok(count)
+        }
+    }
+
+    impl ax_io::IoBuf for PausedInput {
+        fn remaining(&self) -> usize {
+            self.remaining
+        }
+    }
+
+    struct ReleaseInput(std::sync::mpsc::Sender<()>);
+
+    impl Drop for ReleaseInput {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing);
+        let (staged_tx, staged_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::sync_channel(1);
+        *cached.shared.content_wait_observer.lock() = Some(waiting_tx);
+        let second_bytes = vec![0x72; PAGE_SIZE];
+
+        std::thread::scope(|scope| {
+            // Release the paused reader before scoped threads are joined,
+            // including when a fixture or assertion unwinds this scope.
+            let release = ReleaseInput(release_tx);
+            let first = scope.spawn(|| {
+                cached.append(PausedInput {
+                    remaining: 2 * PAGE_SIZE,
+                    staged: staged_tx,
+                    release: release_rx,
+                })
+            });
+            let staged = staged_rx.recv_timeout(Duration::from_secs(5));
+            let second = scope.spawn(|| cached.append(second_bytes.as_slice()));
+            let waiting = waiting_rx.recv_timeout(Duration::from_secs(5));
+            drop(release);
+            let first = first.join().unwrap();
+            let second = second.join().unwrap();
+            assert!(
+                staged.is_ok(),
+                "the first append reached its next input chunk"
+            );
+            assert!(waiting.is_ok(), "the peer attempted an overlapping append");
+            assert_eq!(first, Ok((2 * PAGE_SIZE, (2 * PAGE_SIZE) as u64)));
+            assert_eq!(second, Ok((PAGE_SIZE, (3 * PAGE_SIZE) as u64)));
+        });
+
+        assert_eq!(cached.len(), (3 * PAGE_SIZE) as u64);
+        let mut actual = vec![0; 3 * PAGE_SIZE];
+        assert_eq!(cached.read_at(actual.as_mut_slice(), 0), Ok(actual.len()));
+        assert!(actual[..2 * PAGE_SIZE].iter().all(|byte| *byte == 0x31));
+        assert!(actual[2 * PAGE_SIZE..].iter().all(|byte| *byte == 0x72));
     });
 }
 

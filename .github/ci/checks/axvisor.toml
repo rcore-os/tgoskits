@@ -17,7 +17,9 @@ command = '''
 echo "==> axvisor aarch64 shared general boot (five CI checks)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/general
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
-timeout 240s apps/arceos/virtio-blk-test/run.sh
+# The runner starts its 180 s guest deadline after build and asset preparation.
+# Compiler work remains bounded by the job budget above.
+apps/arceos/virtio-blk-test/run.sh
 echo "==> axvisor aarch64 five virtio-net guest vCPUs on two host CPUs"
 timeout 600s apps/arceos/virtio-net-peer/run.sh --vcpus
 echo "==> axvisor aarch64 PCI memory test ArceOS guest"
@@ -187,12 +189,12 @@ AXBUILD_QEMU_SYSTEM_LOONGARCH64="$task_capture_bin/qemu-system-loongarch64" \
 if [ "$task_status" -ne 0 ]; then
   python3 scripts/test/qemu_state_capture.py --report "$task_capture_state" \
     || printf '%s\n' 'QEMU state report failed' >&2
-  rm "$task_capture_bin/qemu-system-loongarch64"
-  rmdir "$task_capture_bin"
-  exit "$task_status"
 fi
 rm "$task_capture_bin/qemu-system-loongarch64"
 rmdir "$task_capture_bin"
+if [ "$task_status" -ne 0 ]; then
+  exit "$task_status"
+fi
 echo "==> axvm loongarch64 IOCSR isolation axtest"
 target/debug/tg-xtask ktest qemu --package axvm-kernel-tests --test loongarch_iocsr --arch loongarch64 \
   --config virtualization/test_crates/axvm-kernel-tests/build-loongarch64-unknown-none-softfloat.toml \
@@ -396,8 +398,8 @@ cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-cargo xtask starry test board --board orangepi-5-plus-robot
-cargo xtask axvisor test board \
+RUST_LOG=info,uboot_shell=debug cargo xtask starry test board --board orangepi-5-plus-robot
+RUST_LOG=info,uboot_shell=debug cargo xtask axvisor test board \
   --board orangepi-5-plus-robot-starry,orangepi-5-plus-robot-linux
 '''
 

@@ -34,6 +34,12 @@ impl BlockTimeProvider for RuntimeTimeProvider {
         ax_hal::time::wall_time()
     }
 
+    fn try_wall_time(&self) -> Option<Duration> {
+        // init prepares the immutable timer conversion before publication.
+        // Later samples use the hardware counter and atomic clock adjustment.
+        Some(ax_hal::time::wall_time())
+    }
+
     fn monotonic_time(&self) -> Duration {
         ax_hal::time::monotonic_time()
     }
@@ -160,6 +166,14 @@ impl BlockRuntimeOps for RuntimeTaskOps {
     fn can_block(&self) -> bool {
         crate::task::thread::current::current_thread_id().is_ok()
             && !crate::guard::in_atomic_context()
+    }
+
+    fn yield_now(&self) -> BlockResult<()> {
+        if crate::guard::in_atomic_context() {
+            return Err(BlockError::WouldBlock);
+        }
+        crate::task::thread::current::current_thread_id().map_err(task_error_to_block_error)?;
+        crate::task::thread::current::yield_current_cpu().map_err(task_error_to_block_error)
     }
 
     fn notification(&self) -> Arc<dyn BlockNotification> {
@@ -305,6 +319,8 @@ const BUILTIN_INITRAMFS: &[u8] = &[];
 
 pub(super) fn init(bootargs: Option<&str>) {
     ONLINE_BLOCK_CPUS.store(1, Ordering::Release);
+    // Prepare lazy timer conversion before exposing nonblocking clock reads.
+    let _initial_time = TIME_PROVIDER.wall_time();
     ax_block::os::install_dma_device_resolver(ax_driver::dma_device_for_info);
     ax_fs_ng::os::install(
         &TIME_PROVIDER,
@@ -326,7 +342,11 @@ pub(super) fn init(bootargs: Option<&str>) {
         // the target-side map into an owned allocation before releasing them so
         // panic paths never borrow initramfs memory.  Missing maps are expected
         // for early or address-only builds and retain the raw fallback.
-        let context = ax_fs_ng::vfs::FsContext::new(Mountpoint::new_root(&fs).root_location());
+        let tree = Mountpoint::new_root(&fs);
+        let context = ax_fs_ng::vfs::FsContext::from_tree(tree.clone(), tree.root_location())
+            .unwrap_or_else(|error| panic!("host initramfs context failed: {error:?}"));
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let context = ax_fs_ng::FsView::native(context, &caller);
         for path in ["/symbols/kernel.axbt", "/boot/symbols/kernel.axbt"] {
             match context.read(path) {
                 Ok(bytes) => {

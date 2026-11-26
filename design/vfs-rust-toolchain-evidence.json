@@ -1,0 +1,574 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-11-16T17:39:21.909386+08:00",
+  "repository": "rcore-os/tgoskits",
+  "pull_request": 2800,
+  "source_commit": "827e40092cd245875c98b51f9e0a121974802cdf",
+  "source_tree": "d7d5bdbdf068156e947c1ff375373a37e7c7548d",
+  "scope": "Rust nightly integration, native FAT cache retirement, ArceOS std directory-handle behavior, and deterministic host fixtures; full PR migration remains incomplete",
+  "upstream_commit": "f55295b7890ee6ec6984222a840d55355cadfd27",
+  "merge_commit": "3e596259d6bac5d6e8f81e3960016797b223bb63",
+  "toolchain": {
+    "old_rustc": "rustc 1.100.0-nightly (a69a63265 2026-09-03)\nbinary: rustc\ncommit-hash: a69a63265cfd9e006d43137f98301b8d274ad4c9\ncommit-date: 2026-09-03\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0-nightly\nLLVM version: 23.1.1",
+    "new_rustc": "rustc 1.102.0-nightly (8eb778d04 2026-11-12)\nbinary: rustc\ncommit-hash: 8eb778d04094d3af4b26580cab327e0413eb1e02\ncommit-date: 2026-11-12\nhost: x86_64-unknown-linux-gnu\nrelease: 1.102.0-nightly\nLLVM version: 23.1.5"
+  },
+  "upstream_research": [
+    {
+      "change": "allocator API stabilization and allocator_ext split; internal Unique removal",
+      "sources": [
+        "https://github.com/rust-lang/rust/pull/156882",
+        "https://github.com/rust-lang/rust/pull/164146"
+      ],
+      "local_adaptation": "Retain upstream allocator_ext gates and x2apic 0.5.1; no local direct Unique or ptr_internals consumers found in affected code."
+    },
+    {
+      "change": "musl DirEntry metadata now uses the retained directory fd",
+      "sources": [
+        "https://github.com/rust-lang/rust/blob/a69a63265cfd9e006d43137f98301b8d274ad4c9/library/std/src/sys/fs/unix.rs",
+        "https://github.com/rust-lang/rust/blob/8eb778d04094d3af4b26580cab327e0413eb1e02/library/std/src/sys/fs/unix.rs",
+        "https://github.com/rust-lang/rust/blob/8eb778d04094d3af4b26580cab327e0413eb1e02/library/std/src/sys/fs/unix/dir.rs"
+      ],
+      "local_adaptation": "Preserve handle-relative at APIs, remove path-string fd cache, explicitly pass MutationCredentials to native open; extend existing fs-basic rename journey to retain a DirEntry after iterator close and parent rename.",
+      "evidence_note": "Compared installed exact rust-src metadata() implementations. PR 157192 is earlier handle API background, not evidence for the date of this musl consumer migration."
+    },
+    {
+      "change": "inherent integer bit/set_bit methods can shadow trait methods; set_bit returns a value rather than mutating the receiver",
+      "sources": [
+        "https://github.com/rust-lang/rust/pull/147696"
+      ],
+      "local_adaptation": "Retain mainline UFCS at virtual interrupt and hypervisor register sites."
+    },
+    {
+      "change": "new Clippy unnecessary_box_pin, new_instead_of_clear and broader extend_with_drain",
+      "sources": [
+        "https://github.com/rust-lang/rust-clippy/pull/13598",
+        "https://github.com/rust-lang/rust-clippy/pull/16549",
+        "https://github.com/rust-lang/rust-clippy/pull/16778"
+      ],
+      "local_adaptation": "Preserve heap-pinned futures in explicit cancellation tests; stack pin remains limited to journeys that do not depend on early destruction."
+    },
+    {
+      "change": "nonincremental host-test exception-table/TSS linking",
+      "sources": [
+        "https://github.com/rcore-os/tgoskits/pull/2807"
+      ],
+      "local_adaptation": "Keep explicit runtime/axvm host-test linker boundaries and validate with CARGO_INCREMENTAL=0; do not attribute observed TGOSKits linking to an unverified upstream LLVM guarantee."
+    }
+  ],
+  "source_files": [
+    {
+      "path": "fs/ax-fs-ng/src/api.rs",
+      "sha256": "7c97ca773f2dd6ca579f6abd94d24e893bc5acf055a3d17d033e12216f194191"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fops.rs",
+      "sha256": "6aa46c4510255af13ff2545875977e20fd8172a2e5a263645d7c4a1bc2f531ec"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/fat/file.rs",
+      "sha256": "7893739c6b8e7064986800e7d9355f303f3e476d8535d14a9396cf411dd08d13"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/fat/dir.rs",
+      "sha256": "e0571afc7be3faf607336bb992aebabbe5191844f272fda7b1d2cc1a6e41e6db"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/fat/disk.rs",
+      "sha256": "56e937bdd8514033e337fee4d0d4ab2c1d0ef3cfd6b257f3dd80f121c2a0e0a0"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/mod.rs",
+      "sha256": "36315f113e35fd3d499b132d68f7db2ef3b425fe56bcab6eb5f2bdc5a7172aad"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/reclaim.rs",
+      "sha256": "5667ac3daa5a95d11ac8dc9967dd6a26558df8f8c2e67629a69bf9ef17aa03cf"
+    },
+    {
+      "path": "fs/axfs-ng-vfs/src/node/dir/mod.rs",
+      "sha256": "1484f6f8cfaaf8993b8e07f55db23b679e3ad5ff144446a8b6c6787c360cf181"
+    },
+    {
+      "path": "fs/axfs-ng-vfs/src/mount/mod.rs",
+      "sha256": "5396b1a7d3fb38011c99162c5cbb4e834eec2026e519b71eddcc35c580e4c36d"
+    },
+    {
+      "path": "os/arceos/api/arceos_posix_api/src/imp/fs.rs",
+      "sha256": "7d49a33bf69538a50de6167f9f705b6eacb854a231152f49b71eb612b8ed7b73"
+    },
+    {
+      "path": "os/arceos/ulib/axstd/src/os/libc_compat.rs",
+      "sha256": "bafc5ca053b195eb9300333a2337d539e4c316c3fa26e388397a5d63f2920c0a"
+    },
+    {
+      "path": "test-suit/arceos/rust/src/fs/basic.rs",
+      "sha256": "1b3d0703796b7a83572fa3eed3e25057f6df03918f9eaf0161979bb57198feb0"
+    },
+    {
+      "path": "test-suit/arceos/rust/src/lockdep/baseline.rs",
+      "sha256": "012dc93a6fd60da06ff20a18233d0713715f45cbfadf1738bed4d300a53b4dc0"
+    },
+    {
+      "path": "scripts/axbuild/src/support/git/tests/refs.rs",
+      "sha256": "2cba7819b4c34589e621522d0b7317b79241caeca687ffbf6a847370d47d22b8"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/root/grow.rs",
+      "sha256": "2f8f00232883f97e9341f9f35608ff3ba624c067da32e78c37f02810d3bdfdb1"
+    },
+    {
+      "path": "fs/rsext4/tests/filesystem_growth.rs",
+      "sha256": "e4136ebc5776fc4a6943870b66c640c0ffb18218ea07465822e53839e647b997"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "00786dde435bb44d8864fdc881deb18fa7eec5cf89a77080b620ded6675c9ceb"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "8a9bea957f73bf162c642b4b3d456c2925f552ee31caa28de534dbe96f05c6b1"
+    },
+    {
+      "path": "os/arceos/ulib/axstd/Cargo.toml",
+      "sha256": "807317ad3a1722105dc30de9c9e13672592dc12357eb0b3e272efa381e912450"
+    },
+    {
+      "path": "os/arceos/modules/axruntime/Cargo.toml",
+      "sha256": "9f8d691c94240b03fe40b03fe799a7a4dae1ee3ea756f05118dc7957a2105b48"
+    },
+    {
+      "path": "os/StarryOS/signal/Cargo.toml",
+      "sha256": "2b7a9a1d5ef52fdece7aacd5b98fd453350a40433615c0ce10df57e70150a747"
+    },
+    {
+      "path": "drivers/net/rd-net/Cargo.toml",
+      "sha256": "888776a599f8d58ebc503c4de3635ce3d5490053fd31ab94f65336492a2be963"
+    },
+    {
+      "path": "os/arceos/api/arceos_posix_api/Cargo.toml",
+      "sha256": "2b58828fbf0e2c6df89d86f6f9bbcab1fc45426e4c3bd197cb40cd7c5671ce0f"
+    }
+  ],
+  "logs_directory": "/home/zhourui/.codex/artifacts/pr2800-continuation",
+  "std_command": "PATH=<isolated-e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since origin/dev",
+  "std_red": {
+    "source_commit": "f9c01627318b3c6e066f6bd42186b5788b6d0b3f",
+    "log": {
+      "file": "nightly1113-std-tests-red.log",
+      "sha256": "1cdf95a78b6148caeaf939d7cd39c48a2e57630db7f77de9f24cc9779db991e0",
+      "exit_code": 1
+    },
+    "selected_packages": 21,
+    "passed_packages": [
+      "ax-hal",
+      "aic8800",
+      "rdif-eth",
+      "ax-block",
+      "axfs-ng-vfs",
+      "ax-driver",
+      "ax-runtime",
+      "ax-posix-api",
+      "ax-net",
+      "rd-net",
+      "realtek-rtl8125",
+      "ax-display",
+      "ax-cgroup",
+      "axvm",
+      "virtualization-tests",
+      "starry-signal",
+      "ax-drm"
+    ],
+    "failed_packages": [
+      "ax-fs-ng",
+      "rsext4",
+      "starry-kernel",
+      "axbuild"
+    ]
+  },
+  "std_prerequisite_diagnostics": {
+    "source_commit": "59d16430f9326b0449a5d9dcc8c133a678508d25",
+    "log": {
+      "file": "nightly1113-std-tests-green.log",
+      "sha256": "51017b11f9743c71bb039f07ebe49c29eee9de5d2e7f6d072f61e58c7d68df44",
+      "exit_code": 1
+    },
+    "selected_packages": 21,
+    "passed_packages": [
+      "ax-hal",
+      "aic8800",
+      "rdif-eth",
+      "ax-block",
+      "axfs-ng-vfs",
+      "ax-driver",
+      "ax-runtime",
+      "ax-posix-api",
+      "ax-net",
+      "rd-net",
+      "realtek-rtl8125",
+      "ax-display",
+      "ax-cgroup",
+      "axvm",
+      "virtualization-tests",
+      "starry-signal",
+      "axbuild",
+      "ax-drm"
+    ],
+    "failed_packages": [
+      "ax-fs-ng",
+      "rsext4",
+      "starry-kernel"
+    ]
+  },
+  "std_final": {
+    "source_commit": "827e40092cd245875c98b51f9e0a121974802cdf",
+    "log": {
+      "file": "nightly1113-std-tests-final.log",
+      "sha256": "cd813266bbe08daab8be89c4fc5e0994870a52916ac1f6d230c8670cf6fb20e1",
+      "exit_code": 1
+    },
+    "selected_packages": 21,
+    "passed_packages": [
+      "ax-hal",
+      "aic8800",
+      "rdif-eth",
+      "ax-fs-ng",
+      "ax-block",
+      "axfs-ng-vfs",
+      "rsext4",
+      "ax-driver",
+      "ax-runtime",
+      "ax-posix-api",
+      "ax-net",
+      "rd-net",
+      "realtek-rtl8125",
+      "ax-display",
+      "ax-cgroup",
+      "axvm",
+      "virtualization-tests",
+      "starry-signal",
+      "axbuild",
+      "ax-drm"
+    ],
+    "failed_packages": [
+      "starry-kernel"
+    ]
+  },
+  "fat_unlink_red_profiles": [
+    {
+      "features": [
+        "host-test",
+        "vfs",
+        "fat",
+        "ext4"
+      ],
+      "results": [
+        "test result: FAILED. 267 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 82.04s"
+      ],
+      "fat_unlink": [
+        "FAILED"
+      ]
+    },
+    {
+      "features": [
+        "host-test",
+        "vfs",
+        "fat"
+      ],
+      "results": [
+        "test result: FAILED. 156 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s"
+      ],
+      "fat_unlink": [
+        "FAILED"
+      ]
+    },
+    {
+      "features": [
+        "host-test",
+        "fat"
+      ],
+      "results": [
+        "test result: FAILED. 136 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s"
+      ],
+      "fat_unlink": [
+        "FAILED"
+      ]
+    },
+    {
+      "features": [
+        "host-test",
+        "ext4"
+      ],
+      "results": [
+        "test result: ok. 238 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.25s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s"
+      ],
+      "fat_unlink": []
+    },
+    {
+      "features": [
+        "host-test"
+      ],
+      "results": [
+        "test result: ok. 128 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.79s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+      ],
+      "fat_unlink": []
+    }
+  ],
+  "ax_final_profiles": [
+    {
+      "features": [
+        "host-test",
+        "vfs",
+        "fat",
+        "ext4"
+      ],
+      "results": [
+        "test result: ok. 268 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.95s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+      ],
+      "fat_unlink": [
+        "ok"
+      ]
+    },
+    {
+      "features": [
+        "host-test",
+        "vfs",
+        "fat"
+      ],
+      "results": [
+        "test result: ok. 157 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+      ],
+      "fat_unlink": [
+        "ok"
+      ]
+    },
+    {
+      "features": [
+        "host-test",
+        "fat"
+      ],
+      "results": [
+        "test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+      ],
+      "fat_unlink": [
+        "ok"
+      ]
+    },
+    {
+      "features": [
+        "host-test",
+        "ext4"
+      ],
+      "results": [
+        "test result: ok. 238 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.46s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+      ],
+      "fat_unlink": []
+    },
+    {
+      "features": [
+        "host-test"
+      ],
+      "results": [
+        "test result: ok. 128 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s"
+      ],
+      "fat_unlink": []
+    }
+  ],
+  "dirfd_sensitivity": {
+    "base_commit": "59d16430f9326b0449a5d9dcc8c133a678508d25",
+    "mutation": "Use cwd instead of the selected DirHandle in context_for_at for a relative path",
+    "patch": {
+      "file": "nightly1113-dirfd-red.patch",
+      "sha256": "3dc41c89309e48832e82f83c0481d35a36e9152c62893264a106796ea3774344"
+    },
+    "red": {
+      "file": "nightly1113-dirfd-red.log",
+      "sha256": "67439663872560d43a0ee3a7587170a0dab144d6d3834eff2ec6b58ae6f281f6",
+      "exit_code": 1
+    },
+    "failure": "std DirEntry lost its renamed directory handle: ENOENT at fs/basic.rs:199",
+    "green": {
+      "file": "nightly1113-dirfd-green.log",
+      "sha256": "59195c7354b2de66aabc58cae4054f41afc580faf50a5ad032b73d61e38a36e9",
+      "exit_code": 0
+    },
+    "restoration": "api.rs restored byte-for-byte before green; no mutation pushed"
+  },
+  "qemu": [
+    {
+      "arch": "x86_64",
+      "source_commit": "59d16430f9326b0449a5d9dcc8c133a678508d25",
+      "command": "cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case fs-basic",
+      "log": {
+        "file": "nightly1113-dirfd-green.log",
+        "sha256": "59195c7354b2de66aabc58cae4054f41afc580faf50a5ad032b73d61e38a36e9",
+        "exit_code": 0
+      },
+      "scope": "ArceOS Rust std/FAT integration; not Starry syscall coverage"
+    },
+    {
+      "arch": "aarch64",
+      "source_commit": "59d16430f9326b0449a5d9dcc8c133a678508d25",
+      "command": "cargo xtask arceos test qemu --arch aarch64 --test-group rust --test-case fs-basic",
+      "log": {
+        "file": "nightly1113-fs-basic-aarch64.log",
+        "sha256": "40e6199a62f9fde7157f24e4d752cf08cc9c06b80bb5e103f2586375281e3728",
+        "exit_code": 0
+      },
+      "scope": "ArceOS Rust std/FAT integration; not Starry syscall coverage"
+    },
+    {
+      "arch": "riscv64",
+      "source_commit": "59d16430f9326b0449a5d9dcc8c133a678508d25",
+      "command": "cargo xtask arceos test qemu --arch riscv64 --test-group rust --test-case fs-basic",
+      "log": {
+        "file": "nightly1113-fs-basic-riscv64.log",
+        "sha256": "675c84a8c01ce302e56fcb8890893c3be90b26cc6a354da72ea1323c5a5ca84d",
+        "exit_code": 0
+      },
+      "scope": "ArceOS Rust std/FAT integration; not Starry syscall coverage"
+    },
+    {
+      "arch": "loongarch64",
+      "source_commit": "827e40092cd245875c98b51f9e0a121974802cdf",
+      "command": "cargo xtask arceos test qemu --arch loongarch64 --test-group rust --test-case fs-basic",
+      "log": {
+        "file": "nightly1113-fs-basic-loongarch64.log",
+        "sha256": "8adf04a8e4f3a42020f5a16befb56bfacbe00ae779b530904268d862c4ac742d",
+        "exit_code": 0
+      },
+      "scope": "ArceOS Rust std/FAT integration; not Starry syscall coverage"
+    }
+  ],
+  "clippy": [
+    {
+      "source_commit": "9acfaecea3c232127c7e3287e930957ecfadd963",
+      "packages": 9,
+      "checks": 134,
+      "log": {
+        "file": "nightly1113-clippy-final.log",
+        "sha256": "1cbc9ee60e5471fe4302ac04afdc1564f52bc7407a3e0fc0762ad3ebe8e238fe",
+        "exit_code": 0
+      }
+    },
+    {
+      "source_commit": "59d16430f9326b0449a5d9dcc8c133a678508d25",
+      "packages": 1,
+      "checks": 43,
+      "log": {
+        "file": "nightly1113-clippy-suite-final.log",
+        "sha256": "562eb001c88f7eddf8aa1f7b2b7ea477ef24b789a073f43dfddc96204d72db29",
+        "exit_code": 0
+      }
+    },
+    {
+      "source_commit": "827e40092cd245875c98b51f9e0a121974802cdf",
+      "packages": 2,
+      "checks": 9,
+      "log": {
+        "file": "nightly1113-clippy-growth-fixtures.log",
+        "sha256": "b628b3042de2365d038154c729100b98952dc5dfde1b9dc9f01d2b1bb851d28f",
+        "exit_code": 0
+      }
+    }
+  ],
+  "e2fsprogs": {
+    "version": "1.47.3",
+    "source": "https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.3/e2fsprogs-1.47.3.tar.xz",
+    "checksums": "https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.3/sha256sums.asc",
+    "archive_sha256": "857e6ef800feaa2bb4578fbc810214be5d3c88b072ea53c5384733a965737329",
+    "tools": {
+      "mkfs.ext4": {
+        "binary": "/home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/e2fsprogs-1.47.3/misc/mke2fs",
+        "sha256": "9676d8c9daad3498133126db42e199836eabab75b8e6184a95510d0f11060a54",
+        "version_output": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "exit_code": 0
+      },
+      "mke2fs": {
+        "binary": "/home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/e2fsprogs-1.47.3/misc/mke2fs",
+        "sha256": "9676d8c9daad3498133126db42e199836eabab75b8e6184a95510d0f11060a54",
+        "version_output": "mke2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "exit_code": 0
+      },
+      "e2fsck": {
+        "binary": "/home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/e2fsprogs-1.47.3/e2fsck/e2fsck",
+        "sha256": "59b2888cbe6b232a6921ebe98cee7953ba91deb243c34d569e2b6c9e478224f3",
+        "version_output": "e2fsck 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3, 8-Jul-2025",
+        "exit_code": 0
+      },
+      "tune2fs": {
+        "binary": "/home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/e2fsprogs-1.47.3/misc/tune2fs",
+        "sha256": "bfd2fefe8e43467c2098125badfbacd6b379ead22eeae73ebe4f3083fce0098f",
+        "version_output": "tune2fs 1.47.3 (8-Jul-2025)\n/home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/bin/tune2fs: invalid option -- 'V'\nUsage: /home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/bin/tune2fs [-c max_mounts_count] [-e errors_behavior] [-f] [-g group]\n\t[-i interval[d|m|w]] [-j] [-J journal_options] [-l]\n\t[-m reserved_blocks_percent] [-o [^]mount_options[,...]]\n\t[-r reserved_blocks_count] [-u user] [-C mount_count]\n\t[-L volume_label] [-M last_mounted_dir]\n\t[-O [^]feature[,...]] [-Q quota_options]\n\t[-E extended-option[,...]] [-T last_check_time] [-U UUID]\n\t[-I new_inode_size] [-z undo_file] device",
+        "exit_code": 1
+      },
+      "dumpe2fs": {
+        "binary": "/home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/e2fsprogs-1.47.3/misc/dumpe2fs",
+        "sha256": "af397237562c20b488843ec7a1c47f85e086e6082ee6f58ae4e5b47e2ad85020",
+        "version_output": "dumpe2fs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "exit_code": 0
+      },
+      "debugfs": {
+        "binary": "/home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/e2fsprogs-1.47.3/debugfs/debugfs",
+        "sha256": "c62b09a61f562f88c9719df0e840579506efc5ff8e3c398a770b916db6c29b95",
+        "version_output": "debugfs 1.47.3 (8-Jul-2025)\n\tUsing EXT2FS Library version 1.47.3",
+        "exit_code": 0
+      },
+      "resize2fs": {
+        "binary": "/home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/e2fsprogs-1.47.3/resize/resize2fs",
+        "sha256": "1f6c418de036b14de1bf8d9ae9e50d5e24dbe7d5aa8e6756507b0108184916d3",
+        "version_output": "resize2fs 1.47.3 (8-Jul-2025)\n/home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/bin/resize2fs: invalid option -- 'V'\nUsage: /home/zhourui/.codex/artifacts/pr2800-continuation/e2fsprogs/bin/resize2fs [-d debug_flags] [-f] [-F] [-M] [-P] [-p] device [-b|-s|new_size] [-S RAID-stride] [-z undo_file]",
+        "exit_code": 1
+      }
+    },
+    "host_version": "1.46.5; unchanged",
+    "installation": "task-local binaries selected by command-local PATH"
+  },
+  "remaining_limitations": [
+    "Kernel Overlay still fails with E0061 x10 and E0407 x5; full std exit code remains 1.",
+    "Host-only ax-hal retains a conditional axplat-dyn manifest warning; the platform dependency is required by normal builds.",
+    "x86 soft-float standard-library and dependency target-feature future-incompatibility warnings remain; no allow attributes added.",
+    "Full production Owner/Scope/creator migration, Starry syscall checks, performance and final review are still required."
+  ],
+  "formatting": [
+    {
+      "command": "cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "command": "rustfmt --edition 2024 --check test-suit/arceos/rust/src/fs/basic.rs test-suit/arceos/rust/src/lockdep/baseline.rs fs/ax-fs-ng/src/root/grow.rs fs/rsext4/tests/filesystem_growth.rs",
+      "exit_code": 0
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0
+    }
+  ]
+}

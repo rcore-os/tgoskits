@@ -17,7 +17,7 @@ fn a_clean_private_image_transfers_to_partial_write_without_a_home_read() {
     assert!(!cache.get(physical).unwrap().dirty);
 
     let prepared = mount
-        .prepare_inode_write(number, 13, b"patch")
+        .prepare_inode_write(number, 13, b"patch".len())
         .unwrap()
         .unwrap();
     assert!(mount.filesystem.datablock_cache.get(physical).is_none());
@@ -25,7 +25,7 @@ fn a_clean_private_image_transfers_to_partial_write_without_a_home_read() {
         None,
         Some(Ext4Error::io().with_operation("test:no_home_read")),
     );
-    let mut completed = prepared.execute();
+    let mut completed = prepared.execute(FileWriteInput::Resident(b"patch"));
     drop(probe);
     mount.finish_inode_write(&mut completed).unwrap();
     expected[13..18].copy_from_slice(b"patch");
@@ -43,7 +43,7 @@ fn a_dirty_private_image_is_retained_when_detached_preparation_is_rejected() {
         .create_new(&mut mount.device, physical)
         .unwrap();
     let error = mount
-        .prepare_inode_write(number, 0, b"must not discard")
+        .prepare_inode_write(number, 0, b"must not discard".len())
         .unwrap_err();
     assert_eq!(error.kind(), Ext4ErrorKind::Busy);
     let retained = mount.filesystem.datablock_cache.get(physical).unwrap();

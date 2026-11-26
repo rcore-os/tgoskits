@@ -9,7 +9,7 @@ use axfs_ng_vfs::{
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     __kernel_off_t, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_KEEP_SIZE,
-    FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
+    FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE,
 };
 use syscalls::Sysno;
 
@@ -73,6 +73,8 @@ fn positioned_write_file(file_like: &Arc<dyn FileLike>) -> StarryResult<&File> {
         memfd.inner().as_ref()
     } else if let Some(mount_table) = file_like.downcast_ref::<MountTableFile>() {
         mount_table.inner().as_ref()
+    } else if let Some(queue) = file_like.downcast_ref::<MqDescriptor>() {
+        return Err(queue.status_write_error());
     } else if file_like.is::<Directory>() {
         return Err(StarryError::BadFileDescriptor);
     } else {
@@ -144,6 +146,12 @@ pub fn sys_readv(
 ) -> StarryResult<isize> {
     debug!("sys_readv <= fd: {fd}, iovcnt: {iovcnt}");
     let f = get_file_like(fd)?;
+    if let Some(queue) = f.downcast_ref::<MqDescriptor>() {
+        queue.validate_read_access()?;
+        return queue
+            .read_vectored(IoVectorBuf::new(current, iov, iovcnt)?, None)
+            .map(|n| n as _);
+    }
     f.read(&mut IoVectorBuf::new(current, iov, iovcnt)?.into_io())
         .map(|n| n as _)
 }
@@ -213,10 +221,6 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResu
         return Ok(off as _);
     }
 
-    if let Ok(mq) = any_file.clone().downcast_arc::<MqDescriptor>() {
-        return Ok(mq.seek_status(pos)? as _);
-    }
-
     if let Ok(d) = any_file.clone().downcast_arc::<Directory>() {
         let mut position = d.position.lock();
         let new_pos = match pos {
@@ -249,6 +253,7 @@ pub fn sys_truncate(
     path: *const c_char,
     length: __kernel_off_t,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let path = vm_load_path_string(current, path)?;
     debug!("sys_truncate <= {path:?} {length}");
     if path.is_empty() {
@@ -257,14 +262,15 @@ pub fn sys_truncate(
     if length < 0 {
         return Err(StarryError::InvalidInput);
     }
-    let location = ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?;
-    if location.node_type() == axfs_ng_vfs::NodeType::Directory {
+    let location = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &link_caller)
+        .resolve(&path)?;
+    if location.location().node_type() == axfs_ng_vfs::NodeType::Directory {
         return Err(StarryError::IsADirectory);
     }
-    if location.node_type() != axfs_ng_vfs::NodeType::RegularFile {
+    if location.location().node_type() != axfs_ng_vfs::NodeType::RegularFile {
         return Err(StarryError::InvalidInput);
     }
-    if location.is_readonly() {
+    if location.location().is_readonly() {
         return Err(StarryError::ReadOnlyFilesystem);
     }
     if (length as u64) > u32::MAX as u64 * 4096 {
@@ -274,7 +280,7 @@ pub fn sys_truncate(
     // same owner/group/other + root-bypass rules as faccessat2(2).
     let cred = current.as_thread().cred();
     if cred.fsuid != 0 {
-        let metadata = location.metadata()?;
+        let metadata = location.location().metadata()?;
         let (file_uid, file_gid, file_mode) = (metadata.uid, metadata.gid, metadata.mode);
         let has_write = if cred.fsuid == file_uid {
             file_mode.contains(NodePermission::OWNER_WRITE)
@@ -290,7 +296,7 @@ pub fn sys_truncate(
     // Linux checks write permission before acquiring inode write access.
     let file = OpenOptions::new()
         .write(true)
-        .open_loc(location)?
+        .open_loc(location.location().clone())?
         .into_file()?;
     file.set_len(length as _)?;
     Ok(0)
@@ -544,6 +550,10 @@ pub fn sys_pread64(
     if offset < 0 {
         return Err(StarryError::InvalidInput);
     }
+    let file_like = get_file_like(fd)?;
+    if let Some(queue) = file_like.downcast_ref::<MqDescriptor>() {
+        return Ok(queue.read_at(&mut VmBytesMut::new(current, buf, len), offset as u64)? as _);
+    }
     let f = file_or_espipe(fd)?;
     let read = f
         .inner()
@@ -560,6 +570,10 @@ pub fn sys_pwrite64(
 ) -> StarryResult<isize> {
     if offset < 0 {
         return Err(StarryError::InvalidInput);
+    }
+    let file_like = get_file_like(fd)?;
+    if let Some(queue) = file_like.downcast_ref::<MqDescriptor>() {
+        return Err(queue.status_write_error());
     }
     // Route memfd fds through the seal-aware `Memfd::write_at` so
     // `F_SEAL_WRITE`/`F_SEAL_GROW` apply to offset writes the same
@@ -643,6 +657,16 @@ pub fn sys_preadv2(
     validate_rwf_flags(flags)?;
     if offset < -1 {
         return Err(StarryError::InvalidInput);
+    }
+    let file_like = get_file_like(fd)?;
+    if let Some(queue) = file_like.downcast_ref::<MqDescriptor>() {
+        queue.validate_read_access()?;
+        return queue
+            .read_vectored(
+                IoVectorBuf::new(current, iov, iovcnt)?,
+                (offset != -1).then_some(offset as u64),
+            )
+            .map(|n| n as _);
     }
     let mut io_buf = IoVectorBuf::new(current, iov, iovcnt)?.into_io();
     if offset == -1 {
@@ -879,7 +903,7 @@ pub fn sys_sendfile(
         len
     );
     let out_file = get_file_like(out_fd)?;
-    if (out_file.open_flags() & O_APPEND) != 0 {
+    if out_file.append() {
         return Err(StarryError::InvalidInput);
     }
 

@@ -184,5 +184,16 @@ mod tests {
                 "{mixed:?}",
             );
         }
+        for discovery in [
+            &["--arch", "x86_64", "--list"][..],
+            &["--arch", "x86_64", "--test-case", "synthetic-case"],
+        ] {
+            let incomplete: Vec<_> = discovery
+                .iter()
+                .copied()
+                .chain(["--fixed-elf", "kernel.elf"])
+                .collect();
+            assert!(parse(&incomplete).is_err(), "{incomplete:?}");
+        }
     }
 }

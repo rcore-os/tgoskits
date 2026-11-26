@@ -103,6 +103,24 @@ impl Memfd {
         &self.inner
     }
 
+    /// Recover a memfd from an already retained description, including a
+    /// pathname reopen of its backing inode, without looking up an fd again.
+    pub(crate) fn from_description(description: Arc<dyn FileLike>) -> StarryResult<Arc<Self>> {
+        if let Ok(memfd) = description.clone().downcast_arc::<Self>() {
+            return Ok(memfd);
+        }
+        let Some(file) = description.downcast_ref::<File>() else {
+            return Err(StarryError::InvalidInput);
+        };
+        file.inner()
+            .backend()?
+            .location()
+            .user_data()
+            .get::<MemfdRef>()
+            .map(|memfd| memfd.0.clone())
+            .ok_or(StarryError::InvalidInput)
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -575,11 +593,8 @@ impl FileLike for Memfd {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        // Linux reports memfds as `/memfd:<name> (deleted)` via
-        // `readlink /proc/<pid>/fd/<n>`. We drop the " (deleted)" suffix
-        // since callers here are primarily internal `path()` consumers
-        // not readlink.
-        format!("/memfd:{}", self.name).into()
+        // Display only: proc object resolution uses the backing Location.
+        format!("/memfd:{} (deleted)", self.name).into()
     }
 
     fn file_mmap(&self) -> StarryResult<(ax_fs_ng::vfs::FileBackend, ax_fs_ng::vfs::FileFlags)> {
@@ -615,20 +630,7 @@ impl FileLike for Memfd {
     where
         Self: Sized + 'static,
     {
-        let any = get_file_like(fd)?;
-        if let Ok(memfd) = any.clone().downcast_arc::<Memfd>() {
-            return Ok(memfd);
-        }
-        let Some(file) = any.downcast_ref::<File>() else {
-            return Err(StarryError::InvalidInput);
-        };
-        file.inner()
-            .backend()?
-            .location()
-            .user_data()
-            .get::<MemfdRef>()
-            .map(|memfd| memfd.0.clone())
-            .ok_or(StarryError::InvalidInput)
+        Self::from_description(get_file_like(fd)?)
     }
 }
 

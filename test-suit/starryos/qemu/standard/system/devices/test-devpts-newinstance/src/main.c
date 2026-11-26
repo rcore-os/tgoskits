@@ -306,6 +306,13 @@ int main(void)
     check_metadata("/tmp/devpts-newinstance-a/ptmx", 0666, 0,
                    "ptmxmode applies to the per-instance ptmx node");
 
+    if (chmod("/tmp/devpts-newinstance-a/ptmx", 0620) != 0) {
+        fail("change the instance's persistent ptmx permissions");
+    } else {
+        check_metadata("/tmp/devpts-newinstance-a/ptmx", 0620, 0,
+                       "repeated lookups retain ptmx permission changes");
+    }
+
     unsigned int root_number = ~0U;
     int root_master = allocate_pty("/dev/pts", &root_number);
     if (root_master < 0) {

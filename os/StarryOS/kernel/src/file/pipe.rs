@@ -15,7 +15,7 @@ use ax_std::os::arceos::task::{
 };
 use axpoll::{IoEvents, PollRegistration, PollSource, Pollable, RegistrationMode};
 use linux_raw_sys::{
-    general::{O_RDONLY, O_WRONLY, S_IFIFO},
+    general::{O_RDONLY, O_WRONLY},
     ioctl::FIONREAD,
 };
 use ringbuf::{
@@ -29,6 +29,7 @@ use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
     mm::VmMutPtr,
+    pseudofs::object::{ObjectInode, ObjectNode},
     sync::Mutex,
     task::{current_user_task, send_signal_to_process},
 };
@@ -538,6 +539,7 @@ impl Drop for PipeWaitSet {
 }
 
 struct Shared {
+    inode: Arc<ObjectInode>,
     state: Mutex<PipeState>,
     // One coherent Linux-style READ_ONCE view of data, capacity, and peers.
     readiness: AtomicU64,
@@ -604,16 +606,17 @@ fn pipe_write_reader_wake_due(
 }
 
 impl Shared {
-    fn new(state: PipeState) -> Self {
+    fn new(state: PipeState) -> StarryResult<Self> {
         let readiness = state.readiness();
-        Self {
+        Ok(Self {
+            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Fifo, 0o600)?,
             state: Mutex::new(state),
             readiness: AtomicU64::new(readiness.0),
             wait_rx: PipeWaitSet::new(),
             wait_tx: PipeWaitSet::new(),
             poll_usage: AtomicBool::new(false),
             open_wait: WaitQueue::new(),
-        }
+        })
     }
 
     fn readiness(&self) -> PipeReadiness {
@@ -824,7 +827,7 @@ pub struct Pipe {
     access: PipeAccess,
     shared: Arc<Shared>,
     non_blocking: AtomicBool,
-    named: Option<named::NamedFile>,
+    opened_file: Option<named::OpenedPipeFile>,
 }
 
 impl Drop for Pipe {
@@ -854,41 +857,38 @@ impl Drop for Pipe {
 }
 
 impl Pipe {
-    pub fn new() -> (Pipe, Pipe) {
+    pub(crate) fn location(&self) -> axfs_ng_vfs::Location {
+        if let Some(file) = self.backing_file() {
+            return file.inner().location().clone();
+        }
+        self.shared.inode.location(self.shared.clone())
+    }
+
+    pub(crate) fn object_display(location: &axfs_ng_vfs::Location) -> Option<Cow<'static, str>> {
+        let node = location
+            .entry()
+            .downcast::<ObjectNode<Arc<Shared>>>()
+            .ok()?;
+        Some(format!("pipe:[{}]", node.inode.inode()).into())
+    }
+
+    pub fn new() -> StarryResult<(Pipe, Pipe)> {
         let mut state = PipeState::empty();
         state.add_endpoint(PipeAccess::ReadWrite);
-        let shared = Arc::new(Shared::new(state));
+        let shared = Arc::new(Shared::new(state)?);
         let read_end = Pipe {
             access: PipeAccess::Read,
             shared: shared.clone(),
             non_blocking: AtomicBool::new(false),
-            named: None,
+            opened_file: None,
         };
         let write_end = Pipe {
             access: PipeAccess::Write,
             shared,
             non_blocking: AtomicBool::new(false),
-            named: None,
+            opened_file: None,
         };
-        (read_end, write_end)
-    }
-
-    /// Opens another file description for the same pipe endpoint.
-    ///
-    /// Unlike `dup`, reopening `/proc/self/fd/<n>` creates independent file
-    /// status flags while retaining the same underlying pipe buffer. The
-    /// endpoint count must therefore be incremented so closing either file
-    /// description cannot prematurely report EOF or a broken pipe.
-    pub(crate) fn reopen(&self, non_blocking: bool) -> Pipe {
-        debug_assert!(self.named.is_none());
-        self.shared
-            .update_state(|state| state.add_endpoint(self.access));
-        Pipe {
-            access: self.access,
-            shared: self.shared.clone(),
-            non_blocking: AtomicBool::new(non_blocking),
-            named: None,
-        }
+        Ok((read_end, write_end))
     }
 
     pub const fn is_read(&self) -> bool {
@@ -1104,7 +1104,7 @@ impl Pipe {
             access: PipeAccess::Read,
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(self.nonblocking()),
-            named: None,
+            opened_file: None,
         }
     }
 
@@ -1116,7 +1116,7 @@ impl Pipe {
             access: PipeAccess::Write,
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(self.nonblocking()),
-            named: None,
+            opened_file: None,
         }
     }
 
@@ -1142,7 +1142,7 @@ fn rounded_pipe_size(size: usize) -> StarryResult<usize> {
 
 #[cfg(all(test, axtest))]
 fn peer_close_with_multiple_readers_is_visible_for_test() -> bool {
-    let (read_end, write_end) = Pipe::new();
+    let (read_end, write_end) = Pipe::new().unwrap();
     let second_reader = read_end.duplicate_read_end_for_test();
 
     drop(write_end);
@@ -1152,14 +1152,14 @@ fn peer_close_with_multiple_readers_is_visible_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 fn resize_rejects_oversized_pipe_for_test() -> bool {
-    let (read_end, _write_end) = Pipe::new();
+    let (read_end, _write_end) = Pipe::new().unwrap();
     read_end.resize(1024 * 1024 + 1).is_err()
 }
 
 #[cfg(all(test, axtest))]
 fn pipe_linux_io_semantics_hold_for_test() -> bool {
     let null_io_matches = {
-        let (read_end, write_end) = Pipe::new();
+        let (read_end, write_end) = Pipe::new().unwrap();
         read_end.set_nonblocking(true).ok();
         write_end.set_nonblocking(true).ok();
 
@@ -1195,7 +1195,7 @@ fn pipe_linux_io_semantics_hold_for_test() -> bool {
     };
 
     let duplicates_preserve_nonblocking = {
-        let (read_end, write_end) = Pipe::new();
+        let (read_end, write_end) = Pipe::new().unwrap();
         read_end.set_nonblocking(true).ok();
         write_end.set_nonblocking(true).ok();
         read_end.duplicate_read_end_for_test().nonblocking()
@@ -1221,7 +1221,7 @@ fn pipe_linux_io_semantics_hold_for_test() -> bool {
     };
 
     let published_readiness_matches = {
-        let (read_end, write_end) = Pipe::new();
+        let (read_end, write_end) = Pipe::new().unwrap();
         let resized_to_one_slot = write_end.resize(PIPE_BUF).is_ok();
         let input = [b'p'; PIPE_BUF];
         let mut src: &[u8] = &input;
@@ -1355,7 +1355,7 @@ impl FileLike for Pipe {
         let result = self.write_with_broken_pipe_handler(src, raise_pipe);
         if let Ok(bytes) = result
             && bytes > 0
-            && let Some(file) = self.named_file()
+            && let Some(file) = self.backing_file()
         {
             super::inotify::notify_modify_path(file.path().as_ref());
         }
@@ -1363,28 +1363,25 @@ impl FileLike for Pipe {
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
-        if let Some(file) = self.named_file() {
+        if let Some(file) = self.backing_file() {
             return file.stat();
         }
-        Ok(Kstat {
-            mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
-            ..Default::default()
-        })
+        Ok(super::metadata_to_kstat(&self.shared.inode.metadata()?))
     }
 
     fn inode_key(&self) -> Option<InodeKey> {
-        self.named_file().and_then(|file| file.inode_key())
+        self.backing_file().and_then(|file| file.inode_key())
     }
 
     fn path(&self) -> Cow<'_, str> {
-        if let Some(file) = self.named_file() {
+        if let Some(file) = self.backing_file() {
             return file.path();
         }
-        format!("pipe:[{}]", self as *const _ as usize).into()
+        format!("pipe:[{}]", self.shared.inode.inode()).into()
     }
 
     fn open_flags(&self) -> u32 {
-        if let Some(file) = self.named_file() {
+        if let Some(file) = self.backing_file() {
             return file.open_flags()
                 & !(linux_raw_sys::general::O_NONBLOCK | linux_raw_sys::general::O_APPEND);
         }
@@ -1392,11 +1389,11 @@ impl FileLike for Pipe {
     }
 
     fn append(&self) -> bool {
-        self.named_file().is_some_and(|file| file.append())
+        self.backing_file().is_some_and(|file| file.append())
     }
 
     fn set_append(&self, append: bool) -> StarryResult {
-        if let Some(file) = self.named_file() {
+        if let Some(file) = self.backing_file() {
             file.set_append(append)?;
         }
         Ok(())
@@ -1435,9 +1432,9 @@ impl Pollable for Pipe {
         // Linux reports POLLOUT when the pipe has a free PIPE_BUF-sized slot,
         // independently of whether the reader has already closed.
         let (readiness, suppress_hup) = if let Some(generation) = self
-            .named
+            .opened_file
             .as_ref()
-            .and_then(|named| named.initial_writer_generation)
+            .and_then(|opened| opened.initial_writer_generation)
         {
             // Peer presence and its generation must describe the same instant:
             // mixing snapshots could report HUP as the first writer arrives.
@@ -1510,7 +1507,7 @@ impl Pipe {
 
 #[cfg(all(test, axtest))]
 fn pipe_resize_rounding_and_state_rules_hold_for_test() -> bool {
-    let (read_end, _write_end) = Pipe::new();
+    let (read_end, _write_end) = Pipe::new().unwrap();
 
     // Initial capacity is the default 64 KiB ring buffer.
     let initial_capacity = read_end.capacity();
@@ -1689,7 +1686,7 @@ mod tests {
 
     #[axtest::axtest]
     fn exclusive_pipe_poll_registration_marks_linux_poll_usage() {
-        let (read_end, _write_end) = Pipe::new();
+        let (read_end, _write_end) = Pipe::new().unwrap();
         let wakes = Arc::new(CountWake(AtomicUsize::new(0)));
         let waker = Waker::from(wakes);
         let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);

@@ -42,7 +42,7 @@ pub use ext4::{
     ValidatedInodeRead, format, mkfs, mkfs_with_options, umount,
 };
 pub use file::{
-    FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, InodeResize,
+    FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, FileWriteInput, InodeResize,
     PreallocationOptions, RangeOperation, RenameOptions, RenameOutcome, UnlinkOutcome, XattrName,
     XattrNamespace, XattrSetMode, ZeroRangeOptions, create_symbol_link,
     create_symbol_link_with_owner, delete_dir, delete_file, inspect_inode_extents, is_dir_empty,

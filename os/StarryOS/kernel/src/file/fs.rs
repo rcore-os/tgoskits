@@ -2,15 +2,16 @@ use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::c_int,
     hint::likely,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
-use ax_io::{Seek, SeekFrom};
-use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, VfsResult};
+use ax_fs_ng::vfs::{FileBackend, FileFlags, FsView};
+use axfs_ng_vfs::{
+    DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, PathHandle, VfsResult,
+};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
-    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
+    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL, O_NONBLOCK},
     ioctl::TIOCSCTTY,
 };
 
@@ -30,27 +31,39 @@ use crate::{
 // FusionIO/directFS atomic-write toggle used by MySQL.
 const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
-pub fn with_fs<R>(
+pub(crate) fn with_fs<R>(
     dirfd: c_int,
-    f: impl FnOnce(&mut FsContext) -> StarryResult<R>,
+    caller: &crate::task::ProcLinkCaller,
+    f: impl FnOnce(&FsView<'_>) -> StarryResult<R>,
 ) -> StarryResult<R> {
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mut fs = fs_context.lock();
+    let binding = current_user_task()
+        .as_thread()
+        .snapshot_fs_binding()?
+        .ok_or(StarryError::BadState)?;
+    let view = view_at(&FsView::current(binding.fs, caller), dirfd)?;
+    f(&view)
+}
+
+/// Selects a dirfd from the same operation's frozen root, cwd and namespace.
+/// Descriptor lookup retains its original description before leaving the table.
+pub(crate) fn view_at<'caller>(
+    base: &FsView<'caller>,
+    dirfd: c_int,
+) -> StarryResult<FsView<'caller>> {
     if dirfd == AT_FDCWD {
-        f(&mut fs)
+        Ok(base.clone())
     } else {
-        let dir = Directory::from_fd(dirfd)?.inner.clone();
-        f(&mut fs.with_dirfd(dir)?)
+        Ok(base.with_dirfd(Directory::from_fd(dirfd)?.path_handle().clone())?)
     }
 }
 
 pub enum ResolveAtResult {
-    File(Location),
+    File(PathHandle),
     Other(Arc<dyn FileLike>),
 }
 
 impl ResolveAtResult {
-    pub fn into_file(self) -> Option<Location> {
+    pub fn into_file(self) -> Option<PathHandle> {
         match self {
             Self::File(file) => Some(file),
             Self::Other(_) => None,
@@ -59,7 +72,7 @@ impl ResolveAtResult {
 
     pub fn stat(&self) -> StarryResult<Kstat> {
         match self {
-            Self::File(file) => Ok(metadata_to_kstat(&file.metadata()?)),
+            Self::File(file) => Ok(metadata_to_kstat(&file.location().metadata()?)),
             Self::Other(file_like) => file_like.stat(),
         }
     }
@@ -74,48 +87,49 @@ pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
         // (BadFileDescriptor) which would break fstat(O_PATH-fd).
         // man "O_PATH": fstat(2) is in the allowed-operations list.
         // Fixes bug-open-path-fstat-ebadf.
-        ResolveAtResult::File(file.inner().location().clone())
+        ResolveAtResult::File(file.inner().path_handle().clone())
     } else if let Some(file) = f
         .downcast_ref::<super::Pipe>()
-        .and_then(super::Pipe::named_file)
+        .and_then(super::Pipe::backing_file)
     {
-        ResolveAtResult::File(file.inner().location().clone())
+        ResolveAtResult::File(file.inner().path_handle().clone())
     } else if let Some(dir) = f.downcast_ref::<Directory>() {
-        ResolveAtResult::File(dir.inner().clone())
+        ResolveAtResult::File(dir.path_handle().clone())
     } else {
         ResolveAtResult::Other(file_like)
     })
 }
 
 /// Resolves the same dirfd/empty-path contract with directory search admission.
-pub fn resolve_at_checked(
+pub(crate) fn resolve_at_checked(
+    caller: &crate::task::ProcLinkCaller,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
     check_search: impl Fn(&Location) -> VfsResult<()>,
 ) -> StarryResult<ResolveAtResult> {
-    let check = |_: &FsContext, directory: &Location| check_search(directory);
-    resolve_at_with_search(dirfd, path, flags, Some(&check))
-        .map(|(result, _, _)| result)
+    let check = |_: &FsView<'_>, directory: &Location| check_search(directory);
+    with_fs(AT_FDCWD, caller, |base| {
+        resolve_at_with_search(base, dirfd, path, flags, Some(&check)).map(|(result, ..)| result)
+    })
 }
 
-type SearchCheck<'a> = Option<&'a dyn Fn(&FsContext, &Location) -> VfsResult<()>>;
+type SearchCheck<'a> = Option<&'a dyn Fn(&FsView<'_>, &Location) -> VfsResult<()>>;
 
 fn resolve_at_with_search(
+    base: &FsView<'_>,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
     search: SearchCheck<'_>,
-) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
+) -> StarryResult<(ResolveAtResult, Option<PathHandle>, Vec<PathHandle>)> {
     match path {
         Some("") | None => {
             if flags & AT_EMPTY_PATH == 0 {
                 return Err(StarryError::NotFound);
             }
             if dirfd == AT_FDCWD {
-                return with_fs(dirfd, |fs| {
-                    Ok((ResolveAtResult::File(fs.current_dir().clone()), None, Vec::new()))
-                });
+                return Ok((ResolveAtResult::File(base.cwd().clone()), None, Vec::new()));
             }
             Ok((resolve_fd(dirfd)?, None, Vec::new()))
         }
@@ -125,50 +139,60 @@ fn resolve_at_with_search(
             } else {
                 dirfd
             };
-            with_fs(dirfd, |fs| {
-                let boundary = fs.permission_boundary().cloned();
-                if let Some(check) = search {
-                    let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                        fs.resolve_no_follow_with_search_checked(path, |directory| {
-                            check(fs, directory)
-                        })
-                    } else {
-                        fs.resolve_with_search_checked(path, |directory| check(fs, directory))
-                    }?;
-                    return Ok((ResolveAtResult::File(location), boundary, searched));
-                }
+            let fs = view_at(base, dirfd)?;
+            let boundary = fs.permission_boundary().cloned();
+            if let Some(check) = search {
                 let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                    fs.resolve_no_follow_with_search(path)
+                    fs.resolve_no_follow_with_search_checked(path, |directory| {
+                        check(&fs, directory)
+                    })
                 } else {
-                    fs.resolve_with_search(path)
+                    fs.resolve_with_search_checked(path, |directory| check(&fs, directory))
                 }?;
-                Ok((ResolveAtResult::File(location), boundary, searched))
-            })
+                return Ok((ResolveAtResult::File(location), boundary, searched));
+            }
+            let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                fs.resolve_no_follow_with_search(path)
+            } else {
+                fs.resolve_with_search(path)
+            }?;
+            Ok((ResolveAtResult::File(location), boundary, searched))
         }
     }
 }
 
-pub fn resolve_at_with_boundary(
+/// Resolves an `*at` operand from paths already selected for this operation.
+/// The current task's filesystem scope is never consulted again.
+pub(crate) fn resolve_at_from_view(
+    base: &FsView<'_>,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
-) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
-    resolve_at_with_search(dirfd, path, flags, None)
+) -> StarryResult<ResolveAtResult> {
+    resolve_at_with_search(base, dirfd, path, flags, None).map(|(result, ..)| result)
 }
 
 /// Resolves an `*at` path with a credential-aware search check while retaining
 /// the directory trace needed for dirfd boundary validation.
-pub fn resolve_at_with_boundary_checked(
+pub(crate) fn resolve_at_with_boundary_checked(
+    base: &FsView<'_>,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
-    check_search: impl Fn(&FsContext, &Location) -> VfsResult<()>,
-) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
-    resolve_at_with_search(dirfd, path, flags, Some(&check_search))
+    check_search: impl Fn(&FsView<'_>, &Location) -> VfsResult<()>,
+) -> StarryResult<(ResolveAtResult, Option<PathHandle>, Vec<PathHandle>)> {
+    resolve_at_with_search(base, dirfd, path, flags, Some(&check_search))
 }
 
-pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
-    resolve_at_with_boundary(dirfd, path, flags).map(|(result, _, _)| result)
+pub(crate) fn resolve_at(
+    caller: &crate::task::ProcLinkCaller,
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+) -> StarryResult<ResolveAtResult> {
+    with_fs(AT_FDCWD, caller, |base| {
+        resolve_at_from_view(base, dirfd, path, flags)
+    })
 }
 
 pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
@@ -197,7 +221,6 @@ pub struct File {
     inner: ax_fs_ng::File,
     open_flags: u32,
     nonblock: AtomicBool,
-    append: AtomicBool,
 }
 
 impl File {
@@ -206,7 +229,6 @@ impl File {
             inner,
             open_flags,
             nonblock: AtomicBool::new(false),
-            append: AtomicBool::new(open_flags & O_APPEND != 0),
         }
     }
 
@@ -232,8 +254,32 @@ impl File {
 }
 
 fn path_for(loc: &Location) -> Cow<'static, str> {
-    loc.absolute_path()
-        .map_or_else(|_| "<error>".into(), |f| Cow::Owned(f.to_string()))
+    display_location(loc).map_or_else(|_| "<error>".into(), Cow::Owned)
+}
+
+/// Renders a retained object; display text is never fed back into lookup.
+pub(crate) fn display_location(loc: &Location) -> VfsResult<alloc::string::String> {
+    if let Some(display) = super::Pipe::object_display(loc) {
+        return Ok(display.into_owned());
+    }
+    if let Some(display) = super::Socket::object_display(loc) {
+        return Ok(display.into_owned());
+    }
+    if let Some(namespace) = super::NamespaceObject::at_location(loc) {
+        return namespace.display();
+    }
+    let memfd = loc
+        .user_data()
+        .get::<super::memfd::MemfdRef>()
+        .map(|memfd| memfd.0.clone());
+    if let Some(memfd) = memfd {
+        return Ok(memfd.path().into_owned());
+    }
+    let mut path = loc.absolute_path()?.to_string();
+    if loc.entry().name_snapshot().state() == axfs_ng_vfs::NameState::Unlinked {
+        path.push_str(" (deleted)");
+    }
+    Ok(path)
 }
 
 impl FileLike for File {
@@ -262,10 +308,7 @@ impl FileLike for File {
     }
 
     fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
-        let mut inner = self.inner();
-        if self.append() {
-            inner.seek(SeekFrom::End(0))?;
-        }
+        let inner = self.inner();
         let result: StarryResult<usize> = if likely(self.is_blocking()) {
             Ok(inner.write(src)?)
         } else {
@@ -336,11 +379,10 @@ impl FileLike for File {
     }
 
     fn append(&self) -> bool {
-        self.append.load(Ordering::Acquire)
+        self.inner().flags().contains(FileFlags::APPEND)
     }
 
     fn set_append(&self, flag: bool) -> StarryResult {
-        self.append.store(flag, Ordering::Release);
         self.inner().set_flag(FileFlags::APPEND, flag);
         Ok(())
     }
@@ -403,18 +445,18 @@ impl Pollable for File {
 
 /// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
-    inner: Location,
     // Serialize the complete getdents/lseek transition for one open file
     // description. This is a sleepable mutex because filesystem reads may
     // block; dup/fork share the Directory and therefore this position.
     pub(crate) position: Mutex<DirectoryPosition>,
-    /// Original open flags (used by fd_is_path / sys_fchmodat to detect
-    /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
-    /// must reject fchmod just like O_PATH on a regular file).
-    open_flags: u32,
+    /// Flags of this open description. Mutable status bits are shared by
+    /// dup/fork and independent across opens; path and access bits stay fixed.
+    open_flags: AtomicU32,
     /// Whether this is the original handle returned by fsmount(2).
     /// Reopening it as a normal directory deliberately drops this authority.
     detached_mount_handle: bool,
+    // Directory cursor/backend state retires before this exact mount use.
+    inner: axfs_ng_vfs::PathHandle,
 }
 
 pub(crate) struct DirectoryPosition {
@@ -423,37 +465,49 @@ pub(crate) struct DirectoryPosition {
 }
 
 impl Directory {
-    pub fn new(inner: Location, open_flags: u32) -> Self {
+    pub fn new(inner: axfs_ng_vfs::PathHandle, open_flags: u32) -> Self {
         Self {
             inner,
             position: Mutex::new(DirectoryPosition {
                 cursor: DirectoryCursor::START,
                 read_state: None,
             }),
-            open_flags,
+            open_flags: AtomicU32::new(open_flags),
             detached_mount_handle: false,
         }
     }
 
-    pub(crate) fn new_detached_mount(inner: Location, open_flags: u32) -> Self {
-        Self {
-            inner,
+    pub(crate) fn new_detached_mount(inner: Location, open_flags: u32) -> VfsResult<Self> {
+        Ok(Self {
+            inner: axfs_ng_vfs::PathHandle::acquire(inner)?,
             position: Mutex::new(DirectoryPosition {
                 cursor: DirectoryCursor::START,
                 read_state: None,
             }),
-            open_flags,
+            open_flags: AtomicU32::new(open_flags),
             detached_mount_handle: true,
-        }
+        })
     }
 
     /// Get the inner node of the directory.
     pub fn inner(&self) -> &Location {
+        self.inner.location()
+    }
+
+    pub(crate) fn path_handle(&self) -> &axfs_ng_vfs::PathHandle {
         &self.inner
     }
 
     pub(crate) fn is_detached_mount_handle(&self) -> bool {
         self.detached_mount_handle
+    }
+
+    fn set_status_flag(&self, flag: u32, enabled: bool) {
+        if enabled {
+            self.open_flags.fetch_or(flag, Ordering::AcqRel);
+        } else {
+            self.open_flags.fetch_and(!flag, Ordering::AcqRel);
+        }
     }
 }
 
@@ -478,19 +532,37 @@ impl FileLike for Directory {
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
-        Ok(metadata_to_kstat(&self.inner.metadata()?))
+        Ok(metadata_to_kstat(&self.inner().metadata()?))
     }
 
     fn inode_key(&self) -> Option<InodeKey> {
-        Some(InodeKey::for_location(&self.inner))
+        Some(InodeKey::for_location(self.inner()))
     }
 
     fn open_flags(&self) -> u32 {
-        self.open_flags
+        self.open_flags.load(Ordering::Acquire)
+    }
+
+    fn nonblocking(&self) -> bool {
+        self.open_flags() & O_NONBLOCK != 0
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> StarryResult {
+        self.set_status_flag(O_NONBLOCK, nonblocking);
+        Ok(())
+    }
+
+    fn append(&self) -> bool {
+        self.open_flags() & O_APPEND != 0
+    }
+
+    fn set_append(&self, append: bool) -> StarryResult {
+        self.set_status_flag(O_APPEND, append);
+        Ok(())
     }
 
     fn path(&self) -> Cow<'_, str> {
-        path_for(&self.inner)
+        path_for(self.inner())
     }
 
     fn from_fd(fd: c_int) -> StarryResult<Arc<Self>> {

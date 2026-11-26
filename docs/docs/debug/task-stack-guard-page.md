@@ -46,7 +46,7 @@ token 的普通 `Drop` 只发布退休状态。显式 `release()` 或 `retry_ker
 
 ## 2. 保护范围与诊断
 
-诊断属于 runtime stack owner，调用方不需要查找第二个全局栈登记表。`diagnose_current_stack_guard_page_fault()` 屏蔽本地 IRQ 后从当前线程的 `RuntimeStack` 复制 reservation 和 usable 边界，返回拥有地址值的 `Option<StackGuardPageFault>`，恢复原 IRQ 状态后由调用方格式化。
+诊断属于 runtime stack owner，调用方不需要查找第二个全局栈登记表。`diagnose_current_stack_guard_page_fault()` 以 `IrqSaveGuard` 屏蔽本地 IRQ 后从当前线程的 `RuntimeStack` 复制 reservation 和 usable 边界，返回拥有地址值的 `Option<StackGuardPageFault>`，恢复原 IRQ 状态后由调用方格式化。
 
 ### 2.1 覆盖边界
 

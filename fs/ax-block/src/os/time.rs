@@ -9,6 +9,12 @@ pub trait BlockTimeProvider: Send + Sync {
     /// Returns realtime since the Unix epoch for persistent timestamps.
     fn wall_time(&self) -> Duration;
 
+    /// Samples realtime without I/O, initialization, allocation or waiting.
+    /// An unaudited or unavailable provider must return `None`.
+    fn try_wall_time(&self) -> Option<Duration> {
+        None
+    }
+
     /// Returns monotonic time since boot for deadlines and elapsed durations.
     fn monotonic_time(&self) -> Duration;
 }
@@ -26,6 +32,11 @@ pub fn wall_time() -> Duration {
         .get()
         .map(|provider| provider.wall_time())
         .unwrap_or_else(|| Duration::new(0, 0))
+}
+
+/// Samples an explicitly nonblocking realtime provider, without fallback.
+pub fn try_wall_time() -> Option<Duration> {
+    TIME_PROVIDER.get()?.try_wall_time()
 }
 
 pub fn monotonic_time() -> Duration {

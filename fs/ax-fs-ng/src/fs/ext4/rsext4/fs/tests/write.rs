@@ -51,6 +51,31 @@ impl Drop for ProbeGuard {
 
 #[test]
 fn mixed_initialized_and_unwritten_data_releases_mount_and_other_inode_can_write() {
+    struct SameFileInput {
+        inode: Arc<Inode>,
+        offset: u64,
+    }
+
+    impl ax_io::Read for SameFileInput {
+        fn read(&mut self, output: &mut [u8]) -> ax_io::Result<usize> {
+            // Fail promptly if the writer retained physical exclusion. The
+            // actual read below still exercises its normal content admission.
+            let access = self
+                .inode
+                .content_access()
+                .try_read()
+                .map_err(crate::vfs_error_to_io_error)?
+                .ok_or(ax_io::IoError::ResourceBusy)?;
+            drop(access);
+            let read = self
+                .inode
+                .read_at(output, self.offset)
+                .map_err(crate::vfs_error_to_io_error)?;
+            self.offset += read as u64;
+            Ok(read)
+        }
+    }
+
     let (filesystem, input) = fixture();
     let other = super::read::create_inode(&filesystem, b"other", b"before");
     let probe = watch(&filesystem, &input, Interference::WriteOther(other.clone()));
@@ -64,6 +89,21 @@ fn mixed_initialized_and_unwritten_data_releases_mount_and_other_inode_can_write
     let mut output = [0; 6];
     assert_eq!(other.read_at(&mut output, 0), Ok(6));
     assert_eq!(&output, b"during");
+
+    let start = input.len().unwrap();
+    let mut source = SameFileInput {
+        inode: input.clone(),
+        offset: 0,
+    };
+    let end = start + bytes.len() as u64;
+    assert_eq!(
+        input.write_iter(&mut source, bytes.len(), Some(start)),
+        Ok((bytes.len(), end))
+    );
+    assert_eq!(input.len(), Ok(end));
+    let mut copied = alloc::vec![0; bytes.len()];
+    assert_eq!(input.read_at(&mut copied, start), Ok(bytes.len()));
+    assert_eq!(copied, bytes);
 }
 
 #[test]
@@ -145,6 +185,11 @@ fn failed_external_progress_discards_the_completed_mapping_owner() {
             axfs_ng_vfs::NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     let input: Arc<Inode> = entry.entry().downcast().unwrap();

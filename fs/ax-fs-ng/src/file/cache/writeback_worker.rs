@@ -444,6 +444,10 @@ pub(super) mod tests {
             true
         }
 
+        fn yield_now(&self) -> BlockResult<()> {
+            Err(BlockError::RuntimeUnavailable)
+        }
+
         fn notification(&self) -> Arc<dyn BlockNotification> {
             Arc::new(TestNotification::new())
         }
@@ -471,6 +475,11 @@ pub(super) mod tests {
 
         fn can_block(&self) -> bool {
             true
+        }
+
+        fn yield_now(&self) -> BlockResult<()> {
+            thread::yield_now();
+            Ok(())
         }
 
         fn notification(&self) -> Arc<dyn BlockNotification> {

@@ -4,12 +4,14 @@ use super::*;
 
 mod data;
 mod detached;
+mod input;
 mod legacy;
 mod path;
 mod unwritten;
 
 use data::{existing_full_block_run, write_full_block_run, write_inode_block_data};
 pub(crate) use detached::{CompletedFileWrite, PreparedFileWrite};
+pub use input::FileWriteInput;
 use legacy::write_legacy_inode_data;
 pub use path::write_file;
 use unwritten::{extent_write_needs_preparation, write_inode_data_through_unwritten};

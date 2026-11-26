@@ -2,20 +2,48 @@
 extern crate alloc;
 #[cfg(all(test, not(target_os = "none")))]
 extern crate ax_runtime as _;
-#[cfg(test)]
+#[cfg(any(test, feature = "host-test"))]
 extern crate std;
 
+mod file_io;
+mod file_open;
 mod fs;
+mod io;
+mod lookup;
+mod metadata;
 mod mount;
+mod namespace_admission;
+mod namespace_operation;
 mod node;
 pub mod path;
+mod prepared_unlink;
+mod prepared_write;
+mod staging;
+#[cfg(feature = "host-test")]
+#[doc(hidden)]
+pub mod testing;
 mod types;
 mod write_admission;
 mod writeback_policy;
 
+pub use ax_io::{IoError, Read};
+pub use file_io::{FileIoRequest, FileIoTarget};
+pub use file_open::{AuthorizedFileOpen, FileOpenRequest, LockedFileOpenAttempt};
 pub use fs::*;
+pub use io::{io_error_to_vfs_error, vfs_error_to_io_error};
+pub use lookup::{
+    CachedLookup, CachedLookupContext, CachedLookupOptions, LookupPolicy, LookupRestrictions,
+    LookupScope, SYMLINKS_MAX,
+};
+pub use metadata::*;
 pub use mount::*;
+pub use namespace_admission::*;
+pub use namespace_operation::*;
+pub(crate) use node::MutationTarget;
 pub use node::*;
+pub use prepared_unlink::*;
+pub use prepared_write::*;
+pub use staging::{SealedStaging, StagingIo, StagingNode};
 pub use types::*;
 pub use write_admission::*;
 pub use writeback_policy::*;

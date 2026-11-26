@@ -1,4 +1,6 @@
 // Shared contiguous dma-buf primitive for GPUs and other DMA devices.
+mod cached;
+pub(crate) use cached::CachedFileTable;
 pub mod dmabuf;
 pub mod epoll;
 #[cfg(test)]
@@ -16,7 +18,11 @@ mod mount_table;
 mod net;
 pub mod netlink;
 mod nsfd;
+pub(crate) use fs::display_location;
+pub(crate) use nsfd::{NamespaceKind, NamespaceObject};
 mod packet;
+mod path;
+pub(crate) use path::descriptor_path;
 mod pidfd;
 mod pipe;
 pub mod signalfd;
@@ -47,20 +53,23 @@ use linux_raw_sys::general::{
     STATX_BASIC_STATS, stat, statx, statx_timestamp,
 };
 
-pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
 #[cfg(feature = "qperf-metrics")]
 pub(crate) use self::pipe::qperf_metrics_snapshot as pipe_qperf_metrics_snapshot;
 pub use self::{
-    fs::{
-        Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, resolve_at_checked,
-        resolve_at_with_boundary_checked, resolve_fd, with_fs,
-    },
+    fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_fd},
     io_uring::IoUring,
     net::Socket,
     nsfd::NsFd,
     packet::{PacketSocket, SockAddrLl},
     pidfd::PidFd,
     pipe::Pipe,
+};
+pub(crate) use self::{
+    fs::{
+        resolve_at, resolve_at_checked, resolve_at_from_view, resolve_at_with_boundary_checked,
+        view_at, with_fs,
+    },
+    mount_table::{MountTableFile, notify_mount_namespace_changed},
 };
 use crate::{
     StarryError, StarryResult,
@@ -324,8 +333,10 @@ pub trait FileLike: Pollable + DowncastSync {
         None
     }
 
+    /// Reports append mode from this description's authoritative flags.
+    /// Override when `open_flags()` only describes the initial open.
     fn append(&self) -> bool {
-        false
+        self.open_flags() & linux_raw_sys::general::O_APPEND != 0
     }
 
     fn set_append(&self, _append: bool) -> StarryResult {
@@ -485,6 +496,15 @@ impl FileTable {
         let fd = self.entries.add(FileSlot::Reserved).ok()?;
         self.changed();
         Some(fd)
+    }
+
+    fn reserve_below(&mut self, limit: u64) -> StarryResult<usize> {
+        let fd = self.reserve().ok_or(StarryError::TooManyOpenFiles)?;
+        if fd as u64 >= limit {
+            self.release_reserved(fd);
+            return Err(StarryError::TooManyOpenFiles);
+        }
+        Ok(fd)
     }
 
     fn install_reserved(
@@ -700,17 +720,25 @@ impl FileDescriptorReservation {
             .proc_data
             .rlimit_current(RLIMIT_NOFILE);
         let table = current_fd_table();
-        let fd = {
-            let mut slots = table.write();
-            let fd = slots.reserve().ok_or(StarryError::TooManyOpenFiles)?;
-            // The bitmap chooses the lowest free number. Keep FIFO's fd-number
-            // limit without allocating a separate reservation under the raw lock.
-            if fd as u64 >= limit {
-                slots.release_reserved(fd);
-                return Err(StarryError::TooManyOpenFiles);
-            }
-            fd
-        };
+        let fd = table.write().reserve_below(limit)?;
+        Ok(Self {
+            table,
+            fd: Some(fd),
+        })
+    }
+
+    /// Tries to reserve below the descriptor number limit in a selected table.
+    /// The inline bitmap does not allocate or expose a file under the guard.
+    /// Call after capture/publication guards have ended; retirement can destroy
+    /// owners retained by the supplied table.
+    pub(crate) fn try_in_table(
+        table: Arc<RawSpinRwLock<FileTable>>,
+        limit: u64,
+    ) -> StarryResult<Self> {
+        let fd = table
+            .try_write()
+            .ok_or(StarryError::WouldBlock)?
+            .reserve_below(limit)?;
         Ok(Self {
             table,
             fd: Some(fd),
@@ -729,6 +757,22 @@ impl FileDescriptorReservation {
             drop(descriptor);
             panic!("prepared file descriptor lost its reservation before install");
         }
+    }
+
+    /// Tries publication in the original table, then returns the installed fd.
+    /// On contention, normal cleanup releases the unpublished reservation.
+    /// Cleanup can take the table lock and retire endpoint owners, so callers
+    /// must have released their capture/publication guards.
+    pub(crate) fn try_install(mut self, descriptor: FileDescriptor) -> StarryResult<c_int> {
+        let mut slots = self.table.try_write().ok_or(StarryError::WouldBlock)?;
+        let fd = self.fd.take().expect("fd reservation installed twice");
+        let install = slots.install_reserved(fd, descriptor);
+        drop(slots);
+        if let Err(descriptor) = install {
+            drop(descriptor);
+            panic!("prepared file descriptor lost its reservation before install");
+        }
+        Ok(fd as c_int)
     }
 }
 
@@ -937,7 +981,7 @@ fn notify_close_write(fd: &FileDescriptor) {
         || fd
             .inner
             .downcast_ref::<Pipe>()
-            .and_then(Pipe::named_file)
+            .and_then(Pipe::backing_file)
             .is_some();
     if (access == O_WRONLY || access == O_RDWR) && filesystem_backed {
         let path = fd.inner.path();
@@ -1025,7 +1069,9 @@ pub fn close_all_fds() {
 pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
     assert_eq!(fd_table.count(), 0);
     let fs_context = current_fs_context();
-    let cx = fs_context.lock();
+    let caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let cx = ax_fs_ng::FsView::current(fs_context, &caller);
+    // Stdio is opened before the init thread exists, using its boot identity.
     let open = |options: &mut OpenOptions, flags| {
         StarryResult::Ok(Arc::new(File::new(
             options.open(&cx, "/dev/console")?.into_file()?,
@@ -1060,7 +1106,7 @@ pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
 #[cfg(all(test, axtest))]
 fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
     fn descriptor() -> FileDescriptor {
-        let (read_end, _write_end) = Pipe::new();
+        let (read_end, _write_end) = Pipe::new().unwrap();
         FileDescriptor {
             inner: Arc::new(read_end),
             cloexec: true,
@@ -1112,7 +1158,7 @@ fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 fn stable_descriptor_lookup_avoids_repeated_read_lock_for_test() -> bool {
-    let (read_end, _write_end) = Pipe::new();
+    let (read_end, _write_end) = Pipe::new().unwrap();
     let scope = FileTableScope::new();
     assert!(
         scope
@@ -1133,8 +1179,8 @@ fn stable_descriptor_lookup_avoids_repeated_read_lock_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 fn alternating_descriptor_lookup_avoids_cache_thrashing_for_test() -> bool {
-    let (first_read, _first_write) = Pipe::new();
-    let (second_read, _second_write) = Pipe::new();
+    let (first_read, _first_write) = Pipe::new().unwrap();
+    let (second_read, _second_write) = Pipe::new().unwrap();
     let scope = FileTableScope::new();
     assert!(
         scope
@@ -1168,8 +1214,8 @@ fn alternating_descriptor_lookup_avoids_cache_thrashing_for_test() -> bool {
 #[cfg(all(test, axtest))]
 fn descriptor_lookup_invalidates_after_reuse_for_test() -> bool {
     let scope = FileTableScope::new();
-    let (first_read, _first_write) = Pipe::new();
-    let (second_read, _second_write) = Pipe::new();
+    let (first_read, _first_write) = Pipe::new().unwrap();
+    let (second_read, _second_write) = Pipe::new().unwrap();
     assert!(
         scope
             .table
@@ -1202,7 +1248,7 @@ fn descriptor_lookup_invalidates_after_reuse_for_test() -> bool {
 #[cfg(all(test, axtest))]
 fn cloned_table_scope_invalidates_after_fd_reuse_for_test() -> bool {
     let parent = FileTableScope::new();
-    let (parent_read, _parent_write) = Pipe::new();
+    let (parent_read, _parent_write) = Pipe::new().unwrap();
     assert!(
         parent
             .table
@@ -1217,7 +1263,7 @@ fn cloned_table_scope_invalidates_after_fd_reuse_for_test() -> bool {
     let child = clone_file_table_scope(&parent.table);
     let first = child.lookup(0).ok();
     assert!(child.table.write().remove(0).is_some());
-    let (child_read, _child_write) = Pipe::new();
+    let (child_read, _child_write) = Pipe::new().unwrap();
     assert!(
         child
             .table

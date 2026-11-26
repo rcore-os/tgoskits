@@ -51,6 +51,9 @@ pub struct FileBackendInner {
     offset_page: u32,
     cache: CachedFile,
     flags: FileFlags,
+    // A device may supply a cache from a different backing mount. Preserve the
+    // original descriptor path through mapping clones, splits and retirement.
+    source_path: Option<axfs_ng_vfs::PathHandle>,
 }
 
 enum FilePageEntry {
@@ -681,6 +684,7 @@ impl FileBackend {
             offset_page,
             cache: self.0.cache.clone(),
             flags: self.0.flags,
+            source_path: self.0.source_path.clone(),
         }))
     }
 
@@ -1276,6 +1280,27 @@ impl MappingOperation {
         offset: usize,
         shared: bool,
     ) -> StarryResult<Self> {
+        Self::file_mapping(start, cache, flags, offset, shared, None)
+    }
+
+    pub(crate) fn new_device_file(
+        start: VirtAddr,
+        cache: CachedFile,
+        flags: FileFlags,
+        offset: usize,
+        path: axfs_ng_vfs::PathHandle,
+    ) -> StarryResult<Self> {
+        Self::file_mapping(start, cache, flags, offset, true, Some(path))
+    }
+
+    fn file_mapping(
+        start: VirtAddr,
+        cache: CachedFile,
+        flags: FileFlags,
+        offset: usize,
+        shared: bool,
+        source_path: Option<axfs_ng_vfs::PathHandle>,
+    ) -> StarryResult<Self> {
         if !offset.is_multiple_of(PAGE_SIZE_4K) {
             return Err(StarryError::InvalidInput);
         }
@@ -1290,6 +1315,7 @@ impl MappingOperation {
             offset_page,
             cache,
             flags,
+            source_path,
         });
         Ok(Self::from_file(FileBackend(inner)))
     }
@@ -1308,8 +1334,11 @@ fn independent_file_backends_share_page_object_for_test() -> bool {
         0,
         0,
     );
-    let cache =
-        CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry)).unwrap();
+    let cache = CachedFile::get_or_create(
+        axfs_ng_vfs::PathHandle::acquire(Location::new(Mountpoint::new_root(&filesystem), entry))
+            .unwrap(),
+    )
+    .unwrap();
     cache.write_at(&[0x41; PAGE_SIZE_4K][..], 0).unwrap();
     let first_start = VirtAddr::from_usize(0x4000_0000);
     let second_start = VirtAddr::from_usize(0x5000_0000);
@@ -1388,8 +1417,11 @@ fn evicting_file_page_rejects_publication_as_retry_for_test() -> bool {
         0,
         0,
     );
-    let cache =
-        CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry)).unwrap();
+    let cache = CachedFile::get_or_create(
+        axfs_ng_vfs::PathHandle::acquire(Location::new(Mountpoint::new_root(&filesystem), entry))
+            .unwrap(),
+    )
+    .unwrap();
     let operation = MappingOperation::new_file(
         VirtAddr::from_usize(0x6000_0000),
         cache.clone(),

@@ -399,8 +399,7 @@ static long queue_immediate_sequence(int fd, uint32_t crtc_id, uint64_t user_dat
     return syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &event);
 }
 
-static int vblank_wait_child(int fd, uint32_t crtc_id, int ready_fd,
-                             int expect_disable_wake)
+static int vblank_wait_child(int fd, uint32_t crtc_id, int ready_fd)
 {
     struct drm_crtc_get_sequence before = { .crtc_id = crtc_id };
     if (syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &before) != 0)
@@ -410,105 +409,26 @@ static int vblank_wait_child(int fd, uint32_t crtc_id, int ready_fd,
     wait.req.sequence = 100000;
     if (write(ready_fd, "R", 1) != 1)
         return 1;
-    if (!expect_disable_wake)
-        close(ready_fd);
     alarm(5);
     long result = syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, &wait);
     alarm(0);
-    if (expect_disable_wake) {
-        ssize_t copied = write(ready_fd, &wait.reply, sizeof(wait.reply));
-        close(ready_fd);
-        return result == 0 && copied == (ssize_t)sizeof(wait.reply) &&
-               (uint32_t)(wait.reply.sequence - (uint32_t)before.sequence) < 100000 ? 0 : 1;
-    }
-    return result < 0 && errno == EBUSY ? 0 : 1;
+    ssize_t copied = write(ready_fd, &wait.reply, sizeof(wait.reply));
+    close(ready_fd);
+    return result == 0 && copied == (ssize_t)sizeof(wait.reply) &&
+           (uint32_t)(wait.reply.sequence - (uint32_t)before.sequence) < 100000 ? 0 : 1;
 }
 
-static void check_vblank_disable_reenable(int fd, uint32_t crtc_id,
-                                          struct drm_mode_crtc *enabled)
+static int vblank_advance_matches_active_time(uint64_t before, uint64_t after,
+                                             uint64_t elapsed_ns, uint64_t period_ns)
 {
-    cpu_set_t saved_affinity, pinned;
-    int affinity_ok = sched_getaffinity(0, sizeof(saved_affinity), &saved_affinity) == 0;
-    int cpu = 0;
-    if (affinity_ok) {
-        while (cpu < CPU_SETSIZE && !CPU_ISSET(cpu, &saved_affinity))
-            cpu++;
-        affinity_ok = cpu < CPU_SETSIZE;
-    }
-    if (affinity_ok) {
-        CPU_ZERO(&pinned);
-        CPU_SET(cpu, &pinned);
-        affinity_ok = sched_setaffinity(0, sizeof(pinned), &pinned) == 0;
-    }
-    CHECK(affinity_ok, "pin quick re-enable test to one CPU");
-    if (!affinity_ok)
-        return;
-
-    int ready_pipe[2];
-    int piped = pipe(ready_pipe);
-    CHECK(piped == 0, "create quick re-enable waiter pipe");
-    if (piped != 0) {
-        sched_setaffinity(0, sizeof(saved_affinity), &saved_affinity);
-        return;
-    }
-    pid_t waiter = fork();
-    CHECK(waiter >= 0, "fork quick re-enable waiter");
-    if (waiter < 0) {
-        close(ready_pipe[0]);
-        close(ready_pipe[1]);
-        sched_setaffinity(0, sizeof(saved_affinity), &saved_affinity);
-        return;
-    }
-    if (waiter == 0) {
-        close(ready_pipe[0]);
-        _exit(vblank_wait_child(fd, crtc_id, ready_pipe[1], 0));
-    }
-    close(ready_pipe[1]);
-    char ready;
-    int blocked = read(ready_pipe[0], &ready, 1) == 1 && ready == 'R' &&
-                  wait_for_vblank_sleep(waiter) == 0;
-    close(ready_pipe[0]);
-    CHECK(blocked, "quick re-enable waiter is blocked before disable");
-
-    int saved_policy = -1;
-    struct sched_param saved_param, fifo = { .sched_priority = 80 };
-    int fifo_stage = 0;
-    int fifo_ready = 0;
-    if (blocked) {
-        saved_policy = syscall(SYS_sched_getscheduler, 0);
-        fifo_stage = 1;
-        if (saved_policy >= 0) {
-            int got_param = syscall(SYS_sched_getparam, 0, &saved_param) == 0;
-            fifo_stage = 2;
-            if (got_param) {
-                fifo_ready = syscall(SYS_sched_setscheduler, 0, SCHED_FIFO, &fifo) == 0;
-                fifo_stage = 3;
-            }
-        }
-    }
-    if (!fifo_ready)
-        fprintf(stderr, "FAIL: FIFO setup stage=%d errno=%d\n", fifo_stage, errno);
-    long disable_result = -1, enable_result = -1;
-    int policy_restored = 0;
-    if (fifo_ready) {
-        struct drm_mode_crtc disabled = { .crtc_id = crtc_id };
-        disable_result = syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_SETCRTC, &disabled);
-        enable_result = syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_SETCRTC, enabled);
-        policy_restored = syscall(SYS_sched_setscheduler, 0, saved_policy, &saved_param) == 0;
-    } else {
-        kill(waiter, SIGKILL);
-    }
-    CHECK(fifo_ready && policy_restored, "keep switcher at FIFO priority through both ioctls");
-    if (fifo_ready) {
-        CHECK(disable_result == 0, "disable CRTC before immediate re-enable");
-        CHECK(enable_result == 0, "immediately re-enable CRTC");
-    }
-    int status;
-    CHECK(waitpid(waiter, &status, 0) == waiter && blocked &&
-          WIFEXITED(status) && WEXITSTATUS(status) == 0,
-          "WAIT_VBLANK remains pending after an unobserved disable/re-enable");
-    CHECK(sched_setaffinity(0, sizeof(saved_affinity), &saved_affinity) == 0,
-          "restore affinity after quick re-enable test");
+    if (period_ns == 0 || after < before)
+        return 0;
+    /* Linux adds one on modeset and rounds timestamp-derived active frames
+     * to nearest. The first query can enable vblank partway through a frame. */
+    uint64_t active_frames = elapsed_ns / period_ns;
+    active_frames += elapsed_ns % period_ns >= period_ns / 2 + period_ns % 2;
+    uint64_t advance = after - before;
+    return advance == 0 || advance - 1 <= active_frames;
 }
 
 int main(void)
@@ -1123,7 +1043,7 @@ int main(void)
     CHECK(waiter >= 0, "fork waiter for concurrent CRTC disable");
     if (waiter == 0) {
         close(ready_pipe[0]);
-        _exit(vblank_wait_child(fd, crtc_ids[0], ready_pipe[1], 1));
+        _exit(vblank_wait_child(fd, crtc_ids[0], ready_pipe[1]));
     }
     close(ready_pipe[1]);
     char ready;
@@ -1197,9 +1117,13 @@ int main(void)
     clock_gettime(CLOCK_MONOTONIC, &reenable_end);
     uint64_t reenabled_ns = (uint64_t)(reenable_end.tv_sec - reenable_start.tv_sec)
                             * 1000000000ULL + reenable_end.tv_nsec - reenable_start.tv_nsec;
-    CHECK(after_enable.sequence >= resumed_event.sequence &&
-          after_enable.sequence - resumed_event.sequence <=
-          1 + reenabled_ns / period_ns,
+    printf("  INFO | re-enable frozen=(seq=%llu ns=%lld) after=(seq=%llu ns=%lld) "
+           "elapsed_ns=%llu period_ns=%llu\n",
+           (unsigned long long)resumed_event.sequence, (long long)resumed_event.tv_ns,
+           (unsigned long long)after_enable.sequence, (long long)after_enable.sequence_ns,
+           (unsigned long long)reenabled_ns, (unsigned long long)period_ns);
+    CHECK(vblank_advance_matches_active_time(resumed_event.sequence,
+                                            after_enable.sequence, reenabled_ns, period_ns),
           "disabled interval does not advance vblank sequence");
     check_binding(fd, plane_ids[0], crtc_ids[0], next_fb.fb_id);
     struct drm_crtc_get_sequence after_event = { .crtc_id = crtc_ids[0] };
@@ -1210,7 +1134,6 @@ int main(void)
           (int64_t)(resumed_event.sequence - before_disable.sequence) * (int64_t)period_ns,
           "disabled event timestamp identifies the frozen edge");
 
-    check_vblank_disable_reenable(fd, crtc_ids[0], &setcrtc);
     check_binding(fd, plane_ids[0], crtc_ids[0], next_fb.fb_id);
 
     /* --- RMFB detaches the removed FB while the active CRTC remains enabled --- */

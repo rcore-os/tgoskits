@@ -2,9 +2,9 @@
 
 use alloc::{format, vec, vec::Vec};
 
-use axfs_ng_vfs::{MutationCredentials, NodePermission, NodeType, RenameOptions};
+use axfs_ng_vfs::{NodePermission, NodeType, RenameOptions};
 
-use crate::{VfsError, VfsResult, file::File, highlevel::FsContext};
+use crate::{VfsError, VfsResult, file::File, highlevel::FsView};
 
 /// Replaces one boot-owned directory as a complete package.
 ///
@@ -15,20 +15,20 @@ use crate::{VfsError, VfsResult, file::File, highlevel::FsContext};
 /// Ext4 publishes using EXCHANGE. Other filesystems use a recoverable backup
 /// sequence, which does not provide power-loss atomicity.
 pub fn install_directory(
-    source: &FsContext,
-    target: &FsContext,
+    source: &FsView<'_>,
+    target: &FsView<'_>,
     path: &str,
-    validate: impl Fn(&FsContext, &str) -> VfsResult<()>,
+    validate: impl Fn(&FsView<'_>, &str) -> VfsResult<()>,
 ) -> VfsResult<bool> {
     install_with_flush(source, target, path, validate, &flush)
 }
 
 fn install_with_flush(
-    source: &FsContext,
-    target: &FsContext,
+    source: &FsView<'_>,
+    target: &FsView<'_>,
     path: &str,
-    validate: impl Fn(&FsContext, &str) -> VfsResult<()>,
-    flush: &dyn Fn(&FsContext) -> VfsResult<()>,
+    validate: impl Fn(&FsView<'_>, &str) -> VfsResult<()>,
+    flush: &dyn Fn(&FsView<'_>) -> VfsResult<()>,
 ) -> VfsResult<bool> {
     if !path.starts_with('/')
         || path.ends_with('/')
@@ -64,7 +64,7 @@ fn install_with_flush(
     result
 }
 
-pub(crate) fn exists(context: &FsContext, path: &str) -> VfsResult<bool> {
+pub(crate) fn exists(context: &FsView<'_>, path: &str) -> VfsResult<bool> {
     match context.resolve_no_follow(path) {
         Ok(_) => Ok(true),
         Err(VfsError::NotFound) => Ok(false),
@@ -72,28 +72,28 @@ pub(crate) fn exists(context: &FsContext, path: &str) -> VfsResult<bool> {
     }
 }
 
-pub(crate) fn flush(context: &FsContext) -> VfsResult<()> {
+pub(crate) fn flush(context: &FsView<'_>) -> VfsResult<()> {
     #[cfg(feature = "vfs")]
     crate::file::sync_filesystem_cached_files(context.root_dir().filesystem())?;
     context.root_dir().filesystem().flush()
 }
 
 pub(crate) fn rename(
-    context: &FsContext,
+    context: &FsView<'_>,
     from: &str,
     to: &str,
     options: RenameOptions,
 ) -> VfsResult<()> {
-    context.rename_with_options(from, to, options, &MutationCredentials::root())
+    context.rename_with_options(from, to, options)
 }
 
 pub(crate) fn recover(
-    target: &FsContext,
+    target: &FsView<'_>,
     path: &str,
     stage: &str,
     backup: &str,
-    validate: &impl Fn(&FsContext, &str) -> VfsResult<()>,
-    flush: &dyn Fn(&FsContext) -> VfsResult<()>,
+    validate: &impl Fn(&FsView<'_>, &str) -> VfsResult<()>,
+    flush: &dyn Fn(&FsView<'_>) -> VfsResult<()>,
 ) -> VfsResult<()> {
     if exists(target, backup)? {
         if exists(target, path)? {
@@ -112,11 +112,11 @@ pub(crate) fn recover(
 }
 
 fn publish(
-    target: &FsContext,
+    target: &FsView<'_>,
     path: &str,
     stage: &str,
     backup: &str,
-    flush: &dyn Fn(&FsContext) -> VfsResult<()>,
+    flush: &dyn Fn(&FsView<'_>) -> VfsResult<()>,
 ) -> VfsResult<()> {
     let installed = exists(target, path)?;
     let exchange = installed && target.root_dir().filesystem().name() == "ext4";
@@ -158,28 +158,22 @@ fn publish(
     Ok(())
 }
 
-pub(crate) fn mkdir_parents(context: &FsContext, path: &str) -> VfsResult<()> {
+pub(crate) fn mkdir_parents(context: &FsView<'_>, path: &str) -> VfsResult<()> {
     let mut current = alloc::string::String::new();
     for component in path.split('/').filter(|part| !part.is_empty()) {
         current.push('/');
         current.push_str(component);
         if !exists(context, &current)? {
-            context.create_dir(
-                &current,
-                NodePermission::from_bits_truncate(0o755),
-                0,
-                0,
-                &MutationCredentials::root(),
-            )?;
+            context.create_dir(&current, NodePermission::from_bits_truncate(0o755), 0, 0)?;
         } else {
-            context.resolve(&current)?.check_is_dir()?;
+            context.resolve(&current)?.location().check_is_dir()?;
         }
     }
     Ok(())
 }
 
 pub(crate) fn child_names(
-    context: &FsContext,
+    context: &FsView<'_>,
     path: &str,
 ) -> VfsResult<Vec<alloc::string::String>> {
     context
@@ -193,21 +187,15 @@ pub(crate) fn child_names(
 }
 
 pub(crate) fn copy_tree(
-    source: &FsContext,
+    source: &FsView<'_>,
     from: &str,
-    target: &FsContext,
+    target: &FsView<'_>,
     to: &str,
 ) -> VfsResult<()> {
     let node = source.resolve_no_follow(from)?;
-    match node.node_type() {
+    match node.location().node_type() {
         NodeType::Directory => {
-            target.create_dir(
-                to,
-                NodePermission::from_bits_truncate(0o755),
-                0,
-                0,
-                &MutationCredentials::root(),
-            )?;
+            target.create_dir(to, NodePermission::from_bits_truncate(0o755), 0, 0)?;
             for name in child_names(source, from)? {
                 copy_tree(
                     source,
@@ -245,17 +233,17 @@ pub(crate) fn copy_tree(
     }
 }
 
-pub(crate) fn remove_tree(context: &FsContext, path: &str) -> VfsResult<()> {
+pub(crate) fn remove_tree(context: &FsView<'_>, path: &str) -> VfsResult<()> {
     if !exists(context, path)? {
         return Ok(());
     }
-    if context.resolve_no_follow(path)?.node_type() == NodeType::Directory {
+    if context.resolve_no_follow(path)?.location().node_type() == NodeType::Directory {
         for name in child_names(context, path)? {
             remove_tree(context, &format!("{path}/{name}"))?;
         }
-        context.remove_dir(path, &MutationCredentials::root())
+        context.remove_dir(path)
     } else {
-        context.remove_file(path, &MutationCredentials::root())
+        context.remove_file(path)
     }
 }
 
@@ -268,10 +256,15 @@ mod tests {
     use super::*;
     use crate::MemoryFs;
 
-    fn context() -> FsContext {
-        FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location())
+    fn context() -> FsView<'static> {
+        static CALLER: axfs_ng_vfs::NativeLinkCaller = axfs_ng_vfs::NativeLinkCaller::root();
+        let tree = Mountpoint::new_root(&MemoryFs::new());
+        crate::FsView::native(
+            crate::FsContext::from_tree(tree.clone(), tree.root_location()).unwrap(),
+            &CALLER,
+        )
     }
-    fn write(context: &FsContext, path: &str, data: &[u8]) {
+    fn write(context: &FsView<'_>, path: &str, data: &[u8]) {
         File::create(context, path)
             .unwrap()
             .write_at(data, 0)
@@ -320,9 +313,10 @@ mod tests {
             remove_tree(&source, "/guest/builtin/kernel").unwrap();
             install_directory(&source, &target, "/guest/builtin", |_, _| Ok(())).unwrap();
             assert!(child_names(&target, "/guest/builtin").unwrap().is_empty());
-            let full = FsContext::new(
-                Mountpoint::new_root(&MemoryFs::new_with_size_limit(4)).root_location(),
-            );
+            let tree = Mountpoint::new_root(&MemoryFs::new_with_size_limit(4));
+            let full = crate::FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+            let full_caller = axfs_ng_vfs::NativeLinkCaller::root();
+            let full = crate::FsView::native(full, &full_caller);
             mkdir_parents(&full, "/guest/builtin").unwrap();
             write(&full, "/guest/builtin/old-only", b"old");
             write(&source, "/guest/builtin/kernel", b"new");
@@ -331,7 +325,7 @@ mod tests {
                 Err(VfsError::StorageFull)
             );
             assert!(full.resolve("/guest/builtin/old-only").is_ok());
-            target.root_dir().mountpoint().set_readonly(true);
+            target.root_dir().mountpoint().set_readonly(true).unwrap();
             assert_eq!(
                 install_directory(&source, &target, "/guest/builtin", |_, _| Ok(())),
                 Err(VfsError::ReadOnlyFilesystem)
@@ -348,7 +342,7 @@ mod tests {
                 write(&source, "/guest/builtin/new", b"new");
                 let target = context();
                 let calls = Cell::new(0);
-                let failing_flush = |context: &FsContext| {
+                let failing_flush = |context: &FsView<'_>| {
                     flush(context)?;
                     calls.set(calls.get() + 1);
                     if calls.get() == fail_at {

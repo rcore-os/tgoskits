@@ -1526,6 +1526,7 @@ dependencies = [
 name = "axfs-ng-vfs"
 version = "0.8.1"
 dependencies = [
+ "ax-io",
  "ax-runtime",
  "ax-sync",
  "axpoll",
@@ -6678,7 +6679,6 @@ version = "0.3.3"
 dependencies = [
  "ax-runtime",
  "dma-api",
- "futures",
  "rdif-eth",
 ]
 
@@ -7211,6 +7211,7 @@ name = "rsext4"
 version = "0.9.2"
 dependencies = [
  "bitflags 2.13.2",
+ "log",
  "spinning_top",
  "thiserror 2.0.21",
 ]
@@ -8174,7 +8175,6 @@ dependencies = [
  "syscalls",
  "thiserror 2.0.21",
  "tock-registers 0.10.1",
- "uluru",
  "usb-serial",
  "x86",
  "xmas-elf",
@@ -8191,7 +8191,6 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "derive_more",
- "event-listener",
  "extern-trait",
  "linux-raw-sys 0.12.1",
  "log",
@@ -9197,15 +9196,6 @@ name = "uguid"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c8352f8c05e47892e7eaf13b34abd76a7f4aeaf817b716e88789381927f199c"
-
-[[package]]
-name = "uluru"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c8a2469e56e6e5095c82ccd3afb98dad95f7af7929aab6d8ba8d6e0f73657da"
-dependencies = [
- "arrayvec",
-]
 
 [[package]]
 name = "uncased"

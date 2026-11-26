@@ -43,6 +43,15 @@ impl FileNodeOps for Inode {
         Ok((buf.len(), end))
     }
 
+    fn write_iter(
+        &self,
+        source: &mut dyn axfs_ng_vfs::Read,
+        length: usize,
+        offset: Option<u64>,
+    ) -> VfsResult<(usize, u64)> {
+        self.write_inode_iter(source, length, offset)
+    }
+
     fn set_len(&self, len: u64) -> VfsResult<()> {
         let _inode = self.content_access().write()?;
         // An open-unlinked regular file stays alive by inode number, not by a

@@ -6,14 +6,20 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
     fn resolve(&self, path: &str) -> ax_net::NetResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
         use axfs_ng_vfs::NodeType;
 
-        let loc = ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .resolve(path)
-            .map_err(namespace_vfs_error)?;
-        if loc.metadata().map_err(namespace_vfs_error)?.node_type != NodeType::Socket {
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let view = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &caller);
+        let loc = view.resolve(path).map_err(namespace_vfs_error)?;
+        if loc
+            .location()
+            .metadata()
+            .map_err(namespace_vfs_error)?
+            .node_type
+            != NodeType::Socket
+        {
             return Err(ax_net::NetError::NotASocket);
         }
-        loc.user_data()
+        loc.location()
+            .user_data()
             .get::<ax_net::unix::BindSlot>()
             .ok_or(ax_net::NetError::ConnectionRefused)
     }
@@ -22,28 +28,37 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
         use ax_fs_ng::vfs::OpenOptions;
         use axfs_ng_vfs::NodeType;
 
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let view = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &caller);
+
         let loc = OpenOptions::new()
             .write(true)
             .create(true)
             .node_type(NodeType::Socket)
-            .open(&ax_fs_ng::vfs::current_fs_context().lock(), path)
+            .open(&view, path)
             .map_err(namespace_vfs_error)?
-            .into_location();
+            .into_path();
 
-        if loc.metadata().map_err(namespace_vfs_error)?.node_type != NodeType::Socket {
+        if loc
+            .location()
+            .metadata()
+            .map_err(namespace_vfs_error)?
+            .node_type
+            != NodeType::Socket
+        {
             return Err(ax_net::NetError::NotASocket);
         }
 
-        Ok(loc.user_data().get_or_insert_with(Default::default))
+        Ok(loc
+            .location()
+            .user_data()
+            .get_or_insert_with(Default::default))
     }
 
     fn unbind(&self, path: &str) -> ax_net::NetResult<()> {
-        use axfs_ng_vfs::MutationCredentials;
-
-        ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .remove_file(path, &MutationCredentials::root())
-            .map_err(namespace_vfs_error)
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let view = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &caller);
+        view.remove_file(path).map_err(namespace_vfs_error)
     }
 }
 

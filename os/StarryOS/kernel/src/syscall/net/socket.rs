@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 
-use ax_fs_ng::vfs::current_fs_context;
 use ax_net::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     raw::{IpProtocol, IpVersion, RawSocket},
@@ -9,7 +8,7 @@ use ax_net::{
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
     vsock::VsockSocket,
 };
-use axfs_ng_vfs::{MetadataUpdate, NodeType};
+use axfs_ng_vfs::{CreateAttributes, CreateContent, DeviceId, NodePermission, NodeType, VfsError};
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
@@ -105,7 +104,7 @@ pub fn sys_socket(
             if proto == NETLINK_KOBJECT_UEVENT && ty != SOCK_RAW {
                 return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
             }
-            let socket = NetlinkSocket::new(proto, ty);
+            let socket = NetlinkSocket::new(proto, ty)?;
             if raw_ty & O_NONBLOCK != 0 {
                 socket.set_nonblocking(true)?;
             }
@@ -130,7 +129,7 @@ pub fn sys_socket(
             return Err(StarryError::from(Errno::EAFNOSUPPORT));
         }
     };
-    let socket = Socket::new(socket, ip_domain);
+    let socket = Socket::new(socket, ip_domain)?;
 
     if raw_ty & O_NONBLOCK != 0 {
         socket.set_nonblocking(true)?;
@@ -173,29 +172,44 @@ pub fn sys_bind(
     }
     debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
 
-    let unix_path = match &addr {
-        SocketAddrEx::Unix(UnixSocketAddr::Path(path)) => Some(path.clone()),
-        _ => None,
-    };
-    let cred = current.as_thread().cred();
-
-    socket.bind(addr)?;
-
-    if let Some(path) = unix_path
-        && let Err(err) = current_fs_context()
-            .lock()
-            .resolve_no_follow(path.as_ref())
-            .and_then(|loc| {
-                if loc.metadata()?.node_type == NodeType::Socket {
-                    loc.update_metadata(MetadataUpdate {
-                        owner: Some((cred.fsuid, cred.fsgid)),
-                        ..Default::default()
-                    })?;
-                }
-                Ok(())
-            })
+    if let (SocketInner::Unix(unix), SocketAddrEx::Unix(UnixSocketAddr::Path(path))) =
+        (&**socket, &addr)
     {
-        warn!("failed to update AF_UNIX socket owner for {path}: {err:?}");
+        let thread = current.as_thread();
+        let (binding, caller, mask) = {
+            let update = thread.proc_data.namespace_update();
+            (
+                thread
+                    .snapshot_fs_binding_under(&update)?
+                    .ok_or(StarryError::BadState)?,
+                crate::task::ProcLinkCaller::capture_under(thread, &update),
+                thread.proc_data.umask(),
+            )
+        };
+        let permission = NodePermission::from_bits_truncate(
+            socket.location().metadata()?.mode.bits() & !(mask as u16),
+        );
+        let view = ax_fs_ng::FsView::current(binding.fs, &caller);
+        unix.bind_path_with(path.clone(), |path| -> StarryResult<_> {
+            let location = view
+                .create_node(
+                    path,
+                    CreateAttributes {
+                        content: CreateContent::Node(NodeType::Socket, DeviceId::default()),
+                        permission,
+                    },
+                )
+                .map_err(|error| match error {
+                    VfsError::AlreadyExists => StarryError::from(ax_net::NetError::AddrInUse),
+                    error => StarryError::from(error),
+                })?;
+            Ok(location
+                .location()
+                .user_data()
+                .get_or_insert_with(Default::default))
+        })?;
+    } else {
+        socket.bind(addr)?;
     }
 
     Ok(0)
@@ -258,7 +272,7 @@ pub fn sys_accept4(
 
     let cloexec = flags & O_CLOEXEC != 0;
     let listener = Socket::from_fd(fd)?;
-    let socket = Socket::new(listener.accept_user(current)?, listener.ip_domain());
+    let socket = Socket::new(listener.accept_user(current)?, listener.ip_domain())?;
     if flags & O_NONBLOCK != 0 {
         socket.set_nonblocking(true)?;
     }
@@ -344,8 +358,8 @@ pub fn sys_socketpair(
                     return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
                 }
             };
-            let sock1 = Socket::new(sock1.into(), AF_UNIX);
-            let sock2 = Socket::new(sock2.into(), AF_UNIX);
+            let sock1 = Socket::new(sock1.into(), AF_UNIX)?;
+            let sock2 = Socket::new(sock2.into(), AF_UNIX)?;
 
             if raw_ty & O_NONBLOCK != 0 {
                 sock1.set_nonblocking(true)?;

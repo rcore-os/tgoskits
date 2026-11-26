@@ -35,7 +35,7 @@ struct RuntimeFixtures {
 pub(crate) struct HostUdpEchoGuard {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
-    worker: Option<JoinHandle<anyhow::Result<()>>>,
+    worker: Option<JoinHandle<anyhow::Result<UdpSocket>>>,
 }
 
 impl HostUdpEchoGuard {
@@ -77,22 +77,25 @@ impl HostUdpEchoGuard {
     }
 
     pub(crate) fn finish(mut self) -> anyhow::Result<()> {
-        self.stop_and_join()
+        drop(self.stop_and_join()?);
+        Ok(())
     }
 
-    fn stop_and_join(&mut self) -> anyhow::Result<()> {
+    fn stop_and_join(&mut self) -> anyhow::Result<Option<UdpSocket>> {
         self.stop.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
-            worker
-                .join()
-                .map_err(|_| anyhow::anyhow!("host UDP echo {} panicked", self.address))?
-                .with_context(|| format!("host UDP echo {} failed", self.address))?;
-        }
-        Ok(())
+        self.worker
+            .take()
+            .map(|worker| {
+                worker
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("host UDP echo {} panicked", self.address))?
+                    .with_context(|| format!("host UDP echo {} failed", self.address))
+            })
+            .transpose()
     }
 }
 
-fn echo_datagrams(socket: UdpSocket, stop: &AtomicBool) -> anyhow::Result<()> {
+fn echo_datagrams(socket: UdpSocket, stop: &AtomicBool) -> anyhow::Result<UdpSocket> {
     let mut buffer = [0; 65536];
     while !stop.load(Ordering::Acquire) {
         match socket.recv_from(&mut buffer) {
@@ -110,7 +113,10 @@ fn echo_datagrams(socket: UdpSocket, stop: &AtomicBool) -> anyhow::Result<()> {
             Err(error) => return Err(error).context("failed to receive UDP datagram"),
         }
     }
-    Ok(())
+    // Transfer the exclusive socket with the join result. Callers can observe
+    // completed teardown while still owning the port; once dropped, its next
+    // owner is outside this fixture's control.
+    Ok(socket)
 }
 
 impl Drop for HostUdpEchoGuard {
@@ -149,7 +155,7 @@ mod tests {
             );
             return;
         }
-        let fixture = HostUdpEchoGuard::start(&EchoConfig {
+        let mut fixture = HostUdpEchoGuard::start(&EchoConfig {
             bind: loopback(),
             port: 0,
         })
@@ -173,7 +179,19 @@ mod tests {
             assert_eq!(peer, address);
             assert_eq!(&received[..len], payload);
         }
+        let socket = fixture.stop_and_join().unwrap().unwrap();
         fixture.finish().unwrap();
+        assert_eq!(
+            UdpSocket::bind(address).unwrap_err().kind(),
+            ErrorKind::AddrInUse
+        );
+        let payload = b"owned after stop";
+        client.send_to(payload, address).unwrap();
+        let mut received = [0; 64];
+        let (len, peer) = socket.recv_from(&mut received).unwrap();
+        assert_eq!(peer, client.local_addr().unwrap());
+        assert_eq!(&received[..len], payload);
+        drop(socket);
         let rebound = UdpSocket::bind(address).unwrap();
         drop(rebound);
         let fixture = HostUdpEchoGuard::start(&EchoConfig {

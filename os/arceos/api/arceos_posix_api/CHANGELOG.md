@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `sys_futimens` 将 ArceOS 内核身份显式交给 VFS 时间命令，统一授权、
+  只读准入和后端完成；两个 `UTIME_OMIT` 仍直接成功。
+
 ## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.6.7...ax-posix-api-v0.6.8) - 2026-09-22
 
 ### Other

@@ -1,38 +1,47 @@
+use alloc::sync::{Arc, Weak};
 use core::any::Any;
 
-use axfs_ng_vfs::{Location, VfsResult};
+use axfs_ng_vfs::{Location, PathHandle, VfsResult};
 
-use super::pts::PtsDir;
 use crate::{
     StarryError, StarryResult,
-    pseudofs::{DeviceOps, SimpleDir},
+    pseudofs::{
+        DeviceOps, SimpleDir,
+        dev::tty::pts::{PtsDir, PtsInstance},
+    },
 };
 
-pub enum Ptmx {
-    /// The traditional character device, which discovers its sibling pts.
+pub(crate) enum Ptmx {
     Devfs,
-    /// The ptmx node supplied by a specific devpts instance.
-    Devpts,
+    Devpts(Weak<PtsInstance>),
 }
 
 impl Ptmx {
-    pub(crate) fn open_pty(&self, location: &Location) -> StarryResult<Location> {
-        let pts = match self {
-            Self::Devfs => location
-                .parent()
-                .ok_or(StarryError::NotFound)?
-                .lookup_no_follow("pts")?,
-            Self::Devpts => {
-                // A file bind mount still refers to its original devpts node.
-                let entry = location.entry().parent().ok_or(StarryError::NoSuchDevice)?;
-                Location::new(location.mountpoint().clone(), entry)
+    pub(crate) fn create_pty(
+        &self,
+        location: &Location,
+        uid: u32,
+    ) -> StarryResult<Arc<dyn DeviceOps>> {
+        match self {
+            Self::Devfs => {
+                // Linux devpts_acquire selects the sibling mount of this open.
+                let pts = location
+                    .parent()
+                    .ok_or(StarryError::NoSuchDevice)?
+                    .lookup_no_follow("pts")?;
+                let pts = PathHandle::acquire(pts)?;
+                let directory = pts
+                    .location()
+                    .entry()
+                    .downcast::<SimpleDir<PtsDir>>()
+                    .map_err(|_| StarryError::NoSuchDevice)?;
+                directory.operations().create_pty(uid)
             }
-        };
-        let directory = pts
-            .entry()
-            .downcast::<SimpleDir<PtsDir>>()
-            .map_err(|_| StarryError::NoSuchDevice)?;
-        directory.operations().open_pty(&pts)
+            Self::Devpts(instance) => instance
+                .upgrade()
+                .ok_or(StarryError::NoSuchDevice)?
+                .create_pty(uid),
+        }
     }
 }
 

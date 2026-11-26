@@ -1,15 +1,20 @@
 mod backing;
+mod errors;
+pub(in crate::file) use errors::WritebackErrorCursor;
 mod fill;
 mod mapping;
 mod pages;
+mod persistence;
 mod prefetch;
 mod read;
 mod readahead;
-#[cfg(feature = "vfs")]
 mod reclaim;
 mod resize;
 mod update;
+mod write;
 mod writeback;
+#[cfg(feature = "ext4")]
+pub(crate) use reclaim::observe_filesystem_persistence;
 #[cfg(feature = "vfs")]
 mod writeback_worker;
 use alloc::{
@@ -22,13 +27,14 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use ax_io::prelude::*;
-use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
+use axfs_ng_vfs::{FileNode, FilesystemOps, Location, PathHandle, VfsError, VfsResult};
 use pages::CachedPages;
 pub(crate) use prefetch::start_background_readahead;
 use readahead::ReadAheadState;
-#[cfg(all(feature = "vfs", feature = "ext4"))]
+#[cfg(feature = "ext4")]
 pub(crate) use reclaim::prune_cached_files;
+#[cfg(feature = "ext4")]
+pub(crate) use reclaim::prune_cached_files_retiring;
 #[cfg(feature = "vfs")]
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
 #[cfg(feature = "vfs")]
@@ -313,6 +319,11 @@ struct CachedFileShared {
     pending_fills: fill::PendingFills,
     updating: AtomicBool,
     mapping_layout_lock: Mutex<()>,
+    // Logical content operations stay serialized while input reads release
+    // physical cache protection. Read fills, reclaim and writeback skip it.
+    content_operation_lock: Mutex<()>,
+    #[cfg(test)]
+    content_wait_observer: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
     io_lock: Mutex<()>,
     writeback_lock: Mutex<()>,
     mapping_endpoint: Mutex<Option<Weak<dyn CacheMappingEndpoint>>>,
@@ -324,8 +335,9 @@ struct CachedFileShared {
     mapping_epoch: AtomicU64,
     mapping_update_in_progress: AtomicBool,
     unlinked: AtomicBool,
-    #[cfg(feature = "vfs")]
     retired: AtomicBool,
+    backing_persistence: persistence::BackingPersistence,
+    writeback_errors: errors::WritebackErrors,
     #[cfg(feature = "vfs")]
     background_writeback_requested: AtomicBool,
     #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -333,6 +345,18 @@ struct CachedFileShared {
 }
 
 impl CachedFileShared {
+    fn lock_content_operation(&self) -> MutexGuard<'_, ()> {
+        if let Some(guard) = self.content_operation_lock.try_lock() {
+            return guard;
+        }
+        #[cfg(test)]
+        if let Some(observer) = self.content_wait_observer.lock().take() {
+            // One-shot test observation never changes acquisition or lifetime.
+            let _ = observer.send(());
+        }
+        self.content_operation_lock.lock()
+    }
+
     pub fn new(len: u64, backing: FileNode) -> Self {
         Self {
             identity: CachedFileIdentity::allocate(),
@@ -340,6 +364,9 @@ impl CachedFileShared {
             pending_fills: fill::PendingFills::new(),
             updating: AtomicBool::new(false),
             mapping_layout_lock: Mutex::new(()),
+            content_operation_lock: Mutex::new(()),
+            #[cfg(test)]
+            content_wait_observer: Mutex::new(None),
             io_lock: Mutex::new(()),
             writeback_lock: Mutex::new(()),
             mapping_endpoint: Mutex::new(None),
@@ -348,8 +375,9 @@ impl CachedFileShared {
             mapping_epoch: AtomicU64::new(0),
             mapping_update_in_progress: AtomicBool::new(false),
             unlinked: AtomicBool::new(false),
-            #[cfg(feature = "vfs")]
             retired: AtomicBool::new(false),
+            backing_persistence: persistence::BackingPersistence::new(),
+            writeback_errors: errors::WritebackErrors::new(),
             #[cfg(feature = "vfs")]
             background_writeback_requested: AtomicBool::new(false),
             #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -364,6 +392,9 @@ impl CachedFileShared {
             pending_fills: fill::PendingFills::new(),
             updating: AtomicBool::new(false),
             mapping_layout_lock: Mutex::new(()),
+            content_operation_lock: Mutex::new(()),
+            #[cfg(test)]
+            content_wait_observer: Mutex::new(None),
             io_lock: Mutex::new(()),
             writeback_lock: Mutex::new(()),
             mapping_endpoint: Mutex::new(None),
@@ -372,8 +403,9 @@ impl CachedFileShared {
             mapping_epoch: AtomicU64::new(0),
             mapping_update_in_progress: AtomicBool::new(false),
             unlinked: AtomicBool::new(false),
-            #[cfg(feature = "vfs")]
             retired: AtomicBool::new(false),
+            backing_persistence: persistence::BackingPersistence::new(),
+            writeback_errors: errors::WritebackErrors::new(),
             #[cfg(feature = "vfs")]
             background_writeback_requested: AtomicBool::new(false),
             #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -402,7 +434,6 @@ impl CachedFileShared {
     }
 
     fn ensure_writeback_owner_active(&self) -> VfsResult<()> {
-        #[cfg(feature = "vfs")]
         if self.retired.load(Ordering::Acquire) {
             return Err(VfsError::BadState);
         }
@@ -516,7 +547,7 @@ impl CachedFileShared {
         )
     }
 
-    #[cfg(all(feature = "ext4", feature = "vfs"))]
+    #[cfg(feature = "ext4")]
     fn mark_unlinked(&self) {
         // Serialize publication with the worker's final lifecycle check and
         // backing I/O. Once this returns, no writeback that observed the old
@@ -577,10 +608,11 @@ impl Drop for CachedFileShared {
 
 /// A file handle with an LRU page cache for buffered I/O.
 pub struct CachedFile {
-    inner: Location,
     shared: Arc<CachedFileShared>,
     readahead: Arc<Mutex<ReadAheadState>>,
     in_memory: bool,
+    // Backing/cache owners retire before the mount use retained by this handle.
+    inner: PathHandle,
 }
 
 impl Clone for CachedFile {
@@ -611,8 +643,10 @@ fn filesystem_uses_unbounded_page_cache(name: &str) -> bool {
 }
 
 impl CachedFile {
-    /// Returns an existing cached file for `location`, or creates a new one.
-    pub fn get_or_create(location: Location) -> VfsResult<Self> {
+    /// Shares or creates the inode cache while retaining this exact path use.
+    /// Path acquisition belongs outside all cache and backend locks.
+    pub fn get_or_create(path: PathHandle) -> VfsResult<Self> {
+        let location = path.location();
         let in_memory = filesystem_uses_unbounded_page_cache(location.filesystem().name());
 
         let existing = {
@@ -623,12 +657,11 @@ impl CachedFile {
                 .map(FileUserData::get)
         };
         if let Some(shared) = existing {
-            #[cfg(feature = "vfs")]
             if shared.retired.swap(false, Ordering::AcqRel) {
                 reclaim::register_cached_file(&shared);
             }
             return Ok(Self {
-                inner: location,
+                inner: path,
                 shared,
                 readahead: Arc::new(Mutex::new(ReadAheadState::new())),
                 in_memory,
@@ -637,7 +670,7 @@ impl CachedFile {
 
         let len = location.len()?;
         let inode_key =
-            should_share_cached_file_by_inode(&location).then(|| cached_file_key(&location));
+            should_share_cached_file_by_inode(location).then(|| cached_file_key(location));
         let candidate = if in_memory {
             Arc::new(CachedFileShared::new_unbounded(len))
         } else {
@@ -667,15 +700,12 @@ impl CachedFile {
 
         // tmpfs and ramfs have no backing store, so evicting clean pages would
         // lose data. Only register disk-backed files for reclaim.
-        #[cfg(feature = "vfs")]
         if !in_memory && (owner_created || shared.retired.swap(false, Ordering::AcqRel)) {
             reclaim::register_cached_file(&shared);
         }
-        #[cfg(not(feature = "vfs"))]
-        let _ = owner_created;
 
         Ok(Self {
-            inner: location,
+            inner: path,
             shared,
             readahead: Arc::new(Mutex::new(ReadAheadState::new())),
             in_memory,
@@ -717,7 +747,7 @@ impl CachedFile {
 
     /// Returns the current length (in bytes) of the backing file.
     pub fn file_len(&self) -> VfsResult<u64> {
-        self.inner.len()
+        self.inner.location().len()
     }
 
     /// Current generation of the file's page-to-offset mapping.
@@ -926,19 +956,28 @@ impl CachedFile {
         read_backing: bool,
     ) -> VfsResult<PageCache> {
         let mut page = PageCache::new()?;
+        self.initialize_cache_page(file, pn, read_backing, &mut page)?;
+        Ok(page)
+    }
+
+    fn initialize_cache_page(
+        &self,
+        file: &FileNode,
+        pn: u32,
+        read_backing: bool,
+        page: &mut PageCache,
+    ) -> VfsResult<()> {
         if self.in_memory || !read_backing {
             page.data().fill(0);
         } else {
-            // `PageCache::new()` does not zero the freshly allocated frame, and
-            // `FileNodeOps::read_at` short-reads at EOF (rsext4/fat return only the
-            // bytes actually read, leaving the rest of the buffer untouched). Zero the
-            // tail beyond the read length so a partial last page never exposes stale
-            // physical memory past EOF — POSIX/Linux require those bytes to read as 0
-            // (e.g. an mmap of a 100-byte file must see `[100, PAGE_SIZE)` as zero).
-            let read = file.read_at(&mut page.data(), pn as u64 * PAGE_SIZE as u64)?;
-            page.data()[read..].fill(0);
+            // A positive short transfer is not EOF. Complete the retained
+            // prefix before a partial-page write can preserve or modify it.
+            let mut bytes = page.data();
+            let read =
+                backing::read_until_eof_at(file, &mut bytes, u64::from(pn) * PAGE_SIZE as u64)?;
+            bytes[read..].fill(0);
         }
-        Ok(page)
+        Ok(())
     }
 
     /// Updates an existing page or publishes one fully prepared cache page.
@@ -1009,10 +1048,11 @@ impl CachedFile {
 
     /// Marks one cached mmap page dirty through the shared cached-I/O protocol.
     pub fn mark_mmap_dirty_page(&self, pn: u32) -> VfsResult<()> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
         if self.in_memory {
             return Ok(());
         }
+        let _backing_change = self.shared.backing_persistence.begin()?;
         if self
             .shared
             .mapping_update_in_progress
@@ -1047,7 +1087,7 @@ impl CachedFile {
         {
             return Err(VfsError::ResourceBusy);
         }
-        self.populate_page_window(self.inner.entry().as_file()?, pn, 1)?;
+        self.populate_page_window(self.inner.location().entry().as_file()?, pn, 1)?;
         if self
             .shared
             .mapping_update_in_progress
@@ -1122,122 +1162,6 @@ impl CachedFile {
         }))
     }
 
-    fn write_at_locked(
-        &self,
-        mut buf: impl Read + IoBuf,
-        offset: u64,
-        update: &mut update::CacheUpdateGuard<'_>,
-    ) -> VfsResult<usize> {
-        self.shared.ensure_writeback_owner_active()?;
-        // An empty request cannot extend the file.
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let file = self.inner.entry().as_file()?;
-        let end = offset.saturating_add(buf.remaining() as u64);
-        let old_len = self.shared.len();
-        if end > old_len {
-            update.without_io(|| -> VfsResult<()> {
-                let _writeback = self.shared.writeback_lock.lock();
-                let _update = self.shared.lock_for_update();
-                let next_epoch = self.shared.prepare_mapping_epoch()?;
-                if !old_len.is_multiple_of(PAGE_SIZE as u64) {
-                    let page_number = (old_len / PAGE_SIZE as u64) as u32;
-                    let page_start = u64::from(page_number) * PAGE_SIZE as u64;
-                    self.zero_partial_page_locked(
-                        file,
-                        page_number,
-                        (old_len - page_start) as usize,
-                        (end - page_start).min(PAGE_SIZE as u64) as usize,
-                    )?;
-                }
-                file.set_len(end)?;
-                self.shared.update_len_max(end);
-                self.shared.publish_mapping_epoch(next_epoch);
-                Ok(())
-            })?;
-        }
-
-        let mut scratch = PageCache::new()?;
-        let mut written = 0;
-        let mut current = offset;
-        while current < end && buf.remaining() > 0 {
-            let pn = (current / PAGE_SIZE as u64) as u32;
-            let page_start = pn as u64 * PAGE_SIZE as u64;
-            let page_offset = (current - page_start) as usize;
-            let chunk_len =
-                ((PAGE_SIZE - page_offset).min(buf.remaining())).min((end - current) as usize);
-            let n = buf
-                .read(&mut scratch.data()[..chunk_len])
-                .map_err(crate::io_error_to_vfs_error)?;
-            if n == 0 {
-                break;
-            }
-            self.shared.update_len_max(current + n as u64);
-
-            let read_backing = page_start < old_len && !(page_offset == 0 && n == PAGE_SIZE);
-            self.with_page_or_insert(file, pn, read_backing, |page, _| {
-                page.data()[page_offset..page_offset + n].copy_from_slice(&scratch.data()[..n]);
-                if !self.in_memory {
-                    page.mark_dirty();
-                }
-            })?;
-            if !self.in_memory {
-                update.without_io(|| self.shared.balance_dirty_pages(end > old_len))?;
-            }
-
-            written += n;
-            current += n as u64;
-        }
-
-        Ok(written)
-    }
-
-    /// Writes `buf` to the file at `offset`.
-    pub fn write_at(&self, buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        self.write_at_with_completion(buf, offset, |_| Ok(()))
-    }
-
-    /// Runs completion after releasing cache locks while retaining write admission.
-    pub(crate) fn write_at_with_completion(
-        &self,
-        buf: impl Read + IoBuf,
-        offset: u64,
-        complete: impl FnOnce(usize) -> VfsResult<()>,
-    ) -> VfsResult<usize> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
-        let written = {
-            let _layout = self.shared.mapping_layout_lock.lock();
-            let mut update = self.shared.lock_for_update();
-            self.write_at_locked(buf, offset, &mut update)
-        }?;
-        complete(written)?;
-        Ok(written)
-    }
-
-    /// Appends `buf` to the end of the file. Returns `(bytes_written, new_end)`.
-    pub fn append(&self, buf: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
-        self.append_with_completion(buf, |_| Ok(()))
-    }
-
-    /// Runs completion after releasing cache locks while retaining write admission.
-    pub(crate) fn append_with_completion(
-        &self,
-        buf: impl Read + IoBuf,
-        complete: impl FnOnce(usize) -> VfsResult<()>,
-    ) -> VfsResult<(usize, u64)> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
-        let (written, end) = {
-            let _layout = self.shared.mapping_layout_lock.lock();
-            let mut update = self.shared.lock_for_update();
-            let len = self.shared.len();
-            self.write_at_locked(buf, len, &mut update)
-                .map(|written| (written, len + written as u64))
-        }?;
-        complete(written)?;
-        Ok((written, end))
-    }
-
     pub fn writeback(&self) -> VfsResult<alloc::vec::Vec<u32>> {
         if self.in_memory {
             return Ok(alloc::vec::Vec::new());
@@ -1285,12 +1209,41 @@ impl CachedFile {
 
     /// Returns a reference to the underlying [`Location`].
     pub fn location(&self) -> &Location {
+        self.inner.location()
+    }
+
+    /// Borrows the mount use owned by this cache handle, shared with its clones.
+    pub fn path_handle(&self) -> &PathHandle {
         &self.inner
     }
 }
 
 fn should_share_cached_file_by_inode(location: &Location) -> bool {
-    matches!(location.filesystem().name(), "ext4" | "tmpfs" | "ramfs")
+    matches!(
+        location.filesystem().name(),
+        "ext4" | "tmpfs" | "ramfs" | "vfat"
+    )
+}
+
+/// Flushes FAT data and its holder-owned directory editor before device flush.
+#[cfg(feature = "fat")]
+pub(crate) fn sync_fat_cached_files(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
+    reclaim::writeback_cached_files(Some(filesystem), |file| file.sync(false))
+}
+
+/// Releases closed FAT caches before the backend samples active inode users.
+#[cfg(feature = "fat")]
+pub(crate) fn prepare_fat_unlink_cache(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
+    reclaim::writeback_cached_files(Some(filesystem), |file| {
+        // The registry and this writeback snapshot account for two owners.
+        // A concurrent opener may acquire another owner after this check;
+        // normal writeback remains safe and the locked FAT attempt rejects it.
+        if Arc::strong_count(file) == 2 {
+            file.sync(false)
+        } else {
+            Ok(())
+        }
+    })
 }
 
 fn filesystem_key(filesystem: &dyn FilesystemOps) -> usize {
@@ -1327,10 +1280,7 @@ pub(crate) fn retire_filesystem_cache(filesystem: &dyn FilesystemOps) -> VfsResu
         .collect();
     let mut first_error = None;
     for file in files {
-        #[cfg(feature = "vfs")]
         let result = file.retire_from_writeback_registry();
-        #[cfg(not(feature = "vfs"))]
-        let result = file.writeback_dirty_for_global_sync();
         if let Err(error) = result {
             first_error.get_or_insert(error);
         }
@@ -1345,20 +1295,17 @@ pub(crate) fn forget_cached_file_key(filesystem: &dyn FilesystemOps, inode: u64)
             .lock()
             .remove(&(filesystem_key(filesystem), inode))
             .and_then(|cached| cached.upgrade());
-        #[cfg(feature = "vfs")]
         if let Some(cached) = cached {
             cached.mark_unlinked();
             reclaim::release_cached_file(&cached);
         }
-        #[cfg(not(feature = "vfs"))]
-        let _ = cached;
     }
 }
 
 impl Drop for CachedFile {
     fn drop(&mut self) {
         // Linux close(2) does not imply fsync(2). Disk-backed page cache is
-        // retained by the inode user_data and written by explicit sync paths.
+        // retained by the independent registry; memory contents remain inode-owned.
     }
 }
 
@@ -1388,24 +1335,5 @@ fn writeback_filesystem_pages_with(
     filesystem: &dyn FilesystemOps,
     writeback: fn(&CachedFileShared) -> VfsResult<()>,
 ) -> VfsResult<()> {
-    #[cfg(feature = "vfs")]
-    {
-        reclaim::writeback_cached_files(Some(filesystem), writeback)
-    }
-    #[cfg(not(feature = "vfs"))]
-    {
-        let key = filesystem_key(filesystem);
-        let files: Vec<_> = CACHED_FILE_BY_INODE
-            .lock()
-            .range((key, 0)..=(key, u64::MAX))
-            .filter_map(|(_, cached)| cached.upgrade())
-            .collect();
-        let mut first_error = None;
-        for file in files {
-            if let Err(error) = writeback(&file) {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
+    reclaim::writeback_cached_files(Some(filesystem), |file| writeback(file))
 }

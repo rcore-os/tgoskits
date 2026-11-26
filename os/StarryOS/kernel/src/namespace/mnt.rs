@@ -1,38 +1,51 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
 
+use axfs_ng_vfs::{CreatedMountNamespace, MountNamespace};
+
+use super::{ROOT_USER_NS, UserNamespace};
 use crate::sync::RawSpinLock;
 
-/// The initial root mount namespace, shared by all processes until
-/// they call `unshare(CLONE_NEWNS)` or `clone(CLONE_NEWNS)`.
-pub static ROOT_MNT_NS: ax_lazyinit::LazyLock<Arc<RawSpinLock<MntNamespace>>> =
-    ax_lazyinit::LazyLock::new(|| Arc::new(RawSpinLock::new(MntNamespace::new_root())));
+/// The sole initial adapter is bound to the boot Core and initial user namespace.
+pub static ROOT_MNT_NS: ax_lazyinit::LazyLock<Arc<MntNamespace>> =
+    ax_lazyinit::LazyLock::new(|| {
+        Arc::new(MntNamespace {
+            core: ax_fs_ng::ROOT_FS_CONTEXT
+                .get()
+                .expect("root filesystem must precede task scopes")
+                .namespace()
+                .clone(),
+            creator: ROOT_USER_NS.clone(),
+        })
+    });
 
-static MNT_NS_ID: AtomicU64 = AtomicU64::new(1);
+scope_local::scope_local! {
+    /// Paired with FS_CONTEXT in the same task scope, including after exit.
+    pub(crate) static MNT_NAMESPACE: Option<Arc<MntNamespace>> = Some(ROOT_MNT_NS.clone());
+}
 
-/// Per-process mount namespace.
-///
-/// This is the namespace identity visible through `NsProxy`. The live mount
-/// topology is held by the task-local `ax_fs::FsContext`, and syscall paths
-/// update both objects together when entering a new mount namespace.
+/// Immutable OS authorization binding for one actual VFS mount namespace.
+/// A newly created Core can acquire a creator only by consuming its provenance.
 pub struct MntNamespace {
-    id: u64,
+    core: Arc<MountNamespace>,
+    creator: Arc<RawSpinLock<UserNamespace>>,
 }
 
 impl MntNamespace {
-    pub fn new_root() -> Self {
-        Self {
-            id: MNT_NS_ID.fetch_add(1, Ordering::Relaxed),
-        }
+    pub(crate) fn from_created(
+        created: CreatedMountNamespace,
+        creator: Arc<RawSpinLock<UserNamespace>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            core: created.into_namespace(),
+            creator,
+        })
     }
 
-    pub fn clone_ns(&self) -> Self {
-        Self {
-            id: MNT_NS_ID.fetch_add(1, Ordering::Relaxed),
-        }
+    pub(crate) fn core(&self) -> &Arc<MountNamespace> {
+        &self.core
     }
 
-    pub fn id(&self) -> u64 {
-        self.id
+    pub(crate) fn creator(&self) -> &Arc<RawSpinLock<UserNamespace>> {
+        &self.creator
     }
 }

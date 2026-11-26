@@ -431,13 +431,29 @@ impl Ext4Inode {
         Ext4Timestamp::new(sec, nsec)
     }
 
-    fn encode_time_base(ts: Ext4Timestamp, fits_extra: bool) -> u32 {
-        let sec = if fits_extra {
-            ts.sec
+    /// Truncates the complete instant to its physical field range before
+    /// encoding epoch bits. Endpoint fractions follow Linux timestamp_truncate.
+    fn encode_time(ts: Ext4Timestamp, fits_extra: bool) -> (u32, u32) {
+        let minimum = i64::from(i32::MIN);
+        let maximum = i64::from(i32::MAX)
+            + if fits_extra {
+                i64::from(Self::EXT4_EPOCH_MASK) << 32
+            } else {
+                0
+            };
+        let nanoseconds = if fits_extra && ts.sec > minimum && ts.sec < maximum {
+            ts.nsec
         } else {
-            ts.sec.clamp(i32::MIN as i64, i32::MAX as i64)
+            0
         };
-        (sec as i32) as u32
+        let bounded = Ext4Timestamp::new(ts.sec.clamp(minimum, maximum), nanoseconds);
+        let base = (bounded.sec as i32) as u32;
+        let extra = if fits_extra {
+            Self::encode_extra_time(bounded)
+        } else {
+            0
+        };
+        (base, extra)
     }
 
     fn get_raw_xtime(
@@ -456,32 +472,23 @@ impl Ext4Inode {
 
     pub fn set_atime_ts(&mut self, inode_size: u16, ts: Ext4Timestamp) {
         let fits_extra = self.field_fits(inode_size, Self::FIELD_END_I_ATIME_EXTRA);
-        self.i_atime = Self::encode_time_base(ts, fits_extra);
-        self.i_atime_extra = if fits_extra {
-            Self::encode_extra_time(ts)
-        } else {
-            0
-        };
+        let (base, extra) = Self::encode_time(ts, fits_extra);
+        self.i_atime = base;
+        self.i_atime_extra = extra;
     }
 
     pub fn set_mtime_ts(&mut self, inode_size: u16, ts: Ext4Timestamp) {
         let fits_extra = self.field_fits(inode_size, Self::FIELD_END_I_MTIME_EXTRA);
-        self.i_mtime = Self::encode_time_base(ts, fits_extra);
-        self.i_mtime_extra = if fits_extra {
-            Self::encode_extra_time(ts)
-        } else {
-            0
-        };
+        let (base, extra) = Self::encode_time(ts, fits_extra);
+        self.i_mtime = base;
+        self.i_mtime_extra = extra;
     }
 
     pub fn set_ctime_ts(&mut self, inode_size: u16, ts: Ext4Timestamp) {
         let fits_extra = self.field_fits(inode_size, Self::FIELD_END_I_CTIME_EXTRA);
-        self.i_ctime = Self::encode_time_base(ts, fits_extra);
-        self.i_ctime_extra = if fits_extra {
-            Self::encode_extra_time(ts)
-        } else {
-            0
-        };
+        let (base, extra) = Self::encode_time(ts, fits_extra);
+        self.i_ctime = base;
+        self.i_ctime_extra = extra;
     }
 
     pub fn set_crtime_ts(&mut self, inode_size: u16, ts: Ext4Timestamp) {
@@ -490,16 +497,10 @@ impl Ext4Inode {
             self.i_crtime_extra = 0;
             return;
         }
-
-        self.i_crtime = Self::encode_time_base(
-            ts,
-            self.field_fits(inode_size, Self::FIELD_END_I_CRTIME_EXTRA),
-        );
-        self.i_crtime_extra = if self.field_fits(inode_size, Self::FIELD_END_I_CRTIME_EXTRA) {
-            Self::encode_extra_time(ts)
-        } else {
-            0
-        };
+        let fits_extra = self.field_fits(inode_size, Self::FIELD_END_I_CRTIME_EXTRA);
+        let (base, extra) = Self::encode_time(ts, fits_extra);
+        self.i_crtime = base;
+        self.i_crtime_extra = extra;
     }
 
     pub fn atime_ts(&self, inode_size: u16) -> Ext4Timestamp {

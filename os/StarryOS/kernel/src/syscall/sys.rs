@@ -187,14 +187,6 @@ fn uid_valid(id: u32) -> bool {
     id != NOCHG
 }
 
-/// Linux clears `mm->dumpable` from `commit_creds()` when effective or
-/// filesystem credentials change. StarryOS keeps this process-wide flag on
-/// `ProcessData`, so each credential setter checks the committed deltas.
-#[inline]
-fn dumpable_should_reset(old: &crate::task::Cred, new: &crate::task::Cred) -> bool {
-    old.euid != new.euid || old.egid != new.egid || old.fsuid != new.fsuid || old.fsgid != new.fsgid
-}
-
 fn commit_cred_with_id_rules(thread: &crate::task::Thread, new: crate::task::Cred) {
     thread.update_process_creds(|old| {
         let mut target = old.clone();
@@ -357,11 +349,7 @@ pub fn sys_setresuid(
 
     // fsuid always tracks euid.
     new.fsuid = new.euid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -410,11 +398,7 @@ pub fn sys_setresgid(
     }
 
     new.fsgid = new.egid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -446,11 +430,7 @@ pub fn sys_setuid(current: &crate::task::UserTaskRef, uid: u32) -> crate::Starry
     }
 
     new.fsuid = new.euid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -477,11 +457,7 @@ pub fn sys_setgid(current: &crate::task::UserTaskRef, gid: u32) -> crate::Starry
     }
 
     new.fsgid = new.egid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -531,11 +507,7 @@ pub fn sys_setreuid(
     }
 
     new.fsuid = new.euid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -577,11 +549,7 @@ pub fn sys_setregid(
     }
 
     new.fsgid = new.egid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -599,65 +567,33 @@ pub fn sys_setregid(
 
 pub fn sys_setfsuid(current: &crate::task::UserTaskRef, fsuid: u32) -> crate::StarryResult<isize> {
     debug!("sys_setfsuid <= fsuid: {fsuid}");
-    let thread = current;
-    let thread = thread.as_thread();
-    let old = thread.cred();
-    let prev_fsuid = old.fsuid;
-
-    // (uid_t)-1 = query-only: don't change, just return prev.
-    if fsuid == NOCHG {
-        return Ok(prev_fsuid as isize);
-    }
-
-    // Linux: setfsuid silently ignores an invalid fsuid but always returns the
-    // previous fsuid (never reports error). Unprivileged callers may only set
-    // fsuid to one of {uid, euid, suid, fsuid}; CAP_SETUID allows arbitrary.
-    let allowed = old.has_cap_setuid()
-        || fsuid == old.uid
-        || fsuid == old.euid
-        || fsuid == old.suid
-        || fsuid == old.fsuid;
-
-    if allowed {
-        let mut new = (*old).clone();
-        new.fsuid = fsuid;
-        let reset_dumpable = dumpable_should_reset(&old, &new);
-        commit_cred_with_id_rules(thread, new);
-        if reset_dumpable {
-            thread.proc_data.set_dumpable(0);
+    Ok(current.as_thread().update_thread_cred(|old| {
+        let previous = old.fsuid as isize;
+        let allowed =
+            old.has_cap_setuid() || [old.uid, old.euid, old.suid, old.fsuid].contains(&fsuid);
+        if fsuid == NOCHG || !allowed {
+            return (None, previous);
         }
-    }
-    // Always return previous fsuid, even when the request was ignored.
-    Ok(prev_fsuid as isize)
+        let mut new = old.clone();
+        new.fsuid = fsuid;
+        new.apply_fsuid_change_capability_rules(old);
+        (Some(new), previous)
+    }))
 }
 
 pub fn sys_setfsgid(current: &crate::task::UserTaskRef, fsgid: u32) -> crate::StarryResult<isize> {
     debug!("sys_setfsgid <= fsgid: {fsgid}");
-    let thread = current;
-    let thread = thread.as_thread();
-    let old = thread.cred();
-    let prev_fsgid = old.fsgid;
-
-    if fsgid == NOCHG {
-        return Ok(prev_fsgid as isize);
-    }
-
-    let allowed = old.has_cap_setgid()
-        || fsgid == old.gid
-        || fsgid == old.egid
-        || fsgid == old.sgid
-        || fsgid == old.fsgid;
-
-    if allowed {
-        let mut new = (*old).clone();
-        new.fsgid = fsgid;
-        let reset_dumpable = dumpable_should_reset(&old, &new);
-        commit_cred_with_id_rules(thread, new);
-        if reset_dumpable {
-            thread.proc_data.set_dumpable(0);
+    Ok(current.as_thread().update_thread_cred(|old| {
+        let previous = old.fsgid as isize;
+        let allowed =
+            old.has_cap_setgid() || [old.gid, old.egid, old.sgid, old.fsgid].contains(&fsgid);
+        if fsgid == NOCHG || !allowed {
+            return (None, previous);
         }
-    }
-    Ok(prev_fsgid as isize)
+        let mut new = old.clone();
+        new.fsgid = fsgid;
+        (Some(new), previous)
+    }))
 }
 
 pub fn sys_getgroups(
@@ -992,6 +928,7 @@ pub fn sys_getrandom(
     len: usize,
     flags: u32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     if len == 0 {
         return Ok(0);
     }
@@ -1014,8 +951,9 @@ pub fn sys_getrandom(
     let len = len.min(GETRANDOM_MAX_LEN);
     (buf as usize).checked_add(len).ok_or(Errno::EFAULT)?;
 
-    let f = ax_fs_ng::vfs::current_fs_context().lock().resolve(path)?;
-    let file = f.entry().as_file()?;
+    let f = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &link_caller)
+        .resolve(path)?;
+    let file = f.location().entry().as_file()?;
     let mut kbuf = [0u8; GETRANDOM_CHUNK_SIZE];
     let mut written = 0;
     while written < len {

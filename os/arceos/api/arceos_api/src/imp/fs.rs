@@ -1,17 +1,17 @@
 use alloc::string::String;
-use ax_fs_ng::fops::{Directory, File};
+
+pub use ax_fs_ng::fops::{
+    DirEntry as AxDirEntry, FileAttr as AxFileAttr, FileAttrExt as AxFileAttrExt,
+    FilePerm as AxFilePerm, FilePermExt as AxFilePermExt, FileType as AxFileType,
+    FileTypeExt as AxFileTypeExt, OpenOptions as AxOpenOptions,
+};
+use ax_fs_ng::{
+    MutationCredentials,
+    fops::{Directory, File},
+};
+pub use ax_io::SeekFrom as AxSeekFrom;
 
 use crate::ApiResult;
-
-pub use ax_fs_ng::fops::DirEntry as AxDirEntry;
-pub use ax_fs_ng::fops::FileAttr as AxFileAttr;
-pub use ax_fs_ng::fops::FileAttrExt as AxFileAttrExt;
-pub use ax_fs_ng::fops::FilePerm as AxFilePerm;
-pub use ax_fs_ng::fops::FilePermExt as AxFilePermExt;
-pub use ax_fs_ng::fops::FileType as AxFileType;
-pub use ax_fs_ng::fops::FileTypeExt as AxFileTypeExt;
-pub use ax_fs_ng::fops::OpenOptions as AxOpenOptions;
-pub use ax_io::SeekFrom as AxSeekFrom;
 
 /// A handle to an opened file.
 pub struct AxFileHandle(File);
@@ -20,7 +20,12 @@ pub struct AxFileHandle(File);
 pub struct AxDirHandle(Directory);
 
 pub fn ax_open_file(path: &str, opts: &AxOpenOptions) -> ApiResult<AxFileHandle> {
-    Ok(AxFileHandle(File::open(path, opts)?))
+    // Preserve the trusted-kernel identity previously supplied by the wrapper.
+    Ok(AxFileHandle(File::open(
+        path,
+        opts,
+        &MutationCredentials::root(),
+    )?))
 }
 
 pub fn ax_open_dir(path: &str, opts: &AxOpenOptions) -> ApiResult<AxDirHandle> {

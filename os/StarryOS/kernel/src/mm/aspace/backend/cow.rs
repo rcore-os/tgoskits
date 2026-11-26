@@ -233,10 +233,11 @@ impl CowBackend {
     }
 
     fn cache_epoch(&self) -> StarryResult<u64> {
-        match &self.file {
-            Some((FileBackend::Cached(cache), ..)) => Ok(cache.mapping_epoch()),
-            _ => Err(StarryError::BadState),
-        }
+        self.file
+            .as_ref()
+            .and_then(|(file, ..)| file.cached_file())
+            .map(|cache| cache.mapping_epoch())
+            .ok_or(StarryError::BadState)
     }
 
     /// Uses the existing shared-file endpoint for private read-only pages.
@@ -252,7 +253,10 @@ impl CowBackend {
         if self.shared || leaf_size != PAGE_SIZE_4K || access.contains(MappingFlags::WRITE) {
             return Ok(None);
         }
-        let Some((FileBackend::Cached(cache), base, start, end)) = &self.file else {
+        let Some((file, base, start, end)) = &self.file else {
+            return Ok(None);
+        };
+        let Some(cache) = file.cached_file() else {
             return Ok(None);
         };
         let Some(relative) = vaddr.as_usize().checked_sub(base.as_usize()) else {
@@ -283,9 +287,7 @@ impl CowBackend {
             owner.get_or_insert_with(|| domain.clone()).clone()
         };
         let epoch = cache.mapping_epoch();
-        let pin = {
-            cache.pin_read_page(number)?
-        };
+        let pin = { cache.pin_read_page(number)? };
         let Some(pin) = pin else {
             return Ok(None);
         };
@@ -305,7 +307,7 @@ impl CowBackend {
         let Some(source) = page.frame().provider::<CachedFilePage>() else {
             return publish().map(Some);
         };
-        let Some((FileBackend::Cached(cache), ..)) = &self.file else {
+        let Some(cache) = self.file.as_ref().and_then(|(file, ..)| file.cached_file()) else {
             return Ok(None);
         };
         cache.with_current_read_backing(
@@ -414,8 +416,10 @@ impl CowBackend {
     }
 
     pub(crate) fn page_cache_resident(&self, va: VirtAddr) -> bool {
-        let Some((FileBackend::Cached(cache), file_vaddr_base, file_start, file_end)) = &self.file
-        else {
+        let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
+            return false;
+        };
+        let Some(cache) = file.cached_file() else {
             return false;
         };
         let relative = va.as_usize().saturating_sub(file_vaddr_base.as_usize()) as u64;
@@ -632,9 +636,7 @@ impl CowBackend {
         if size < PAGE_SIZE_4K || !size.is_power_of_two() {
             return Err(StarryError::InvalidInput);
         }
-        let frame = {
-            alloc_frame(zeroed, size)?
-        };
+        let frame = { alloc_frame(zeroed, size)? };
         // SAFETY: alloc_frame returned this unique allocation with the same
         // size, and the lease takes over its only release duty.
         self.index_new_frame(unsafe { FrameLease::owned(frame, size) }, resident_kind)
@@ -712,9 +714,7 @@ impl CowBackend {
         if leaf_size < PAGE_SIZE_4K || !leaf_size.is_power_of_two() {
             return Err(StarryError::InvalidInput);
         }
-        let frame = {
-            alloc_frame(false, leaf_size)?
-        };
+        let frame = { alloc_frame(false, leaf_size)? };
         // SAFETY: this unique allocation is not indexed or mapped. The lease
         // releases it on every error before an initialized PageObject exists.
         let lease = unsafe { FrameLease::owned(frame, leaf_size) };
@@ -816,7 +816,7 @@ impl CowBackend {
             && self.page_size == PAGE_SIZE_4K
             && !access_flags.contains(MappingFlags::WRITE)
             && self.file.as_ref().is_some_and(|(file, base, start, _)| {
-                matches!(file, FileBackend::Cached(_))
+                file.cached_file().is_some()
                     && run[0]
                         .checked_sub_addr(*base)
                         .and_then(|relative| start.checked_add(relative as u64))
@@ -3555,9 +3555,14 @@ mod tests {
             0,
             0,
         );
-        let cache =
-            CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry))
-                .unwrap();
+        let cache = CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(Location::new(
+                Mountpoint::new_root(&filesystem),
+                entry,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
         let contents = alloc::vec![0x41; PAGE_SIZE_4K * 2 + 17];
         cache.write_at(contents.as_slice(), 0).unwrap();
         let start = VirtAddr::from_usize(0x4a00_0000);
@@ -3718,9 +3723,14 @@ mod tests {
             0,
             0,
         );
-        let cache =
-            CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry))
-                .unwrap();
+        let cache = CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(Location::new(
+                Mountpoint::new_root(&filesystem),
+                entry,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
         let contents: alloc::vec::Vec<u8> = (0..256).map(|byte| (byte % 251 + 1) as u8).collect();
         assert_eq!(
             cache.write_at(contents.as_slice(), 0).unwrap(),

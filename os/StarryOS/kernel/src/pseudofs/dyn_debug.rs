@@ -3,10 +3,10 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
 use ddebug::ControlFile;
 
-use super::SimpleFs;
+use super::SimpleFsContext;
 use crate::{
     dyn_debug::{DynamicDebugOps, dynamic_debug_init},
-    pseudofs::{DirectRwFsFileOps, SpecialFsFile},
+    pseudofs::{DirectRwFsFileOps, SpecialFsFileBacking},
     sync::Mutex,
 };
 
@@ -62,8 +62,10 @@ impl DirectRwFsFileOps for DynDebugControlObj {
 }
 
 /// Creates a control file for dynamic debug. This file can be used to enable/disable dynamic debug sites at runtime.
-pub fn create_dyn_debug_control_file(fs: Arc<SimpleFs>) -> Arc<SpecialFsFile<DynDebugControlObj>> {
+pub fn create_dyn_debug_control_file(
+    fs: SimpleFsContext,
+) -> VfsResult<Arc<SpecialFsFileBacking<DynDebugControlObj>>> {
     let control = dynamic_debug_init();
     let obj = DynDebugControlObj::new(control);
-    SpecialFsFile::new_regular_with_perm(fs, obj, NodePermission::from_bits_truncate(0o644))
+    SpecialFsFileBacking::new_regular_with_perm(fs, obj, NodePermission::from_bits_truncate(0o644))
 }

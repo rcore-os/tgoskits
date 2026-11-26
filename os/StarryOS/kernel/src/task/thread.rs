@@ -13,8 +13,8 @@ use starry_signal::{SignalSet, Signo, api::ThreadSignalManager};
 
 use super::{
     CpuTimeAccounting, Cred, ExitPathLease, PidIdentity, PidNamespaceRef, PidRoleLease,
-    ProcessData, ROOT_PID_NS, SeccompDecision, SeccompState, SeccompStateStore, SockFilter, Tid,
-    TidNumber, UserTaskRef,
+    ProcessData, ProcessNamespaceUpdate, ROOT_PID_NS, SeccompDecision, SeccompState,
+    SeccompStateStore, SockFilter, Tid, TidNumber, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
     future,
@@ -54,7 +54,7 @@ struct ThreadPidOwnership {
 }
 
 /// Scope-local resources and their task-context serialization.
-struct ThreadScope {
+pub(super) struct ThreadScope {
     scope: UnsafeCell<Scope>,
     access: Mutex<()>,
 }
@@ -66,6 +66,21 @@ struct ThreadScope {
 unsafe impl Sync for ThreadScope {}
 
 impl ThreadScope {
+    pub(super) fn read<R>(&self, operation: impl FnOnce(&Scope) -> R) -> R {
+        let _access = self.access.lock();
+        // SAFETY: this mutex excludes the only mutation. Active-scope reads
+        // may overlap because payloads are Sync; no reference escapes the call.
+        operation(unsafe { &*self.scope.get() })
+    }
+
+    pub(super) fn try_read<R>(&self, operation: impl FnOnce(&Scope) -> R) -> Option<R> {
+        let _access = self.access.try_lock()?;
+        // SAFETY: the acquired access mutex excludes the only mutable path,
+        // exactly as in `read`. The eagerly initialized Scope remains owned
+        // by this ThreadScope; no reference can escape the closure's borrow.
+        Some(operation(unsafe { &*self.scope.get() }))
+    }
+
     fn new(scope: Scope) -> Self {
         Self {
             scope: UnsafeCell::new(scope),
@@ -332,7 +347,7 @@ pub struct Thread {
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
 
-    scope: ThreadScope,
+    pub(super) scope: ThreadScope,
     accounting: ThreadAccounting,
     lifecycle: ThreadLifecycle,
     work: ThreadWork,
@@ -973,9 +988,20 @@ impl Thread {
         self.security.cred.lock().clone()
     }
 
-    fn set_cred_single(&self, new_cred: Arc<Cred>) {
+    pub(super) fn try_cred(&self) -> Option<Arc<Cred>> {
+        self.security.cred.try_lock().map(|cred| cred.clone())
+    }
+
+    fn set_cred_single(&self, update: &ProcessNamespaceUpdate<'_>, new_cred: Arc<Cred>) {
+        assert!(update.owns(&self.proc_data));
         let previous = {
             let mut current = self.security.cred.lock();
+            if super::proc_access::credential_resets_dumpable(&current, &new_cred) {
+                // Clear before publication, including capability gains. The
+                // credential mutex release and common process gate pair with
+                // READ_FSCREDS's credential-then-dumpable observation.
+                self.proc_data.set_dumpable(0);
+            }
             core::mem::replace(&mut *current, new_cred)
         };
         drop(previous);
@@ -983,19 +1009,44 @@ impl Thread {
 
     /// Replaces credentials for this thread only.
     pub(crate) fn set_thread_cred(&self, new_cred: Cred) {
-        self.set_cred_single(Arc::new(new_cred));
+        let update = self.proc_data.namespace_update();
+        self.set_cred_single(&update, Arc::new(new_cred));
+    }
+
+    /// Authorizes and replaces this thread's credentials in one publication.
+    /// None leaves the actual allocation and all sibling threads unchanged.
+    pub(crate) fn update_thread_cred<R>(
+        &self,
+        update: impl FnOnce(&Cred) -> (Option<Cred>, R),
+    ) -> R {
+        let publication = self.proc_data.namespace_update();
+        let old = self.cred();
+        let (replacement, result) = update(&old);
+        if let Some(replacement) = replacement {
+            self.set_cred_single(&publication, Arc::new(replacement));
+        }
+        drop(publication);
+        result
     }
 
     /// Replaces credentials for every thread in this process.
     pub fn set_cred(&self, new_cred: Cred) {
+        let update = self.proc_data.namespace_update();
+        update.set_process_cred(self, new_cred);
+    }
+
+    pub(super) fn set_cred_under(&self, update: &ProcessNamespaceUpdate<'_>, new_cred: Cred) {
         let new_arc = Arc::new(new_cred);
-        self.set_cred_single(new_arc.clone());
+        self.set_cred_single(update, new_arc.clone());
 
         let mut tids = self.proc_data.proc.threads();
         tids.sort_unstable();
         for tid in &tids {
             if let Ok(task) = ops::get_task_by_number(*tid) {
-                task.as_thread().set_cred_single(new_arc.clone());
+                let thread = task.as_thread();
+                if update.owns(&thread.proc_data) {
+                    thread.set_cred_single(update, new_arc.clone());
+                }
             }
         }
     }
@@ -1005,19 +1056,20 @@ impl Thread {
     /// Process-wide set-ID transitions must preserve thread-local state such
     /// as `PR_SET_KEEPCAPS` while publishing the shared ID change.
     pub(crate) fn update_process_creds(&self, update: impl Fn(&Cred) -> Cred) {
+        let publication = self.proc_data.namespace_update();
         let old_cred = self.cred();
-        self.set_cred_single(Arc::new(update(&old_cred)));
+        self.set_cred_single(&publication, Arc::new(update(&old_cred)));
 
         let mut tids = self.proc_data.proc.threads();
         tids.sort_unstable();
         for tid in &tids {
             if let Ok(task) = ops::get_task_by_number(*tid) {
                 let thread = task.as_thread();
-                if core::ptr::eq(thread, self) {
+                if core::ptr::eq(thread, self) || !publication.owns(&thread.proc_data) {
                     continue;
                 }
                 let old_cred = thread.cred();
-                thread.set_cred_single(Arc::new(update(&old_cred)));
+                thread.set_cred_single(&publication, Arc::new(update(&old_cred)));
             }
         }
     }

@@ -1,4 +1,9 @@
-use std::{env, fs, io, mem, ptr, string::String, vec::Vec};
+use std::{
+    env, fs, io, mem, ptr,
+    string::String,
+    time::{Duration, UNIX_EPOCH},
+    vec::Vec,
+};
 
 const DIR: &str = "/arceos-test-suit";
 const FILE: &str = "/arceos-test-suit/basic.txt";
@@ -39,6 +44,32 @@ pub fn run() -> crate::TestResult {
             .expect("missing file metadata")
             .is_file()
     );
+    // Exercise Rust std's futimens path on a read-only data description.
+    // FAT stores access dates at midnight and modification times in even seconds.
+    let accessed = UNIX_EPOCH + Duration::from_secs(1_704_067_200);
+    let modified = accessed + Duration::from_secs(46);
+    let timestamp_file = fs::File::open(FILE).expect("failed to open timestamp file");
+    timestamp_file
+        .set_times(
+            fs::FileTimes::new()
+                .set_accessed(accessed)
+                .set_modified(modified),
+        )
+        .expect("failed to set file timestamps");
+    let metadata = timestamp_file
+        .metadata()
+        .expect("missing timestamp metadata");
+    assert_eq!(metadata.accessed().unwrap(), accessed);
+    assert_eq!(metadata.modified().unwrap(), modified);
+    let modified = modified + Duration::from_secs(2);
+    timestamp_file
+        .set_modified(modified)
+        .expect("failed to update only the modification time");
+    drop(timestamp_file);
+    let metadata = fs::metadata(FILE).expect("missing persisted timestamp metadata");
+    assert_eq!(metadata.accessed().unwrap(), accessed);
+    assert_eq!(metadata.modified().unwrap(), modified);
+
     assert!(ax_std::fs::create_dir_all(FILE).is_err());
     assert!(ax_std::fs::create_dir_all("/arceos-test-suit/basic.txt/child").is_err());
     assert_eq!(fs::read_to_string(FILE).unwrap(), CONTENT);
@@ -174,6 +205,13 @@ fn verify_renameat_tracks_moved_directory_fd() -> crate::TestResult {
     fs::create_dir(SRC_DIR).expect("failed to create rename_src");
     fs::write(SRC_ITEM, ITEM_CONTENT.as_bytes()).expect("failed to write source item");
 
+    // Rust std now retains a directory handle for DirEntry metadata on musl.
+    // Keep an entry after its iterator closes and its original name is moved.
+    let mut entries = fs::read_dir(SRC_DIR).expect("failed to read rename_src");
+    let entry = entries.next().expect("missing source entry").unwrap();
+    assert_eq!(entry.file_name(), "item.txt");
+    drop(entries);
+
     let dir_fd = unsafe {
         libc::open(
             c"/arceos-test-suit/rename_src".as_ptr(),
@@ -187,6 +225,13 @@ fn verify_renameat_tracks_moved_directory_fd() -> crate::TestResult {
     );
 
     fs::rename(SRC_DIR, MOVED_DIR).expect("failed to rename open directory");
+    let metadata = entry
+        .metadata()
+        .expect("std DirEntry lost its renamed directory handle");
+    assert!(metadata.is_file());
+    assert_eq!(metadata.len(), ITEM_CONTENT.len() as u64);
+    assert!(entry.file_type().unwrap().is_file());
+    drop(entry);
 
     let mut st_dir: libc::stat = unsafe { mem::zeroed() };
     let ret = unsafe { libc::fstatat(dir_fd, ptr::null(), &mut st_dir, libc::AT_EMPTY_PATH) };

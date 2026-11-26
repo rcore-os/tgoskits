@@ -1,6 +1,8 @@
 use alloc::sync::Arc;
 
-use axfs_ng_vfs::{Location, Mountpoint, NodePermission, NodeType, UnmountKind, VfsError};
+use axfs_ng_vfs::{
+    Location, Mountpoint, MutationCredentials, NodePermission, NodeType, UnmountKind, VfsError,
+};
 
 use crate::pseudofs::MemoryFs;
 
@@ -12,6 +14,7 @@ fn directory(parent: &Location, name: &str) -> Location {
             NodePermission::from_bits_truncate(0o755),
             0,
             0,
+            &MutationCredentials::root(),
         )
         .expect("create mount directory")
 }
@@ -166,7 +169,6 @@ fn writable_remount_preserves_concurrent_file_admission() {
     use axfs_ng_vfs::CachedWriteGuard;
 
     let root = ax_fs_ng::vfs::current_fs_context()
-        .lock()
         .root_dir()
         .filesystem()
         .root_dir();

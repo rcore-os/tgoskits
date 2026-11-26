@@ -3,54 +3,20 @@ use core::mem::offset_of;
 
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
-use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, RLIMIT_RTTIME, rlimit64, rusage};
+use linux_raw_sys::general::{
+    __kernel_old_timeval, CAP_SYS_RESOURCE, RLIM_NLIMITS, RLIMIT_RTTIME, rlimit64, rusage,
+};
 
 use crate::{
     StarryError, StarryResult,
     mm::{UserPtr, VmPtr},
-    namespace::{ROOT_USER_NS, UserNamespace},
+    namespace::{ROOT_USER_NS, UserNamespace, has_namespace_capability},
     sync::RawSpinLock,
     task::{
         Cred, ProcessData, Rlimit, TgidNumber, Thread, UserTaskRef, get_user_process_data_by_number,
     },
     time::TimeValueLike,
 };
-
-fn user_namespace_cap_sys_resource(
-    caller: &Cred,
-    caller_ns: &Arc<RawSpinLock<UserNamespace>>,
-    target_ns: &Arc<RawSpinLock<UserNamespace>>,
-) -> bool {
-    if Arc::ptr_eq(target_ns, caller_ns) {
-        return caller.has_cap_sys_resource();
-    }
-
-    // A parent namespace owns a child namespace even after the owner's
-    // effective capability has been cleared.
-    let caller_level = caller_ns.lock_irqsave().level();
-    let target_level = target_ns.lock_irqsave().level();
-    if target_level <= caller_level {
-        return false;
-    }
-
-    let mut namespace = target_ns.clone();
-    loop {
-        let (parent, owner_uid, namespace_level) = {
-            let namespace = namespace.lock_irqsave();
-            (namespace.parent(), namespace.owner_uid(), namespace.level())
-        };
-        let Some(parent) = parent else {
-            return false;
-        };
-        if Arc::ptr_eq(&parent, caller_ns) {
-            return owner_uid == caller.euid || caller.has_cap_sys_resource();
-        }
-        if namespace_level <= caller_level + 1 {
-            return false;
-        }
-        namespace = parent;
-    }
-}
 
 fn has_initial_user_namespace_cap_sys_resource(
     caller: &Cred,
@@ -85,7 +51,7 @@ fn check_prlimit_permission(
         && caller.gid == target.egid
         && caller.gid == target.sgid;
 
-    if ids_match || user_namespace_cap_sys_resource(caller, caller_ns, target_ns) {
+    if ids_match || has_namespace_capability(caller, caller_ns, target_ns, CAP_SYS_RESOURCE) {
         Ok(())
     } else {
         Err(StarryError::OperationNotPermitted)

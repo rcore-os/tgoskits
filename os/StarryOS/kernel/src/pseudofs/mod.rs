@@ -9,41 +9,45 @@ mod dyn_debug;
 mod file;
 mod fs;
 mod mqueue;
+pub(crate) mod object;
 pub(crate) mod overlay;
 pub(crate) mod proc;
 mod proc_mountinfo;
+mod recipe;
 mod sysfs;
 pub(crate) mod usbfs;
 
 use alloc::{boxed::Box, sync::Arc};
 
-use ax_fs_ng::vfs::{FsContext, current_fs_context};
-use ax_lazyinit::LazyInit;
-use axfs_ng_vfs::{
-    DirNodeOps, FileNodeOps, Filesystem, MutationCredentials, NodePermission, WeakDirEntry,
-};
 pub use ax_fs_ng::MemoryFs;
+use ax_fs_ng::vfs::{FsView, current_fs_context};
+use ax_lazyinit::LazyInit;
+use axfs_ng_vfs::{Filesystem, NodePermission, VfsResult};
+pub(crate) use mqueue::{
+    allocate_mqueue_inode, mqueue_at_location, mqueue_device, mqueue_location,
+};
 
-pub use self::{device::*, dir::*, file::*, fs::*};
+pub use self::{
+    device::*,
+    dir::*,
+    file::*,
+    fs::*,
+    recipe::{DirMaker, FileMaker},
+};
 use crate::StarryResult;
 
-/// A callback that builds a `Arc<dyn DirNodeOps>` for a given
-/// `WeakDirEntry`.
-pub type DirMaker = Arc<dyn Fn(WeakDirEntry) -> Arc<dyn DirNodeOps> + Send + Sync>;
-
-/// An enum containing either a directory ([`DirMaker`]) or a file (`Arc<dyn
-/// FileNodeOps>`).
+/// Filesystem-free recipes for a directory or file entity.
 #[derive(Clone)]
 pub enum NodeOpsMux {
     /// A directory node.
     Dir(DirMaker),
     /// A file node.
-    File(Arc<dyn FileNodeOps>),
+    File(FileMaker),
 }
 
 enum NodeOpsMuxTy {
     Static(NodeOpsMux),
-    Dynamic(Box<dyn Fn() -> NodeOpsMux + Send + Sync>),
+    Dynamic(Box<dyn Fn() -> VfsResult<NodeOpsMux> + Send + Sync>),
 }
 
 impl From<DirMaker> for NodeOpsMux {
@@ -52,9 +56,12 @@ impl From<DirMaker> for NodeOpsMux {
     }
 }
 
-impl<T: FileNodeOps> From<Arc<T>> for NodeOpsMux {
-    fn from(ops: Arc<T>) -> Self {
-        Self::File(ops)
+impl<T> From<Arc<T>> for NodeOpsMux
+where
+    FileMaker: From<Arc<T>>,
+{
+    fn from(backing: Arc<T>) -> Self {
+        Self::File(backing.into())
     }
 }
 
@@ -71,52 +78,62 @@ pub fn tmp_tmpfs() -> Option<Arc<MemoryFs>> {
     TMP_TMPFS.get().map(Arc::clone)
 }
 
-fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> StarryResult<()> {
+fn mount_at(fs: &FsView<'_>, path: &str, mount_fs: Filesystem) -> StarryResult<()> {
     let initial_resolve = fs.resolve(path);
     if initial_resolve.is_err() {
-        fs.create_dir(path, DIR_PERMISSION, 0, 0, &MutationCredentials::root())?;
+        fs.create_dir(path, DIR_PERMISSION, 0, 0)?;
     }
     let loc = fs.resolve(path)?;
-    loc.mount_with_source(&mount_fs, mount_fs.name())?;
+    loc.location()
+        .mount_with_source(&mount_fs, mount_fs.name())?;
     info!("Mounted {} at {}", mount_fs.name(), path);
     Ok(())
+}
+
+fn mount_temporary(fs: &FsView<'_>, path: &str) -> StarryResult<Arc<MemoryFs>> {
+    let (filesystem, handle) = MemoryFs::new_with_handle();
+    mount_at(fs, path, filesystem)?;
+    let root = fs.resolve(path)?;
+    axfs_ng_vfs::TrustedInitialization::kernel().restore_metadata(
+        root.location(),
+        axfs_ng_vfs::MetadataUpdate {
+            mode: Some(NodePermission::from_bits_truncate(0o1777)),
+            ..Default::default()
+        },
+    )?;
+    Ok(handle)
 }
 
 /// Mount all filesystems
 pub fn mount_all() -> StarryResult<()> {
     info!("Initialize pseudofs...");
 
-    let fs_context = current_fs_context();
-    let fs = fs_context.lock();
+    let caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let fs = FsView::current(current_fs_context(), &caller);
     let usbfs = usbfs::new_usbfs()?;
     let root_mount_device = fs.root_dir().mountpoint().device();
-    mount_at(&fs, "/dev", dev::new_devfs(root_mount_device))?;
+    mount_at(&fs, "/dev", dev::new_devfs(root_mount_device)?)?;
     if let Some(dev_usbfs) = usbfs {
         mount_at(&fs, "/dev/bus/usb", dev_usbfs)?;
     }
 
-    let (shm_fs, shm_handle) = MemoryFs::new_with_handle();
-    mount_at(&fs, "/dev/shm", shm_fs)?;
-    SHM_TMPFS.init_once(shm_handle);
+    SHM_TMPFS.init_once(mount_temporary(&fs, "/dev/shm")?);
+    TMP_TMPFS.init_once(mount_temporary(&fs, "/tmp")?);
 
-    let (tmp_fs, tmp_handle) = MemoryFs::new_with_handle();
-    mount_at(&fs, "/tmp", tmp_fs)?;
-    TMP_TMPFS.init_once(tmp_handle);
-
-    mount_at(&fs, "/dev/mqueue", mqueue::new_mqueuefs())?;
+    mount_at(&fs, "/dev/mqueue", mqueue::new_mqueuefs()?)?;
 
     mount_at(
         &fs,
         "/proc",
-        proc::new_procfs(crate::task::ROOT_PID_NS.clone()),
+        proc::new_procfs(crate::task::ROOT_PID_NS.clone())?,
     )?;
 
-    mount_at(&fs, "/sys", sysfs::new_sysfs())?;
+    mount_at(&fs, "/sys", sysfs::new_sysfs()?)?;
     if usbfs::has_manager() {
-        mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs())?;
+        mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs()?)?;
     }
 
-    mount_at(&fs, "/sys/kernel/debug", debug::new_debugfs())?;
+    mount_at(&fs, "/sys/kernel/debug", debug::new_debugfs()?)?;
 
     drop(fs);
 

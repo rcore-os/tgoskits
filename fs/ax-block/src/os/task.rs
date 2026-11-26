@@ -43,6 +43,12 @@ pub trait BlockRuntimeOps: Send + Sync {
     /// Returns whether the current context may block.
     fn can_block(&self) -> bool;
 
+    /// Cooperatively yields after all attempt-local guards have been released.
+    ///
+    /// Returns WouldBlock in atomic context and preserves runtime/scheduler
+    /// failures. Implementations must perform an actual scheduler yield.
+    fn yield_now(&self) -> BlockResult<()>;
+
     /// Creates an independent lost-wakeup-safe wait/notify object.
     fn notification(&self) -> Arc<dyn BlockNotification>;
 
@@ -245,6 +251,14 @@ mod tests {
 
         fn can_block(&self) -> bool {
             TEST_CAN_BLOCK.with(Cell::get)
+        }
+
+        fn yield_now(&self) -> BlockResult<()> {
+            if !self.can_block() || crate::os::sync::current_thread_holds_irq_mutex() {
+                return Err(crate::BlockError::WouldBlock);
+            }
+            thread::yield_now();
+            Ok(())
         }
 
         fn notification(&self) -> Arc<dyn BlockNotification> {

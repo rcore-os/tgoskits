@@ -1,15 +1,17 @@
 use alloc::sync::Arc;
 
 use axfs_ng_vfs::{
-    Location, MutationCredentials, NodeFlags, NodePermission, NodeType, VfsError, VfsResult,
-    path::Path,
+    Location, MutationCredentials, NodeFlags, NodePermission, NodeType, PathHandle, VfsError,
+    VfsResult, path::Path,
 };
 
 use super::{
     WriteAccess,
     handle::{File, FileBackend},
 };
+#[cfg(test)]
 use crate::fs_core::FsContext;
+use crate::fs_core::FsView;
 
 bitflags::bitflags! {
     /// Flags describing the access mode of an opened file.
@@ -33,7 +35,7 @@ pub enum OpenResult {
     /// The opened path is a regular file.
     File(File),
     /// The opened path is a directory.
-    Dir(Location),
+    Dir(PathHandle),
 }
 
 impl OpenResult {
@@ -50,18 +52,18 @@ impl OpenResult {
 
     /// Converts into a [`Location`], returning an error if this is a file.
     #[cfg(feature = "vfs")]
-    pub fn into_dir(self) -> VfsResult<Location> {
+    pub fn into_dir(self) -> VfsResult<PathHandle> {
         match self {
             Self::Dir(dir) => Ok(dir),
             Self::File(_) => Err(VfsError::NotADirectory),
         }
     }
 
-    /// Extracts the underlying [`Location`] regardless of variant.
+    /// Keeps the selected path use regardless of the opened object type.
     #[cfg(feature = "vfs")]
-    pub fn into_location(self) -> Location {
+    pub fn into_path(self) -> PathHandle {
         match self {
-            Self::File(file) => file.location().clone(),
+            Self::File(file) => file.path_handle().clone(),
             Self::Dir(dir) => dir,
         }
     }
@@ -222,6 +224,10 @@ impl OpenOptions {
             loc.check_is_dir()?;
         }
 
+        if loc.node_type() == NodeType::Symlink && !self.path {
+            return Err(VfsError::FilesystemLoop);
+        }
+
         // ENXIO on opening a UNIX-domain-socket file. man 2 open §"ENXIO":
         // "The file is a UNIX domain socket." Two exclusions:
         //   (1) O_PATH bypass: socket file can still be O_PATH-opened to get a
@@ -248,7 +254,7 @@ impl OpenOptions {
             if !newly_created {
                 self.check_open_access(&loc, &flags, credentials)?;
             }
-            OpenResult::Dir(loc)
+            OpenResult::Dir(PathHandle::acquire(loc)?)
         } else {
             if !newly_created {
                 self.check_open_access(&loc, &flags, credentials)?;
@@ -259,10 +265,20 @@ impl OpenOptions {
                 && loc.node_type() == NodeType::RegularFile
                 && (flags.contains(FileFlags::WRITE) || self.truncate)
             {
-                Some(WriteAccess::acquire(loc.clone())?)
+                Some(Arc::new(WriteAccess::acquire(loc.clone())?))
             } else {
                 None
             };
+            if !newly_created
+                && loc.filesystem().stack_depth() != 0
+                && let Some(write) = &write_access
+            {
+                let mut access = NodePermission::OTHER_WRITE;
+                if flags.contains(FileFlags::READ) {
+                    access.insert(NodePermission::OTHER_READ);
+                }
+                write.prepare_open(access, credentials)?;
+            }
             // TODO(mivik): is this correct?
             let non_cacheable_type = matches!(
                 loc.metadata()?.node_type,
@@ -273,17 +289,27 @@ impl OpenOptions {
                 || self.path
                 || self.direct
                 || loc.flags().contains(NodeFlags::NON_CACHEABLE);
-            let backend = if !direct || loc.flags().contains(NodeFlags::ALWAYS_CACHE) {
+            // O_TRUNC changes regular file contents; opening a pipe or device
+            // must not call its length mutation operation.
+            let truncate = self.truncate && !self.path && loc.node_type() == NodeType::RegularFile;
+            let mut backend = if loc.filesystem().stack_depth() != 0
+                && let Some(write) = &write_access
+            {
+                FileBackend::new_layered(loc, write, self.direct)?
+            } else if !direct || loc.flags().contains(NodeFlags::ALWAYS_CACHE) {
                 FileBackend::new_cached(loc)?
             } else {
-                FileBackend::new_direct(loc)
+                FileBackend::new_direct(loc)?
             };
-            if self.truncate && !self.path {
+            if truncate {
                 backend.set_len(0)?;
+            }
+            if !flags.contains(FileFlags::WRITE) {
+                backend.finish_readonly_open();
             }
             let mut file = File::new(backend, flags);
             if flags.contains(FileFlags::WRITE) {
-                file.write_access = write_access.map(Arc::new);
+                file.write_access = write_access;
             }
             OpenResult::File(file)
         })
@@ -308,155 +334,46 @@ impl OpenOptions {
         self._open(loc, credentials, false)
     }
 
-    /// Opens a file at the given path relative to the provided [`FsContext`].
-    pub fn open(&self, context: &FsContext, path: impl AsRef<Path>) -> VfsResult<OpenResult> {
-        self.open_with_credentials(context, path, &MutationCredentials::root())
-    }
-
-    /// Opens a file while authorizing any file creation against its parent.
-    pub fn open_with_credentials(
-        &self,
-        context: &FsContext,
-        path: impl AsRef<Path>,
-        credentials: &MutationCredentials<'_>,
-    ) -> VfsResult<OpenResult> {
+    /// Opens a path using the identity and paths selected for this operation.
+    pub fn open(&self, context: &FsView<'_>, path: impl AsRef<Path>) -> VfsResult<OpenResult> {
+        let credentials = context.credentials();
         if !self.is_valid() {
             return Err(VfsError::InvalidInput);
         }
-
-        // Empty pathname → NotFound. man "ENOENT — O_CREAT is not set and
-        // the named file does not exist." resolve_parent("") would otherwise
-        // return cwd itself which lets open() succeed — wrong per POSIX.
-        // openat() does not accept AT_EMPTY_PATH; only specific *at calls do.
-        // Fixes bug-openat-empty-path-no-enoent.
-        if path.as_ref().as_str().is_empty() {
-            return Err(VfsError::NotFound);
+        let flags = self.to_flags()?;
+        let mut access = NodePermission::empty();
+        if !self.path {
+            if flags.contains(FileFlags::READ) {
+                access.insert(NodePermission::OTHER_READ);
+            }
+            if flags.contains(FileFlags::WRITE) || self.truncate {
+                access.insert(NodePermission::OTHER_WRITE);
+            }
         }
-
-        // Trailing-slash check: man — paths with trailing '/' must refer to
-        // a directory. Components::parse_forward strips the empty trailing
-        // component, so we use Path::has_trailing_slash() to recover the
-        // signal. Captured early; the post-resolution check below enforces
-        // it. Fixes bug-open-trailing-slash.
-        let must_be_dir = path.as_ref().has_trailing_slash();
-
-        let (loc, newly_created) =
-            match context.resolve_parent_with_search_checked(path.as_ref(), |directory| {
-                context.check_search_path(directory, context.permission_boundary(), credentials)
-            }) {
-                Ok((parent, name, searched)) => {
-                    context.check_search_trace(
-                        &searched,
-                        context.permission_boundary(),
-                        credentials,
-                    )?;
-                    // If the path ends with '/', Linux never creates regular
-                    // files via O_CREAT here — the path explicitly requests a
-                    // directory, and open() cannot create directories. Suppress
-                    // create flags BEFORE open_file to avoid creating an inode
-                    // that the post-check would then reject (codex P1: original
-                    // ordering left a stale file on disk for failing calls).
-                    let existing = match parent.lookup_no_follow(&name) {
-                        Ok(_) => true,
-                        Err(VfsError::NotFound) => false,
-                        Err(error) => return Err(error),
-                    };
-                    // A trailing slash prevents creation of a missing regular
-                    // file, but an existing directory must still see the
-                    // original O_CREAT flag so _open() returns EISDIR.
-                    let effective_create = self.create && (!must_be_dir || existing);
-                    let effective_create_new = self.create_new && (!must_be_dir || existing);
-                    if (effective_create || effective_create_new) && !existing {
-                        context.check_mutation_parent_with_search(
-                            &parent,
-                            &searched,
-                            credentials,
-                        )?;
-                    }
-                    let (mut loc, newly_created) = parent.open_file_with_status(
-                        &name,
-                        &axfs_ng_vfs::OpenOptions {
-                            create: effective_create,
-                            create_new: effective_create_new,
-                            node_type: self.node_type,
-                            permission: NodePermission::from_bits_truncate(self.mode as _),
-                            user: self.user,
-                        },
-                    )?;
-                    if !self.no_follow {
-                        // Save the symlink-target path before resolving, so we can
-                        // recurse into create-at-target if the target is dangling.
-                        let was_symlink = loc.node_type() == NodeType::Symlink;
-                        let symlink_target = if was_symlink && self.create {
-                            loc.read_link().ok()
-                        } else {
-                            None
-                        };
-                        let parent_for_resolve = parent.clone();
-                        match context
-                            .with_current_dir(parent_for_resolve)?
-                            .try_resolve_symlink_checked(loc, &mut 0, |directory| {
-                                context.check_search_path(
-                                    directory,
-                                    context.permission_boundary(),
-                                    credentials,
-                                )
-                            }) {
-                            Ok(resolved) => loc = resolved,
-                            Err(VfsError::NotFound) if self.create && symlink_target.is_some() => {
-                                // O_CREAT on a dangling symlink: man — Linux follows
-                                // the symlink and creates the target file (provided
-                                // its parent directory exists). Recurse with the
-                                // symlink target as the new path.
-                                // Fixes bug-open-creat-dangling-no-create.
-                                let target = symlink_target.unwrap();
-                                return self.open_with_credentials(
-                                    &context.with_current_dir(parent)?,
-                                    &target,
-                                    credentials,
-                                );
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    } else if loc.node_type() == NodeType::Symlink && !self.path {
-                        // O_NOFOLLOW + basename is a symlink + not O_PATH:
-                        // man "If the trailing component (i.e., basename) of
-                        // pathname is a symbolic link, then the open fails,
-                        // with the error ELOOP."
-                        //
-                        // Precedence: a trailing slash on the original path
-                        // forces the resolved entry to be a directory; a
-                        // symlink itself is not a directory, so ENOTDIR
-                        // takes priority over ELOOP (Linux behavior verified
-                        // via host gcc: `open("/tmp/sym/", O_NOFOLLOW)` →
-                        // ENOTDIR, not ELOOP). Without this check, starry
-                        // returns ELOOP and diverges from Linux.
-                        if must_be_dir {
-                            return Err(VfsError::NotADirectory);
-                        }
-                        // Fixes bug-open-nofollow-sym.
-                        return Err(VfsError::FilesystemLoop);
-                    }
-                    (loc, newly_created)
-                }
-                Err(VfsError::InvalidInput) => {
-                    // `resolve_parent()` has no parent to return for either `/` or
-                    // a relative `.` whose current directory is a detached mount
-                    // root. Resolve the path itself so openat(dirfd, ".") keeps
-                    // the supplied directory instead of falling back to `/`.
-                    (context.resolve(path.as_ref())?, false)
-                }
-                Err(err) => return Err(err),
-            };
-
-        // Trailing-slash post-check: if the original pathname ended with '/'
-        // (other than the root itself), the resolved location MUST be a
-        // directory; otherwise return NotADirectory.
-        if must_be_dir && !loc.is_dir() {
-            return Err(VfsError::NotADirectory);
-        }
-
-        self._open(loc, credentials, newly_created)
+        let intent = crate::fs_core::LookupOpenIntent {
+            node: axfs_ng_vfs::OpenOptions {
+                create: self.create,
+                create_new: self.create_new,
+                node_type: self.node_type,
+                permission: NodePermission::from_bits_truncate(self.mode as _),
+                user: self.user,
+                access,
+                observation: None,
+            },
+            follow: !self.no_follow,
+            path_only: self.path,
+            directory: self.directory,
+        };
+        let resolved = crate::fs_core::LookupSession::new(context, path.as_ref().as_str())?
+            .parent()?
+            .finish_open(intent)?;
+        // Keep the accepted mount use until the opened description has acquired
+        // its own path and writer rights, including on every failure path.
+        self._open(
+            resolved.path.location().clone(),
+            credentials,
+            resolved.created,
+        )
     }
 
     fn check_open_access(
@@ -479,7 +396,7 @@ impl OpenOptions {
             required.insert(NodePermission::OTHER_WRITE);
         }
         if !required.is_empty() {
-            FsContext::check_permission(location, credentials, required)?;
+            FsView::check_permission(location, credentials, required)?;
         }
         Ok(())
     }
@@ -538,14 +455,194 @@ mod tests {
 
     use super::*;
 
-    #[derive(Clone, Copy)]
-    struct TestFilesystem;
+    #[test]
+    fn opened_paths_keep_mount_uses_through_dup_close_and_lazy_detach() {
+        use alloc::{boxed::Box, rc::Rc};
+
+        use axfs_ng_vfs::UnmountKind;
+
+        for kind in [
+            "direct",
+            "buffered",
+            "path",
+            "directory",
+            "dirfd",
+            "iterator",
+        ] {
+            let tree = Mountpoint::new_root(&crate::MemoryFs::new());
+            let view = FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+            let view_caller = axfs_ng_vfs::NativeLinkCaller::root();
+            let view = crate::FsView::native(view, &view_caller);
+            let point = view
+                .create_dir("/mount", NodePermission::default(), 0, 0)
+                .unwrap();
+            let mounted = point.location().mount(&crate::MemoryFs::new()).unwrap();
+            let root = mounted.root_location();
+            let location = root
+                .create(
+                    "file",
+                    NodeType::RegularFile,
+                    NodePermission::default(),
+                    0,
+                    0,
+                    &MutationCredentials::root(),
+                )
+                .unwrap();
+            let open = || -> Box<dyn Any> {
+                match kind {
+                    "direct" => Box::new(File::new(
+                        FileBackend::new_direct(location.clone()).unwrap(),
+                        FileFlags::READ,
+                    )),
+                    "buffered" | "path" => {
+                        let mut options = OpenOptions::new();
+                        options.read(true);
+                        options.path = kind == "path";
+                        Box::new(
+                            options
+                                ._open(location.clone(), &MutationCredentials::root(), false)
+                                .unwrap()
+                                .into_file()
+                                .unwrap(),
+                        )
+                    }
+                    "directory" => Box::new(
+                        crate::fops::Directory::from_path(
+                            PathHandle::acquire(root.clone()).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                    "dirfd" => Box::new(
+                        crate::fops::Directory::from_path(
+                            PathHandle::acquire(root.clone()).unwrap(),
+                        )
+                        .unwrap()
+                        .dir_handle(),
+                    ),
+                    "iterator" => Box::new(view.read_dir("/mount").unwrap()),
+                    _ => unreachable!(),
+                }
+            };
+            let held = Rc::new(open());
+            assert!(
+                matches!(
+                    mounted.plan_unmount(UnmountKind::Normal),
+                    Err(VfsError::ResourceBusy)
+                ),
+                "{kind}: an open path must pin its exact mount"
+            );
+            let duplicate = held.clone();
+            drop(held);
+            assert!(
+                matches!(
+                    mounted.plan_unmount(UnmountKind::Normal),
+                    Err(VfsError::ResourceBusy)
+                ),
+                "{kind}: duplicate ownership keeps the use"
+            );
+            drop(duplicate);
+            let admitted = mounted.plan_unmount(UnmountKind::Normal).unwrap();
+            let mut held = open();
+            assert_eq!(
+                root.commit_unmount(admitted),
+                Err(VfsError::ResourceBusy),
+                "{kind}: commit rechecks a newly opened path"
+            );
+            root.detach_mount().unwrap();
+            if let Some(file) = held.downcast_ref::<File>() {
+                assert_eq!(
+                    file.location().metadata().unwrap().node_type,
+                    NodeType::RegularFile
+                );
+            } else if let Some(directory) = held.downcast_ref::<crate::fops::Directory>() {
+                assert_eq!(directory.get_attr().unwrap().node_type, NodeType::Directory);
+            } else if let Some(directory) = held.downcast_ref::<crate::fops::DirHandle>() {
+                assert_eq!(
+                    directory
+                        .path_handle()
+                        .location()
+                        .metadata()
+                        .unwrap()
+                        .node_type,
+                    NodeType::Directory
+                );
+            } else if let Some(iterator) = held.downcast_mut::<crate::fs_core::ReadDir>() {
+                assert!(iterator.any(|entry| entry.unwrap().name == "file"));
+            } else {
+                unreachable!("known open path kind");
+            }
+        }
+    }
+
+    struct TestFilesystem {
+        this: alloc::sync::Weak<Self>,
+        depth: u32,
+        reads: alloc::vec::Vec<Location>,
+        writes: alloc::vec::Vec<Location>,
+    }
+
+    impl TestFilesystem {
+        const fn native() -> Self {
+            Self {
+                this: alloc::sync::Weak::new(),
+                depth: 0,
+                reads: alloc::vec::Vec::new(),
+                writes: alloc::vec::Vec::new(),
+            }
+        }
+    }
 
     struct TestFile {
         metadata: Metadata,
+        filesystem: Option<Arc<TestFilesystem>>,
     }
 
-    static TEST_FILESYSTEM: TestFilesystem = TestFilesystem;
+    static TEST_FILESYSTEM: TestFilesystem = TestFilesystem::native();
+
+    impl TestFile {
+        fn backing_file(&self) -> VfsResult<Location> {
+            let backing = self
+                .filesystem
+                .as_ref()
+                .and_then(|filesystem| filesystem.writes.first())
+                .ok_or(VfsError::BadState)?;
+            if backing.is_dir() {
+                backing.lookup_no_follow("writer")
+            } else {
+                Ok(backing.clone())
+            }
+        }
+    }
+
+    struct TestOpenAttempt<'a>(&'a TestFile);
+
+    impl axfs_ng_vfs::LockedFileOpenAttempt for TestOpenAttempt<'_> {
+        fn observe(&mut self) -> VfsResult<Metadata> {
+            self.0.metadata()
+        }
+
+        fn commit(
+            &mut self,
+            open: axfs_ng_vfs::AuthorizedFileOpen<'_>,
+        ) -> axfs_ng_vfs::NamespaceOutcome<Metadata> {
+            let result = (|| {
+                let backing = self.0.backing_file()?;
+                let selected = open.forward_to(&backing, &MutationCredentials::root())?;
+                selected.result()?;
+                Ok(match selected.state() {
+                    axfs_ng_vfs::NamespaceState::Retry => axfs_ng_vfs::NamespaceOutcome::retry(),
+                    axfs_ng_vfs::NamespaceState::Unchanged => {
+                        axfs_ng_vfs::NamespaceOutcome::unchanged_observed(
+                            self.0.metadata()?,
+                            Ok(()),
+                        )
+                    }
+                    _ => axfs_ng_vfs::NamespaceOutcome::uncertain(None, Err(VfsError::BadState)),
+                })
+            })();
+            result.unwrap_or_else(|error| axfs_ng_vfs::NamespaceOutcome::unchanged(Err(error)))
+        }
+    }
 
     impl FilesystemOps for TestFilesystem {
         fn name(&self) -> &str {
@@ -553,7 +650,22 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            test_entry(metadata(0, 0, 0, NodePermission::default()))
+            test_entry_on(
+                metadata(0, 0, 0, NodePermission::default()),
+                self.this.upgrade(),
+            )
+        }
+
+        fn stack_depth(&self) -> u32 {
+            self.depth
+        }
+
+        fn read_backing_roots(&self) -> &[Location] {
+            &self.reads
+        }
+
+        fn write_backing_roots(&self) -> &[Location] {
+            &self.writes
         }
 
         fn stat(&self) -> VfsResult<StatFs> {
@@ -575,7 +687,7 @@ mod tests {
         }
 
         fn filesystem(&self) -> &dyn FilesystemOps {
-            &TEST_FILESYSTEM
+            self.filesystem.as_deref().unwrap_or(&TEST_FILESYSTEM)
         }
 
         fn sync(&self, _data_only: bool) -> VfsResult<()> {
@@ -601,6 +713,24 @@ mod tests {
     }
 
     impl FileNodeOps for TestFile {
+        fn prepare_write_open(
+            &self,
+            request: &axfs_ng_vfs::FileOpenRequest<'_>,
+        ) -> axfs_ng_vfs::NamespaceCompletion<Metadata> {
+            axfs_ng_vfs::NamespaceCompletion::new(request.execute(&mut TestOpenAttempt(self)), None)
+        }
+
+        fn resolve_file_io(
+            &self,
+            request: axfs_ng_vfs::FileIoRequest<'_>,
+        ) -> VfsResult<axfs_ng_vfs::FileIoTarget> {
+            if self.filesystem().stack_depth() == 0 {
+                request.native(self)
+            } else {
+                request.forward_to(self.backing_file()?, &MutationCredentials::root())
+            }
+        }
+
         fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
             Ok(0)
         }
@@ -638,27 +768,77 @@ mod tests {
     }
 
     fn test_entry(metadata: Metadata) -> DirEntry {
+        test_entry_on(metadata, None)
+    }
+
+    fn test_entry_on(metadata: Metadata, filesystem: Option<Arc<TestFilesystem>>) -> DirEntry {
         DirEntry::new_file(
-            FileNode::new(Arc::new(TestFile { metadata })),
+            FileNode::new(Arc::new(TestFile {
+                metadata,
+                filesystem,
+            })),
             NodeType::RegularFile,
             Reference::root(),
         )
     }
 
     fn test_location(metadata: Metadata) -> Location {
-        let filesystem = Filesystem::new(Arc::new(TestFilesystem));
+        let filesystem = Filesystem::new(Arc::new(TestFilesystem::native()));
         Location::new(Mountpoint::new_root(&filesystem), test_entry(metadata))
     }
 
     fn credentials(fsuid: u32, fsgid: u32, supplementary_gids: &[u32]) -> MutationCredentials<'_> {
         MutationCredentials {
+            cap_mknod: false,
             fsuid,
             fsgid,
             supplementary_gids,
             cap_dac_override: false,
             cap_dac_read_search: false,
             cap_fowner: false,
+            cap_chown: false,
+            cap_fsetid: false,
         }
+    }
+
+    #[cfg(feature = "vfs")]
+    #[test]
+    fn resolved_open_rechecks_dac_without_revoking_open_files() {
+        let filesystem = crate::MemoryFs::new();
+        let root = axfs_ng_vfs::Mountpoint::new_root(&filesystem).root_location();
+        let location = root
+            .create(
+                "private",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o600),
+                1000,
+                1000,
+                &MutationCredentials {
+                    fsuid: 1000,
+                    fsgid: 1000,
+                    ..MutationCredentials::root()
+                },
+            )
+            .unwrap();
+        let owner = credentials(1000, 1000, &[]);
+        let mut options = OpenOptions::new();
+        options.read(true);
+        let opened = options
+            .open_loc_with_credentials(location.clone(), &owner)
+            .and_then(OpenResult::into_file)
+            .unwrap();
+        location
+            .change_metadata(
+                axfs_ng_vfs::MetadataChange::Chmod(NodePermission::empty()),
+                &MutationCredentials::root(),
+            )
+            .unwrap();
+        assert!(matches!(
+            options.open_loc_with_credentials(location, &owner),
+            Err(VfsError::PermissionDenied)
+        ));
+        let mut bytes = [0];
+        assert_eq!(opened.read_at(&mut bytes[..], 0), Ok(0));
     }
 
     #[test]
@@ -744,5 +924,436 @@ mod tests {
             options._open(location, &credentials, false),
             Err(VfsError::PermissionDenied)
         ));
+    }
+
+    #[cfg(feature = "host-test")]
+    fn check_backing_write_rights() {
+        use alloc::{vec, vec::Vec};
+
+        // Only the dependency declarations are a fixture. Every mount lease,
+        // open description, duplicate and remount uses the real implementation.
+        fn layer(depth: u32, reads: Vec<Location>, writes: Vec<Location>) -> Location {
+            let filesystem = Filesystem::new(Arc::new_cyclic(|this| TestFilesystem {
+                this: this.clone(),
+                depth,
+                reads,
+                writes,
+            }));
+            Mountpoint::new_root(&filesystem).root_location()
+        }
+
+        let lower_fs = crate::MemoryFs::new();
+        let lower = Mountpoint::new_root(&lower_fs).root_location();
+        lower.mountpoint().set_readonly(true).unwrap();
+        let upper_fs = crate::MemoryFs::new();
+        let upper = Mountpoint::new_root(&upper_fs).root_location();
+        upper
+            .create(
+                "writer",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o600),
+                0,
+                0,
+                &MutationCredentials::root(),
+            )
+            .unwrap();
+        let middle = layer(1, vec![lower.clone()], vec![upper.clone()]);
+        let visible = layer(2, Vec::new(), vec![middle.clone()]);
+        let credentials = MutationCredentials::root();
+        let mut writable = OpenOptions::new();
+        writable.read(true).write(true).direct = true;
+        let description = Arc::new(
+            writable
+                ._open(visible.clone(), &credentials, false)
+                .and_then(OpenResult::into_file)
+                .unwrap(),
+        );
+        let duplicate = description.clone();
+        let mapping = description.write_access().unwrap().clone();
+        // The logical node owns no bytes. Ordinary I/O must use the selected
+        // MemoryFs cache and retain that accepted endpoint after DAC changes.
+        assert_eq!(description.write_at(b"original".as_slice(), 0), Ok(8));
+        let native = upper.lookup_no_follow("writer").unwrap();
+        native
+            .change_metadata(
+                axfs_ng_vfs::MetadataChange::Chmod(NodePermission::empty()),
+                &credentials,
+            )
+            .unwrap();
+        assert_eq!(description.write_at(b"updated".as_slice(), 0), Ok(7));
+        let mut observed = [0; 8];
+        assert_eq!(description.read_at(observed.as_mut_slice(), 0), Ok(8));
+        assert_eq!(&observed, b"updatedl");
+        let reject_readonly = || {
+            assert!(
+                matches!(
+                    crate::file::ExecutableFile::acquire(native.clone()),
+                    Err(VfsError::TextFileBusy)
+                ),
+                "backing execution stays excluded through the last mapping lease"
+            );
+            for location in [&visible, &middle, &upper] {
+                assert_eq!(
+                    location.mountpoint().set_readonly(true),
+                    Err(VfsError::ResourceBusy),
+                    "writable descriptions and mappings must retain every write dependency"
+                );
+            }
+            assert_eq!(
+                upper.mountpoint().set_filesystem_readonly(true),
+                Err(VfsError::ResourceBusy)
+            );
+        };
+        reject_readonly();
+        drop(description);
+        reject_readonly();
+        drop(duplicate);
+        reject_readonly();
+        drop(mapping);
+        let executable = crate::file::ExecutableFile::acquire(native.clone()).unwrap();
+        assert!(matches!(
+            writable._open(visible.clone(), &credentials, false),
+            Err(VfsError::TextFileBusy)
+        ));
+        drop(executable);
+        let mut truncate = OpenOptions::new();
+        truncate.read(true).truncate(true).direct = true;
+        let reader = truncate
+            ._open(visible.clone(), &credentials, false)
+            .and_then(OpenResult::into_file)
+            .unwrap();
+        assert!(reader.write_access().is_none());
+        let executable = crate::file::ExecutableFile::acquire(native).unwrap();
+        drop(executable);
+        drop(reader);
+
+        for location in [&visible, &middle, &upper] {
+            location.mountpoint().set_readonly(true).unwrap();
+        }
+        // Refusing a later backing must release the earlier visible/middle
+        // leases too. The read-only lower remains a read dependency throughout.
+        visible.mountpoint().set_readonly(false).unwrap();
+        middle.mountpoint().set_readonly(false).unwrap();
+        assert!(matches!(
+            writable._open(visible.clone(), &credentials, false),
+            Err(VfsError::ReadOnlyFilesystem)
+        ));
+        visible.mountpoint().set_readonly(true).unwrap();
+        middle.mountpoint().set_readonly(true).unwrap();
+        assert!(lower.is_readonly());
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn readonly_reconfiguration_preserves_writers_until_description_and_mapping_release() {
+        crate::os::memory::test_support::with_test_page_provider(true, |_| {
+            check_readonly_reconfiguration();
+        });
+    }
+
+    #[cfg(feature = "host-test")]
+    fn check_readonly_reconfiguration() {
+        for shared in [false, true] {
+            let filesystem = crate::MemoryFs::new();
+            let mount = Mountpoint::new_root(&filesystem);
+            let location = mount
+                .root_location()
+                .create(
+                    "writer",
+                    NodeType::RegularFile,
+                    NodePermission::from_bits_truncate(0o600),
+                    1000,
+                    1000,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 1000,
+                        fsgid: 1000,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
+                )
+                .unwrap();
+            let target = if shared {
+                mount.clone_tree()
+            } else {
+                mount.clone()
+            };
+            let credentials = credentials(1000, 1000, &[]);
+            let mut writable = OpenOptions::new();
+            writable.write(true).direct = true;
+            let description = Arc::new(
+                writable
+                    ._open(location.clone(), &credentials, false)
+                    .and_then(OpenResult::into_file)
+                    .unwrap(),
+            );
+            let duplicate = description.clone();
+            let mapping = description.write_access().unwrap().clone();
+            let reopened = writable
+                ._open(location.clone(), &credentials, false)
+                .and_then(OpenResult::into_file)
+                .unwrap();
+            // A bind-local change does not drain writers on another alias,
+            // and those writers cannot lend authority to the read-only alias.
+            let alias = mount.clone_tree();
+            alias.set_readonly(true).unwrap();
+            let alias_location = Location::new(alias.clone(), location.entry().clone());
+            assert!(matches!(
+                alias_location.acquire_write(),
+                Err(VfsError::ReadOnlyFilesystem)
+            ));
+            {
+                let right = location.acquire_write().unwrap();
+                right.check_location(&location).unwrap();
+                assert_eq!(
+                    right.check_location(&alias_location),
+                    Err(VfsError::CrossesDevices)
+                );
+            }
+            // Keeping or relaxing write authority must not reject live writers.
+            // Collect every result before asserting so one refusal cannot hide
+            // the other entry points in the same regression run.
+            let writable_reconfigurations = (
+                mount.set_readonly(false),
+                filesystem.set_readonly(false),
+                mount.set_filesystem_readonly(false),
+                alias.set_filesystem_readonly(false),
+            );
+            assert_eq!(
+                writable_reconfigurations,
+                (Ok(()), Ok(()), Ok(()), Ok(())),
+                "local RW, shared RW, ordinary RW, ordinary RW clearing alias-local RO"
+            );
+            assert!(!mount.is_readonly());
+            assert!(!filesystem.is_readonly());
+            assert!(!alias.is_readonly());
+            assert!(!alias.is_filesystem_readonly());
+            let reject_readonly = || {
+                if shared {
+                    assert_eq!(
+                        target.set_filesystem_readonly(true),
+                        Err(VfsError::ResourceBusy)
+                    );
+                    assert!(!target.is_filesystem_readonly());
+                    assert!(!target.is_readonly());
+                } else {
+                    assert_eq!(target.set_readonly(true), Err(VfsError::ResourceBusy));
+                    assert!(!target.is_readonly());
+                }
+            };
+            reject_readonly();
+            drop(description);
+            reject_readonly();
+            drop(duplicate);
+            drop(reopened);
+            reject_readonly();
+            drop(mapping);
+
+            let mut read_only = OpenOptions::new();
+            read_only.read(true).direct = true;
+            let reader = read_only
+                ._open(location.clone(), &credentials, false)
+                .and_then(OpenResult::into_file)
+                .unwrap();
+            let mut path = read_only.clone();
+            path.path = true;
+            let path_file = path
+                ._open(location.clone(), &credentials, false)
+                .and_then(OpenResult::into_file)
+                .unwrap();
+            if shared {
+                target.set_filesystem_readonly(true).unwrap();
+                assert!(target.is_filesystem_readonly());
+                assert!(target.is_readonly());
+            } else {
+                target.set_readonly(true).unwrap();
+                assert!(target.is_readonly());
+            }
+            assert!(matches!(
+                writable._open(location, &credentials, false),
+                Err(VfsError::ReadOnlyFilesystem)
+            ));
+            drop(reader);
+            drop(path_file);
+        }
+
+        check_backing_write_rights();
+
+        let filesystem = crate::MemoryFs::new();
+        let mount = Mountpoint::new_root(&filesystem);
+        let root = mount.root_location();
+        root.update_metadata(MetadataUpdate {
+            mode: Some(NodePermission::from_bits_truncate(0o777)),
+            ..Default::default()
+        })
+        .unwrap();
+        let existing = root
+            .create(
+                "existing",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o600),
+                1000,
+                1000,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 1000,
+                    fsgid: 1000,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
+            .unwrap();
+        let credentials = credentials(1000, 1000, &[]);
+        let context = FsContext::from_tree(root.mountpoint().clone(), root.clone()).unwrap();
+        let context_paths = context.clone();
+        let context_caller = axfs_ng_vfs::NativeLinkCaller::new(credentials);
+        let context = crate::FsView::native(context, &context_caller);
+        let mut writable = OpenOptions::new();
+        writable.read(true).write(true).direct = true;
+        let writer = writable
+            .open(&context, "existing")
+            .and_then(OpenResult::into_file)
+            .unwrap();
+        assert_eq!(writer.write_at(b"retained".as_slice(), 0), Ok(8));
+        drop(writer);
+        let identity = existing.entry().key();
+        root.change_metadata(
+            axfs_ng_vfs::MetadataChange::Chmod(NodePermission::from_bits_truncate(0o555)),
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
+        mount.set_readonly(true).unwrap();
+
+        let mut read_only = OpenOptions::new();
+        read_only.read(true).direct = true;
+        let mut path = read_only.clone();
+        path.path = true;
+        let mut create = read_only.clone();
+        create.create(true);
+        let mut exclusive = create.clone();
+        exclusive.create_new(true);
+        let ordinary = read_only
+            .open(&context, "existing")
+            .and_then(OpenResult::into_file);
+        let path_only = path
+            .open(&context, "existing")
+            .and_then(OpenResult::into_file);
+        let opened = create
+            .open(&context, "existing")
+            .and_then(OpenResult::into_file);
+        let excluded = exclusive
+            .open(&context, "existing")
+            .and_then(OpenResult::into_file);
+        let missing = create
+            .open(&context, "missing")
+            .and_then(OpenResult::into_file);
+        // OpenResult hides the created marker. Exercise its real existing
+        // status-bearing entry as well, without bypassing the creation request.
+        let status = root.open_file_with_status(
+            "existing",
+            &axfs_ng_vfs::OpenOptions {
+                access: axfs_ng_vfs::NodePermission::empty(),
+                create: true,
+                create_new: false,
+                node_type: NodeType::RegularFile,
+                permission: NodePermission::from_bits_truncate(0o600),
+                user: Some((1000, 1000)),
+                observation: None,
+            },
+            &axfs_ng_vfs::MutationCredentials::root(),
+        );
+        let missing_absent = matches!(root.lookup_no_follow("missing"), Err(VfsError::NotFound));
+        assert_eq!(
+            (
+                ordinary.as_ref().map(|_| ()).map_err(|error| *error),
+                path_only.as_ref().map(|_| ()).map_err(|error| *error),
+                opened.as_ref().map(|_| ()).map_err(|error| *error),
+                excluded.as_ref().map(|_| ()).map_err(|error| *error),
+                missing.as_ref().map(|_| ()).map_err(|error| *error),
+                status
+                    .as_ref()
+                    .map(|(_, created)| *created)
+                    .map_err(|error| *error),
+            ),
+            (
+                Ok(()),
+                Ok(()),
+                Ok(()),
+                Err(VfsError::AlreadyExists),
+                Err(VfsError::ReadOnlyFilesystem),
+                Ok(false),
+            ),
+            "ordinary, O_PATH, existing O_CREAT, existing O_EXCL, missing O_CREAT, created status"
+        );
+        assert!(
+            missing_absent,
+            "a read-only creation failure must not publish a name"
+        );
+        assert!(mount.is_readonly());
+        for reader in [ordinary.unwrap(), opened.unwrap()] {
+            assert!(reader.location().entry().ptr_eq(existing.entry()));
+            assert_eq!(reader.location().entry().key(), identity);
+            assert!(reader.write_access().is_none());
+            let mut bytes = [0; 8];
+            assert_eq!(reader.read_at(&mut bytes[..], 0), Ok(8));
+            assert_eq!(&bytes, b"retained");
+        }
+        let (location, created) = status.unwrap();
+        assert!(!created);
+        assert!(location.entry().ptr_eq(existing.entry()));
+        assert_eq!(existing.metadata().unwrap().nlink, 1);
+
+        // Searchable but non-writable parents do not block existing selections.
+        // The current object's DAC still applies despite the saved write denial.
+        let stranger = MutationCredentials {
+            fsuid: 2000,
+            fsgid: 2000,
+            ..credentials
+        };
+        let stranger_caller = axfs_ng_vfs::NativeLinkCaller::new(stranger);
+        let stranger_context = crate::FsView::native(context_paths, &stranger_caller);
+        assert!(matches!(
+            create.open(&stranger_context, "existing"),
+            Err(VfsError::PermissionDenied)
+        ));
+        let path_created = root
+            .open_file_with_status(
+                "existing",
+                &axfs_ng_vfs::OpenOptions {
+                    create: true,
+                    ..Default::default()
+                },
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 2000,
+                    fsgid: 2000,
+                    cap_dac_override: false,
+                    cap_dac_read_search: false,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
+            .unwrap();
+        assert!(!path_created.1);
+        assert!(path_created.0.entry().ptr_eq(existing.entry()));
+        assert!(matches!(
+            exclusive.open(&context, "existing"),
+            Err(VfsError::AlreadyExists)
+        ));
+        mount.set_readonly(false).unwrap();
+        assert!(matches!(
+            create.open(&context, "denied"),
+            Err(VfsError::PermissionDenied)
+        ));
+        assert!(matches!(
+            root.lookup_no_follow("denied"),
+            Err(VfsError::NotFound)
+        ));
+        root.change_metadata(
+            axfs_ng_vfs::MetadataChange::Chmod(NodePermission::from_bits_truncate(0o444)),
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
+        mount.set_readonly(true).unwrap();
+        assert!(matches!(
+            create.open(&context, "existing"),
+            Err(VfsError::PermissionDenied)
+        ));
+        assert_eq!(existing.entry().key(), identity);
+        assert_eq!(existing.metadata().unwrap().nlink, 1);
     }
 }

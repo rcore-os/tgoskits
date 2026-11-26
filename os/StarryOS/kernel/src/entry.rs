@@ -53,23 +53,18 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
+    let caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let view = ax_fs_ng::FsView::current(current_fs_context(), &caller);
     let mut selected = None;
     for candidate in paths {
-        let Ok(loc) = current_fs_context().lock().resolve(candidate) else {
+        let Ok(loc) = view.resolve(candidate) else {
             continue;
         };
         let mut builder =
             new_user_image_builder().expect("Failed to create unpublished user address space");
         let mut args = alloc::vec![candidate.clone()];
         args.extend_from_slice(init_args);
-        match load_user_app(
-            &mut builder,
-            loc.clone(),
-            candidate,
-            &args,
-            envs,
-            &crate::task::Cred::root(),
-        ) {
+        match load_user_app(&mut builder, loc.clone(), candidate, &args, envs, &view) {
             Ok(image) => {
                 selected = Some((loc, builder, image, args));
                 break;
@@ -80,9 +75,10 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
     let (loc, image_builder, loaded_image, args) =
         selected.unwrap_or_else(|| panic!("No working init found among candidates: {paths:?}"));
     let path = loc
+        .location()
         .absolute_path()
         .expect("Failed to get executable absolute path");
-    let name = loc.name().into_owned();
+    let name = loc.location().name().into_owned();
 
     let prepared_image = image_builder
         .finish(loaded_image)

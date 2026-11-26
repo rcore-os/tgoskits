@@ -1,4 +1,6 @@
 //! See Linux Documentation for details: <https://docs.kernel.org/trace/ftrace.html>
+
+use axfs_ng_vfs::VfsResult;
 mod control;
 pub(crate) mod gate;
 mod net;
@@ -34,7 +36,7 @@ use registry::TracepointReclaimer;
 
 use crate::{
     StarryError, StarryResult,
-    pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
+    pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFsContext, SpecialFsFileBacking},
     sync::Mutex,
     task::{PidIdentityId, future::IrqNotify, try_current_user_irq_view},
 };
@@ -785,7 +787,7 @@ mod identity_trace_tests {
 }
 
 /// Initialize events directory in debugfs
-fn init_events(fs: Arc<SimpleFs>) -> DirMaker {
+fn init_events(fs: SimpleFsContext) -> VfsResult<DirMaker> {
     let mut events_root = DirMapping::new();
     let mut subsystem = BTreeMap::new();
 
@@ -805,22 +807,22 @@ fn init_events(fs: Arc<SimpleFs>) -> DirMaker {
         let mut event_root = DirMapping::new();
         event_root.add(
             "enable",
-            SpecialFsFile::new_regular_with_perm(
+            SpecialFsFileBacking::new_regular_with_perm(
                 fs.clone(),
                 control::EventEnableObj::new(ext_tp.clone()),
                 NodePermission::from_bits_truncate(0o640),
-            ),
+            )?,
         );
         event_root.add("format", {
             let seq_obj = SeqObject::new({
                 let format_file = TracePointFormatFile::new(tp);
                 move || Ok(format_file.read())
             });
-            SpecialFsFile::new_regular_with_perm(
+            SpecialFsFileBacking::new_regular_with_perm(
                 fs.clone(),
                 seq_obj,
                 NodePermission::from_bits_truncate(0o440),
-            )
+            )?
         });
 
         event_root.add("id", {
@@ -828,78 +830,78 @@ fn init_events(fs: Arc<SimpleFs>) -> DirMaker {
                 let id_file = TracePointIdFile::new(tp);
                 move || Ok(id_file.read())
             });
-            SpecialFsFile::new_regular_with_perm(
+            SpecialFsFileBacking::new_regular_with_perm(
                 fs.clone(),
                 seq_obj,
                 NodePermission::from_bits_truncate(0o440),
-            )
+            )?
         });
         event_root.add(
             "filter",
-            SpecialFsFile::new_regular_with_perm(
+            SpecialFsFileBacking::new_regular_with_perm(
                 fs.clone(),
                 control::EventFilterObj::new(ext_tp.clone()),
                 NodePermission::from_bits_truncate(0o640),
-            ),
+            )?,
         );
         subsystem_root.add(
             event_name,
-            SimpleDir::new_maker(fs.clone(), Arc::new(event_root)),
+            SimpleDir::new_maker(fs.clone(), Arc::new(event_root))?,
         );
     }
     for (subsystem_name, subsystem_root) in subsystem {
         events_root.add(
             &subsystem_name,
-            SimpleDir::new_maker(fs.clone(), Arc::new(subsystem_root)),
+            SimpleDir::new_maker(fs.clone(), Arc::new(subsystem_root))?,
         );
     }
     SimpleDir::new_maker(fs, Arc::new(events_root))
 }
 
 /// Initialize tracing directory in debugfs
-pub fn init_tracing_dir(fs: Arc<SimpleFs>) -> DirMaker {
+pub fn init_tracing_dir(fs: SimpleFsContext) -> VfsResult<DirMaker> {
     let mut tracing_root = DirMapping::new();
     tracing_root.set_cacheable(false);
 
     tracing_root.add(
         "saved_cmdlines_size",
-        SpecialFsFile::new_regular_with_perm(
+        SpecialFsFileBacking::new_regular_with_perm(
             fs.clone(),
             control::TraceCmdLineSizeObj,
             NodePermission::from_bits_truncate(0o640),
-        ),
+        )?,
     );
     tracing_root.add(
         "trace_pipe",
-        SpecialFsFile::new_regular_with_perm(
+        SpecialFsFileBacking::new_regular_with_perm(
             fs.clone(),
             trace_pipe::TracePipeFile::new(),
             NodePermission::from_bits_truncate(0o440),
-        ),
+        )?,
     );
     tracing_root.add_dynamic("saved_cmdlines", {
         let fs = fs.clone();
         move || {
-            SpecialFsFile::new_regular_with_perm(
+            SpecialFsFileBacking::new_regular_with_perm(
                 fs.clone(),
                 trace::TraceCmdLineFile::new(),
                 NodePermission::from_bits_truncate(0o440),
             )
-            .into()
+            .map(Into::into)
         }
     });
     tracing_root.add_dynamic("trace", {
         let fs = fs.clone();
         move || {
-            SpecialFsFile::new_regular_with_perm(
+            SpecialFsFileBacking::new_regular_with_perm(
                 fs.clone(),
                 trace::TraceFile::new(),
                 NodePermission::from_bits_truncate(0o640),
             )
-            .into()
+            .map(Into::into)
         }
     });
-    tracing_root.add("events", init_events(fs.clone()));
+    tracing_root.add("events", init_events(fs.clone())?);
     SimpleDir::new_maker(fs, Arc::new(tracing_root))
 }
 

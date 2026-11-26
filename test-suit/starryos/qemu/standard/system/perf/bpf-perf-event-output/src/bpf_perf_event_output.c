@@ -28,6 +28,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
@@ -51,6 +52,7 @@
 #define BPF_PSEUDO_MAP_FD 1
 
 #define BPF_LD 0x00
+#define BPF_LDX 0x01
 #define BPF_ST 0x02
 #define BPF_STX 0x03
 #define BPF_JMP 0x05
@@ -65,10 +67,12 @@
 #define BPF_ADD 0x00
 #define BPF_MOV 0xb0
 #define BPF_JEQ 0x10
+#define BPF_JNE 0x50
 #define BPF_CALL 0x80
 #define BPF_EXIT 0x90
 
 #define HELPER_MAP_LOOKUP_ELEM 1
+#define HELPER_GET_CURRENT_COMM 16
 #define HELPER_PERF_EVENT_OUTPUT 25
 #define BPF_F_CURRENT_CPU 0xffffffffu
 
@@ -213,7 +217,11 @@ static int map_elem(int cmd, int map_fd, uint32_t key, void *value) {
 }
 
 /* ret = bpf_perf_event_output(ctx, perf_map, CURRENT_CPU, &zero, 8); *result = ret */
+static const char result_owner_name[16] = "bpf-output-main";
+
 static int load_program(int perf_map, int result_map) {
+    uint32_t owner_words[4];
+    memcpy(owner_words, result_owner_name, sizeof(owner_words));
     struct bpf_insn prog[] = {
         insn(BPF_LD | BPF_DW | BPF_IMM, 2, BPF_PSEUDO_MAP_FD, 0, perf_map),
         insn(0, 0, 0, 0, 0),
@@ -228,6 +236,21 @@ static int load_program(int perf_map, int result_map) {
         insn(BPF_ALU64 | BPF_MOV | BPF_K, 5, 0, 0, 8),
         insn(BPF_JMP | BPF_CALL, 0, 0, 0, HELPER_PERF_EVENT_OUTPUT),
         insn(BPF_ALU64 | BPF_MOV | BPF_X, 6, 0, 0, 0),
+        /* Every callback above exercises output. Only the named controller
+         * may publish a result for the synchronous target checks below. */
+        insn(BPF_ALU64 | BPF_MOV | BPF_X, 1, 10, 0, 0),
+        insn(BPF_ALU64 | BPF_ADD | BPF_K, 1, 0, 0, -32),
+        insn(BPF_ALU64 | BPF_MOV | BPF_K, 2, 0, 0, 16),
+        insn(BPF_JMP | BPF_CALL, 0, 0, 0, HELPER_GET_CURRENT_COMM),
+        insn(BPF_JMP | BPF_JNE | BPF_K, 0, 0, 0, 0),
+        insn(BPF_LDX | BPF_MEM | BPF_W, 0, 10, -32, 0),
+        insn(BPF_JMP | BPF_JNE | BPF_K, 0, 0, 0, (int32_t)owner_words[0]),
+        insn(BPF_LDX | BPF_MEM | BPF_W, 0, 10, -28, 0),
+        insn(BPF_JMP | BPF_JNE | BPF_K, 0, 0, 0, (int32_t)owner_words[1]),
+        insn(BPF_LDX | BPF_MEM | BPF_W, 0, 10, -24, 0),
+        insn(BPF_JMP | BPF_JNE | BPF_K, 0, 0, 0, (int32_t)owner_words[2]),
+        insn(BPF_LDX | BPF_MEM | BPF_W, 0, 10, -20, 0),
+        insn(BPF_JMP | BPF_JNE | BPF_K, 0, 0, 0, (int32_t)owner_words[3]),
         insn(BPF_LD | BPF_DW | BPF_IMM, 1, BPF_PSEUDO_MAP_FD, 0, result_map),
         insn(0, 0, 0, 0, 0),
         insn(BPF_ALU64 | BPF_MOV | BPF_X, 2, 10, 0, 0),
@@ -239,6 +262,14 @@ static int load_program(int perf_map, int result_map) {
         insn(BPF_ALU64 | BPF_MOV | BPF_K, 0, 0, 0, 0),
         insn(BPF_JMP | BPF_EXIT, 0, 0, 0, 0),
     };
+    /* Guard failures all skip to the final return. Derive the offsets from
+     * this instruction array so extending a guard cannot change its target. */
+    size_t return_index = sizeof(prog) / sizeof(prog[0]) - 2;
+    for (size_t i = 0; i < return_index; i++) {
+        if (prog[i].code == (BPF_JMP | BPF_JNE | BPF_K)) {
+            prog[i].off = (int16_t)(return_index - i - 1);
+        }
+    }
     static const char license[] = "GPL";
     struct {
         uint32_t prog_type;
@@ -335,10 +366,65 @@ static _Atomic int stop_callers;
 
 static void *syscall_caller(void *arg) {
     (void)arg;
+    if (prctl(PR_SET_NAME, "bpf-output-peer", 0ul, 0ul, 0ul) != 0) {
+        return (void *)(uintptr_t)1;
+    }
     while (!atomic_load_explicit(&stop_callers, memory_order_relaxed)) {
         syscall(SYS_getpid);
     }
     return NULL;
+}
+
+/* A foreign callback must still execute the output helper, but must not
+ * overwrite the controller's result. Both participants use atomic handoff:
+ * after publishing the sentinel the controller makes no syscall until the
+ * peer has copied the value, so the peer's callback is observed directly. */
+struct result_observer {
+    _Atomic int phase;
+    int name_error;
+    int lookup_error;
+    uint64_t observed;
+};
+
+static void *observe_result(void *arg) {
+    struct result_observer *observer = arg;
+    observer->name_error =
+        prctl(PR_SET_NAME, "bpf-output-peer", 0ul, 0ul, 0ul);
+    atomic_store_explicit(&observer->phase, 1, memory_order_release);
+    while (atomic_load_explicit(&observer->phase, memory_order_acquire) != 2) {
+    }
+    observer->lookup_error =
+        map_elem(BPF_MAP_LOOKUP_ELEM, result_map, 0, &observer->observed);
+    atomic_store_explicit(&observer->phase, 3, memory_order_release);
+    return NULL;
+}
+
+static int check_result_isolation(void) {
+    struct result_observer observer = {0};
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, observe_result, &observer) != 0) {
+        printf("result observer creation failed\n");
+        return 1;
+    }
+    while (atomic_load_explicit(&observer.phase, memory_order_acquire) != 1) {
+    }
+    uint64_t sentinel = 0x5a5a5a5a5a5a5a5aull;
+    int update_error =
+        map_elem(BPF_MAP_UPDATE_ELEM, result_map, 0, &sentinel);
+    atomic_store_explicit(&observer.phase, 2, memory_order_release);
+    while (atomic_load_explicit(&observer.phase, memory_order_acquire) != 3) {
+    }
+    int join_error = pthread_join(thread, NULL);
+    if (observer.name_error != 0 || update_error != 0 ||
+        observer.lookup_error != 0 || join_error != 0) {
+        printf("result observer setup failed\n");
+        return 1;
+    }
+    if (observer.observed != sentinel) {
+        printf("foreign callback overwrote the controller result\n");
+        return 1;
+    }
+    return 0;
 }
 
 static int check_targets(uint32_t tp_id) {
@@ -510,7 +596,11 @@ static int close_while_helpers_run(uint32_t tp_id) {
     }
     atomic_store_explicit(&stop_callers, 1, memory_order_relaxed);
     for (int i = 0; i < ncpu; i++) {
-        pthread_join(threads[i], NULL);
+        void *result = NULL;
+        if (pthread_join(threads[i], &result) != 0 || result != NULL) {
+            printf("helper caller failed\n");
+            failures++;
+        }
     }
     free(threads);
     printf("closed %d tracepoint events while the helper ran\n", rounds);
@@ -535,6 +625,10 @@ int main(void) {
         printf("BPF_MAP_CREATE failed errno=%d\n", errno);
         return 1;
     }
+    if (prctl(PR_SET_NAME, result_owner_name, 0ul, 0ul, 0ul) != 0) {
+        printf("result owner naming failed\n");
+        return 1;
+    }
     int prog_fd = load_program(perf_map, result_map);
     if (prog_fd < 0) {
         printf("BPF_PROG_LOAD failed errno=%d\n", errno);
@@ -546,7 +640,8 @@ int main(void) {
         return 1;
     }
 
-    int failures = check_targets((uint32_t)tp_id);
+    int failures = check_result_isolation();
+    failures += check_targets((uint32_t)tp_id);
     failures += close_while_helpers_run((uint32_t)tp_id);
 
     close(link_fd);

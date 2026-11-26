@@ -5,7 +5,7 @@ use ax_io::{IoError, IoResult, prelude::*};
 use bytemuck::{AnyBitPattern, NoUninit};
 use starry_vm::VmError;
 
-use super::{VmPtr, vm_read_slice, vm_write_slice};
+use super::{VmBytesMut, VmPtr, vm_read_slice, vm_write_slice};
 use crate::{StarryError, StarryResult, task::UserTaskRef};
 
 #[repr(C)]
@@ -86,6 +86,34 @@ impl<'task> IoVectorBuf<'task> {
             }
         }
         Ok(())
+    }
+
+    /// Runs a legacy scalar file read per nonempty segment. A later failure
+    /// leaves earlier completed segments observable, as in Linux's fallback
+    /// `do_loop_readv_writev` for a file with `.read` and no `.read_iter`.
+    pub(crate) fn read_segments(
+        self,
+        mut read: impl FnMut(&mut VmBytesMut<'task>) -> StarryResult<usize>,
+    ) -> StarryResult<usize> {
+        let mut copied = 0;
+        for iov in self.iovs {
+            let len = iov.iov_len as usize;
+            if len == 0 {
+                continue;
+            }
+            let mut destination = VmBytesMut::new(self.task, iov.iov_base, len);
+            match read(&mut destination) {
+                Ok(count) => {
+                    copied += count;
+                    if count < len {
+                        break;
+                    }
+                }
+                Err(error) if copied == 0 => return Err(error),
+                Err(_) => break,
+            }
+        }
+        Ok(copied)
     }
 
     pub fn into_io(self) -> IoVectorBufIo<'task> {

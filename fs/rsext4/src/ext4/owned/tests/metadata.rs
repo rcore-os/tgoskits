@@ -78,7 +78,8 @@ fn failed_restart_restores_only_the_new_step_and_reopens_the_same_reader() {
         .update_inode_metadata(
             number,
             InodeMetadataUpdate {
-                owner: Some((41, 0)),
+                uid: Some(41),
+                gid: Some(0),
                 ..Default::default()
             },
         )

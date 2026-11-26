@@ -25,8 +25,15 @@ use super::{
 pub struct InodeResize {
     inode: InodeNumber,
     target_size: u64,
-    original_size: Option<u64>,
-    complete: bool,
+    purpose: TruncatePurpose,
+    phase: ResizePhase,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResizePhase {
+    Pending,
+    MappingCleanup,
+    Complete,
 }
 
 impl InodeResize {
@@ -39,8 +46,16 @@ impl InodeResize {
         Self {
             inode,
             target_size,
-            original_size: None,
-            complete: false,
+            purpose: TruncatePurpose::UserResize,
+            phase: ResizePhase::Pending,
+        }
+    }
+
+    /// Retires failed-write mappings at the accepted EOF, even at equal size.
+    pub(crate) const fn for_failed_write(inode: InodeNumber, size: u64) -> Self {
+        Self {
+            purpose: TruncatePurpose::FailedWrite,
+            ..Self::new(inode, size)
         }
     }
 
@@ -50,29 +65,39 @@ impl InodeResize {
         fs: &mut Ext4FileSystem,
     ) -> Ext4Result<()> {
         device.ensure_mutation_admitted()?;
-        if self.complete {
-            return Ok(());
-        }
-        let inode = fs.get_inode_by_num(device, self.inode)?;
-        let original_size = *self.original_size.get_or_insert(inode.size());
-        if self.target_size < original_size && inode.size() == self.target_size {
-            // Size publication starts a bounded shrink; it is not evidence
-            // that all mappings have been detached. Do not infer intent from
-            // the current link count, which can change while awaiting I/O.
-            truncate_inode_mapping(
+        match self.phase {
+            ResizePhase::Pending => truncate_inode_with_phase(
                 device,
                 fs,
                 self.inode,
                 self.target_size,
-                TruncatePurpose::OrphanRecovery,
-            )?;
-            if inode.i_links_count != 0 && fs.orphan_contains(device, self.inode)? {
-                finish_orphaned_truncate(device, fs, self.inode)?;
+                self.purpose,
+                &mut self.phase,
+            )?,
+            ResizePhase::MappingCleanup => {
+                let inode = fs.get_inode_by_num(device, self.inode)?;
+                if inode.size() != self.target_size {
+                    return Err(
+                        Ext4Error::corrupted().with_operation("inode:resize_continuation_size")
+                    );
+                }
+                // This phase records publication of this exact shrink. Link
+                // count can still change during lock-external journal progress.
+                truncate_inode_mapping(
+                    device,
+                    fs,
+                    self.inode,
+                    self.target_size,
+                    TruncatePurpose::OrphanRecovery,
+                    &mut self.phase,
+                )?;
+                if inode.i_links_count != 0 && fs.orphan_contains(device, self.inode)? {
+                    finish_orphaned_truncate(device, fs, self.inode)?;
+                }
             }
-        } else {
-            truncate_inode(device, fs, self.inode, self.target_size)?;
+            ResizePhase::Complete => return Ok(()),
         }
-        self.complete = true;
+        self.phase = ResizePhase::Complete;
         Ok(())
     }
 }
@@ -83,6 +108,24 @@ pub fn truncate_inode<B: BlockIo>(
     inode_num: InodeNumber,
     truncate_size: u64,
 ) -> Ext4Result<()> {
+    truncate_inode_with_phase(
+        device,
+        fs,
+        inode_num,
+        truncate_size,
+        TruncatePurpose::UserResize,
+        &mut ResizePhase::Pending,
+    )
+}
+
+fn truncate_inode_with_phase<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    truncate_size: u64,
+    purpose: TruncatePurpose,
+    phase: &mut ResizePhase,
+) -> Ext4Result<()> {
     let inode = fs.get_inode_by_num(device, inode_num)?;
     if inode.i_links_count != 0 && fs.orphan_contains(device, inode_num)? {
         // A prior bounded truncate may have published its new size before
@@ -90,13 +133,7 @@ pub fn truncate_inode<B: BlockIo>(
         // interpreting another resize; size equality alone is not completion.
         recover_linked_truncate_inode(device, fs, inode_num, inode.size())?;
     }
-    truncate_inode_mapping(
-        device,
-        fs,
-        inode_num,
-        truncate_size,
-        TruncatePurpose::UserResize,
-    )
+    truncate_inode_mapping(device, fs, inode_num, truncate_size, purpose, phase)
 }
 
 pub(crate) fn recover_linked_truncate_inode<B: BlockIo>(
@@ -111,6 +148,7 @@ pub(crate) fn recover_linked_truncate_inode<B: BlockIo>(
         inode_num,
         truncate_size,
         TruncatePurpose::OrphanRecovery,
+        &mut ResizePhase::Pending,
     )?;
     finish_orphaned_truncate(device, fs, inode_num)
 }
@@ -120,17 +158,29 @@ pub(crate) fn truncate_inode_for_reap<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
 ) -> Ext4Result<()> {
-    truncate_inode_mapping(device, fs, inode_num, 0, TruncatePurpose::FinalReap)
+    truncate_inode_mapping(
+        device,
+        fs,
+        inode_num,
+        0,
+        TruncatePurpose::FinalReap,
+        &mut ResizePhase::Pending,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TruncatePurpose {
     UserResize,
+    FailedWrite,
     OrphanRecovery,
     FinalReap,
 }
 
 impl TruncatePurpose {
+    const fn starts_resize(self) -> bool {
+        matches!(self, Self::UserResize | Self::FailedWrite)
+    }
+
     const fn force_mapping_cleanup(self) -> bool {
         !matches!(self, Self::UserResize)
     }
@@ -146,6 +196,7 @@ fn truncate_inode_mapping<B: BlockIo>(
     inode_num: InodeNumber,
     truncate_size: u64,
     purpose: TruncatePurpose,
+    phase: &mut ResizePhase,
 ) -> Ext4Result<()> {
     let mut inode = fs.get_inode_by_num(device, inode_num)?;
 
@@ -214,8 +265,9 @@ fn truncate_inode_mapping<B: BlockIo>(
             )?;
             zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
             if let Some(credit_limit) = restart_limit {
-                if purpose == TruncatePurpose::UserResize {
+                if purpose.starts_resize() {
                     begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
+                    *phase = ResizePhase::MappingCleanup;
                 }
                 remove_extent_mapping_with_restarts(
                     device,
@@ -226,7 +278,7 @@ fn truncate_inode_mapping<B: BlockIo>(
                     u64::from(u32::MAX) + 1,
                     credit_limit,
                 )?;
-                return if purpose == TruncatePurpose::UserResize {
+                return if purpose.starts_resize() {
                     finish_orphaned_truncate(device, fs, inode_num)
                 } else {
                     inode.i_size_lo = truncate_size as u32;
@@ -282,8 +334,9 @@ fn truncate_inode_mapping<B: BlockIo>(
     // preflight before any data or metadata is changed.
     zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
     if let Some(credit_limit) = restart_limit {
-        if purpose == TruncatePurpose::UserResize {
+        if purpose.starts_resize() {
             begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
+            *phase = ResizePhase::MappingCleanup;
         }
         remove_legacy_mapping_with_restarts(
             device,
@@ -294,7 +347,7 @@ fn truncate_inode_mapping<B: BlockIo>(
             u64::from(u32::MAX) + 1,
             credit_limit,
         )?;
-        if purpose == TruncatePurpose::UserResize {
+        if purpose.starts_resize() {
             finish_orphaned_truncate(device, fs, inode_num)
         } else {
             inode.i_size_lo = truncate_size as u32;

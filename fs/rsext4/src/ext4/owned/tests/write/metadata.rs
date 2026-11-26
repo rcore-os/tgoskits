@@ -24,7 +24,7 @@ fn external_extent_conversion_preserves_concurrent_links_owner_and_xattr_blocks(
     );
     let input = alloc::vec![0x83; 16 * 4096];
     let prepared = mount
-        .prepare_inode_write(number, 0, &input)
+        .prepare_inode_write(number, 0, input.len())
         .unwrap()
         .unwrap();
     mount
@@ -38,7 +38,8 @@ fn external_extent_conversion_preserves_concurrent_links_owner_and_xattr_blocks(
         .update_inode_metadata(
             number,
             InodeMetadataUpdate {
-                owner: Some((73, 91)),
+                uid: Some(73),
+                gid: Some(91),
                 ..Default::default()
             },
         )
@@ -54,7 +55,7 @@ fn external_extent_conversion_preserves_concurrent_links_owner_and_xattr_blocks(
         )
         .unwrap();
     let before = mount.inode(number).unwrap();
-    let mut completed = prepared.execute();
+    let mut completed = prepared.execute(FileWriteInput::Resident(&input));
     mount.finish_inode_write(&mut completed).unwrap();
     let after = mount.inode(number).unwrap();
     assert_eq!(after.links, 2);

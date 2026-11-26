@@ -1,22 +1,24 @@
 use alloc::string::{String, ToString};
 
-use axfs_ng_vfs::{
-    MutationCredentials, NodePermission, RenameOptions, VfsError, VfsResult, path::Path,
-};
+use axfs_ng_vfs::{NodePermission, RenameOptions, VfsError, VfsResult, path::Path};
 
 use crate::{
     fops::{DirHandle, FileAttr},
-    fs_core::FsContext,
+    fs_core::{FS_CONTEXT, FsView},
     highlevel::current_fs_context,
 };
 
-fn context_for_at(base: &FsContext, dir: Option<&DirHandle>, path: &str) -> VfsResult<FsContext> {
+pub(crate) fn context_for_at<'a>(
+    base: &FsView<'a>,
+    dir: Option<&DirHandle>,
+    path: &str,
+) -> VfsResult<FsView<'a>> {
     if path.is_empty() {
         return Err(VfsError::NotFound);
     }
     match dir {
         Some(handle) if !Path::new(path).is_absolute() => {
-            base.with_dirfd(handle.location().clone())
+            base.with_dirfd(handle.path_handle().clone())
         }
         _ => Ok(base.clone()),
     }
@@ -25,9 +27,10 @@ fn context_for_at(base: &FsContext, dir: Option<&DirHandle>, path: &str) -> VfsR
 pub(crate) fn with_at_context<R>(
     dir: Option<&DirHandle>,
     path: &str,
-    f: impl FnOnce(&FsContext) -> VfsResult<R>,
+    f: impl FnOnce(&FsView<'_>) -> VfsResult<R>,
 ) -> VfsResult<R> {
-    let base = current_fs_context().lock().clone();
+    let caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let base = FsView::current(current_fs_context(), &caller);
     let ctx = context_for_at(&base, dir, path)?;
     f(&ctx)
 }
@@ -35,13 +38,7 @@ pub(crate) fn with_at_context<R>(
 /// Creates a new, empty directory relative to `dir` (or cwd when `None`).
 pub fn create_dir_at(dir: Option<&DirHandle>, path: &str) -> VfsResult {
     with_at_context(dir, path, |ctx| {
-        ctx.create_dir(
-            path,
-            NodePermission::default(),
-            0,
-            0,
-            &MutationCredentials::root(),
-        )?;
+        ctx.create_dir(path, NodePermission::default(), 0, 0)?;
         Ok(())
     })
 }
@@ -52,9 +49,7 @@ pub fn create_dir(path: &str) -> VfsResult {
 
 /// Removes an empty directory relative to `dir` (or cwd when `None`).
 pub fn remove_dir_at(dir: Option<&DirHandle>, path: &str) -> VfsResult {
-    with_at_context(dir, path, |ctx| {
-        ctx.remove_dir(path, &MutationCredentials::root())
-    })
+    with_at_context(dir, path, |ctx| ctx.remove_dir(path))
 }
 
 pub fn remove_dir(path: &str) -> VfsResult {
@@ -63,9 +58,7 @@ pub fn remove_dir(path: &str) -> VfsResult {
 
 /// Removes a file relative to `dir` (or cwd when `None`).
 pub fn remove_file_at(dir: Option<&DirHandle>, path: &str) -> VfsResult {
-    with_at_context(dir, path, |ctx| {
-        ctx.remove_file(path, &MutationCredentials::root())
-    })
+    with_at_context(dir, path, |ctx| ctx.remove_file(path))
 }
 
 pub fn remove_file(path: &str) -> VfsResult {
@@ -80,26 +73,17 @@ pub fn rename_at(
     new_dir: Option<&DirHandle>,
     new_path: &str,
 ) -> VfsResult {
-    let base = current_fs_context().lock().clone();
-    let creds = MutationCredentials::root();
+    let caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let base = FsView::current(current_fs_context(), &caller);
     let src_ctx = context_for_at(&base, old_dir, old_path)?;
-    let (src_dir, src_name, src_searched) = src_ctx
-        .resolve_parent_with_search_checked(Path::new(old_path), |directory| {
-            src_ctx.check_search_path(directory, src_ctx.permission_boundary(), &creds)
-        })?;
+    let source = src_ctx.resolve_parent_checked(Path::new(old_path), |directory| {
+        src_ctx.check_search_path(directory, src_ctx.permission_boundary())
+    })?;
     let dst_ctx = context_for_at(&base, new_dir, new_path)?;
-    let (dst_dir, dst_name, dst_searched) = dst_ctx
-        .resolve_parent_with_search_checked(Path::new(new_path), |directory| {
-            dst_ctx.check_search_path(directory, dst_ctx.permission_boundary(), &creds)
-        })?;
-    base.rename_locations_with_boundaries_and_search(
-        (&src_dir, &src_name),
-        (&dst_dir, &dst_name),
-        RenameOptions::REPLACE,
-        (src_ctx.permission_boundary(), dst_ctx.permission_boundary()),
-        (&src_searched, &dst_searched),
-        &creds,
-    )
+    let destination = dst_ctx.resolve_parent_checked(Path::new(new_path), |directory| {
+        dst_ctx.check_search_path(directory, dst_ctx.permission_boundary())
+    })?;
+    base.rename_resolved(&source, &destination, RenameOptions::REPLACE)
 }
 
 pub fn rename(old: &str, new: &str) -> VfsResult {
@@ -108,23 +92,31 @@ pub fn rename(old: &str, new: &str) -> VfsResult {
 
 pub fn current_dir() -> VfsResult<String> {
     current_fs_context()
-        .lock()
         .current_dir()
         .absolute_path()
         .map(|path| path.to_string())
 }
 
 pub fn set_current_dir(path: &str) -> VfsResult {
-    let fs_context = current_fs_context();
-    let mut ctx = fs_context.lock();
-    let dir = ctx.resolve(path)?;
-    ctx.set_current_dir(dir)?;
-    Ok(())
+    let source = current_fs_context();
+    let caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let view = FsView::current(source.clone(), &caller);
+    let path = view.resolve(path)?;
+    let (update, prepared_retirement) = source.prepare_cwd(path);
+    let mut update = Some(update?);
+    let (result, committed_retirement) = FS_CONTEXT.with(|owner| match owner.as_ref() {
+        Some(owner) => owner.apply_cwd_update(update.take().expect("prepared cwd")),
+        None => (Err(VfsError::BadState), Default::default()),
+    });
+    drop(committed_retirement);
+    drop(update);
+    drop(prepared_retirement);
+    result
 }
 
 /// Returns metadata for the current working directory.
 pub fn current_dir_metadata() -> VfsResult<FileAttr> {
-    current_fs_context().lock().current_dir().metadata()
+    current_fs_context().current_dir().metadata()
 }
 
 /// Returns metadata for a path resolved relative to `dir` (or cwd when `None`).
@@ -137,7 +129,7 @@ pub fn metadata_at(
         if follow_symlinks {
             ctx.metadata(path)
         } else {
-            ctx.resolve_no_follow(path)?.metadata()
+            ctx.resolve_no_follow(path)?.location().metadata()
         }
     })
 }

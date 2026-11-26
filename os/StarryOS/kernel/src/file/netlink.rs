@@ -36,9 +36,9 @@ use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
 use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
 use linux_raw_sys::{
-    general::{O_RDWR, S_IFSOCK},
+    general::O_RDWR,
     net::AF_NETLINK,
-    netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
+    netlink::{NETLINK_GENERIC, NETLINK_ROUTE, sockaddr_nl},
 };
 
 use crate::{
@@ -277,6 +277,7 @@ struct NetlinkState {
 }
 
 pub struct NetlinkSocket {
+    inode: Arc<crate::pseudofs::object::ObjectInode>,
     protocol: u32,
     socket_type: u32,
     non_blocking: AtomicBool,
@@ -292,15 +293,20 @@ static NETLINK_SOCKETS: LazyLock<Mutex<Vec<Weak<NetlinkSocket>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl NetlinkSocket {
-    pub fn new(protocol: u32, socket_type: u32) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new(protocol: u32, socket_type: u32) -> StarryResult<Arc<Self>> {
+        Ok(Arc::new(Self {
+            inode: crate::pseudofs::object::ObjectInode::new(axfs_ng_vfs::NodeType::Socket, 0o777)?,
             protocol,
             socket_type,
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
             state: Mutex::new(NetlinkState::default()),
             queue: Mutex::new(VecDeque::with_capacity(MAX_QUEUED)),
-        })
+        }))
+    }
+
+    pub(crate) fn location(&self) -> axfs_ng_vfs::Location {
+        self.inode.location(())
     }
 
     pub fn bind(self: &Arc<Self>, addr: sockaddr_nl) -> StarryResult {
@@ -708,11 +714,7 @@ impl FileLike for NetlinkSocket {
     }
 
     fn stat(&self) -> StarryResult<crate::file::Kstat> {
-        Ok(crate::file::Kstat {
-            mode: S_IFSOCK | 0o777,
-            blksize: 4096,
-            ..Default::default()
-        })
+        Ok(crate::file::metadata_to_kstat(&self.inode.metadata()?))
     }
 
     fn nonblocking(&self) -> bool {
@@ -725,11 +727,7 @@ impl FileLike for NetlinkSocket {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        if self.protocol == NETLINK_KOBJECT_UEVENT {
-            "socket:[netlink]".into()
-        } else {
-            format!("netlink:{}:[{}]", self.protocol, self as *const _ as usize).into()
-        }
+        format!("socket:[{}]", self.inode.inode()).into()
     }
 
     fn open_flags(&self) -> u32 {
@@ -796,11 +794,12 @@ fn link_infos() -> Vec<LinkInfo> {
                     IF_OPER_UNKNOWN
                 },
                 link_addresses: (info.kind != InterfaceKind::Tun).then(|| {
-                    let broadcast = if matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap) {
-                        [0xff; 6]
-                    } else {
-                        [0; 6]
-                    };
+                    let broadcast =
+                        if matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap) {
+                            [0xff; 6]
+                        } else {
+                            [0; 6]
+                        };
                     (address, broadcast)
                 }),
             }
@@ -814,15 +813,16 @@ fn addr_infos() -> Vec<AddrInfo> {
         .filter_map(|info| {
             let ipv4 = info.ipv4?;
             let local = ipv4.address.address().octets();
-            let broadcast = matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap).then(|| {
-                let ip = u32::from_be_bytes(local);
-                let mask = if ipv4.address.prefix_len() == 0 {
-                    0
-                } else {
-                    !0u32 << (32 - ipv4.address.prefix_len())
-                };
-                (ip | !mask).to_be_bytes()
-            });
+            let broadcast =
+                matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap).then(|| {
+                    let ip = u32::from_be_bytes(local);
+                    let mask = if ipv4.address.prefix_len() == 0 {
+                        0
+                    } else {
+                        !0u32 << (32 - ipv4.address.prefix_len())
+                    };
+                    (ip | !mask).to_be_bytes()
+                });
             Some(AddrInfo {
                 index: info.id.get(),
                 label: info.name,

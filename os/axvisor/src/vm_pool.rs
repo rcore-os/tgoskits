@@ -815,7 +815,7 @@ pub(crate) fn ensure_directory(directory: &str) -> Result<(), String> {
 /// that directory.
 #[cfg(any(feature = "web", test, axtest))]
 pub fn save(name: &str, toml: &str) -> Result<String, SaveError> {
-    save_in(&directory(), name, toml)
+    save_in(directory(), name, toml)
 }
 
 /// Store a guest config in a specific directory, returning its path.

@@ -147,6 +147,8 @@ fn growth_preserves_files_and_exposes_new_groups_to_linux() {
 /// Creates the mkfs layout selected by `block_size` (bytes) and `features`, grows
 /// it across a GDT boundary, then remounts and checks contents beyond the old end.
 fn growth_round_trip(block_size: &str, features: &str) {
+    // Keep positive growth fixtures independent of newer mkfs feature defaults.
+    let features = format!("{features},^orphan_file,^metadata_csum_seed");
     let directory =
         std::env::temp_dir().join(format!("rsext4-native-growth-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
@@ -159,7 +161,7 @@ fn growth_round_trip(block_size: &str, features: &str) {
     command(
         "mkfs.ext4",
         &[
-            "-q", "-F", "-b", block_size, "-g", "1024", "-O", features, path_str,
+            "-q", "-F", "-b", block_size, "-g", "1024", "-O", &features, path_str,
         ],
     );
     let mut device = open(&path);
@@ -498,6 +500,7 @@ fn growth_recovers_commit_checkpoint_and_flush_interruptions() {
 /// checksummed descriptors or legacy reserved-GDT pointer records. Every cut
 /// reopens the image and must preserve files, capacity and Linux consistency.
 fn interrupted_growth_round_trip(features: &str, journal_pressure: bool) {
+    let features = format!("{features},^orphan_file,^metadata_csum_seed");
     let directory =
         std::env::temp_dir().join(format!("rsext4-growth-fault-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
@@ -518,7 +521,7 @@ fn interrupted_growth_round_trip(features: &str, journal_pressure: bool) {
             "-g",
             "1024",
             "-O",
-            features,
+            &features,
             original.to_str().unwrap(),
         ],
     );

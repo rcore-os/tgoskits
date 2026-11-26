@@ -720,8 +720,6 @@ fn seccomp_filter_rules_hold_for_test() -> bool {
 
 #[cfg(all(test, not(axtest)))]
 fn seccomp_filter_construction_rules_hold_for_test() -> bool {
-    use alloc::vec;
-
     // Empty instruction list is rejected.
     SeccompFilter::new(alloc::vec![]).is_err()
         // A single return-instruction filter is accepted.

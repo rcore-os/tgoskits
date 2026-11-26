@@ -10,11 +10,80 @@ use rsext4::{
 use super::*;
 use crate::{BlockError, BlockResult};
 
+/// Routes former native test calls through the real credentialed VFS entry.
+trait NativeTestDirectory {
+    fn test_location(&self) -> axfs_ng_vfs::Location;
+
+    fn create(
+        &self,
+        name: &str,
+        kind: axfs_ng_vfs::NodeType,
+        mode: axfs_ng_vfs::NodePermission,
+        uid: u32,
+        gid: u32,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult<DirEntry> {
+        self.test_location()
+            .create(name, kind, mode, uid, gid, credentials)
+            .map(|location| location.entry().clone())
+    }
+
+    fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        mode: axfs_ng_vfs::NodePermission,
+        uid: u32,
+        gid: u32,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult<DirEntry> {
+        self.test_location()
+            .create_symlink(name, target, mode, uid, gid, credentials)
+            .map(|location| location.entry().clone())
+    }
+
+    fn link(
+        &self,
+        name: &str,
+        source: &DirEntry,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult<DirEntry> {
+        let parent = self.test_location();
+        let source = axfs_ng_vfs::Location::new(parent.mountpoint().clone(), source.clone());
+        parent
+            .link(name, &source, credentials)
+            .map(|location| location.entry().clone())
+    }
+
+    fn unlink(
+        &self,
+        name: &str,
+        directory: bool,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        self.test_location().unlink(name, directory, credentials)
+    }
+}
+
+impl NativeTestDirectory for Inode {
+    fn test_location(&self) -> axfs_ng_vfs::Location {
+        Inode::test_location(self)
+    }
+}
+
+impl NativeTestDirectory for axfs_ng_vfs::DirNode {
+    fn test_location(&self) -> axfs_ng_vfs::Location {
+        self.downcast::<Inode>().unwrap().test_location()
+    }
+}
+
 mod inode_io;
 mod inode_load;
 mod inode_writeback;
 mod lifetime;
 mod metadata;
+mod metadata_change;
+pub(super) mod metadata_pressure;
 mod namespace;
 mod persistence;
 mod read;

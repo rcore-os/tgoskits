@@ -3,8 +3,8 @@ use core::time::Duration;
 
 use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{
-    FileRangeOperation, Location, Metadata, MetadataUpdate, NodePermission, NodeType,
-    PreallocationMode, VfsError, VfsResult,
+    FileRangeOperation, Metadata, MetadataChange, NodePermission, NodeType, PathHandle,
+    PreallocationMode, TimeChange, VfsError, VfsResult,
 };
 
 use crate::{
@@ -188,9 +188,14 @@ pub struct File {
 }
 
 impl File {
-    pub fn open(path: &str, opts: &OpenOptions) -> VfsResult<Self> {
-        let fs_context = current_fs_context();
-        let inner = opts.to_core().open(&fs_context.lock(), path)?;
+    pub fn open(
+        path: &str,
+        opts: &OpenOptions,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult<Self> {
+        let caller = axfs_ng_vfs::NativeLinkCaller::new(*credentials);
+        let fs_context = crate::FsView::current(current_fs_context(), &caller);
+        let inner = opts.to_core().open(&fs_context, path)?;
         Ok(Self {
             inner: inner.into_file()?,
         })
@@ -239,17 +244,24 @@ impl File {
     }
 
     /// Updates the access and modification times selected by non-`None` values.
+    /// Uses this call's identity and the current inode metadata for authority.
     ///
     /// # Errors
     ///
-    /// Returns the underlying filesystem error when metadata cannot be updated.
-    pub fn set_times(&self, atime: Option<Duration>, mtime: Option<Duration>) -> VfsResult {
-        self.inner.location().update_metadata(MetadataUpdate {
-            atime,
-            mtime,
-            ..MetadataUpdate::default()
-        })?;
-        Ok(())
+    /// Returns authorization, mount-admission, and backend-completion errors.
+    pub fn set_times(
+        &self,
+        atime: Option<Duration>,
+        mtime: Option<Duration>,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult {
+        self.inner.location().change_metadata(
+            MetadataChange::Times {
+                atime: atime.map_or(TimeChange::Keep, TimeChange::Set),
+                mtime: mtime.map_or(TimeChange::Keep, TimeChange::Set),
+            },
+            credentials,
+        )
     }
 }
 
@@ -263,10 +275,10 @@ pub enum OpenEntry {
 
 /// Immutable, cloneable handle to an open VFS directory.
 #[derive(Clone)]
-pub struct DirHandle(Location);
+pub struct DirHandle(PathHandle);
 
 impl DirHandle {
-    pub(crate) fn location(&self) -> &Location {
+    pub(crate) fn path_handle(&self) -> &PathHandle {
         &self.0
     }
 }
@@ -277,18 +289,22 @@ pub fn open_at(
     path: &str,
     opts: &OpenOptions,
     directory_only: bool,
+    credentials: &axfs_ng_vfs::MutationCredentials<'_>,
 ) -> VfsResult<OpenEntry> {
     let mut core_opts = opts.to_core();
     core_opts.directory(directory_only);
-    let result = crate::api::with_at_context(dir, path, |ctx| core_opts.open(ctx, path))?;
+    let caller = axfs_ng_vfs::NativeLinkCaller::new(*credentials);
+    let base = crate::FsView::current(current_fs_context(), &caller);
+    let view = crate::api::context_for_at(&base, dir, path)?;
+    let result = core_opts.open(&view, path)?;
     match result {
         OpenResult::File(inner) => Ok(OpenEntry::File(File { inner })),
-        OpenResult::Dir(location) => Ok(OpenEntry::Directory(Directory::from_location(location)?)),
+        OpenResult::Dir(location) => Ok(OpenEntry::Directory(Directory::from_path(location)?)),
     }
 }
 
 pub struct Directory {
-    location: Location,
+    location: PathHandle,
     entries: Vec<DirEntry>,
     cursor: usize,
 }
@@ -304,14 +320,16 @@ impl Directory {
         {
             return Err(VfsError::InvalidInput);
         }
-        let location = current_fs_context().lock().resolve(path)?;
-        Self::from_location(location)
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let view = crate::FsView::current(current_fs_context(), &caller);
+        let location = view.resolve(path)?;
+        Self::from_path(location)
     }
 
-    pub(crate) fn from_location(location: Location) -> VfsResult<Self> {
-        location.check_is_dir()?;
+    pub(crate) fn from_path(location: PathHandle) -> VfsResult<Self> {
+        location.location().check_is_dir()?;
         let mut entries = Vec::new();
-        for entry in ReadDir::from_location(location.clone())? {
+        for entry in ReadDir::from_path(location.clone())? {
             let entry = entry?;
             entries.push(DirEntry {
                 name: entry.name,
@@ -329,7 +347,7 @@ impl Directory {
 
     /// Returns metadata for the underlying directory object.
     pub fn get_attr(&self) -> VfsResult<FileAttr> {
-        self.location.metadata()
+        self.location.location().metadata()
     }
 
     /// Returns a cloneable handle to the underlying VFS directory location.
@@ -426,6 +444,74 @@ impl FileAttrExt for FileAttr {
 }
 
 #[cfg(test)]
+mod metadata_tests {
+    use axfs_ng_vfs::{Mountpoint, MutationCredentials, NativeLinkCaller};
+
+    use super::*;
+
+    #[test]
+    fn file_times_use_current_authority_and_mount_admission() {
+        let root = MutationCredentials::root();
+        let filesystem = crate::MemoryFs::new();
+        let directory = Mountpoint::new_root(&filesystem).root_location();
+        let location = directory
+            .create(
+                "times",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o600),
+                0,
+                0,
+                &root,
+            )
+            .unwrap();
+        let context =
+            crate::FsContext::from_tree(directory.mountpoint().clone(), directory.clone()).unwrap();
+        let caller_view = NativeLinkCaller::new(root);
+        let view = crate::FsView::native(context, &caller_view);
+        let file = File {
+            inner: CoreOpenOptions::new()
+                .read(true)
+                .open(&view, "times")
+                .and_then(OpenResult::into_file)
+                .unwrap(),
+        };
+        let caller = MutationCredentials {
+            fsuid: 1000,
+            fsgid: 1000,
+            supplementary_gids: &[],
+            cap_dac_override: false,
+            cap_dac_read_search: false,
+            cap_fowner: false,
+            cap_mknod: false,
+            cap_chown: false,
+            cap_fsetid: false,
+        };
+        let before = file.get_attr().unwrap();
+        let changed = Duration::from_secs(123);
+        assert_eq!(
+            file.set_times(None, Some(changed), &caller),
+            Err(VfsError::OperationNotPermitted)
+        );
+        assert_eq!(file.get_attr().unwrap().mtime, before.mtime);
+        // Metadata changes do not require a writable data description.
+        file.set_times(None, Some(changed), &root).unwrap();
+        let accepted = file.get_attr().unwrap();
+        assert_eq!(accepted.mtime, changed);
+        assert_eq!(accepted.atime, before.atime);
+
+        location.mountpoint().set_readonly(true).unwrap();
+        assert_eq!(
+            file.set_times(None, Some(Duration::from_secs(456)), &root),
+            Err(VfsError::ReadOnlyFilesystem)
+        );
+        assert_eq!(file.set_times(None, None, &root), Ok(()));
+        let unchanged = file.get_attr().unwrap();
+        assert_eq!(unchanged.mtime, accepted.mtime);
+        assert_eq!(unchanged.atime, accepted.atime);
+    }
+}
+
+#[cfg(test)]
 mod directory_tests {
     use alloc::vec;
 
@@ -440,14 +526,14 @@ mod directory_tests {
         }
     }
 
-    fn test_location() -> Location {
+    fn test_location() -> axfs_ng_vfs::Location {
         axfs_ng_vfs::Mountpoint::new_root(&crate::MemoryFs::new()).root_location()
     }
 
     #[test]
     fn peek_does_not_advance_until_output_is_committed() {
         let mut directory = Directory {
-            location: test_location(),
+            location: PathHandle::acquire(test_location()).unwrap(),
             entries: vec![entry("first", 1), entry("second", 2)],
             cursor: 0,
         };
@@ -470,7 +556,7 @@ mod directory_tests {
     #[test]
     fn seek_to_shared_htree_cookie_restarts_the_collision_chain() {
         let mut directory = Directory {
-            location: test_location(),
+            location: PathHandle::acquire(test_location()).unwrap(),
             entries: vec![
                 entry("before", 10),
                 entry("collision-a", 10),

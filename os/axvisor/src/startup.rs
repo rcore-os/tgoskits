@@ -3,7 +3,6 @@
 use alloc::vec::Vec;
 
 use anyhow::{Result, bail};
-use axvisor::builtin::BuiltinCatalog;
 
 const SELECTOR_KEY: &str = "axvisor.vm_start";
 const SELECTOR_PREFIX: &str = "axvisor.vm_start=";
@@ -15,41 +14,6 @@ const SELECTOR_PREFIX: &str = "axvisor.vm_start=";
 const PREPARE_KEY: &str = "axvisor.vm_prepare";
 const PREPARE_PREFIX: &str = "axvisor.vm_prepare=";
 
-/// Immutable host startup selection parsed before Axvisor creates any VM.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StartupSelector {
-    ids: Vec<usize>,
-}
-
-impl StartupSelector {
-    /// Parses and validates the host selector against the builtin catalog.
-    pub(crate) fn parse(command_line: Option<&str>, catalog: &BuiltinCatalog) -> Result<Self> {
-        Ok(Self {
-            ids: select_ids(SELECTOR_KEY, SELECTOR_PREFIX, command_line, |id| {
-                catalog.get(id).is_some()
-            })?,
-        })
-    }
-
-    pub(crate) fn ids(&self) -> &[usize] {
-        &self.ids
-    }
-}
-
-/// Parses the host selector and validates every requested builtin VM ID.
-///
-/// The caller supplies the host boot arguments, not a guest `[kernel].cmdline`.
-/// Linux-style tokenization is shared with root selection, and arguments after
-/// `--` belong to the guest payload and are deliberately ignored.
-pub(crate) fn selected_vm_ids(
-    command_line: Option<&str>,
-    catalog: &BuiltinCatalog,
-) -> Result<Vec<usize>> {
-    Ok(StartupSelector::parse(command_line, catalog)?
-        .ids()
-        .to_vec())
-}
-
 /// The validated host startup selection: guests started at boot and guests
 /// created at boot whose start is deferred to a later shell/Web command.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +23,10 @@ pub(crate) struct StartupSelection {
 }
 
 /// Parses both host startup selectors and validates them together.
+///
+/// The command line contains host boot arguments. Linux-style tokenization is
+/// shared with root selection; arguments after `--` belong to the guest payload
+/// and are ignored.
 ///
 /// `known` reports whether an ID names a builtin guest. Every started and
 /// prepared ID must be builtin, and the two selections must be disjoint.
@@ -129,25 +97,14 @@ fn parse_ids(key: &str, value: &str, known: impl Fn(usize) -> bool) -> Result<Ve
 
 #[cfg(any(test, axtest))]
 mod tests {
-    use super::{StartupSelector, parse_ids, select_ids, selected_vm_ids, startup_selection};
-    use axvisor::builtin::BuiltinCatalog;
+    use super::{parse_ids, select_ids, startup_selection};
 
     #[cfg_attr(axtest, axtest::axtest)]
     #[cfg_attr(not(axtest), test)]
     fn absent_selector_does_not_create_a_guest() {
-        assert!(
-            selected_vm_ids(Some("root=/dev/vda"), &BuiltinCatalog::default())
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[cfg_attr(axtest, axtest::axtest)]
-    #[cfg_attr(not(axtest), test)]
-    fn selector_is_an_immutable_empty_index_without_a_key() {
-        let selector =
-            StartupSelector::parse(Some("root=/dev/vda"), &BuiltinCatalog::default()).unwrap();
-        assert!(selector.ids().is_empty());
+        let selection = startup_selection(Some("root=/dev/vda"), |_| false).unwrap();
+        assert!(selection.start.is_empty());
+        assert!(selection.prepare.is_empty());
     }
 
     #[cfg_attr(axtest, axtest::axtest)]

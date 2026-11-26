@@ -103,7 +103,7 @@ fn periodic_writeback_finds_an_open_unlinked_cached_file() {
             .root_dir()
             .as_dir()
             .unwrap()
-            .unlink("input", false)
+            .unlink("input", false, &axfs_ng_vfs::MutationCredentials::root())
             .unwrap();
         file.write_at(b"after".as_slice(), 0).unwrap();
 
@@ -134,7 +134,10 @@ fn failed_final_mount_writeback_keeps_dirty_cache_for_retry() {
         let retained = entry.upgrade().expect("dirty dentry owner was discarded");
 
         let new_mount = Mountpoint::new_root(&Filesystem::new(filesystem.clone()));
-        let reopened = CachedFile::get_or_create(Location::new(new_mount, retained)).unwrap();
+        let reopened = CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(Location::new(new_mount, retained)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(reopened.identity(), identity);
         assert_eq!(reopened.dirty_pages_in_range(0, 1).unwrap(), [0]);
 
@@ -333,12 +336,20 @@ fn cache_on_filesystem(mut filesystem: Ext4Filesystem) -> (Arc<Ext4Filesystem>, 
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     entry.as_file().unwrap().write_at(b"start", 0).unwrap();
     filesystem.sync_to_disk().unwrap();
     filesystem.lock().dirty = false;
-    let file = CachedFile::get_or_create(Location::new(mount, entry)).unwrap();
+    let file = CachedFile::get_or_create(
+        axfs_ng_vfs::PathHandle::acquire(Location::new(mount, entry)).unwrap(),
+    )
+    .unwrap();
     (filesystem, file)
 }
 

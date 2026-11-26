@@ -83,6 +83,8 @@ GICv2/SMP4启动检查已并入ARM OpenRC；旧`qemu/gicv2-boot`选择仅在aarc
 
 ## qemu/system 聚合
 
+路径所有权与 proc 链接访问旅程位于 `qemu/standard/system/fs/test-path-lookup-ownership` 和 `qemu/standard/system/fs/test-proc-link-access`，保留原叶项目 ID 并进入默认批次。
+
 公开 `qemu/system` 选择器指向 `qemu/standard/system/qemu-*.toml`，在 SMP4 普通 profile 中聚合系统类子测例；ARM额外profile保持显式启动。项目按功能分类存放，每个项目保留自己的CMake与实现：
 
 ```text

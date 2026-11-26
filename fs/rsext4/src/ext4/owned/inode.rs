@@ -119,13 +119,21 @@ impl InodeInfo {
 }
 
 /// Metadata changes already authorized and normalized by the embedding VFS.
+///
+/// `permissions` contains the final permission bits, including any setid-bit
+/// policy already applied by the caller. Ownership changes do not clear them.
+/// Each `None` leaves that field unchanged, except that an omitted `ctime`
+/// uses the current filesystem time when another field is updated. An entirely
+/// empty update leaves all metadata unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InodeMetadataUpdate {
     pub permissions: Option<FilePermissions>,
-    pub owner: Option<(u32, u32)>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
     pub device_number: Option<DeviceNumber>,
     pub atime: Option<Ext4Timestamp>,
     pub mtime: Option<Ext4Timestamp>,
+    pub ctime: Option<Ext4Timestamp>,
     pub project_id: Option<u32>,
     pub flags: Option<InodeFlags>,
 }
@@ -266,10 +274,6 @@ where
         if let Some(device_number) = update.device_number {
             inode.set_device_number(device_number)?;
         }
-        let (uid, gid) = match update.owner {
-            Some((uid, gid)) => (Some(uid), Some(gid)),
-            None => (None, None),
-        };
         self.filesystem.finalize_inode_update(
             &mut self.device,
             number,
@@ -279,12 +283,11 @@ where
                 mode: update
                     .permissions
                     .map(|permissions| Ext4ModeUpdate::Chmod(permissions.bits())),
-                uid,
-                gid,
+                uid: update.uid,
+                gid: update.gid,
                 atime: update.atime.map(Ext4TimeSpec::Set),
                 mtime: update.mtime.map(Ext4TimeSpec::Set),
-                ctime: Some(Ext4TimeSpec::Now),
-                clear_suid_sgid_on_chown: update.owner.is_some(),
+                ctime: Some(update.ctime.map_or(Ext4TimeSpec::Now, Ext4TimeSpec::Set)),
                 ..Default::default()
             },
         )?;

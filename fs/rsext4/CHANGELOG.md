@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 完整输入或数据写入失败后，复用截断意图回收已接受长度之外的分配，保留原始错误。
+- 截断跨日志进展时显式保留映射清理阶段，避免从当前长度和链接数推断进度。
+
 ## [0.9.2](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.9.1...rsext4-v0.9.2) - 2026-09-21
 
 ### Other
