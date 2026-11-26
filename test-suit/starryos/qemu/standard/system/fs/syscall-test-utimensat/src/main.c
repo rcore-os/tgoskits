@@ -79,6 +79,18 @@ static int create_tmpfile(const char *path)
 	return fd;
 }
 
+/* Record a failed call. The caller must not read the call's output afterwards.
+ * Pass the return value and errno saved right after the call, since fprintf
+ * may change errno. */
+#define FAIL_CALL(name, ret, saved_errno)                                      \
+	do {                                                                   \
+		fprintf(stderr,                                                \
+			"FAIL:%s: %s returned %ld, errno=%d:%s\n",             \
+			_current_test, name, (long)(ret), saved_errno,         \
+			strerror(saved_errno));                                \
+		_test_fail_count++;                                            \
+	} while (0)
+
 /* ================================================================ */
 
 void test_set_specific_times(void)
@@ -116,8 +128,15 @@ void test_ext4_whole_times(void)
 	unlink(EXT4FILE);
 	create_tmpfile(EXT4FILE);
 
+	/* Read an output only after its call succeeded. On failure record the
+	 * call, its return value and errno, then remove the file and fail. */
 	struct statfs fs;
-	CHECK_RET(statfs(EXT4FILE, &fs), 0, "statfs ext4 file");
+	long ret = statfs(EXT4FILE, &fs);
+	int saved_errno = errno;
+	if (ret != 0) {
+		FAIL_CALL("statfs ext4 file", ret, saved_errno);
+		goto cleanup;
+	}
 	CHECK(fs.f_type == EXT4_SUPER_MAGIC, "test file is not on ext4");
 
 	/* The mtime lies past 2106, beyond an unsigned 32-bit seconds field,
@@ -127,10 +146,20 @@ void test_ext4_whole_times(void)
 	ts[0].tv_nsec = 123456789;
 	ts[1].tv_sec  = 5000000000LL;
 	ts[1].tv_nsec = 999999999;
-	CHECK_RET(utimensat(AT_FDCWD, EXT4FILE, ts, 0), 0, "utimensat ext4 file");
+	ret = utimensat(AT_FDCWD, EXT4FILE, ts, 0);
+	saved_errno = errno;
+	if (ret != 0) {
+		FAIL_CALL("utimensat ext4 file", ret, saved_errno);
+		goto cleanup;
+	}
 
 	struct stat st;
-	CHECK_RET(stat(EXT4FILE, &st), 0, "stat ext4 file");
+	ret = stat(EXT4FILE, &st);
+	saved_errno = errno;
+	if (ret != 0) {
+		FAIL_CALL("stat ext4 file", ret, saved_errno);
+		goto cleanup;
+	}
 	printf("  stat  atime %lld.%09ld mtime %lld.%09ld\n",
 	       (long long)st.st_atim.tv_sec, (long)st.st_atim.tv_nsec,
 	       (long long)st.st_mtim.tv_sec, (long)st.st_mtim.tv_nsec);
@@ -141,9 +170,13 @@ void test_ext4_whole_times(void)
 
 	struct statx_abi stx;
 	memset(&stx, 0, sizeof(stx));
-	CHECK_RET(syscall(SYS_statx, AT_FDCWD, EXT4FILE, 0,
-			  STATX_ATIME | STATX_MTIME, &stx),
-		  0, "statx ext4 file");
+	ret = syscall(SYS_statx, AT_FDCWD, EXT4FILE, 0,
+		      STATX_ATIME | STATX_MTIME, &stx);
+	saved_errno = errno;
+	if (ret != 0) {
+		FAIL_CALL("statx ext4 file", ret, saved_errno);
+		goto cleanup;
+	}
 	printf("  statx atime %lld.%09u mtime %lld.%09u\n",
 	       (long long)stx.stx_atime.tv_sec, stx.stx_atime.tv_nsec,
 	       (long long)stx.stx_mtime.tv_sec, stx.stx_mtime.tv_nsec);
@@ -155,6 +188,7 @@ void test_ext4_whole_times(void)
 	CHECK(stx.stx_mtime.tv_sec == 5000000000LL, "statx mtime sec mismatch");
 	CHECK(stx.stx_mtime.tv_nsec == 999999999, "statx mtime nsec mismatch");
 
+cleanup:
 	unlink(EXT4FILE);
 	TEST_DONE();
 }
