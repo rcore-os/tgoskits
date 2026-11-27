@@ -313,6 +313,85 @@ fn large_extent_range_removal_restarts_across_small_journal_transactions() {
 }
 
 #[test]
+fn restarted_truncate_to_a_partial_block_folds_the_last_leaf_into_the_inode() {
+    let mut fixture = build_large_extent_fixture("/restart-fold");
+    install_small_journal(&mut fixture);
+    fixture.power_cut.reset_observation();
+    let starting_depth = ExtentTree::with_filesystem(
+        &mut fixture.inode,
+        &fixture.filesystem,
+        fixture.inode_number,
+    )
+    .load_root_from_inode()
+    .expect("extent root must be valid")
+    .header()
+    .eh_depth;
+    assert!(
+        starting_depth > 0,
+        "the fixture must start with an external tree"
+    );
+
+    // Keeping logical block 0 leaves the root with one child at the end, so
+    // the last removal step both releases a leaf and folds the survivor into
+    // the inode. That step must have reserved a revoke for each.
+    truncate_inode(
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        fixture.inode_number,
+        100,
+    )
+    .expect("a restarted truncate that folds the root must succeed");
+    assert!(
+        fixture.power_cut.commit_writes.get() >= 2,
+        "small journal must force more than one transaction"
+    );
+
+    fixture
+        .filesystem
+        .umount(&mut fixture.journal)
+        .expect("unmount after the folding truncate failed");
+    let device = fixture.journal.into_inner();
+    let mut remount_device = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut remounted = Ext4FileSystem::mount(&mut remount_device)
+        .expect("remount after the folding truncate failed");
+    let mut inode = remounted
+        .get_inode_by_num(&mut remount_device, fixture.inode_number)
+        .expect("remounted inode read failed");
+    assert_eq!(inode.size(), 100);
+    assert_eq!(remounted.superblock.s_last_orphan, 0);
+    assert_eq!(
+        remounted.superblock.free_blocks_count(),
+        fixture.free_before + u64::from(fixture.logical_blocks) - 1
+            + fixture.external_blocks.len() as u64
+    );
+    assert!(bitmap_block_is_allocated(
+        &mut remounted,
+        &mut remount_device,
+        fixture.data_blocks[0]
+    ));
+    for block in fixture.data_blocks[1..]
+        .iter()
+        .chain(&fixture.external_blocks)
+    {
+        assert!(
+            !bitmap_block_is_allocated(&mut remounted, &mut remount_device, *block),
+            "released block {block:?} must be free"
+        );
+    }
+    let root = ExtentTree::with_filesystem(&mut inode, &remounted, fixture.inode_number)
+        .load_root_from_inode()
+        .expect("folded extent root must be valid");
+    assert!(matches!(
+        root,
+        ExtentNode::Leaf { header, entries }
+            if header.eh_depth == 0
+                && entries.len() == 1
+                && entries[0].ee_block == 0
+                && entries[0].len() == 1
+    ));
+}
+
+#[test]
 fn large_extent_truncate_recovery_resumes_after_transaction_boundary_power_cut() {
     let mut fixture = build_large_extent_fixture("/restart-crash");
     install_small_journal(&mut fixture);
