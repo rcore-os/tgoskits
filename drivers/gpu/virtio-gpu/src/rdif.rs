@@ -153,7 +153,7 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
 
     fn ensure_ready(&mut self) -> Result<(), GpuError> {
         if self.raw.is_reset() && !self.lost {
-            self.mark_lost();
+            self.reset_and_lose();
         }
         if self.lost {
             Err(GpuError::DeviceLost)
@@ -249,7 +249,7 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
         // device lost — stopping all DMA — exactly when that proof stays
         // unconfirmable.
         if self.raw.resource_unref(id).is_err() {
-            self.mark_lost();
+            self.reset_and_lose();
             return;
         }
         let _ = self.confirm_drain();
@@ -266,14 +266,17 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
     fn confirm_drain(&mut self) -> Result<(), GpuError> {
         self.raw.ctrl_notify();
         if self.raw.wait_idle().is_err() {
-            self.mark_lost();
+            self.reset_and_lose();
             return Err(GpuError::DeviceLost);
         }
         Ok(())
     }
 
-    fn mark_lost(&mut self) {
-        // Reset stops all DMA before any backing or scanout reference drops.
+    /// The [`GpuDevice::mark_lost`] implementation, kept on the weakest impl
+    /// so the `VirglOps` block (whose transport needs no `Send`) reaches it
+    /// too: reset stops all DMA before any backing or scanout reference
+    /// drops.
+    fn reset_and_lose(&mut self) {
         self.raw.reset();
         self.lost = true;
         self.states.fill(None);
@@ -364,7 +367,7 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
 
     fn fail_commit_after_bind(&mut self, index: usize, error: DisplayError) -> DisplayError {
         if self.rollback_scanout(index).is_err() {
-            self.mark_lost();
+            self.reset_and_lose();
             DisplayError::DeviceLost
         } else {
             error
@@ -707,7 +710,7 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
                 Err(Error::QueueBusy) => return Err(GpuError::Busy),
                 Err(_) => {
                     // Without a confirmed detach the host may still DMA backing.
-                    self.mark_lost();
+                    self.reset_and_lose();
                     return Err(GpuError::DeviceLost);
                 }
             }
@@ -731,7 +734,7 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
             }
             Err(Error::QueueBusy) => Err(GpuError::Busy),
             Err(_) => {
-                self.mark_lost();
+                self.reset_and_lose();
                 Err(GpuError::DeviceLost)
             }
         }
@@ -758,6 +761,10 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
                 })
             }
         }
+    }
+
+    fn mark_lost(&mut self) {
+        self.reset_and_lose();
     }
 
     fn take_irq_endpoint(&mut self) -> Option<Box<dyn GpuIrqEndpoint>> {
@@ -842,7 +849,7 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
                     // The teardown is ambiguous; the host may still use the
                     // attached resources. Stop DMA before their backing can be
                     // released by a closing file.
-                    self.mark_lost();
+                    self.reset_and_lose();
                     return Err(GpuError::DeviceLost);
                 }
             }
@@ -852,7 +859,7 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
             Ok(()) => {}
             Err(Error::QueueBusy) => return Err(GpuError::Busy),
             Err(_) => {
-                self.mark_lost();
+                self.reset_and_lose();
                 return Err(GpuError::DeviceLost);
             }
         }
