@@ -1,6 +1,7 @@
 #include "test_framework.h"
 #include "test_helpers.h"
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/sendfile.h>
@@ -44,6 +45,63 @@ static int check_sendfile_to_fifo_with_append(void)
         close(dir);
     }
     rmdir(directory);
+    return fail;
+}
+
+static int check_memfd_append(int input)
+{
+    int fail = 0;
+    int fd = (int)syscall(SYS_memfd_create, "dup-fcntl-append", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "创建追加测试的 memfd");
+    if (fd < 0) return fail;
+
+    CHECK_RET(syscall(SYS_fcntl, fd, F_SETFL, O_APPEND), 0, "为 memfd 设置 O_APPEND");
+    long flags = syscall(SYS_fcntl, fd, F_GETFL, 0);
+    CHECK(flags >= 0 && (flags & O_APPEND) != 0, "memfd 报告当前 O_APPEND");
+
+    off_t offset = 0;
+    CHECK_ERR(syscall(SYS_sendfile, fd, input, &offset, 1), EINVAL,
+              "sendfile 拒绝带 O_APPEND 的 memfd");
+    CHECK_RET(offset, 0, "sendfile 拒绝后保留输入偏移");
+    CHECK_RET(lseek(fd, 0, SEEK_END), 0, "sendfile 拒绝后 memfd 长度不变");
+
+    CHECK_RET(syscall(SYS_fcntl, fd, F_SETFL, 0), 0, "清除 memfd 的 O_APPEND");
+    flags = syscall(SYS_fcntl, fd, F_GETFL, 0);
+    CHECK(flags >= 0 && (flags & O_APPEND) == 0, "memfd 报告清除后的状态");
+    CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "回到 memfd 开头");
+    offset = 0;
+    CHECK_RET(syscall(SYS_sendfile, fd, input, &offset, 1), 1,
+              "sendfile 接受清除 O_APPEND 的 memfd");
+
+    CHECK_RET(syscall(SYS_fcntl, fd, F_SETFL, O_APPEND), 0, "重新设置 memfd 的 O_APPEND");
+    CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "追加写入前将 memfd 偏移归零");
+    CHECK_RET(syscall(SYS_write, fd, "x", 1), 1, "memfd 追加写入成功");
+    CHECK_RET(lseek(fd, 0, SEEK_CUR), 2, "memfd 追加写入推进到文件末尾");
+    offset = 0;
+    off_t dest_offset = 2;
+    CHECK_ERR(syscall(SYS_copy_file_range, fd, &offset, fd, &dest_offset, 1, 0), EBADF,
+              "copy_file_range 拒绝带 O_APPEND 的 memfd");
+
+    int pipefds[2];
+    int pipe_result = pipe2(pipefds, O_NONBLOCK);
+    CHECK_RET(pipe_result, 0, "为 splice 创建非阻塞管道");
+    if (pipe_result == 0) {
+        CHECK_RET(write(pipefds[1], "p", 1), 1, "准备 splice 输入");
+        CHECK_ERR(syscall(SYS_splice, pipefds[0], NULL, fd, NULL, 1, 0), EINVAL,
+                  "splice 拒绝带 O_APPEND 的 memfd");
+        char byte = 0;
+        CHECK_RET(read(pipefds[0], &byte, 1), 1, "splice 拒绝后管道数据仍可读");
+        CHECK(byte == 'p', "splice 拒绝后管道内容不变");
+        close(pipefds[1]);
+        close(pipefds[0]);
+    }
+
+    CHECK_RET(syscall(SYS_fcntl, fd, F_ADD_SEALS, F_SEAL_GROW), 0, "为 memfd 禁止扩容");
+    CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "封印后将 memfd 偏移归零");
+    CHECK_ERR(syscall(SYS_write, fd, "y", 1), EPERM, "禁止扩容的 memfd 拒绝追加写入");
+    CHECK_RET(lseek(fd, 0, SEEK_CUR), 0, "追加写入被拒绝后保留 memfd 偏移");
+
+    close(fd);
     return fail;
 }
 
@@ -209,6 +267,7 @@ int parts_dup_dup3_fcntl(void)
         errno = 0;
         CHECK_ERR(sendfile(fd, input, NULL, 0), EINVAL,
                   "sendfile 拒绝通过 F_SETFL 启用的 O_APPEND");
+        fail += check_memfd_append(input);
         close(input);
     }
 
