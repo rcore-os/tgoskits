@@ -45,6 +45,26 @@ QEMU `hostfwd` 发 `GET /api/v1/ota/status` 才能证明客户端可访问。
 
 本文件记录 LoongArch 动态统一可扩展固件接口平台启动、someboot 对称多处理、StarryOS 测试和 Axvisor LoongArch 虚拟化扩展 QEMU 冒烟测试的项目经验。
 
+## D3 外置 UEFI 栈无人值守启动
+
+D3 若固件只提供 UNDI/NII，不先识别缺失的 DPC、SNP、MNP、ARP、IP4、UDP4、DHCP4 或 TCP 协议，就不能把“无网卡”归因于 Realtek NII。
+
+自动入口使用 `edk2-stable202502` 提交 `fbe0805b2091393406952e84724188f8c1941837` 的 pinned Shell，`PcdShellDefaultDelay=0`；`EFI/BOOT/BOOTX64.EFI` 是该 Shell，同目录 `startup.nsh` 优先执行。脚本从 `%homefilesystem%` 显式选择并校验启动卷，再进入 `EFI/D3NET`，不依赖固定 `FS0` 或其他 ESP。
+
+启动顺序是 RNG、Hash2、DPC、SNP、MNP、ARP、IP4、UDP4、DHCP4、TCP，最后 `connect -r`，以 `no-report` 运行 `load-network.nsh`，再链式执行原 `EFI/AXLOADER/LAUNCHER.EFI`。`no-report` 不依赖日志写入；装配器不创建或重置 A/B 与 `STATE`，自动入口也不能改变其字节。详细装配见 [D3 bootstrap](../../../../bootloader/axloader/scripts/d3-uefi-bootstrap/README.md)，板卡 suite 与验证边界见 [D3 test suite](../../../../test-suit/axvisor/board/tianhong-minipc-d3/README.md)。
+
+QEMU 真实 FAT 零输入已观察到启动卷 `FS1`、10 个驱动、原 launcher、`loader_net_ready` 和 `device_listening`；缺 RNG 时停在 launcher 前，空驱动目录直接运行无参 `load-network.nsh` 返回 `0xE` 且无语法错误，A/B/STATE 哈希不变。自动入口也已安装到同一 OSTOOLBOOT USB，保留 `BOOTX64.PREVIOUS.EFI` 并完成 `sync` 后卸载；D3 实机已完成自动入口到 AxVisor 入口。
+
+物理板卡类型是 `TianHong-minipc-D3`；AMD SVM 由 CPUID 选择，构建不增加 `svm` feature。SerialIo 身份帧仍是自动串口绑定的必要条件，宿主 `/dev/ttyUSB1` 不能替代；D3 已于 2026-11-26 在 AML 关闭配置下连续通过两次正式 Linux guest case。
+
+D3 已配置 AC 来电自启动，ostool 多次通过继电器完成冷启动，无需人工按电源；USB 外置 EDK2 网络/serial 驱动、loader 身份绑定和 HTTP 交接均正常。默认 AML 路径仍会在 `_SB_.PCI0.GP19.XHC3.RHUB` 报 `LevelDoesNotExist` 并早期 panic，不能归因于 SVM。
+
+正式 case 使用 `RDRIVE_ACPI_LOAD_AML=0`、`guest_type = "virtualized"`、guest CPU bitmap2 对应物理 CPU1；host 为 16 CPU、`Info`、300 秒，guest 为 1 CPU、256 MiB。该模式保留 RSDP 静态表、MCFG、MADT CPU/中断信息和根回调，只跳过 AML interpreter 与命名空间设备枚举。
+
+SVM 当前对 guest 隐藏 MTRR、EXTAPIC 和 IBS。`setup_msr_bitmap()` 拦截 `0xfe`、`0x2ff` 与 `0x200..=0x26f`，`handle_unsupported_mtrr_msr()` 注入 `#GP Some(0)` 且不推进 RIP，不向宿主透传或伪造 MTRR；`handle_cpuid()` 隐藏 CPUID.1 EDX MTRR 及 `0x8000_0001` ECX EXTAPIC/IBS，标准 APIC/PAT 保持。`x86_vlapic` 尚无 EILVT，因此 AMD IBS/MTRR 虚拟化和完整 AML 不在支持范围，VMX 路径不变。
+
+2026-11-26 连续两轮正式 case 均由 ostool relay 自动停电/上电冷启动，无人工操作且未改代码；两轮退出码均为 0、全部 groups 通过，BusyBox 输出 `test pass!` 后进入 `~#`，TSC 正常。第一轮 session `3cc01f10-8fc7-439f-ae59-a744514eadb0`、端到端 163.05 秒；第二轮 session `9bebb339-3cc8-44e2-9cd5-eaaaed79fa62`、端到端 63.80 秒。两轮 kernel SHA-256 同为 `324370754f2e374324ea845c2dc3bb94ce8c81ba6c7ab1c6bfa153beb1837466`；端到端时间包含串口身份绑定等待，不是 Linux 启动性能。远端 GitHub Actions 未执行，最终 21 组 axvm clippy 已通过，`cargo fmt` 已完成。
+
 ## 分层映射
 
 | 层 | 常见文件 | 必须一致的内容 |

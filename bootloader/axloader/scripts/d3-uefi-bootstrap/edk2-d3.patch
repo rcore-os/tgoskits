@@ -1,0 +1,115 @@
+diff --git a/NetworkPkg/NetworkPkg.dsc b/NetworkPkg/NetworkPkg.dsc
+index b3710bf..1437345 100644
+--- a/NetworkPkg/NetworkPkg.dsc
++++ b/NetworkPkg/NetworkPkg.dsc
+@@ -27,6 +27,7 @@
+   DebugLib|MdePkg/Library/BaseDebugLibNull/BaseDebugLibNull.inf
+   BaseLib|MdePkg/Library/BaseLib/BaseLib.inf
+   BaseMemoryLib|MdePkg/Library/BaseMemoryLib/BaseMemoryLib.inf
++  IoLib|MdePkg/Library/BaseIoLibIntrinsic/BaseIoLibIntrinsic.inf
+   DevicePathLib|MdePkg/Library/UefiDevicePathLib/UefiDevicePathLib.inf
+   HiiLib|MdeModulePkg/Library/UefiHiiLib/UefiHiiLib.inf
+   MemoryAllocationLib|MdePkg/Library/UefiMemoryAllocationLib/UefiMemoryAllocationLib.inf
+@@ -84,6 +85,8 @@
+ [PcdsFixedAtBuild]
+   gEfiMdePkgTokenSpaceGuid.PcdDebugPropertyMask|0x2f
+   gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x80000000
++  # DxeNetLib must use an approved EFI_RNG_PROTOCOL algorithm.
++  gEfiMdePkgTokenSpaceGuid.PcdEnforceSecureRngAlgorithms|TRUE
+ 
+ [PcdsDynamicDefault]
+   gEfiNetworkPkgTokenSpaceGuid.PcdHttpIoTimeout|5000
+@@ -118,6 +121,13 @@
+   NetworkPkg/Library/DxeTcpIoLib/DxeTcpIoLib.inf
+   NetworkPkg/Library/DxeUdpIoLib/DxeUdpIoLib.inf
+ 
++  # Optional standard SIO/PCI 16550 serial provider for D3 startup.
++  MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
++  # CTR-256-only RNG provider for this diagnostic network stack.
++  SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
++  # Hash2DxeCrypto satisfies TcpDxe's Hash2 service-binding dependency.
++  SecurityPkg/Hash2DxeCrypto/Hash2DxeCrypto.inf
++
+   !include NetworkPkg/Network.dsc.inc
+ 
+ [BuildOptions]
+diff --git a/SecurityPkg/RandomNumberGenerator/RngDxe/Rand/RngDxe.c b/SecurityPkg/RandomNumberGenerator/RngDxe/Rand/RngDxe.c
+index 8b0742b..c83d58c 100644
+--- a/SecurityPkg/RandomNumberGenerator/RngDxe/Rand/RngDxe.c
++++ b/SecurityPkg/RandomNumberGenerator/RngDxe/Rand/RngDxe.c
+@@ -7,8 +7,7 @@
+   RNG Algorithms defined in UEFI 2.4:
+    - EFI_RNG_ALGORITHM_SP800_90_CTR_256_GUID  - Supported
+      (RDRAND implements a hardware NIST SP800-90 AES-CTR-256 based DRBG)
+-   - EFI_RNG_ALGORITHM_RAW                    - Supported
+-     (Structuring RDRAND invocation can be guaranteed as high-quality entropy source)
++   - EFI_RNG_ALGORITHM_RAW                    - Unsupported in this build
+    - EFI_RNG_ALGORITHM_SP800_90_HMAC_256_GUID - Unsupported
+    - EFI_RNG_ALGORITHM_SP800_90_HASH_256_GUID - Unsupported
+    - EFI_RNG_ALGORITHM_X9_31_3DES_GUID        - Unsupported
+@@ -30,7 +29,7 @@
+ //
+ // Count of Rng algorithms.
+ //
+-#define RNG_ALGORITHM_COUNT  2
++#define RNG_ALGORITHM_COUNT  1
+ 
+ /** Allocate and initialize mAvailableAlgoArray with the available
+     Rng algorithms. Also update mAvailableAlgoArrayCount.
+@@ -118,14 +117,6 @@ RngGetRNG (
+     return Status;
+   }
+ 
+-  //
+-  // The "raw" algorithm is intended to provide entropy directly
+-  //
+-  if (CompareGuid (RNGAlgorithm, &gEfiRngAlgorithmRaw)) {
+-    Status = GenerateEntropy (RNGValueLength, RNGValue);
+-    return Status;
+-  }
+-
+   //
+   // Other algorithms were unsupported by this driver.
+   //
+@@ -182,9 +173,6 @@ RngGetInfo (
+ 
+   CopyMem (&RNGAlgorithmList[0], &gEfiRngAlgorithmSp80090Ctr256Guid, sizeof (EFI_RNG_ALGORITHM));
+ 
+-  // x86 platforms also support EFI_RNG_ALGORITHM_RAW via RDSEED
+-  CopyMem (&RNGAlgorithmList[1], &gEfiRngAlgorithmRaw, sizeof (EFI_RNG_ALGORITHM));
+-
+   *RNGAlgorithmListSize = RequiredSize;
+   return EFI_SUCCESS;
+ }
+diff --git a/SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf b/SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
+index 8704a64..216dd5c 100644
+--- a/SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
++++ b/SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
+@@ -37,9 +37,6 @@
+ 
+ [Sources.IA32, Sources.X64]
+   Rand/RngDxe.c
+-  Rand/RdRand.c
+-  Rand/AesCore.c
+-  Rand/AesCore.h
+ 
+ [Sources.AARCH64, Sources.ARM]
+   ArmRngDxe.c
+@@ -62,13 +59,15 @@
+   BaseLib
+   DebugLib
+   UefiDriverEntryPoint
+-  TimerLib
+   RngLib
+ 
+ [LibraryClasses.AARCH64, LibraryClasses.ARM]
+   ArmTrngLib
+ 
+-[Guids]
++[Guids.IA32, Guids.X64]
++  gEfiRngAlgorithmSp80090Ctr256Guid   ## SOMETIMES_PRODUCES    ## GUID        # Unique ID of the algorithm for RNG
++
++[Guids.AARCH64, Guids.ARM]
+   gEfiRngAlgorithmSp80090Hash256Guid  ## SOMETIMES_PRODUCES    ## GUID        # Unique ID of the algorithm for RNG
+   gEfiRngAlgorithmSp80090Hmac256Guid  ## SOMETIMES_PRODUCES    ## GUID        # Unique ID of the algorithm for RNG
+   gEfiRngAlgorithmSp80090Ctr256Guid   ## SOMETIMES_PRODUCES    ## GUID        # Unique ID of the algorithm for RNG

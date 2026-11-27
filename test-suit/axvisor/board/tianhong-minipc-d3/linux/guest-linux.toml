@@ -1,0 +1,51 @@
+# Vm base info configs
+#
+[base]
+# Guest vm id.
+id = 1
+# Guest vm name.
+name = "linux-tianhong-minipc-d3"
+# Virtualization type.
+guest_type = "virtualized"
+# The number of virtual CPUs.
+cpu_num = 1
+# Guest vm physical cpu sets.
+# Affinity is a bitmap: keep CPU0 available for the FIFO-scheduled management shell.
+phys_cpu_sets = [2]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the kernel image.
+# Linux direct boot uses the Linux-specific boot stub at this GPA.
+entry_point = 0x8000
+# The TianHong MiniPC D3 HTTP Boot flow packages the Linux guest images in the
+# host initramfs.
+# The file path of the kernel image.
+kernel_path = "${workspace}/target/axbuild/board-assets/tianhong-minipc-d3-linux/qemu-x86_64/linux/linux-qemu"
+# The load address of the kernel image.
+kernel_load_addr = 0x20_0000
+# Whether to enable BIOS boot flow.
+enable_bios = false
+# The file path of the initramfs image.
+ramdisk_path = "${workspace}/target/axbuild/board-assets/tianhong-minipc-d3-linux/initramfs-x86_64-busybox.cpio.gz/initramfs-x86_64-busybox.cpio.gz"
+# The load address of the initramfs image.
+ramdisk_load_addr = 0x0600_0000
+# Linux kernel command line.
+cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 ignore_loglevel loglevel=8 rdinit=/init devtmpfs.mount=1 acpi=off pci=off nox2apic no_timer_check 8250.nr_uarts=1 initcall_blacklist=ahci_pci_driver_init,i8042_init"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
+memory_regions = [
+  [0x0000_0000, 0x1000_0000, 0x7, 0], # System RAM 256M
+]
+
+#
+# Device specifications
+#
+
+# Physical-device selection. Virtual platform devices are machine-owned.
+[devices]
+passthrough = []
+disabled = []
