@@ -35,17 +35,22 @@ impl LocalExecutor {
     }
 
     pub(super) fn discard_ready_references(&self) {
-        let mut cursor = self.take_ready_snapshot();
-        while !cursor.is_null() {
-            let header = cursor;
-            cursor = unsafe {
-                // Closing waited for every pre-close publisher, so this detached
-                // list is the final shared ready snapshot.
-                IntrusiveInbox::take_next(header, InboxKind::Ready)
-            };
-            unsafe {
-                (*header).state.fetch_and(!RUN_QUEUED, Ordering::AcqRel);
-                release_reference(header);
+        // Closing has joined all publishers. Drain owner-local work and both
+        // inbox generations before releasing the permanent owner references.
+        while self.has_ready() {
+            let mut cursor = self.take_ready_snapshot();
+            while !cursor.is_null() {
+                let header = cursor;
+                cursor = unsafe {
+                    // The owner exclusively holds this detached queue reference.
+                    IntrusiveInbox::take_next(header, InboxKind::Ready)
+                };
+                unsafe {
+                    // Queue membership ends here. The detached reference is
+                    // released independently of the future's owner reference.
+                    (*header).state.fetch_and(!RUN_QUEUED, Ordering::AcqRel);
+                    release_reference(header);
+                }
             }
         }
     }

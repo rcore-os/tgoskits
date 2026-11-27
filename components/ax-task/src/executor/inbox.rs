@@ -79,6 +79,30 @@ impl IntrusiveInbox {
                 .swap(ptr::null_mut(), Ordering::Relaxed)
         }
     }
+
+    /// Appends `suffix` to the nonempty detached list `head`.
+    ///
+    /// # Safety
+    /// Both lists must be disjoint and exclusively owned through their live
+    /// queue references and the intrusive links selected by `kind`.
+    pub(super) unsafe fn append(
+        mut head: *mut CoroutineHeader,
+        suffix: *mut CoroutineHeader,
+        kind: InboxKind,
+    ) {
+        loop {
+            let link = unsafe {
+                // The owner retains this detached node and its link.
+                (*head).next(kind)
+            };
+            let next = link.load(Ordering::Relaxed);
+            if next.is_null() {
+                link.store(suffix, Ordering::Relaxed);
+                break;
+            }
+            head = next;
+        }
+    }
 }
 
 /// Reverses an exclusively detached intrusive list.
