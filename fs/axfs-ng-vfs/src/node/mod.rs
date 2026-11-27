@@ -22,8 +22,8 @@ use inherit_methods_macro::inherit_methods;
 use smallvec::SmallVec;
 
 use crate::{
-    FilesystemOps, Metadata, MetadataUpdate, NodeType, RawSpinLock, RawSpinLockGuard, VfsError,
-    VfsResult, WritebackPolicy, path::PathBuf,
+    FilesystemOps, Location, Metadata, MetadataUpdate, NodeType, RawSpinLock, RawSpinLockGuard,
+    VfsError, VfsResult, WritebackPolicy, path::PathBuf,
 };
 
 bitflags! {
@@ -59,6 +59,16 @@ bitflags! {
         /// The direct backend then calls the node once per request instead
         /// of filling or draining the caller's buffer across records.
         const PACKET = 0x0010;
+
+        /// Indicates that this symlink is a procfs-style magic link.
+        ///
+        /// A magic link's target is a kernel object handle displayed as a path
+        /// (for example `/proc/<pid>/exe` or `/proc/<pid>/fd/<n>`), so it
+        /// jumps directly to its backing object instead of naming a real
+        /// pathname. Path-walk constraints such as openat2's
+        /// `RESOLVE_NO_MAGICLINKS` use this distinction to reject magic links
+        /// while still following ordinary symlinks.
+        const MAGIC_LINK = 0x0020;
     }
 }
 
@@ -73,6 +83,26 @@ pub trait NodeOps: Send + Sync + 'static {
 
     /// Updates the metadata of the node.
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    /// Plans and commits one metadata update across the implementation's
+    /// update serialization boundary.
+    ///
+    /// `plan` runs against the inode's current attributes and returns the
+    /// update to commit, or an error to abort with no change. Implementations
+    /// that serialize metadata updates must run the plan under the same lock,
+    /// so permission decisions and the commit observe one state (Linux
+    /// `inode_lock` covering `setattr_prepare` and `notify_change`). The
+    /// default observes the attributes and then commits through
+    /// [`Self::update_metadata`]; it keeps `plan` side-effect free on error but
+    /// cannot close a race the implementation does not serialize.
+    fn update_metadata_checked(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()> {
+        let current = self.metadata()?;
+        let update = plan(&current)?;
+        self.update_metadata(update)
+    }
 
     /// Gets the filesystem
     fn filesystem(&self) -> &dyn FilesystemOps;
@@ -91,6 +121,18 @@ pub trait NodeOps: Send + Sync + 'static {
     /// Returns the flags of the node.
     fn flags(&self) -> NodeFlags {
         NodeFlags::empty()
+    }
+
+    /// For a magic link ([`NodeFlags::MAGIC_LINK`]), the VFS location its
+    /// jump lands on when the target is a filesystem object.
+    ///
+    /// `RESOLVE_NO_XDEV` compares that location's mount with the link's own
+    /// mount, so a jump that stays on the same mount is allowed while a
+    /// cross-mount jump stays `EXDEV` (Linux `nd_jump_link`). `None` means the
+    /// target has no VFS identity (an anonymous pipe, a socket, a namespace
+    /// object) and any constrained jump must be treated as crossing.
+    fn magic_link_target(&self) -> Option<Location> {
+        None
     }
 
     /// Queries inode-owned persistence flags. Mount policy is applied by the
@@ -270,12 +312,31 @@ impl DirEntry {
 
     pub fn filesystem(&self) -> &dyn FilesystemOps;
 
-    pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+    /// Updates metadata; a directory update takes the same guard as its
+    /// entry creation (see [`DirNode::update_metadata_serialized`]).
+    pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
+        match &self.0.node {
+            Node::Dir(dir) => dir.update_metadata_serialized(update),
+            Node::File(file) => file.inner().update_metadata(update),
+        }
+    }
+
+    pub fn update_metadata_checked(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()> {
+        match &self.0.node {
+            Node::Dir(dir) => dir.update_metadata_checked_serialized(plan),
+            Node::File(file) => file.inner().update_metadata_checked(plan),
+        }
+    }
 
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> VfsResult<u64>;
 
     pub fn flags(&self) -> NodeFlags;
+
+    pub fn magic_link_target(&self) -> Option<Location>;
 
     pub fn writeback_policy(&self) -> VfsResult<WritebackPolicy>;
 

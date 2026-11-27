@@ -524,6 +524,26 @@ impl Drop for InodeRef {
     }
 }
 
+/// Applies the named fields of one metadata update to a memory inode.
+fn apply_metadata_update(metadata: &mut Metadata, update: MetadataUpdate) {
+    if let Some(mode) = update.mode {
+        metadata.mode = mode;
+    }
+    if let Some((uid, gid)) = update.owner {
+        metadata.uid = uid;
+        metadata.gid = gid;
+    }
+    if let Some(rdev) = update.rdev {
+        metadata.rdev = rdev;
+    }
+    if let Some(atime) = update.atime {
+        metadata.atime = atime;
+    }
+    if let Some(mtime) = update.mtime {
+        metadata.mtime = mtime;
+    }
+}
+
 struct MemoryNode {
     fs: Arc<MemoryFs>,
     inode: Arc<Inode>,
@@ -589,22 +609,21 @@ impl NodeOps for MemoryNode {
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
         let mut metadata = self.inode.metadata.lock_irqsave();
-        if let Some(mode) = update.mode {
-            metadata.mode = mode;
-        }
-        if let Some((uid, gid)) = update.owner {
-            metadata.uid = uid;
-            metadata.gid = gid;
-        }
-        if let Some(rdev) = update.rdev {
-            metadata.rdev = rdev;
-        }
-        if let Some(atime) = update.atime {
-            metadata.atime = atime;
-        }
-        if let Some(mtime) = update.mtime {
-            metadata.mtime = mtime;
-        }
+        apply_metadata_update(&mut metadata, update);
+        Ok(())
+    }
+
+    fn update_metadata_checked(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()> {
+        // One lock spans planning and commit: the permission decision sees
+        // the attributes the commit replaces, so an owner change through
+        // another descriptor cannot authorize a stale request (Linux
+        // `inode_lock` covering `setattr_prepare` and `notify_change`).
+        let mut metadata = self.inode.metadata.lock_irqsave();
+        let update = plan(&metadata)?;
+        apply_metadata_update(&mut metadata, update);
         Ok(())
     }
 
@@ -998,5 +1017,105 @@ mod tests {
     #[axtest::axtest]
     fn failed_symlink_capacity_reservation_does_not_publish_name() {
         assert!(super::failed_symlink_capacity_reservation_does_not_publish_name_for_test());
+    }
+
+    /// The checked update plans against the state its commit replaces and a
+    /// denied plan leaves the inode untouched. `memfd_create` backs its inode
+    /// with this filesystem, so this is the inode boundary used by
+    /// `fchown`/`fchmod` on a shared memfd.
+    #[test]
+    fn checked_metadata_update_plans_against_the_committed_state() {
+        use super::*;
+
+        let filesystem = MemoryFs::new();
+        let root = filesystem.root_dir();
+        let directory = root.as_dir().expect("memory root is a directory");
+        let entry = directory
+            .create(
+                "file",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o644),
+                1000,
+                1000,
+            )
+            .expect("create fixture file");
+
+        let observed = core::cell::Cell::new(None);
+        entry
+            .update_metadata_checked(&|current| {
+                observed.set(Some((current.uid, current.gid, current.mode)));
+                Ok(MetadataUpdate {
+                    owner: Some((2000, current.gid)),
+                    ..Default::default()
+                })
+            })
+            .expect("authorized update commits");
+        assert_eq!(
+            observed
+                .get()
+                .map(|(uid, gid, mode)| (uid, gid, mode.bits())),
+            Some((1000, 1000, 0o644)),
+            "the plan observes the attributes the commit replaces"
+        );
+        let after = entry.metadata().expect("metadata");
+        assert_eq!(
+            (after.uid, after.gid),
+            (2000, 1000),
+            "only the named owner field changes"
+        );
+
+        let denied = entry.update_metadata_checked(&|_| Err(VfsError::OperationNotPermitted));
+        assert!(matches!(denied, Err(VfsError::OperationNotPermitted)));
+        let unchanged = entry.metadata().expect("metadata");
+        assert_eq!(
+            (unchanged.uid, unchanged.gid),
+            (2000, 1000),
+            "a denied plan must not modify the inode"
+        );
+    }
+
+    /// The checked open authorizes only on the create path, and a denied
+    /// authorization leaves no directory entry behind. This closes the
+    /// probe/create race for `O_CREAT`: a concurrent unlink between the
+    /// caller's existence probe and the VFS lookup cannot create an entry
+    /// whose parent write permission was never checked.
+    #[test]
+    fn checked_open_authorizes_only_on_the_create_path() {
+        use super::*;
+
+        let filesystem = MemoryFs::new();
+        let root = filesystem.root_dir();
+        let directory = root.as_dir().expect("memory root is a directory");
+        let options = axfs_ng_vfs::OpenOptions {
+            create: true,
+            ..Default::default()
+        };
+
+        let denied = directory
+            .open_file_checked("target", &options, &|| Err(VfsError::OperationNotPermitted));
+        assert!(matches!(denied, Err(VfsError::OperationNotPermitted)));
+        assert!(
+            directory.lookup("target").is_err(),
+            "a denied create must not leave a directory entry"
+        );
+
+        directory
+            .create(
+                "target",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o644),
+                0,
+                0,
+            )
+            .expect("create fixture entry");
+        let ran = core::cell::Cell::new(false);
+        let opened = directory
+            .open_file_checked("target", &options, &|| {
+                ran.set(true);
+                Ok(())
+            })
+            .expect("existing entries open without creation");
+        assert!(!opened.1, "an existing entry is opened, not created");
+        assert!(!ran.get(), "authorization runs only when creating");
     }
 }

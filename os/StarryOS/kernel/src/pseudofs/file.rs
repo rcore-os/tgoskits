@@ -2,8 +2,8 @@ use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering};
 
 use axfs_ng_vfs::{
-    FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
-    NodeType, VfsError, VfsResult,
+    FileNodeOps, FilesystemOps, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps,
+    NodePermission, NodeType, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
@@ -101,6 +101,13 @@ where
 pub struct SimpleFile {
     node: SimpleFsNode,
     ops: Arc<dyn SimpleFileOps>,
+    /// Marks procfs-style magic links (`NodeFlags::MAGIC_LINK`): symlinks
+    /// whose target is a kernel object handle displayed as a path rather than
+    /// a real pathname.
+    magic_link: bool,
+    /// VFS location the magic-link jump lands on, when the target is a
+    /// filesystem object (`RESOLVE_NO_XDEV` compares its mount).
+    magic_link_target: Option<Location>,
 }
 
 impl SimpleFile {
@@ -110,12 +117,41 @@ impl SimpleFile {
         Arc::new(Self {
             node,
             ops: Arc::new(ops),
+            magic_link: false,
+            magic_link_target: None,
         })
     }
 
     /// Creates a simple file from given file operations.
     pub fn new_regular(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<Self> {
         Self::new(fs, NodeType::RegularFile, ops)
+    }
+
+    /// Creates a symlink that is a procfs-style magic link (e.g.
+    /// `/proc/<pid>/exe`, `/proc/<pid>/fd/<n>`): its target names a kernel
+    /// object handle, so path walkers must treat it like Linux's
+    /// `nd_jump_link` links and honor `RESOLVE_NO_MAGICLINKS` on it.
+    pub fn new_magic_link(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<Self> {
+        Self::new_magic_link_targeting(fs, ops, None)
+    }
+
+    /// Creates a magic link whose jump lands on `target`, when that target is
+    /// a filesystem object. `RESOLVE_NO_XDEV` compares the target's mount
+    /// with the link's own mount (Linux `nd_jump_link`); use
+    /// [`Self::new_magic_link`] when the target is an anonymous kernel handle
+    /// with no mount identity.
+    pub fn new_magic_link_targeting(
+        fs: Arc<SimpleFs>,
+        ops: impl SimpleFileOps,
+        target: Option<Location>,
+    ) -> Arc<Self> {
+        let node = SimpleFsNode::new(fs, NodeType::Symlink, NodePermission::default());
+        Arc::new(Self {
+            node,
+            ops: Arc::new(ops),
+            magic_link: true,
+            magic_link_target: target,
+        })
     }
 
     /// Overwrite the node's stored ownership, permission bits and timestamps.
@@ -175,7 +211,15 @@ impl NodeOps for SimpleFile {
     }
 
     fn flags(&self) -> NodeFlags {
-        NodeFlags::NON_CACHEABLE
+        if self.magic_link {
+            NodeFlags::NON_CACHEABLE | NodeFlags::MAGIC_LINK
+        } else {
+            NodeFlags::NON_CACHEABLE
+        }
+    }
+
+    fn magic_link_target(&self) -> Option<Location> {
+        self.magic_link_target.clone()
     }
 }
 

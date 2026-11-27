@@ -32,6 +32,9 @@ pub fn sys_pipe2(
 
     let cloexec = flags.contains(PipeFlags::CLOEXEC);
     let (read_end, write_end) = Pipe::new();
+    // Linux `get_pipe_inode` assigns the creating task's fsuid/fsgid.
+    let cred = current.as_thread().cred();
+    read_end.set_inode_owner(cred.fsuid, cred.fsgid);
     if flags.contains(PipeFlags::NONBLOCK) {
         read_end.set_nonblocking(true)?;
         write_end.set_nonblocking(true)?;

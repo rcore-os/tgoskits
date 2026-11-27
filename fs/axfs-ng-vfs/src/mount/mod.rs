@@ -876,6 +876,8 @@ impl Location {
 
     pub fn flags(&self) -> NodeFlags;
 
+    pub fn magic_link_target(&self) -> Option<Location>;
+
     pub fn user_data(&self) -> RawSpinLockGuard<'_, TypeMap>;
 
     pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>>;
@@ -913,6 +915,18 @@ impl Location {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         self.entry.update_metadata(update)
+    }
+
+    /// Plans and commits one metadata update under the inode's update
+    /// serialization boundary; see [`NodeOps::update_metadata_checked`].
+    pub fn update_metadata_checked(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.update_metadata_checked(plan)
     }
 
     pub fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
@@ -1039,6 +1053,31 @@ impl Location {
             .children
             .lock()
             .contains_key(&self.entry.key())
+    }
+
+    /// Returns the topmost location when mounts are stacked on this dentry.
+    ///
+    /// Plain resolution already follows over-mounts at every named component,
+    /// but a location reached through `.`/`..`/`/` does not descend them.
+    /// `umount2(2)` uses this to operate on the top mount at the target,
+    /// matching Linux resolution for the `pivot_root(".", ".")` idiom where
+    /// the old root is stacked on the new root at "/".
+    pub fn mount_top(&self) -> Self {
+        let mut current = self.clone();
+        loop {
+            let key = current.entry.key();
+            let Some(child) = current.mountpoint.children.lock().get(&key).cloned() else {
+                break;
+            };
+            current = child.effective_mountpoint().root_location();
+        }
+        current
+    }
+
+    /// Returns whether this location is a procfs-style magic link; see
+    /// [`NodeFlags::MAGIC_LINK`].
+    pub fn is_magic_link(&self) -> bool {
+        self.flags().contains(NodeFlags::MAGIC_LINK)
     }
 
     /// Follows mounts stacked directly over this location.
@@ -1227,10 +1266,25 @@ impl Location {
         name: &str,
         options: &OpenOptions,
     ) -> VfsResult<(Location, bool)> {
+        self.open_file_checked(name, options, &|| Ok(()))
+    }
+
+    /// Opens (or creates) a file, running `authorize_create` after the entry
+    /// is found missing and before the directory creates it; see
+    /// [`DirNode::open_file_checked`].
+    pub fn open_file_checked(
+        &self,
+        name: &str,
+        options: &OpenOptions,
+        authorize_create: &dyn Fn() -> VfsResult<()>,
+    ) -> VfsResult<(Location, bool)> {
         if self.is_readonly() && (options.create || options.create_new) {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        let opened = self.entry.as_dir()?.open_file_with_status(name, options)?;
+        let opened = self
+            .entry
+            .as_dir()?
+            .open_file_checked(name, options, authorize_create)?;
         Ok((self.wrap(opened.0).resolve_mountpoint(), opened.1))
     }
 
