@@ -15,6 +15,8 @@ use crate::{
 
 mod cpu_iter;
 mod layout;
+#[cfg(all(efi, target_arch = "riscv64"))]
+pub(crate) use layout::early_cpu_area_layout;
 
 static mut CPU_AREA_REGION_START: usize = 0;
 static mut CPU_AREA_REGION_END: usize = 0;
@@ -116,7 +118,7 @@ pub(crate) enum CpuBootPrepareError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-enum PerCpuLayoutError {
+pub(crate) enum PerCpuLayoutError {
     #[error("firmware did not provide any usable CPU")]
     EmptyCpuSet,
     #[error("per-CPU layout alignment {alignment:#x} is not a nonzero power of two")]

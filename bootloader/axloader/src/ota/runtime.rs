@@ -58,6 +58,11 @@ impl OtaController {
         self.state.pending == Some(self.slot) && self.state.attempted
     }
 
+    /// A committed inactive slot must be started even if its HTTP reply fails.
+    pub fn reboot_pending(&self) -> bool {
+        self.state.pending.is_some() && !self.trial()
+    }
+
     pub fn record_failure(&mut self, reason: &'static str) {
         self.last_failure = Some(reason);
     }
@@ -69,7 +74,7 @@ impl OtaController {
             "active_slot": match self.state.active { Slot::A => "a", Slot::B => "b" },
             "active_sha256": hex(self.state.digest(self.state.active)),
             "pending_update_id": self.pending_id(),
-            "phase": if self.trial() { "awaiting_confirmation" } else if self.state.pending.is_some() { "staged" } else { "stable" },
+            "phase": if self.trial() { "awaiting_confirmation" } else if self.reboot_pending() { "staged" } else { "stable" },
             "version": self.state.version(),
             "trial": self.trial(),
             "source": self.state.source,

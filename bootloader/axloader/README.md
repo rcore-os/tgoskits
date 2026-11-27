@@ -4,16 +4,26 @@
 
 ### 1.1 设备接口
 
-axloader 在同一网卡使用 UEFI SNP、IP4、UDP4 与 TCP4，向 UDP `2998` 广播自身
-MAC、架构名称、`boot_epoch` 和 HTTP 端口，并在 TCP `2999` 提供设备接口。它不再
-发现 ostool-server、轮询任务或通过 HTTP 下载镜像；串口在启动前输出本次身份帧和诊断，并在交接后
-供目标系统使用。`network::NetworkInterface::select()` 选择网卡，
-`network::Announcer` 广播，`direct::Listener` 接受请求。调用方可以直接按设备 IP
-操作，ostool-server 也调用同一组接口。
+x86_64、LoongArch64 和 RISC-V64 原生前端统一使用 `snp::run()` 控制循环。
+`snp::Network` 独占一个 UEFI SNP 控制器，由 smoltcp 提供 DHCP、IPv4、UDP
+发现与 TCP，在 UDP `2998` 广播自身 MAC、架构名称、`boot_epoch` 和 HTTP 端口，
+并在 TCP `2999` 提供设备接口。MAC、公告地址与 HTTP 共用同一网卡和 DHCP 地址。
+固件不需要提供 IP4、UDP4 或 TCP4 协议。
+
+`Network::open()` 逐一初始化网卡并获取 DHCP 地址，每个候选最多等待 30 秒。
+失败后先停稳当前网卡，再尝试下一候选。整轮遇到 DHCP 超时或无链路时，
+间隔 2 秒重新轮选，网络恢复后继续启动；停稳失败仍执行终结复位。
+确定接口后才建立启动身份和串口绑定，服务期间保持同一网卡。
+
+调用方可以直接按设备 IP 操作，ostool-server 也调用同一组接口；设备不发现、
+轮询或下载服务端资源。`http::HttpConnection` 处理共享路由，`BootServer` 保存
+启动事务。RISC-V 在架构层完成 `Fdt::prepare()` 后进入共享网络循环。
+串口在启动前输出本次身份帧和诊断，交接后供目标系统使用。连接重置只中止当前
+请求，NIC 停稳失败则禁止交接。
 
 每次启动创建新的 `boot_epoch`。所有 boot、serial 和 OTA mutation 均需
 `X-Axloader-Protocol-Version: 7` 与 `X-Boot-Epoch`；GET 状态查询可省略版本头。
-错误代次返回 `409 boot_epoch_mismatch`。v7 是唯一协议，不维护 v2–v6 运行分支、
+错误代次返回 `409 boot_epoch_mismatch`。v7 是唯一协议，不维护 v2 至 v6 运行分支、
 旧 discovery/poll 路由或 arch/format/entry 请求字段。以下接口由
 `boot_server::BootServer` 和 `axloader::ota::OtaController` 共享监听器：
 
@@ -39,31 +49,37 @@ v7 设备必须与发送 v7 头和 `X-Serial-Binding` 的 ostool CLI/server 配�
 
 启动文件暂存内存，每个文件上限 256 MiB，EFI 上限 32 MiB，请求头上限
 4 KiB。只接受定长请求体，连接空闲 30 秒后取消，SHA-256 不符时不发布文件。
-上传时 `direct::Connection::wait()` 仍推进广播；同一时间只处理一个上传事务。
+上传时 `snp::Network::drive()` 仍推进网络和串口身份帧；同一时间只处理一个上传事务。
 `BootServer::create()` 允许同 ID、同清单重试，其他并发事务返回冲突。upload 只在
 move 后核对一次长度和摘要，任务只向 backend 借用不可变文件切片。start 每次从内存
 读取并在 `ElfImage::parse(image, target)` 中解析一次；machine 不匹配、缺少/不可执行
 本地 EFI 符号、坏段或 handoff 准备失败会记录首个错误、释放上传缓冲并返回 422。
-只有文件和 handoff 准备成功、`202 ready_to_handoff` 完整写出后，才停止控制面并
-进入内核；202 写失败会析构本次 execution，原 ready 事务仍可再次 start。
+只有文件和 handoff 准备成功、`202 ready_to_handoff` 完整写出且收到 TCP ACK 后，
+才停止控制面并进入内核。`snp::connection::Connection::finish()` 在入口及每次推进网络后，先
+确认 DHCP 地址有效、连接处于 `Established` 或 `CloseWait`，再检查发送队列为空。
+这使客户端正常半关闭后仍能接收并确认响应；RST、租约丢失或发送超时会析构本次
+execution，原 ready 事务仍可再次 start。ACK 确认后才关闭连接并停稳 NIC，
+后续 FIN 交换不决定响应是否已确认。
 
 两个 frontend 的顺序固定为版本、epoch/trial、当前 ID/failed、长度/摘要、body
 读取与分配，最后才进入 route。旧 epoch 不因 failed 事务改成 422；当前 failed
 PUT/start 则在检查新长度或分配恢复缓冲前重放首错。真实 QEMU 构建启用默认关闭的
-`qemu-fail-202-write` feature，只对固定测试 boot ID 的首次真实提交注入一次错误；
-生产构建不保留注入分支，HTTP 也没有开关。测试要求同 ID 重试；x86_64 与
+`qemu-fail-202-write` feature，对固定测试 boot ID 的前两次提交分别注入响应写失败
+和响应确认前的 socket 复位。测试检查两次失败后 ready 事务仍可重试，随后用同一
+ID 和正常半关闭请求验证目标交接。生产构建不保留注入分支，HTTP 也没有开关。x86_64 与
 LoongArch64 还跑错误 machine、缺符号、
 不可执行入口和坏段矩阵。
-HTTP `CloseToken` 只做有界等待；超时后用 `Configure(NULL)` 按 Tcp4 reset 契约中止
-并重置实例，不能把 Close token 传给 `Cancel()`。监听 Accept token 可在有界等待中
-使用合法 `Cancel()`，之后同样以 `Configure(NULL)` 完成 reset。固件无法确认 token
-已出队时 loader 冷复位，不释放可能仍被固件引用的 token；receive/transmit 超时取消
-也遵循同一有界 reset 契约。交接路径一次性输出
-`handoff_stage: http_close_start/http_closed/listener_closed/resources_closed/target_enter`。
+`snp::device::Device` 保留已提交的发送缓冲，直到固件 `GetStatus` 返回原指针。
+`Network::close()` 在交接前关闭 SNP；无法停稳时保留仍可能被固件访问的缓冲并复位，
+不能释放这些资源后继续进入目标。
 
 `cmdline` 与 `initramfs` 相互独立且都可省略。设备端固定 `TargetSpec` 决定 ELF
-machine、EFI 入口符号和装载约束，状态里的 `arch` 只是开放字符串诊断值；当前只实现
-x86_64 UEFI 和 LoongArch64 UEFI/arceos-efi，不声称有 RISC-V axloader backend。
+machine、EFI 入口符号和装载约束，状态里的 `arch` 只是开放字符串诊断值；当前实现
+x86_64、RISC-V64、LoongArch64 原生 UEFI，以及 LoongArch64 arceos-efi 前端。
+原生 RISC-V/LoongArch 的重定位校验读取 `__rela_dyn_begin`、`__rela_dyn_end`
+声明的已装载字节，并同时检查重定位节。someboot 在执行重定位时，另按运行中的
+linker 地址检查整张实际表及写入范围，全部通过后才写入；篡改节类型或边界符号
+不能关闭执行端检查。非法表从 EFI 入口返回 `LOAD_ERROR`。
 axloader 把命令行编码成带 NUL
 结尾的 UCS-2，临时安装到自身 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`；没有
 命令行时显式安装空 LoadOptions，避免把 axloader 自身参数传给内核。归档存在时，
@@ -88,12 +104,13 @@ sequenceDiagram
     C->>L: PUT kernel；可选 PUT initramfs
     C->>L: POST /api/v1/boot/jobs/{id}/start（X-Serial-Binding）
     L-->>C: 202 ready_to_handoff
+    C-->>L: TCP ACK 确认完整响应
     L->>L: 关闭网络对象，执行内核交接
 ```
 
 同一 Session 设备复位后得到新启动代次，服务端可以按旧 `boot_id` 重新推送。
-待试 EFI 槽必须先收到对应来源的确认，才接受启动事务。TCP4 被动监听不可用
-时仅显示诊断；完全切换后的网络启动需要固件提供该协议。
+待试 EFI 槽必须先收到对应来源的确认，才接受启动事务。原生前端需要固件提供可用
+SNP 并从 DHCP 取得地址；smoltcp 负责 HTTP 监听，运行中保持同一 SNP 所有者。
 
 ## 2. 自动串口
 
@@ -105,14 +122,17 @@ sequenceDiagram
 
 ### 2.1 本次身份与门禁
 
-每次启动的 `serial_id` 是独立 128 位 ID。两个原生 UEFI 目标都优先使用 UEFI RNG，
-缺失时使用固件单调计数和运行时信息派生控制面身份。
+每次启动的 `serial_id` 是独立 128 位 ID。三个原生 UEFI 目标都优先使用 UEFI RNG；
+x86_64、LoongArch64 在缺失时保留固件单调计数和运行时信息回退，RISC-V 则返回错误。
+身份种子与派生算法由 `loader::identity::BootIdentity` 共享，回退和失败重试策略由 `loader::arch` 选择。
 `SerialBeacon::progress()` 每 250 ms 启动 ASCII 身份帧发送，以最多 4 字节的部分写入推进。
 `BootServer` 状态与 UDP 公告关联同一 serial_id 和 epoch；网络确认后停止身份帧。
 
 ```text
-\r\nAXLOADER-SERIAL/1 <32位小写十六进制 serial_id>\r\n
+\nAXLOADER-SERIAL/1 <32位小写十六进制 serial_id>\n
 ```
+
+发送端使用 LF 分隔；固件可转换为 CRLF。不要显式发送 CRLF 后再由固件补充 CR，否则严格身份解码会收到双回车。
 
 `bound` 对应宿主 UART 身份匹配；`direct` 由不需要隧道的客户端显式放行，不能显示为串口已绑定。
 启动需当前 epoch 和绑定令牌；上传、查询、OTA 不受 UART 门禁影响。撤销当前令牌后恢复发送。
@@ -123,7 +143,7 @@ sequenceDiagram
 现有 console driver 保持连接。每次参数读取或写入使用短期非独占 `GetProtocol` guard，
 在 `TPL_CALLBACK` 阻止竞争回调，先关闭 guard 再恢复 TPL；没有协议引用跨越网络轮询。
 写入暂用 5 ms 超时并恢复原属性，无事件回调保留 Rust 上下文。
-`efi_main` 在 OTA reset 和内核交接前显式析构 TCP/UDP 对象与 beacon 计时器。
+`snp::run()` 在 OTA reset 和内核交接前停稳 SNP，释放网络对象与 beacon 计时器。
 约束依据 [UEFI Boot Services](https://uefi.org/specs/UEFI/2.10/07_Services_Boot_Services.html)
 和 [Serial IO](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html#efi-serial-io-protocol-write)。
 
@@ -143,10 +163,12 @@ and rejects tables larger than 1 MiB.
 | --- | --- | --- |
 | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
 | `loongarch64` | `loongarch64-unknown-uefi` | `BOOTLOONGARCH64.EFI` |
+| `riscv64` | 仓库自定义 `riscv64-unknown-uefi` | `BOOTRISCV64.EFI` |
 
-x86_64 and LoongArch64 use the same native UEFI loader code, firmware network
-protocols, HTTP v7/OTA transaction, serial identity and ELF handoff. The device
-target selects the ELF machine, local EFI entry symbol and load/link contract;
+三种原生架构使用共享 SNP/smoltcp 控制循环、HTTP v7/OTA 事务和串口身份。
+各架构提供本地时钟与 ELF 交接策略；LoongArch64 axstd/arceos-efi 前端继续使用其运行时网络。
+
+The device target selects the ELF machine, local EFI entry symbol and load/link contract;
 QEMU still selects its firmware architecture and boot filename. x86_64 accepts
 `__x86_64_efi_pe_entry`; LoongArch accepts ELF64 `EM_LOONGARCH` with
 `efi_pe_entry`. The maximum uploaded target is 256 MiB.
@@ -159,7 +181,7 @@ LoongArch inherited-handoff mode and never runs ArceOS as loader internals. A
 target uploaded over HTTP is ordinary ELF and must
 complete its own EFI-entry relocation and handoff.
 
-Both native entries disable the firmware watchdog immediately after UEFI
+All native entries disable the firmware watchdog immediately after UEFI
 helper initialization and before OTA, network or SerialIO waits. Firmware BDS
 normally starts a five-minute watchdog around `StartImage`; an unattended
 loader must explicitly cancel it with zero timeout and a non-reserved
@@ -168,19 +190,30 @@ reported and fails initialization. This does not call `ExitBootServices`; the
 target still owns that transition. The Loongson `V00011003` event from
 `WatchdogTimerDxe` is a watchdog expiry, not a LoongArch CPU exception.
 
-One firmware controller must expose SNP, IP4Config2, UDP4 service binding and
-TCP4 service binding; broadcast does not prove this bundle. Automatic serial
-identity requires a uniquely selectable UEFI SerialIo device associated with
-ConOut. Missing protocols are reported through ConOut as
-`loader_net_controller[...]`, `loader_tcp4_listen_failed`,
-`loader_serial_probe` and `loader_serial_unavailable`; absence of SerialIo is
-never replaced with a synthetic 115200 identity.
+原生网络只要求固件提供 SNP；DHCP、UDP 发现和 TCP 由 smoltcp 提供。
+`loader_snp_open` 与 `loader_snp_dhcp` 分别标明网卡和实际地址，
+`loader_snp_dhcp_lost` 表示租约丢失。自动串口身份需要与 ConOut 对应且可唯一选择的
+UEFI SerialIo，失败时通过 `loader_serial_probe`、`loader_serial_unavailable`
+报告原因，不用固定 115200 参数伪造身份。固件 RNG 和平台身份回退策略见第 2.1 节。
 
 `boot-resources` 可独立于网络、OTA 和交接生产端使用；`efi-handoff` 组合 EFI 与
 资源能力，替代已经删除的 `efi-loader`。普通 EFI 内核消费交接始终随 `cfg(efi)`，
 无需开启生产端。原生 `target_os = "uefi"` 依赖只编译公共能力和固件适配，不带入
 someboot 内核入口、分页或 SMP。模块、协议与所有权依据见
 [启动资源设计](../../docs/design/someboot-boot-resources.md)。
+
+ArceOS 激活 runtime UART 后，axstd 前端报告实际波特率和 8N1 参数，未绑定时
+输出身份帧；没有活动 UART 时状态为 `ready=false`，客户端必须显式 `direct` continue。
+
+RISC-V 原生前端接受 `EM_RISCV` ELF64，固定入口为 someboot 的
+`efi_pe_entry`。接收端要求固件以 S-mode 进入并保持 EFI 内存恒等寻址，提供
+`RISCV_EFI_BOOT_PROTOCOL` 和有效 FDT。遵循 UEFI 2.11，固件页表保留至
+`ExitBootServices` 和 `SetVirtualAddressMap` 完成，随后在回收固件启动内存前切回 Bare。SNP 计时取自 FDT 的
+`/cpus/timebase-frequency`；设备树必须同时满足 EFI 保留内存契约及接收内核的硬件需求。
+构建及交接约束见 [axloader 使用文档](../../docs/docs/build/axloader.md#15-risc-v-原生-efi)。
+
+RISC-V 前端从固件 RNG 生成本次 epoch 和串口身份，无法取得随机数时停止。
+串口复用标准 Serial I/O；没有匹配 UART 时不报告 ready。
 
 ## Build and test
 
@@ -190,9 +223,12 @@ Use the project task runner:
 rustup target add x86_64-unknown-uefi
 cargo xtask axloader build --target x86_64-unknown-uefi --release
 cargo xtask axloader build --target loongarch64-unknown-uefi --release
+cargo xtask axloader build --target riscv64-unknown-uefi --release
+cargo xtask axloader test host
 cargo xtask clippy --package axloader
 cargo xtask axloader test qemu --target x86_64-unknown-uefi
 cargo xtask axloader test qemu --target loongarch64-unknown-uefi
+cargo xtask axloader test qemu --target riscv64-unknown-uefi
 cargo xtask axloader test qemu --target loongarch64-unknown-uefi \
   --firmware-code /path/to/code.fd --firmware-vars /path/to/vars.fd
 ```
@@ -204,11 +240,22 @@ target/x86_64-unknown-uefi/release/axloader.efi
 target/x86_64-unknown-uefi/release/axloader-launcher.efi
 target/loongarch64-unknown-uefi/release/axloader.efi
 target/loongarch64-unknown-uefi/release/axloader-launcher.efi
+target/riscv64-unknown-uefi/release/axloader.efi
+target/riscv64-unknown-uefi/release/axloader-launcher.efi
 ```
+
+三种原生架构共享 `ota::State`、`ota::OtaDisk` 和 launcher 的 A/B 选择逻辑。
+RISC-V 的 `BOOTRISCV64.EFI` 应部署 `axloader-launcher.efi`，主映像放入
+`EFI/AXLOADER/A.EFI`、`B.EFI`，并初始化两份状态记录。首次安装使用
+`build-install-efi.sh --fresh --target riscv64-unknown-uefi --device <ESP>`；
+BananaPi 在同一 ESP 保留匹配的 `EFI/BOOT/board.dtb`。
+直接把主映像作为 `BOOTRISCV64.EFI` 运行时，不启用 A/B OTA。
 
 ### Native QEMU verification
 
-`test qemu` uses the same real FAT/OTA/HTTP transaction for both native targets.
+`test qemu` uses the same real FAT/OTA/HTTP transaction for x86_64 and LoongArch64.
+RISC-V 固件与 BananaPi 板卡的验证方法见
+[成功判据](../../docs/docs/build/axloader.md#32-成功判据)。
 The Loong profile selects `qemu-system-loongarch64`, `virt`, `la464`, Loong
 UEFI firmware, `BOOTLOONGARCH64.EFI`, and the local LoongArch `TargetSpec`
 whose EFI symbol is `efi_pe_entry`. Its ArceOS smoke target must print `HOST_CMDLINE` and
@@ -225,17 +272,15 @@ virtual machine is involved.
 `--firmware-code` and `--firmware-vars` must be supplied together and override
 only the test invocation's firmware pair. Loong QEMU copies both files into the
 run directory and pads short copies to 16 MiB without modifying the source.
-The Loong profile adds `virtio-rng-pci` and disables the virtio-net/rng option
-ROM lookup because the firmware supplies the network drivers. RNG is required
-by `DxeNetLib`; TCP4 additionally requires a firmware `Hash2DxeCrypto`
-producer. The stock debug firmware may still lack Hash2, which must be reported
-as a firmware dependency rather than worked around with a loader network stack.
+Loong profile 添加 `virtio-rng-pci`，供固件提供 RNG；virtio-net/rng 使用空
+`romfile`，由固件提供设备驱动。网络路径通过 SNP 收发以太网帧，不要求固件
+IP4、UDP4、TCP4 或 Hash2 生产者。
 The native Loong EFI build is available through
 `cargo xtask axloader build --target loongarch64-unknown-uefi --release`; this
 command is not currently run as a separate CI step. The existing
 `loong-qemu-smoke.py` CI gate covers the legacy axstd backend. The full native
-Loong QEMU command remains a release/board validation entry that must be given a
-firmware pair containing Hash2.
+Loong QEMU command remains a release/board validation entry using Loong UEFI
+CODE/VARS firmware with SNP support.
 
 Native Loong QEMU coverage is not evidence that physical LoongArch firmware,
 USB installation, network protocols and SerialIO have been accepted on
@@ -247,9 +292,9 @@ cargo xtask arceos test board \
   --board loongson-3a6000-ll --test-case http-boot
 ```
 
-## x86_64 OTA 布局与状态
+## 原生 UEFI OTA 布局与状态
 
-安装后，ESP 中的 `EFI/BOOT/BOOTX64.EFI` 是独立构建的
+安装后，ESP 中当前架构的 `EFI/BOOT/BOOT*.EFI` 是独立构建的
 `axloader-launcher.efi`；`EFI/AXLOADER/A.EFI`、`B.EFI` 是可升级装载器。
 全新安装时 A、B 初始使用同一份新装载器，A 为稳定槽且没有待试升级；迁移安装时
 A 保存旧装载器，B 使用新装载器。`STATE0.BIN` 与 `STATE1.BIN` 分别存放 256 字节
@@ -275,8 +320,10 @@ stateDiagram-v2
 防止它在稳定槽随后损坏时被提升为稳定槽。普通升级只写非活动槽；32 MiB 是
 镜像上限。
 
-`loader::direct::Listener` 同时处理上述启动和升级路由。直连上传不依赖
-ostool-server；上传方在重启后先核对运行摘要与升级 ID，再用当前启动代次
+`loader::snp::Network` 同时处理上述启动和升级路由。直连上传不依赖
+ostool-server。`OtaController::finish_update()` 持久提交后，主循环通过
+`reboot_pending()` 执行重启；即使 `202` 写入或响应确认失败，也不能取消已提交的
+升级。上传方在响应不确定时等待设备重启，先核对运行摘要与升级 ID，再用当前启动代次
 确认。服务端指派传入 `X-Update-Source: server` 和 `X-Update-Id`，只在再次
 发现匹配升级 ID 与运行摘要的待试槽后发送同来源确认。直连任务无法由服务端
 误确认；确认状态写入并 Flush 成功后才接收内核启动事务。
@@ -287,7 +334,25 @@ MAC 也不是身份认证。若以后要求内核验签，须先让 A/B 都执�
 
 ## Install to removable media
 
-脚本支持 x86_64 与 LoongArch64 的全新安装和旧布局迁移。全新安装适用于已经格式化但没有
+RISC-V 原生 UEFI 使用独立测试 U 盘的 FAT ESP，将构建产物
+`target/riscv64-unknown-uefi/release/axloader-launcher.efi` 放入
+`EFI/BOOT/BOOTRISCV64.EFI`，并按上述 A/B 布局安装主映像和状态记录。
+同一 `EFI/BOOT` 目录可放入与板卡及固件匹配的 `board.dtb`；
+`Fdt::prepare()` 优先读取该显式文件，完成完整结构、保留内存和标准 DT Fixup
+校验后安装配置表。只有文件缺失或启动映像没有文件系统时，才使用已经满足
+ACPI reclaim 生命周期与保留区契约的固件 FDT；显式文件损坏时不会回退。
+普通静态保留区接受 EFI `BOOT_SERVICES_DATA`，`no-map` 仍必须由 `RESERVED`
+完整覆盖。接收内核的 EFI RAM 映射来自已保存的 EFI 内存图，FDT 仅补充保留与
+`no-map` 约束；EFI 启动不要求 FDT 含有 `/memory`。
+DTB 应与板卡及所用固件匹配，由 `Fdt::prepare()` 校验；无合格输入时输出
+`loader_fdt_unavailable` 并停止，不放宽 `no-map` 校验。
+使用独立测试盘保留板载系统已有的 EFI 启动文件，部署步骤见
+[部署与验证说明](../../docs/docs/build/axloader.md#15-risc-v-原生-efi)。
+
+网络联调也可以先由板载 GRUB 临时加载 axloader 和匹配 DTB，再通过
+`cargo xtask arceos board` 上传内核并检查目标输出；此流程不要求 U 盘或 Linkr。
+
+脚本支持三种原生架构的全新安装，以及 x86_64 的旧布局迁移。全新安装适用于已经格式化但没有
 可用架构 launcher 的可写 FAT ESP，不需要旧装载器：
 
 ```bash
@@ -295,6 +360,8 @@ MAC 也不是身份认证。若以后要求内核验签，须先让 A/B 都执�
   --fresh --device /dev/sdb1
 ./bootloader/axloader/scripts/build-install-efi.sh \
   --fresh --device /dev/sdb1 --target loongarch64-unknown-uefi
+./bootloader/axloader/scripts/build-install-efi.sh \
+  --fresh --device /dev/sdb1 --target riscv64-unknown-uefi
 ```
 
 全新安装会把新装载器复制到 A、B，生成稳定状态记录，再写入 launcher。
@@ -312,12 +379,12 @@ MAC 也不是身份认证。若以后要求内核验签，须先让 A/B 都执�
 
 默认按 `OSTOOLBOOT` 查找分区。脚本会按 `--target` 构建并校验两个同架构 PE 映像、
 检查空闲空间、写入 A/B 和双状态记录、同步并逐项核对，最后替换
-`BOOTX64.EFI` 或 `BOOTLOONGARCH64.EFI`。迁移模式还会把旧文件保存为同名的
+`BOOTX64.EFI`、`BOOTLOONGARCH64.EFI` 或 `BOOTRISCV64.EFI`。迁移模式还会把旧文件保存为同名的
 `.ORIGINAL.EFI`，B 首次作为直连待试槽，
 安装命令打印升级 ID，上传方须在首次启动后核对摘要并调用确认接口。两种模式都
 会拒绝已有 `EFI/AXLOADER` 文件的 ESP，避免覆盖未知状态；请先离线恢复或清理。
 
-从 legacy ArceOS LoongArch loader 切换到 native loader 时使用 `--fresh`。该模式
+LoongArch64、RISC-V64 的首次原生安装使用 `--fresh`。从 legacy ArceOS LoongArch loader 切换时，该模式
 把 A、B 都写成 native loader，旧 `BOOTLOONGARCH64.EFI` 只保存为
 `BOOTLOONGARCH64.PREVIOUS.EFI` 备份，不进入 OTA 回滚槽，避免静默回退到旧
 ArceOS loader。
@@ -337,9 +404,14 @@ the ArceOS board case above rather than an AxVisor host shell.
 
 ## Troubleshooting
 
-`loader_tcp4_unavailable` 表示同一网卡没有 SNP/IP4/UDP4/TCP4 协议束；
-`loader_tcp4_listen_failed` 表示固件未能在端口 `2999` 创建被动 TCP4 实例。
-`loader_broadcast_error` 仅影响自动发现；有设备 IP 的直连调用仍可用。
+`loader_snp_candidate_open_failed` 表示候选 SNP 打开失败，继续检查对应的 start、
+initialize 或接收过滤错误；`NO_MEDIA` 表示未检测到链路。
+`loader_snp_retry` 表示本轮没有取得地址，稍后重新轮选；`loader_snp_unavailable`
+表示初始化失败且无法按临时网络故障重试。`loader_snp_dhcp` 给出实际地址，
+`loader_snp_dhcp_lost` 表示租约丢失。
+`loader_http_response_failed` 表示响应尚未完成确认。内核启动的原 ready 事务可以用同一 ID 重试；OTA 已持久提交时仍会重启，应按升级 ID 和运行摘要查询试运行结果。
+UDP 公告只用于自动发现；有设备 IP 的直连调用仍可用。NIC 关闭失败时
+`loader_snp_stop_failed` 记录原因并复位。
 返回 `409 boot_epoch_mismatch` 时重新 GET 状态，使用新的启动代次发起请求。
 `ready_to_handoff` 后出现交接错误，应核对 ELF/归档入口和 UEFI 退出路径。
 

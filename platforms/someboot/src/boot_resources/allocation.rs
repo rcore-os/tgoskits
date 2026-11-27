@@ -255,6 +255,26 @@ pub(crate) fn prepare_static_plan() {
     }
 }
 
+#[cfg(all(
+    not(target_os = "uefi"),
+    efi,
+    target_arch = "riscv64",
+    feature = "boot-resources"
+))]
+/// # Safety
+/// Only the boot CPU may discard its prepared, unused plan before EBS.
+pub(crate) unsafe fn discard_static_plan() {
+    let resources = snapshots();
+    // SAFETY: the boot CPU owns the plan. It has not left Boot Services or
+    // handed ownership to any consumer, so no arena allocation can be live.
+    unsafe {
+        restore(&[], &[]).expect("failed to discard EFI resource plan");
+        for resource in resources.into_iter().filter(|resource| resource.id != 0) {
+            firmware::release(resource.range);
+        }
+    }
+}
+
 #[cfg(all(not(target_os = "uefi"), efi))]
 fn static_requests() -> &'static [ResourceRequest] {
     unsafe extern "C" {

@@ -40,6 +40,8 @@ cfg_select! {
         mod boot_payload;
         mod cmdline;
         pub(crate) mod consts;
+        #[cfg(any(efi, all(test, not(target_arch = "riscv64"))))]
+        mod efi_memory_map;
         #[cfg(efi)]
         mod efi_stub;
         mod elf;
@@ -110,7 +112,10 @@ cfg_select! {
             fn virtual_address_space()
             -> Result<mem::VirtualAddressSpaceLayout, mem::VirtualAddressSpaceError>;
             fn is_kernel_relocated_at(addr: usize) -> bool {
-                (crate::consts::VM_LOAD_ADDRESS..usize::MAX).contains(&addr)
+                // Flat-linked targets need no virtual image transition by default.
+                // Architectures with a distinct runtime mapping override this method.
+                crate::consts::VM_LOAD_ADDRESS == crate::consts::KERNEL_LOAD_ADDRESS
+                    || (crate::consts::VM_LOAD_ADDRESS..usize::MAX).contains(&addr)
             }
 
             fn is_mmu_enabled() -> bool;

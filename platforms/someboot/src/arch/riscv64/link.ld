@@ -10,6 +10,8 @@ SECTIONS
     .head.text : {
         KEEP(*(.head.text))
         KEEP(*(.text._head))
+        /* The EFI receiver is selected by its ELF symbol at runtime. */
+        KEEP(*(.text.efi_pe_entry))
     }
 ${ld_text}
 ${ld_rodata}

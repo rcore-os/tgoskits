@@ -30,7 +30,10 @@ mod platform;
 mod std_build;
 pub(crate) mod symbol_map;
 
-pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
+pub(crate) use bare_build::{
+    LOONGARCH64_UEFI_TARGET, RISCV64_UEFI_TARGET, bare_build_target_for,
+    freestanding_build_target_for, uefi_build_target_for,
+};
 pub(crate) use config_file::{
     BuildConfiguration, invalid_config_value, reject_extra_fields, validate_config_target,
     validate_resource_path,

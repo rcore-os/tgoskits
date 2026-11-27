@@ -17,7 +17,11 @@ pub fn get_load_offset() -> i128 {
 
 /// 早期重定位入口点
 pub fn relocate() {
-    relocate_with_offset(get_load_offset());
+    assert!(try_relocate(), "invalid kernel relocation table");
+}
+
+pub(crate) fn try_relocate() -> bool {
+    relocate_with_offset(get_load_offset())
 }
 
 pub fn reset() {
@@ -26,14 +30,19 @@ pub fn reset() {
     }
 }
 
-pub fn relocate_with_offset(offset: i128) {
+fn relocate_with_offset(offset: i128) -> bool {
+    // SAFETY: the running linker addresses describe the uniquely owned
+    // image. Its data/RELRO range is writable during early relocation.
     unsafe {
-        crate::elf::apply_reloc(
+        if !crate::elf::apply_reloc(
             offset,
             sym_running_addr!(__rela_dyn_begin) as _,
             sym_running_addr!(__rela_dyn_end) as _,
             R_LARCH_RELATIVE,
-        );
+            sym_running_addr!(_srodata)..sym_running_addr!(__cpu0_stack),
+        ) {
+            return false;
+        }
     }
 
     // 刷新指令与数据缓存，确保重定位后的数据立即生效
@@ -41,4 +50,5 @@ pub fn relocate_with_offset(offset: i128) {
         asm!("ibar 0", options(nostack));
         asm!("dbar 0", options(nostack));
     }
+    true
 }

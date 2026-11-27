@@ -8,6 +8,7 @@ pub mod elf_image;
 pub mod boot_job;
 pub mod efi_image;
 pub mod elf;
+pub mod fdt_image;
 pub mod http_control;
 pub mod integrity;
 pub mod ota;

@@ -7,38 +7,82 @@ use crate::{
 
 pub fn setup_memory_map<'a>(mems: impl Iterator<Item = &'a MemoryDescriptor>) {
     for memory in mems {
-        let mut desc = match memory.ty {
-            MemoryType::CONVENTIONAL
-            | MemoryType::BOOT_SERVICES_CODE
-            | MemoryType::BOOT_SERVICES_DATA
-            | MemoryType::LOADER_CODE
-            | MemoryType::LOADER_DATA => crate::mem::MemoryDescriptor {
-                physical_start: memory.phys_start as _,
-                size_in_bytes: memory.page_count as usize * page_size(),
-                memory_type: crate::mem::MemoryType::Free,
+        add_memory_descriptor(classify_memory(memory)).unwrap();
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(super) fn prepare_fdt_memory_map(
+    map: &mut crate::mem::MemoryMap,
+    fdt: &fdt_raw::Fdt<'_>,
+    kernel: core::ops::Range<usize>,
+    firmware_map: &crate::efi_memory_map::RawBootMemoryMap<'_>,
+    dtb_layout: core::alloc::Layout,
+    cpu_layout: core::alloc::Layout,
+) -> Result<crate::mem::PreparedBootMemory, uefi::Status> {
+    use ranges_ext::RangeError;
+    use uefi::Status;
+
+    use crate::{
+        efi_memory_map::covers_initramfs_ram,
+        mem::{NoMapError, insert_memory_descriptor},
+    };
+
+    map.clear();
+    for memory in firmware_map.entries() {
+        insert_memory_descriptor(map, classify_memory(&memory)).map_err(|error| match error {
+            RangeError::Capacity => Status::OUT_OF_RESOURCES,
+            RangeError::Conflict { .. } => Status::COMPROMISED_DATA,
+        })?;
+    }
+    let archive = if crate::boot_payload::staged_uefi().is_none() {
+        crate::fdt::initramfs_from_fdt(fdt.clone(), |range| {
+            covers_initramfs_ram(firmware_map.entries(), range)
+        })
+        .map_err(|_| Status::COMPROMISED_DATA)?
+    } else {
+        None
+    };
+    crate::mem::check_fdt_boot_map(
+        map,
+        fdt,
+        kernel,
+        super::boot_data_reservations(),
+        archive,
+        |map, excluded, kernel| {
+            crate::arch::select_efi_boot_ram(map, excluded, kernel, dtb_layout, cpu_layout)
+        },
+    )
+    .map_err(|error| match error {
+        NoMapError::Capacity => Status::OUT_OF_RESOURCES,
+        _ => Status::COMPROMISED_DATA,
+    })
+}
+
+fn classify_memory(memory: &MemoryDescriptor) -> crate::mem::MemoryDescriptor {
+    use crate::mem::{MemoryDescriptor as Descriptor, MemoryType as Kind};
+
+    let start = memory.phys_start as usize;
+    let size = memory.page_count as usize * page_size();
+    match memory.ty {
+        MemoryType::CONVENTIONAL
+        | MemoryType::BOOT_SERVICES_CODE
+        | MemoryType::BOOT_SERVICES_DATA
+        | MemoryType::LOADER_CODE
+        | MemoryType::LOADER_DATA => Descriptor {
+            physical_start: start,
+            size_in_bytes: size,
+            // Retain complete descriptors backing firmware configuration tables.
+            memory_type: if retains_firmware_storage(memory) {
+                Kind::Reserved
+            } else {
+                Kind::Free
             },
-            MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE => {
-                crate::mem::MemoryDescriptor::new_aligned(
-                    memory.phys_start as _,
-                    memory.page_count as usize * page_size(),
-                    crate::mem::MemoryType::Mmio,
-                    PAGE_SIZE,
-                )
-            }
-            _ => crate::mem::MemoryDescriptor::new_aligned(
-                memory.phys_start as _,
-                memory.page_count as usize * page_size(),
-                crate::mem::MemoryType::Reserved,
-                PAGE_SIZE,
-            ),
-        };
-        // Config entries have no common payload size. Preserve their containing
-        // firmware descriptors, including boot-services allocations, rather
-        // than guessing a header length and freeing reachable trailing bytes.
-        if desc.memory_type == crate::mem::MemoryType::Free && retains_firmware_storage(memory) {
-            desc.memory_type = crate::mem::MemoryType::Reserved;
+        },
+        MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE => {
+            Descriptor::new_aligned(start, size, Kind::Mmio, PAGE_SIZE)
         }
-        add_memory_descriptor(desc).unwrap();
+        _ => Descriptor::new_aligned(start, size, Kind::Reserved, PAGE_SIZE),
     }
 }
 
@@ -70,8 +114,8 @@ fn retains_firmware_storage(memory: &MemoryDescriptor) -> bool {
     ) {
         return true;
     }
-    // SAFETY: this is the installed firmware table, retained after EBS; only
-    // storage pointers are inspected and no firmware function is called.
+    // SAFETY: this is the installed firmware table before its addresses are
+    // virtualized; only storage pointers are inspected here.
     let system = unsafe { system.as_ref() };
     if [
         system.firmware_vendor as usize,

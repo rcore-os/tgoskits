@@ -4,7 +4,7 @@ use kernutil::memory::{MemoryDescriptor, MemoryType};
 use num_align::NumAlign;
 use page_table_generic::FrameAllocator;
 
-use crate::mem::{add_memory_descriptor, page_size};
+use crate::mem::{MB, add_memory_descriptor, page_size};
 
 /// RAM 分配器的起始地址
 static mut RAM_START: usize = 0;
@@ -20,8 +20,7 @@ static mut RAM_CURRENT: usize = 0;
 /// # Safety
 /// 此函数仅应在单核环境下的早期启动阶段使用
 pub unsafe fn alloc(layout: Layout) -> Option<usize> {
-    let start = unsafe { RAM_CURRENT.align_up(layout.align()) };
-    let end = start + layout.size();
+    let (start, end) = allocation_bounds(unsafe { RAM_CURRENT }, layout)?;
 
     if end > unsafe { RAM_END } {
         return None;
@@ -31,6 +30,37 @@ pub unsafe fn alloc(layout: Layout) -> Option<usize> {
         RAM_CURRENT = end;
     }
     Some(start)
+}
+
+fn allocation_bounds(cursor: usize, layout: Layout) -> Option<(usize, usize)> {
+    let start = cursor.checked_next_multiple_of(layout.align())?;
+    Some((start, start.checked_add(layout.size())?))
+}
+
+#[cfg(any(all(efi, target_arch = "riscv64"), test))]
+pub(crate) fn planned_allocation(
+    cursor: usize,
+    layout: Layout,
+    page_bytes: usize,
+) -> Option<Range<usize>> {
+    let (start, end) = allocation_bounds(cursor, layout)?;
+    // Boot reservations advance the allocator to the next page boundary.
+    Some(start..end.checked_next_multiple_of(page_bytes)?)
+}
+
+pub(crate) fn select_range(
+    map: &[MemoryDescriptor],
+    mut fits: impl FnMut(&Range<usize>) -> bool,
+) -> Option<Range<usize>> {
+    map.iter()
+        .filter(|entry| entry.memory_type == MemoryType::Free && entry.size_in_bytes > 8 * MB)
+        .filter_map(|entry| {
+            let start = entry.physical_start;
+            let end = start.checked_add(entry.size_in_bytes)?;
+            let range = start..end;
+            fits(&range).then_some(range)
+        })
+        .min_by_key(|range| range.start)
 }
 
 pub unsafe fn alloc_and_flush_to_memory_map(layout: Layout, kind: MemoryType) -> Option<usize> {
@@ -72,8 +102,12 @@ pub fn init(range: Range<usize>) {
     unsafe {
         RAM_START = range.start;
         RAM_END = range.end;
-        RAM_CURRENT = range.start.max(0x40);
+        RAM_CURRENT = initial_cursor(range.start);
     }
+}
+
+pub(crate) fn initial_cursor(start: usize) -> usize {
+    start.max(0x40)
 }
 
 /// 获取已使用的内存范围

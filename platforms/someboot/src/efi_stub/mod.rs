@@ -28,10 +28,17 @@ use uefi::{
     table::{self, cfg::ConfigTableEntry},
 };
 
+#[cfg(target_arch = "x86_64")]
+use crate::arch::relocate;
+#[cfg(target_arch = "loongarch64")]
+use crate::arch::try_relocate as relocate;
+#[cfg(not(target_arch = "riscv64"))]
+use crate::{ArchTrait, arch::Arch};
 use crate::{
-    ArchTrait,
     acpi::set_rsdp,
-    arch::{Arch, relocate},
+    efi_memory_map::{
+        AlignedBytes, EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE, RawBootMemoryMap, read_exit_boot_memory_map,
+    },
     mem::{__io, __va},
 };
 
@@ -41,18 +48,21 @@ cfg_select! {
         use loongarch64 as platform;
         pub use loongarch64::{ResetType, reset};
     }
-    any(target_arch = "x86_64", target_arch = "aarch64") => {
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ) => {
         mod firmware;
         use firmware as platform;
     }
 }
 
 const EFI_IMAGE_HANDLE_UNSET: usize = usize::MAX;
-const EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE: usize = 128 * 1024;
 const EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY: usize =
     EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE / size_of::<MemoryDescriptor>();
 const EXIT_BOOT_MEMORY_MAP_RETRIES: usize = 3;
-const FDT_TABLE_GUID: Guid = guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
+pub(crate) const FDT_TABLE_GUID: Guid = guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 const LINUX_EFI_INITRD_MEDIA_GUID: Guid = guid!("5568e427-68fc-4f3d-ac74-ca555231cc68");
 const LINUX_INITRD_DEVICE_PATH_SIZE: usize = 24;
 const MAX_UEFI_INITRAMFS_BYTES: usize = 1024 * 1024 * 1024;
@@ -62,9 +72,6 @@ const _: () =
     assert!(size_of::<LoadFile2>() == size_of::<uefi_raw::protocol::media::LoadFile2Protocol>());
 const _: () =
     assert!(align_of::<LoadFile2>() == align_of::<uefi_raw::protocol::media::LoadFile2Protocol>());
-
-#[repr(align(8))]
-struct AlignedBytes<const N: usize>([u8; N]);
 
 static mut EXIT_BOOT_MEMORY_MAP_BUFFER: AlignedBytes<EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE> =
     AlignedBytes([0; EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE]);
@@ -117,15 +124,15 @@ pub unsafe extern "C" fn __x86_64_efi_pe_entry() -> Status {
     )
 }
 
+#[cfg(not(target_arch = "riscv64"))]
 unsafe extern "C" fn efi_pe_entry_main(
     image_handle: Handle,
     system_table: *const ::core::ffi::c_void,
 ) -> Status {
     unsafe {
-        save_image_handle(image_handle);
         boot::set_image_handle(image_handle);
         table::set_system_table(system_table.cast());
-        platform::prepare_entry_payload(image_handle);
+        prepare_entry_payload(image_handle);
         // Safety: `system_table` comes from the EFI firmware entry path and
         // matches the contract documented on `ArchTrait::efi_enter_kernel`.
         if Arch::efi_enter_kernel(system_table) {
@@ -133,6 +140,29 @@ unsafe extern "C" fn efi_pe_entry_main(
         } else {
             unreachable!()
         }
+    }
+}
+
+pub(crate) fn prepare_entry_payload(image_handle: Handle) {
+    save_image_handle(image_handle);
+    platform::prepare_entry_payload(image_handle);
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn discard_entry_payload() {
+    if let Some((start, end)) = crate::boot_payload::take_staged_uefi() {
+        let address = core::ptr::NonNull::new(start as *mut u8)
+            .expect("staged initramfs has an EFI allocation");
+        let pages = (end - start).div_ceil(crate::consts::PAGE_SIZE);
+        // SAFETY: the staged allocation has not been published and still
+        // owns precisely these firmware pages. Boot Services remain active.
+        unsafe { boot::free_pages(address, pages) }.expect("failed to release rejected initramfs");
+    }
+    #[cfg(feature = "boot-resources")]
+    // SAFETY: the EFI entry is rejecting the handoff before publishing the
+    // boot CPU record, starting other CPUs or taking over Boot Services.
+    unsafe {
+        crate::boot_resources::discard_static_plan();
     }
 }
 
@@ -144,7 +174,9 @@ pub unsafe extern "efiapi" fn efi_pe_entry(
     system_table: *const ::core::ffi::c_void,
 ) -> Status {
     unsafe {
-        relocate();
+        if !crate::arch::relocate::try_apply() {
+            return Status::LOAD_ERROR;
+        }
         efi_pe_entry_main(image_handle, system_table)
     }
 }
@@ -180,10 +212,15 @@ pub unsafe extern "efiapi" fn efi_pe_entry(
         ld.d        $a0, $sp, 8
         ld.d        $a1, $sp, 16
         bl          {relocate}
+        bnez        $a0, 3f
+        li.d        $a0, {load_error}
+        b           4f
+    3:
         ld.d        $a0, $sp, 8
         ld.d        $a1, $sp, 16
         bl          {entry}
 
+    4:
         ld.d        $t0, $sp, 24
         ld.d        $ra, $sp, 0
         move        $sp, $t0
@@ -192,6 +229,7 @@ pub unsafe extern "efiapi" fn efi_pe_entry(
         bss_start = sym __bss_start,
         bss_stop = sym __bss_stop,
         relocate = sym relocate,
+        load_error = const Status::LOAD_ERROR.0,
         entry = sym efi_pe_entry_main,
     )
 }
@@ -201,27 +239,22 @@ pub(crate) fn exit_boot_services() {
         return;
     }
     println!("Exiting UEFI boot services...");
-    UEFI_SERVICE_EXIT.store(true, core::sync::atomic::Ordering::Relaxed);
-    let mem_map = unsafe { exit_boot_services_no_alloc() };
-
-    if let Some((start, end)) = crate::boot_payload::staged_uefi() {
-        let allocation_end = end
-            .checked_next_multiple_of(crate::consts::PAGE_SIZE)
-            .expect("host archive page range overflows");
-        assert!(
-            mem_map.entries().any(|entry| {
-                entry.ty == MemoryType::LOADER_DATA
-                    && entry.phys_start <= start as u64
-                    && entry
-                        .page_count
-                        .checked_mul(4096)
-                        .and_then(|size| entry.phys_start.checked_add(size))
-                        .is_some_and(|limit| allocation_end as u64 <= limit)
-            }),
-            "host initramfs is not backed by UEFI loader pages"
-        );
+    // SAFETY: the boot CPU exclusively owns the memory-map buffers.
+    let (mem_map, ()) = unsafe { exit_boot_services_no_alloc(|_| Ok(())) }
+        .unwrap_or_else(|status| reset_on_exit_boot_services_failure(status));
+    assert!(staged_initramfs_is_backed(mem_map.entries().copied()));
+    // Inspect firmware configuration tables before SetVirtualAddressMap
+    // rewrites their pointers to aliases installed by the kernel.
+    memmap::setup_memory_map(mem_map.entries());
+    finish_boot_services_exit(mem_map);
+    platform::reserve_boot_memory();
+    for descriptor in boot_data_reservations() {
+        crate::mem::add_memory_descriptor(descriptor).expect("failed to reserve EFI boot data");
     }
+    crate::boot_payload::publish_staged_uefi();
+}
 
+fn finish_boot_services_exit(mem_map: ExitBootMemoryMap) {
     // The firmware map has already been copied to separate static storage.
     // Reuse the original buffer for an in-place compacted virtual map, retaining
     // the firmware's descriptor stride, version, and trailing descriptor bytes.
@@ -255,22 +288,96 @@ pub(crate) fn exit_boot_services() {
         }
     }
 
-    memmap::setup_memory_map(mem_map.entries());
-    platform::reserve_boot_memory();
-    #[cfg(feature = "boot-resources")]
-    for resource in crate::boot_resources::snapshots()
-        .iter()
-        .filter(|r| r.id != 0)
-    {
-        crate::mem::add_memory_descriptor(crate::mem::MemoryDescriptor::new_aligned(
-            resource.range.start as usize,
-            resource.range.len as usize,
-            crate::mem::MemoryType::BootData,
-            4096,
-        ))
-        .expect("failed to reserve boot resource");
+    #[cfg(target_arch = "riscv64")]
+    platform::retire_boot_page_tables();
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn exit_riscv_boot_services(
+    fdt: &fdt_raw::Fdt<'_>,
+    kernel: core::ops::Range<usize>,
+    dtb_bytes: usize,
+    hart_id: usize,
+) -> core::result::Result<crate::mem::PreparedBootMemory, Status> {
+    use core::alloc::Layout;
+
+    let dtb_layout = Layout::from_size_align(dtb_bytes, 8).map_err(|_| Status::COMPROMISED_DATA)?;
+    let cpu_layout =
+        crate::smp::early_cpu_area_layout(hart_id).map_err(|_| Status::COMPROMISED_DATA)?;
+    let mut map = crate::mem::MemoryMap::new();
+    println!("Exiting UEFI boot services...");
+    // SAFETY: the boot CPU owns the memory-map buffers. The callback only
+    // reads firmware-owned data and prepares the kernel's private map.
+    let (mem_map, prepared) = unsafe {
+        exit_boot_services_no_alloc(|raw| {
+            if !staged_initramfs_is_backed(raw.entries()) {
+                return Err(Status::COMPROMISED_DATA);
+            }
+            memmap::prepare_fdt_memory_map(
+                &mut map,
+                fdt,
+                kernel.clone(),
+                raw,
+                dtb_layout,
+                cpu_layout,
+            )
+        })
+    }?;
+    finish_boot_services_exit(mem_map);
+    crate::mem::replace_boot_map(map);
+    if let Some(archive) = prepared.archive {
+        crate::boot_payload::publish(archive.start, archive.end, archive.reclaimable);
+    } else {
+        crate::boot_payload::publish_staged_uefi();
     }
-    crate::boot_payload::reserve_staged_uefi();
+    Ok(prepared)
+}
+
+fn staged_initramfs_is_backed(mut entries: impl Iterator<Item = MemoryDescriptor>) -> bool {
+    let Some((start, end)) = crate::boot_payload::staged_uefi() else {
+        return true;
+    };
+    let Some(allocation_end) = end.checked_next_multiple_of(crate::consts::PAGE_SIZE) else {
+        return false;
+    };
+    entries.any(|entry| {
+        entry.ty == MemoryType::LOADER_DATA
+            && entry.phys_start <= start as u64
+            && entry
+                .page_count
+                .checked_mul(4096)
+                .and_then(|size| entry.phys_start.checked_add(size))
+                .is_some_and(|limit| allocation_end as u64 <= limit)
+    })
+}
+
+fn boot_data_reservations() -> impl Iterator<Item = crate::mem::MemoryDescriptor> {
+    use crate::mem::{MemoryDescriptor, MemoryType};
+
+    #[cfg(feature = "boot-resources")]
+    let resources = crate::boot_resources::snapshots()
+        .into_iter()
+        .filter(|resource| resource.id != 0)
+        .map(|resource| {
+            MemoryDescriptor::new_aligned(
+                resource.range.start as usize,
+                resource.range.len as usize,
+                MemoryType::BootData,
+                4096,
+            )
+        });
+    #[cfg(not(feature = "boot-resources"))]
+    let resources = core::iter::empty();
+
+    resources.chain(crate::boot_payload::staged_uefi().map(|(start, end)| {
+        assert!(end.checked_add(crate::consts::PAGE_SIZE - 1).is_some());
+        MemoryDescriptor::new_aligned(
+            start,
+            end - start,
+            MemoryType::BootData,
+            crate::consts::PAGE_SIZE,
+        )
+    }))
 }
 
 fn load_firmware_entry_payload(image_handle: Handle) {
@@ -505,64 +612,57 @@ impl ExitBootMemoryMap {
     }
 }
 
-unsafe fn exit_boot_services_no_alloc() -> ExitBootMemoryMap {
-    let Some(system_table) = uefi::table::system_table_raw() else {
-        reset_on_exit_boot_services_failure(Status::INVALID_PARAMETER);
-    };
+/// # Safety
+/// The boot CPU exclusively owns the map buffers and may call GetMemoryMap and
+/// ExitBootServices. The validator may read the candidate map, but may not
+/// call firmware or otherwise invalidate the map key.
+unsafe fn exit_boot_services_no_alloc<T>(
+    mut validate: impl FnMut(&RawBootMemoryMap<'_>) -> core::result::Result<T, Status>,
+) -> core::result::Result<(ExitBootMemoryMap, T), Status> {
+    let system_table = uefi::table::system_table_raw().ok_or(Status::INVALID_PARAMETER)?;
     let boot_services = unsafe {
         system_table
             .as_ref()
             .boot_services
             .as_ref()
-            .unwrap_or_else(|| reset_on_exit_boot_services_failure(Status::INVALID_PARAMETER))
+            .ok_or(Status::INVALID_PARAMETER)?
     };
-    let Some(image_handle) = saved_image_handle() else {
-        reset_on_exit_boot_services_failure(Status::INVALID_PARAMETER);
-    };
+    let image_handle = saved_image_handle().ok_or(Status::INVALID_PARAMETER)?;
 
-    let mut status = Status::SUCCESS;
-
-    for _ in 0..EXIT_BOOT_MEMORY_MAP_RETRIES {
-        let mut map_size = EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE;
-        let mut map_key = 0;
-        let mut desc_size = 0;
-        let mut desc_version = 0;
-        let map_ptr =
-            unsafe { addr_of_mut!(EXIT_BOOT_MEMORY_MAP_BUFFER.0).cast::<MemoryDescriptor>() };
-
-        status = unsafe {
-            (boot_services.get_memory_map)(
-                &mut map_size,
-                map_ptr,
-                &mut map_key,
-                &mut desc_size,
-                &mut desc_version,
-            )
+    for attempt in 0..EXIT_BOOT_MEMORY_MAP_RETRIES {
+        // SAFETY: the boot CPU is the sole writer and a previous attempt
+        // cannot retain its borrow of this fixed buffer.
+        let buffer = unsafe { &mut *addr_of_mut!(EXIT_BOOT_MEMORY_MAP_BUFFER) };
+        // SAFETY: the live EFI table contains the GetMemoryMap service.
+        let map = unsafe { read_exit_boot_memory_map(boot_services.get_memory_map, buffer) };
+        let map = map.and_then(|map| validate(&map).map(|prepared| (map, prepared)));
+        let (map, prepared) = match map {
+            Ok(map) => map,
+            Err(error) if attempt == 0 => return Err(error),
+            // Firmware may have partially stopped services on the first call.
+            // Do not return to the loader or try to free its boot payload.
+            Err(error) => reset_on_exit_boot_services_failure(error),
         };
-        if status == Status::BUFFER_TOO_SMALL {
-            continue;
-        }
-        if status != Status::SUCCESS {
-            reset_on_exit_boot_services_failure(status);
-        }
 
-        // LoongArch firmware publishes callable service entry points in its
-        // current EFI address space. Translate only the service-table storage
-        // above; rewriting these function pointers to a guessed direct-map
-        // alias breaks firmware-owned tables.
-        status = unsafe { (boot_services.exit_boot_services)(image_handle.as_ptr(), map_key) };
+        let status = unsafe { (boot_services.exit_boot_services)(image_handle.as_ptr(), map.key) };
         if status == Status::SUCCESS {
-            let entries =
-                unsafe { copy_exit_boot_memory_map(map_ptr.cast_const(), map_size, desc_size) };
-            return ExitBootMemoryMap {
-                entries,
-                desc_size,
-                desc_version,
-            };
+            UEFI_SERVICE_EXIT.store(true, core::sync::atomic::Ordering::Relaxed);
+            let entries = unsafe { copy_exit_boot_memory_map(map.entries()) };
+            return Ok((
+                ExitBootMemoryMap {
+                    entries,
+                    desc_size: map.desc_size,
+                    desc_version: map.desc_version,
+                },
+                prepared,
+            ));
+        }
+        if status != Status::INVALID_PARAMETER {
+            reset_on_exit_boot_services_failure(status);
         }
     }
 
-    reset_on_exit_boot_services_failure(status);
+    reset_on_exit_boot_services_failure(Status::INVALID_PARAMETER);
 }
 
 unsafe fn build_virtual_address_map(
@@ -608,32 +708,19 @@ unsafe fn build_virtual_address_map(
 }
 
 unsafe fn copy_exit_boot_memory_map(
-    src: *const MemoryDescriptor,
-    map_size: usize,
-    desc_size: usize,
+    entries: impl ExactSizeIterator<Item = MemoryDescriptor>,
 ) -> &'static [MemoryDescriptor] {
-    assert!(
-        desc_size >= size_of::<MemoryDescriptor>(),
-        "UEFI memory descriptor size is too small"
-    );
-
-    let entry_count = map_size / desc_size;
-    assert!(
-        entry_count <= EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY,
-        "UEFI memory map has too many entries"
-    );
-
+    let entry_count = entries.len();
+    assert!(entry_count <= EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY);
     let dst =
         addr_of_mut!(EXIT_BOOT_MEMORY_MAP_DESCRIPTORS).cast::<MaybeUninit<MemoryDescriptor>>();
-    for index in 0..entry_count {
-        let entry = unsafe {
-            src.cast::<u8>()
-                .add(index * desc_size)
-                .cast::<MemoryDescriptor>()
-        };
-        unsafe { dst.add(index).write(MaybeUninit::new(entry.read())) };
+    for (index, entry) in entries.enumerate() {
+        // SAFETY: entry_count fits the destination, which this call exclusively
+        // initializes after ExitBootServices succeeds.
+        unsafe { dst.add(index).write(MaybeUninit::new(entry)) };
     }
 
+    // SAFETY: the initialized copy is retained for the lifetime of the boot.
     unsafe { core::slice::from_raw_parts(dst.cast::<MemoryDescriptor>(), entry_count) }
 }
 

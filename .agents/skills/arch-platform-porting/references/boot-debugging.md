@@ -34,14 +34,14 @@ UEFI load options 时读取该文件。排查候选入口 panic 时先检查实�
 调试顺序：确认固件实际从预期 ESP 启动 `BOOTX64.EFI`；确认启动器按当前
 记录选槽，并在待试 `StartImage` 前持久标记 `attempted`；确认待试装载器
 报告运行摘要/升级 ID 且只由相同来源确认；掉电后检查记录的
-`rolled_back`。`ota_direct_listening` 证明 TCP4 服务已绑定；再通过
-QEMU `hostfwd` 发 `GET /api/v1/ota/status` 才能证明客户端可访问。
+`rolled_back`。`loader_snp_open` 和 `loader_snp_dhcp` 分别报告网卡与实际地址；
+再通过 QEMU `hostfwd` 发 `GET /api/v1/ota/status` 才能证明客户端可访问。
 `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 使用真实 FAT
 镜像跨 QEMU 启动，避免 `fat:rw:` 的实验性写入语义污染回滚结论。
 迁移覆盖启动器时仍可能断电，需要保留
 `EFI/AXLOADER/BOOTX64.ORIGINAL.EFI`；全新安装若原来存在启动器则保留
-`BOOTX64.PREVIOUS.EFI`，两种安装都需要外部启动介质。没有同网卡 TCP4
-服务绑定时观察 `ota_direct_unavailable`，服务端启动功能仍可使用。
+`BOOTX64.PREVIOUS.EFI`，两种安装都需要外部启动介质。原生网络由固件 SNP
+和 smoltcp 提供；没有取得 DHCP 地址时先检查网卡、链路和 DHCP 服务。
 
 本文件记录 LoongArch 动态统一可扩展固件接口平台启动、someboot 对称多处理、StarryOS 测试和 Axvisor LoongArch 虚拟化扩展 QEMU 冒烟测试的项目经验。
 
@@ -277,7 +277,7 @@ StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直
 
 1. 入口保存固件参数，并在未初始化数据段清理或重定位破坏前记录。
 2. `ExitBootServices` 前早期串口可用。
-3. 取得固件内存映射，完成分类并转换为内核内存模型。
+3. 取得固件内存映射，完成分类并转换为内核内存模型。`efi_stub::exit_boot_services()` 在 `SetVirtualAddressMap` 前调用 `memmap::setup_memory_map()`，使用仍有效的固件地址保留系统表及其可达存储；转换后的高地址表指针在内核页表建立前不得解引用。RISC-V 的 `uspace`/`hv` 具有非零直接映射偏移，仅验证平坦地址 ArceOS 不足以覆盖此顺序。
 4. 地址转换辅助函数使用前，内核映像物理范围、加载偏移和高地址范围已经确定。
 5. 页表或直接映射窗口覆盖当前代码、启动栈、页表、内核高地址、设备资源和启动数据。
 6. 按当前阶段要求的地址形式安装陷阱向量。
@@ -287,6 +287,24 @@ StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直
 10. 动态分配运行时处理器区域和次处理器栈，每个类型化区域只初始化一次、冻结并通过体系结构处理器局部寄存器契约绑定。
 11. 启动参数与页表对其他处理器可见后才释放次处理器。
 12. 体系结构钩子只负责唤醒传输。someboot 公共所有者在调用前发布逐处理器 `KICKED`，等待次处理器在公共入口报告 `ALIVE`，再把该处理器释放为 `SHOULD_ONLINE`。握手不进入不可变跳板元数据，并与稍后的调度器、中断和定时器在线发布分离。详见 `docs/design/someboot-secondary-cpu-startup.md`。
+
+FDT 静态 `reg` 中长度为零的元组是空占位，不占用 RAM；非空元组仍校验长度、溢出并按页保护。
+内存保留块中非终止的零长度 `memreserve` 同样跳过，但须继续读取后续非空条目；
+只有地址和大小同时为零才终止，结构预校验、axloader 解析及接收端实际保留保持一致。
+`reserve_static_memory()` 按地址合并 `memreserve` 和静态 `reg`，再与已有内存图
+合并，容量以最终描述符计。`no-map` 排除区仍独立检查，普通保留区不会把相邻的
+排除区之间的地址变成 `no-map` 页。
+直接启动的 `/memory/reg` 同样可能包含 U-Boot 未使用的 RAM bank，
+`fdt::memory::ram_regions()` 必须跳过零长度元组，与 `init_memory_map()` 保持一致；
+非空范围仍通过 `checked_region()` 检查溢出并扣除 `no-map` 页。
+停在 `Mapping early memory regions...` 且没有首个 RAM 映射时，检查该阶段是否因
+空 bank 拒绝而提前 panic；QEMU 会重写传入 DTB 的内存节点，复现时须在内核入口
+确认实际 `reg` 内容。
+
+`NoMapRegions::current()` 只解析排除区，不能提前要求固件传入的 DTB 自身可映射：
+U-Boot 可能把它放在 framebuffer 的 `no-map` 区内。`fdt::save_fdt()` 在早期 RAM
+分配器就绪后复制输入，并在发布新地址前检查目标区间，随后才建立内核页表。
+必须保留原有 `no-map` 排除，不能通过删除保留区来兼容启动。
 
 ### PL011 的重定位地址重绑
 
@@ -567,21 +585,50 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 
 ### axloader UEFI 网络启动
 
-- axloader 只接入 v7 控制协议，不保留 v2–v6 发现、poll 或 OTA 升级桥接。所有 boot、serial、OTA 修改请求和会话 HTTP Boot 上传必须携带 `X-Axloader-Protocol-Version: 7`，门禁先于 body 解析和副作用；UART 身份帧仍为独立的 `AXLOADER-SERIAL/1`。控制面只使用固件提供的网络协议。`SimpleNetwork`、`Ip4Config2`、`UDP4 Service Binding` 和 `TCP4 Service Binding` 必须来自同一个 UEFI 控制器；广播、MAC 和 HTTP 监听分别来自不同网卡不算可用实现。
+- axloader 只接入 v7 控制协议，不保留 v2 至 v6 发现、poll 或 OTA 升级桥接。所有 boot、serial、OTA 修改请求和会话 HTTP Boot 上传必须携带 `X-Axloader-Protocol-Version: 7`，门禁先于 body 解析和副作用；UART 身份帧仍为独立的 `AXLOADER-SERIAL/1`。x86_64、LoongArch64 和 RISC-V64 原生控制面统一使用 `loader::snp::run()`：`snp::Network` 独占一个 UEFI SNP，由 smoltcp 提供 DHCP、IPv4、UDP 发现与 TCP。广播、MAC 和 HTTP 共用同一网卡及 DHCP 地址，不要求固件 IP4、UDP4 或 TCP4 协议。
 - `ConOut` 输出诊断；实际控制台对应的唯一 `SerialIo` 以受控非独占短借用输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧并上报生效线参数。波特率、数据位、校验或停止位无效时拒绝自动绑定；读取流控位失败沿用既有无硬件流控策略并记录诊断。无法唯一选择 UART 仍失败，不能伪造 UART 存在。不能从 `ConIn` 或 `SerialIo` 解析 READY/BOOT、AT 命令或启动命令。借用限定 `TPL_CALLBACK`，写入有界且恢复原超时，guard 先于 TPL guard 释放。目标映像接管后，串口作为交互终端。
-- 原生 x86_64/LoongArch UEFI 每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP4 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。每次上电还生成新的 `serial_id`；UART 匹配后网络 continue 才允许带 `X-Serial-Binding` 启动，直连须显式 direct continue。缺少 RNG 时使用平台单调计数，不能仅用秒级 RTC 和栈地址生成身份。
-- QEMU smoke 使用真实 UEFI TCP4 接收启动及 OTA 文件，SLiRP `hostfwd` 将宿主空闲端口指向客户机 2999。ostool 的隔离服务端联调用私有 PTY 原样转发 OVMF UART，从真实 HTTP 状态取得启动身份，再构造公告调用同一设备协调入口；测试地址仅在夹具内映射到 `hostfwd`。该夹具不证明生产 UDP 路由或虚拟板卡 netns 路径，仍须独立联调。
+- 三种原生 UEFI 目标每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。每次上电还生成新的 `serial_id`；UART 匹配后网络 continue 才允许带 `X-Serial-Binding` 启动，直连须显式 direct continue。`loader::identity::BootIdentity` 共享派生算法，三个目标都优先使用固件 RNG；x86_64、LoongArch64 缺失时保留平台单调计数等既有回退，RISC-V 则停止发布身份。
+- x86_64、LoongArch64 的原生 QEMU smoke 使用真实 SNP/smoltcp HTTP 接收启动及 OTA 文件，SLiRP `hostfwd` 将宿主空闲端口指向客户机 2999。ostool 的隔离服务端联调用私有 PTY 原样转发 OVMF UART，从真实 HTTP 状态取得启动身份，再构造公告调用同一设备协调入口；测试地址仅在夹具内映射到 `hostfwd`。该夹具不证明生产 UDP 路由或虚拟板卡 netns 路径，仍须独立联调。
 - UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。主机只传字节和事务元数据，`arch` 是开放的诊断名称，不传 `arch/image_format/entry_symbol`。设备在 start 的实际装载路径按本地 `TargetSpec` 解析一次 ELF：x86_64 使用 `__x86_64_efi_pe_entry`，原生 LoongArch 使用 `efi_pe_entry`，不回退到 ELF `e_entry`、`_start` 或 `httpboot_entry`。cmdline 以 UCS-2 EFI LoadOptions 交接，可选 initramfs 以 Linux EFI `LoadFile2` 提供者交接。someboot 在退出 Boot Services 前从实际 image handle 复制 LoadOptions，命令行来源优先级是 EFI LoadOptions、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
 - create 只校验清单，upload 校验长度/摘要并移入不可变缓冲；`ready` 仅表示传输完成。装载或交接准备失败返回顶层 `{code,message}`，保留 failed 事务的首错并释放源缓冲；相同清单重试不清错，DELETE 后才可重新创建。旧 epoch、错误 binding、文件未齐或其他 boot ID 不得破坏当前事务。设备明确拒绝必须经 server/WebSocket 到达 CLI 并终止会话，不能继续等待广播。
-- `prepare` 产生拥有目标镜像及载荷的执行对象；成功写完 `202 ready_to_handoff` 后才能进入终结分支。响应写失败须析构本次执行对象、回滚临时资源，保留 ready 事务；成功后关闭连接/网络并释放 server 和源上传缓冲，再交接自有目标载荷。LoongArch axstd 的普通 heap 析构必须早于运行时停稳和 handoff seal。主机 start 响应不确定时仅查询同 epoch/ID；明确 ready 才能同 ID 重试，否则报告交接结果未确认并继续串口观察，不能自动重建或跨代重启。
+- `prepare` 产生拥有目标镜像及载荷的执行对象；原生 UEFI 路径完整发送 `202 ready_to_handoff` 并收到 TCP ACK 后才能进入终结分支。`snp::connection::Connection::finish()` 在入口及每次推进网络后，先确认 DHCP 地址有效、TCP 状态为 `Established` 或 `CloseWait`，再判断发送队列为空；无效连接的队列状态不能作为 ACK 证明。正常半关闭连接仍可确认响应，租约丢失、RST 或发送超时会析构本次 execution 并保留 ready 事务。确认后才进行有界 FIN 交换、关闭网络并释放 server 和源上传缓冲，再交接自有目标载荷。LoongArch axstd/arceos-efi 的运行时发送流程保持不变，普通 heap 析构必须早于运行时停稳和 handoff seal。主机 start 响应不确定时仅查询同 epoch/ID；明确 ready 才能同 ID 重试，否则报告交接结果未确认并继续串口观察，不能自动重建或跨代重启。
+- OTA 的持久提交与内核交接采用不同失败语义。`OtaController::finish_update()` 提交非活动槽后，`reboot_pending()` 驱动共享 `snp::run()` 重启，响应写入、TCP ACK 或网络推进失败不能撤销已提交的升级；未提交或正在试运行时不触发该重启。复用原生 QEMU 的现有升级轮次，在仅测试 feature 中分别注入提交后响应写失败和 socket 复位，检查新 epoch、试运行摘要、确认及回滚。内核 start 仍须完整响应获得 ACK 才可交接。
 - 切换 v7 前暂停新 session/OTA，确认旧设备没有 pending/trial，停止旧 server，备份配置及 OTA 数据。人工移除旧 `boot_arch`、`uefi_http` 和 `loader_network.public_base_url` 配置，仅清理已备份的 `loader-ota/devices.json` 观测缓存；保留 jobs、images、板卡身份、电源配置及设备回滚记录。离线安装配套 v7 launcher/loader 和 host/server，再重新发现验证，不通过旧协议 OTA 过渡。
 - 实体板卡发布通过 `context::board_elf::BoardElf` 持有独立的 ELF 传输副本，使用固定 Rust 工具链 `llvm-tools` 组件中的 `llvm-objcopy --strip-debug` 去掉 DWARF，防止 StarryOS 的调试 ELF 超过已部署 ostool-server 的 64 MiB 内核上传上限。原始 ELF、AXBT/AXKS 保留用于调试；传输副本必须保留符号表、EFI 入口和全部装载段，不能使用 `--strip-all`。临时 ELF/BIN 由板卡运行结束后统一清理。ASUS NUC15CRH 沿用板卡配置中的 `RDRIVE_ACPI_LOAD_AML=0`；Linux 客体测试先执行 `.github/ci/checks/axvisor.toml` 中的两条镜像准备命令，缺少构建机镜像时不能将目标内核的路径错误归因于 axloader。
 - `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 必须上传真实 ArceOS UEFI ELF，跨同一 FAT 镜像的独立启动验证无附加字段、仅 cmdline、仅 initramfs、两者都有以及 ESP initramfs 回退；成功证据来自内核的 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED`，不能只停在 `ready_to_handoff`。
 - 同一入口的 `ota_qemu::payloads::OsPayloads` 构建 StarryOS 和 AxVisor，再复用 HTTP 事务上传真实 ELF 与归档。StarryOS 用户态和 AxVisor Linux 客体须在内存根运行 `axloader-smoke.sh`、检查参数及文件写读，输出各自完整成功行；不能把 cmdline 回显、host banner 或 VM 创建日志当作客体执行证据。AxVisor 用例等待管理 shell 后执行 `vm console 1`，要求嵌套 KVM（VMX/SVM）、2 vCPU、2 GiB、`host,-la57`；不改为 TCG 或跳过客体来掩盖缺失能力。证据保存在 `target/axbuild/axloader/qemu/x86-*` 的独立 ESP、VARS、串口和 stderr。
 - 三系统夹具通过 `AXBUILD_NO_SNAPSHOT=1` 子进程调用 OS 的 `cargo xtask` 构建，检查 `.starry.toml`/`.axvisor.toml` 构建前后字节不变。直接调用保存快照的 CLI 路径会改变用户后续默认选择；不要在多线程父进程中设置全局环境来关闭持久化。
-- 发送准备交接响应后先析构 TCP4 监听、子句柄、事件、UART 身份计时器及 UDP4 广播对象，然后在 Boot Services 存活时通过 someboot 固件交接调用目标 EFI 入口。loader 不调用 `ExitBootServices`；目标复制 LoadOptions/initramfs 并自行退出服务，再初始化 ArceOS。退出后不能再调用固件网络或控制台服务。
+- 确认准备交接响应后，`snp::Network::close()` 先停稳 NIC，再释放网络对象与 UART 身份计时器，然后在 Boot Services 存活时通过 someboot 固件交接调用目标 EFI 入口。loader 不调用 `ExitBootServices`；目标复制 LoadOptions/initramfs 并自行退出服务，再初始化 ArceOS。退出后不能再调用固件网络或控制台服务。
 - 原生 launcher 和 loader 在 helpers 初始化后、OTA/网络/SerialIO 等待前关闭 BDS watchdog：timeout 为 0，`WatchdogCode` 使用应用区合法值 `>= 0x10000`；关闭失败须诊断并返回错误。`V00011003` 来自 `WatchdogTimerDxe`，不能直接判为 CPU 非法指令。
-- TCP4 `CloseToken` 不能传给 `Cancel()`。graceful close 使用有界轮询，超时后以 `Configure(NULL)` 中止 pending Close 并重置实例。Accept、receive/transmit 的合法 Cancel 同样须有界等待；轮询期间固件可写的 token status 只通过稳定地址上的裸指针易失读取，不持有跨越 Poll/Cancel/Configure 的共享引用。无法确认 token 已出队时冷复位，不能释放固件仍可能引用的 token 或 fragment。一次性 `handoff_stage` 日志区分 HTTP close、listener close、资源关闭和目标入口。
+- `snp::device::Device` 保留已提交的发送缓冲，直到 `GetStatus` 返回原指针；无法停稳时保留所有者并复位，不能释放固件仍可能引用的缓冲。只有 SNP 声明接收过滤掩码为零时采用固件默认接收并保留软件 MAC 过滤，其他协议错误继续传播。`loader_snp_open`、`loader_snp_dhcp` 和 `loader_snp_dhcp_lost` 分别定位网卡、地址与租约丢失；`loader_http_response_failed` 表示响应未完成确认，`loader_snp_stop_failed` 表示 NIC 停稳失败。
+
+- `Network::open()` 每个候选最多等待 30 秒获取 DHCP，初始化后的 `MediaPresent` 可能尚未反映 PHY 协商结果，不据此提前关闭网卡；失败时先停稳再尝试下一网卡。整轮存在 DHCP 超时或无链路时，间隔 2 秒重新轮选；时钟及不可恢复初始化错误继续返回，停稳失败仍终结复位。选定接口后才建立启动身份，服务期间不搬移事务。
+
+- SNP 维持两个固定 TCP socket，业务仍串行；使用 `poll_ingress_single()` 在相邻帧间重听，不能重置 active handle 或吞掉 pending RST。smoltcp 按槽顺序分派，既有 peer 必须位于 Listen 前，否则重传 SYN 会建立重复四元组；完整移出/重加 socket 可保留 TCP 状态并重建邻居调度元数据，当前事务固定第一槽且处理中不重排它。双槽满载时，`SynBackpressure` 只延迟没有既有四元组的合法新 HTTP SYN，让客户端重传；既有连接的 ACK/FIN/RST 继续处理。
+
+- `CheckEvent` 返回 `Result<bool>`，只有 `Ok(true)` 才表示串口周期到期。身份帧使用 LF 分隔，避免固件 Serial I/O 将显式 CRLF 再转换为 CRCRLF，导致严格身份解码失败。
+
+- axbuild 的自定义 RISC-V、LoongArch UEFI 编译参数统一由 `build::uefi_build_target_for()` 解析，构建与 Clippy 共用入口；保留各架构既有的 LTO、bitcode 和 profile 覆盖。`axloader::artifact` 共享 LLVM 工具定位与 ELF 转换，`artifact/riscv64.rs`、`artifact/loongarch64.rs` 分别拥有本架构的 ELF、PE 与重定位约束，不以公共转换步骤替代架构校验。
+
+#### RISC-V 原生 EFI
+
+构建、U 盘安装、固件启动项和 OTA 操作见[Axloader 指南](../../../../docs/docs/build/axloader.md)。排查入口、内存或网络故障时，重点核对以下契约。
+
+- `cargo xtask axloader build --target riscv64-unknown-uefi --release` 同时生成 loader 与 launcher；首次安装使用 `--fresh`，`EFI/BOOT/BOOTRISCV64.EFI` 是 launcher，主映像位于 A/B 槽，BananaPi 在同一 ESP 保留匹配的 `EFI/BOOT/board.dtb`。直接执行主映像可以启动内核，但不启用槽位 OTA。
+- 自定义目标使用 RV64IMAC、lp64、PIE 和禁用松弛的链接契约。`os=uefi` 带入 Windows 标志，因此关闭 LTO/嵌入 bitcode；`arch/riscv64/linker.py` 仅移除 ELF 不支持的 `--nxcompat`，须保留可执行权限。`artifact/riscv64.rs` 转换并校验 machine 为 `0x5064` 的 PE32+；裸入口应用 `R_RISCV_RELATIVE` 并执行 `fence.i` 后才进入 Rust。
+- `src/arch/` 管理主映像和 launcher 的固件入口；`loader::arch` 选择架构策略，RISC-V 的 `Fdt::prepare()` 所有者覆盖共享 `snp::run()` 和内核交接。缓存、时钟与身份回退留在架构层；`arch/riscv64/clock.rs` 从 FDT 的 `/cpus/timebase-frequency` 配合 `rdtime` 计时。RISC-V 无标准 RNG 时停止发布 epoch 和串口身份。
+- `target::RISCV64_EFI` 接收 `EM_RISCV` ELF64 和 `efi_pe_entry`。someboot 要求 S-mode、EFI 内存恒等寻址、标准 RISC-V Boot Protocol 和有效 FDT，查询真实 boot hart，私有栈与 BSS 只初始化一次。UEFI 2.11 允许固件页表：保留至 ExitBootServices 和 SetVirtualAddressMap 完成，再由 `firmware::retire_boot_page_tables()` 切回 Bare 并失效本地转换，随后才能复用固件启动内存。
+- someboot 的 `arch/riscv64/efi.rs::efi_entry()` 在首次 Rust 调用前启用 RV64GC 浮点状态，保存固件全部 32 个浮点寄存器、`fcsr` 及原始 `sstatus`，并为内核设置 RNE 舍入模式。入口校验失败返回时先恢复浮点状态，再恢复原始 FS 和中断状态；不能依赖固件预先启用 FPU，或推迟到任务切换才启用。
+- `elf_loader::allocate_load_region()` 为内核分配 `LOADER_CODE`，由 `ImagePages` 持有至交接；不能使用可能被固件标为 NX 的 `LOADER_DATA` 执行内核。
+- `Fdt::prepare()` 优先读取同一 LoadedImage 文件系统的 `board.dtb`，校验完整文件，以独立 ACPI reclaim 页调用 DT Fixup 并安装配置表。仅文件不存在或映像无文件系统时使用固件树；显式文件损坏、读取或 fixup 失败不回退。新旧 fixup GUID 对应不同 flags ABI，不能按 revision 猜测。返回时恢复旧配置表；恢复失败或表被其他所有者替换时保留页。
+- `ValidatedFdt::parse()` 检查完整结构和全部静态保留元组，零长度 `reg` 作为空占位跳过，非空范围检查溢出及分配前 EFI 内存图覆盖。普通静态保留区可以由 `BOOT_SERVICES_DATA` 承载，内核在分配前再次保留；`no-map` 只接受 EFI `RESERVED` 完整覆盖。动态 `size` 请求须非零，仅传递给内核，不表示固件已经分配或保护该区。
+- someboot 按页合并静态 `no-map` 区间。若遍历中的区间数超出暂存容量，按地址分段重扫并合并，容量按最终不相邻区间计。RISC-V EFI 入口在准备载荷和应用的启动资源后，用 `ExitBootServices` 实际接收的内存图和键校验启动布局。每次刷新内存图都重新校验，原始缓冲上限为 128 KiB。首次调用前失败时返回 EFI 错误，固件已尝试退出服务后走重置路径。EFI RAM 来自规范化 EFI 内存图并跳过 MMIO，直接启动仍用 FDT RAM。早期页表逐段接收扣除 `no-map` 后的 RAM，AArch64 与 RISC-V 动态平台的 ArceOS 内存清单按规范化内存图和额外切分的上限分配容量。与 KImage 扩展尾、PerCpu 或启动数据冲突时失败。输入 DTB 可以位于排除区，`fdt::save_fdt()` 复制到安全 RAM 后再建立内核页表。
+- RISC-V EFI 入口与早期建页表复用 `required_boot_mappings()` 校验 KImage；映像末尾向上对齐到 2 MiB 页后，如果尾部覆盖 `no-map`，入口返回 `COMPROMISED_DATA`。
+- EFI 入口按顺序为启动资源、EFI initramfs、FDT 保留区、回退 initramfs 和 KImage 建立内存图。回退 initramfs 的整页范围由同一份原始 EFI 图验证。内核在退出服务后接管已校验的内存图和选定的空闲段。预检与页表构建复用同一组映射范围和页表层级参数，为对齐后的 FDT 副本、全部 CPU 区域、页表根与子页表检查空间。同一子页表由多个范围共用时，预检允许重复计入。规范化布局限 512 项，另留 5 项给 FDT 副本、每 CPU 区域、页表和控制台 MMIO。首次退出服务前内存不足时返回 `OUT_OF_RESOURCES`，并释放 EFI 入口分配的 initramfs 和应用资源页。启动记录、中断和早期控制台由成功退出服务后的内核接管。
+- 公共 `mmu::is_kernel_relocated()` 只委托架构接口；默认实现处理平坦链接，RISC-V 的 `Arch::is_kernel_relocated_at()` 在 KImage 初始化后比较 PC-relative `_head` 与最终装载地址；不能以装载常量相等或 PC 落入宽内核范围代替。临时 PIE 地址也可能落在该范围内。
+- RISC-V 与 LoongArch 的 `TargetSpec::relocation()` 启用相对重定位校验，要求 `p_vaddr == p_paddr`。装载器同时检查 linker 边界符号指向的已装载 RELA 字节与重定位节，节的地址和文件偏移必须指向同一段内字节；拒绝不支持的类型、非零符号索引、不完整记录、不对齐或越过可写段的写入。写入不能覆盖任何已装载 RELA 表。
+- ELF 符号仍是不可信输入。someboot 的 `elf::apply_reloc()` 按运行中的 linker 地址独立校验实际表和数据/RELRO 写入范围，上界止于 `__cpu0_stack`，排除活动栈、启动记录及重定位表；整表通过后才写入。拒绝时 EFI 入口恢复固件上下文并返回 `LOAD_ERROR`。接受与拒绝路径分别由源码内 `native_relocations_*` 和实际重定位测试覆盖。
+- K3 UART 的 IER.UUE 是端口使能位。设备树控制台节点应声明 `spacemit,k3-uart`、`intel,xscale-uart`，并使用 `reg-shift = <2>`、`reg-io-width = <4>`；仅声明 `ns16550` 会选中标准类型并在接管时关闭端口。FDT 结构校验不验证设备类型与硬件是否一致。普通及紧急控制台接管先清 IER；MMIO 后端仅对设备兼容标识选择的 `UartVariant::XScale` 在非 DLAB 寄存器组写入时强制保留 UUE，只有启用接收数据中断时才设置 RTOIE。通用 MMIO 后端分别接收 `reg-shift` 对应的寄存器间距与 `reg-io-width` 对应的访问宽度，按 1/2/4 字节执行易失访问；对齐、寄存器偏移计算或映射范围校验失败时拒绝探测。标准与 DesignWare 后端清除继承的 PTIME 等模式位，维持 LSR.THRE 的 FIFO-empty 语义；不能按处理器架构或未知高位推断 UART 能力。通过 ostool 自动绑定前释放调试 UART；`ostool board connect` 的服务端在串口就绪后自动开机，身份等待超时会释放会话并关机。
 
 #### LoongArch 原生 UEFI axloader
 
@@ -605,17 +652,16 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 - LoongArch QEMU 只使用显式设置的 `AXBUILD_QEMU_SYSTEM_LOONGARCH64`，否则按
   `qemu-system-loongarch64` 从 `PATH` 查找；不探测固定 `/opt` 路径或读取环境
   专用别名。显式路径错误由进程启动失败直接报告，不能静默换用其他模拟器。
-- LoongArch loader 回归使用 ArceOS payload 验证目标执行、命令行、initramfs 和 OTA；
-  Hello 实机入口不承担 Axvisor 或 Linux 客户机验收。
-  QEMU 网络固件须具备 RNG 和 Hash2 生产者，可用成对的
-  `--firmware-code`/`--firmware-vars` 选择隔离构建的测试固件。
+- LoongArch loader 回归使用 ArceOS payload 验证目标执行、命令行、initramfs 和 OTA。
+  AxVisor 宿主和 Linux 客户机由独立的板测覆盖。
+  QEMU 网络固件须提供 SNP，profile 提供 virtio RNG。可用成对的
+  `--firmware-code`/`--firmware-vars` 选择测试固件。
 - A/B 回归用一个待试槽不可加载镜像覆盖真实 `LoadImage` 失败，要求提交失败结果、
   清理 pending、校验稳定槽后回退，并再次启动稳定槽。上传完成仍须验证 PE 契约，
   但 launcher、loader 和回退路径不重复解析 PE 头。
-- 固件须暴露同一控制器上的 SNP、IP4Config2、UDP4/TCP4 Service Binding。
-  只有固件网络启动菜单或 SNP 不证明完整协议可用；用 `loader_net_controller`
-  的实际状态区分未连接协议和缺少固件网络栈。SerialIO 缺失时明确诊断，不能
-  回退到自有网卡/串口驱动并称其为原生 UEFI 路径。
+- 固件须提供 SNP，由 smoltcp 提供 DHCP、UDP 和 TCP；不要求固件 IP4、UDP4、
+  TCP4 或 Hash2。用 `loader_snp_open` 和 `loader_snp_dhcp` 核对网卡及实际地址。
+  SerialIo 缺失时明确诊断，不能回退到自有网卡或串口驱动并称其为原生 UEFI 路径。
 - 实机入口为 `cargo xtask arceos test board --board loongson-3a6000-ll --test-case http-boot`。
   最小 Hello 使用单核、`RDRIVE_ACPI_LOAD_AML=0`、上游 ACPI 和 earlycon；
   不启用 PCI、网络、文件系统或虚拟化。应核对自动串口绑定、目标命令行和

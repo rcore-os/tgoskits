@@ -2,9 +2,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-#[cfg(efi)]
-use crate::mem::{MemoryDescriptor, MemoryType, add_memory_descriptor};
-
 static PUBLISHED: AtomicBool = AtomicBool::new(false);
 static START: AtomicUsize = AtomicUsize::new(0);
 static END: AtomicUsize = AtomicUsize::new(0);
@@ -174,27 +171,21 @@ pub(crate) fn stage_uefi(start: usize, end: usize) {
 }
 
 #[cfg(efi)]
-pub(crate) fn reserve_staged_uefi() {
-    let end = PENDING_END.load(Ordering::Acquire);
-    if end == 0 {
-        return;
+pub(crate) fn publish_staged_uefi() {
+    if let Some((start, end)) = staged_uefi() {
+        publish(start, end, true);
     }
-    let start = PENDING_START.load(Ordering::Relaxed);
-    assert!(end.checked_add(crate::consts::PAGE_SIZE - 1).is_some());
-    let reservation = MemoryDescriptor::new_aligned(
-        start,
-        end - start,
-        MemoryType::BootData,
-        crate::consts::PAGE_SIZE,
-    );
-    add_memory_descriptor(reservation)
-        .unwrap_or_else(|error| panic!("failed to reserve UEFI host initramfs: {error:?}"));
-    publish(start, end, true);
 }
 
 #[cfg(efi)]
 pub(crate) fn staged_uefi() -> Option<(usize, usize)> {
     let end = PENDING_END.load(Ordering::Acquire);
+    (end != 0).then(|| (PENDING_START.load(Ordering::Relaxed), end))
+}
+
+#[cfg(all(efi, target_arch = "riscv64"))]
+pub(crate) fn take_staged_uefi() -> Option<(usize, usize)> {
+    let end = PENDING_END.swap(0, Ordering::AcqRel);
     (end != 0).then(|| (PENDING_START.load(Ordering::Relaxed), end))
 }
 

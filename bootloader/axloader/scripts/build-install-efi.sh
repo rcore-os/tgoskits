@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Install or migrate an x86_64 or LoongArch64 ESP to the A/B axloader layout.
+# Install or migrate a native UEFI ESP to the A/B axloader layout.
 #
 # Default target:
 #   package: axloader
 #   target:  x86_64-unknown-uefi
-#   output:  BOOTX64.EFI or BOOTLOONGARCH64.EFI (selected by --target)
+#   output:  BOOTX64.EFI, BOOTLOONGARCH64.EFI, or BOOTRISCV64.EFI
 #   USB fs label: OSTOOLBOOT
 #
 # Examples:
@@ -161,16 +161,20 @@ case "$TARGET" in
         DEFAULT_EFI_OUTPUT="BOOTLOONGARCH64.EFI"
         EXPECTED_MACHINE_HEX="6462"
         ;;
+    riscv64-unknown-uefi)
+        DEFAULT_EFI_OUTPUT="BOOTRISCV64.EFI"
+        EXPECTED_MACHINE_HEX="6450"
+        ;;
     *)
-        die "A/B migration supports x86_64-unknown-uefi and loongarch64-unknown-uefi"
+        die "A/B installation supports x86_64-unknown-uefi, loongarch64-unknown-uefi, and riscv64-unknown-uefi"
         ;;
 esac
 if [[ "$EFI_OUTPUT_SET" -eq 0 ]]; then
     EFI_OUTPUT="$DEFAULT_EFI_OUTPUT"
 fi
 [[ "$EFI_OUTPUT" == "$DEFAULT_EFI_OUTPUT" ]] || die "$TARGET requires $DEFAULT_EFI_OUTPUT"
-if [[ "$TARGET" == "loongarch64-unknown-uefi" && "$FRESH" -eq 0 ]]; then
-    die "native LoongArch installation requires --fresh so both A/B slots are native; the old launcher is backed up only"
+if [[ "$TARGET" != "x86_64-unknown-uefi" && "$FRESH" -eq 0 ]]; then
+    die "native $TARGET installation requires --fresh so both A/B slots are native; the old launcher is backed up only"
 fi
 BOOT_STEM="${EFI_OUTPUT%.EFI}"
 PREVIOUS_BOOT="$BOOT_STEM.PREVIOUS.EFI"
@@ -179,9 +183,9 @@ NEW_BOOT="$BOOT_STEM.NEW.EFI"
 
 if [[ "$CLEAN" -eq 1 ]]; then
     info "Cleaning $PACKAGE for $TARGET"
-    if [[ "$TARGET" == "loongarch64-unknown-uefi" ]]; then
-        # Cargo clean expects a built-in target for --target; the native Loong
-        # target is supplied as a JSON path by xtask. Remove only its artifacts.
+    if [[ "$TARGET" != "x86_64-unknown-uefi" ]]; then
+        # Cargo clean expects a built-in target for --target; native custom
+        # targets are supplied as JSON paths by xtask. Remove only their artifacts.
         rm -rf -- "$REPO_ROOT/target/$TARGET"
     else
         "$CARGO_BIN" clean -p "$PACKAGE" --target "$TARGET"

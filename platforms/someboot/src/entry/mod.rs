@@ -9,28 +9,36 @@ pub struct PrimaryCpuInitInfo {
 }
 
 pub fn primary_init_early(params: PrimaryCpuInitInfo) {
+    setup_primary_memory(&params);
+    setup_primary_console();
+    crate::entropy::capture();
+    #[cfg(efi)]
+    if crate::efi_stub::is_uefi_available() {
+        crate::efi_stub::exit_boot_services();
+    }
+    log_primary_init(&params);
+    crate::mem::early_init();
+}
+
+pub(crate) fn setup_primary_memory(params: &PrimaryCpuInitInfo) {
     crate::mem::setup_entry(
         params.kernel_start,
         params.kernel_end,
         params.kernel_start_link,
     );
+}
 
+pub(crate) fn setup_primary_console() {
     crate::fdt::setup_earlycon();
     let _ = crate::acpi::earlycon::acpi_setup_earlycon();
-    crate::entropy::capture();
+}
 
-    #[cfg(efi)]
-    if crate::efi_stub::is_uefi_available() {
-        crate::efi_stub::exit_boot_services();
-    }
-
+pub(crate) fn log_primary_init(params: &PrimaryCpuInitInfo) {
     if let Some(cmdline) = crate::cmdline::cmdline() {
         println!("{cmdline}");
     }
     println!("VM Load @{:#x}", params.kernel_start);
     println!("VM Load Offset: {:#x}", crate::mem::vm_load_offset());
-
-    crate::mem::early_init();
 }
 
 pub(crate) fn secondary_entry(cpu_meta_paddr: usize) {

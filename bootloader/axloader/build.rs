@@ -12,6 +12,10 @@ const UEFI_TARGETS: &[Target] = &[
         arch_cfg: "loongarch64",
         uefi_target: "loongarch64-unknown-uefi",
     },
+    Target {
+        arch_cfg: "riscv64",
+        uefi_target: "riscv64-unknown-uefi",
+    },
 ];
 
 fn main() {
@@ -55,6 +59,14 @@ fn main() {
             println!("cargo:rustc-link-arg-bin={binary}=--gc-sections");
             println!("cargo:rustc-link-arg-bin={binary}=-znorelro");
             println!("cargo:rustc-link-arg-bin={binary}=-znostart-stop-gc");
+        }
+    } else if target_info.arch_cfg == "riscv64" {
+        let root = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+        let script = root.join("src/arch/riscv64/link.ld");
+        println!("cargo::rerun-if-changed={}", script.display());
+        println!("cargo::rerun-if-changed=src/arch/riscv64/linker.py");
+        for binary in ["axloader", "axloader-launcher"] {
+            println!("cargo::rustc-link-arg-bin={binary}=-T{}", script.display());
         }
     }
 }
