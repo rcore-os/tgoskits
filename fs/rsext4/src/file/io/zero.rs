@@ -62,6 +62,14 @@ fn zero_mapped_inode_block_slice<B: BlockIo>(
         .modify(device, physical, |block| block[start..end].fill(0))
 }
 
+/// Zeroes the retained EOF block's tail for good.
+///
+/// The callers zero bytes that the file has already lost or never shows: a
+/// shrink whose new size is already on disk, or an extension that publishes
+/// its larger size only after this succeeds. Nothing puts the bytes back.
+/// A failed write-through can still leave the old bytes on the device; a
+/// shrink then stays pending, and `finish_pending_truncate` zeroes them again
+/// before any later write or preallocation can grow the file over them.
 pub(super) fn zero_mapped_inode_tail<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,

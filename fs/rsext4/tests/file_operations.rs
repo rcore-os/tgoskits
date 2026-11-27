@@ -2068,6 +2068,90 @@ mod file_functional_tests {
     }
 
     #[test]
+    fn failed_extent_truncate_keeps_every_byte_of_the_file() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/extent-truncate-tail", None, None)
+            .expect("file creation failed");
+        let original: Vec<u8> = (0..2 * BLOCK_SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        write_file(
+            &mut jbd2_dev,
+            &mut fs,
+            "/extent-truncate-tail",
+            0,
+            &original,
+        )
+        .unwrap();
+        jbd2_dev.umount_commit().unwrap();
+        jbd2_dev.set_journal_use(false).unwrap();
+        let inode_table = fs.group_descs[0].inode_table();
+
+        fail_after_write_sector.set(Some(inode_table));
+        let error = truncate(&mut jbd2_dev, &mut fs, "/extent-truncate-tail", 100)
+            .expect_err("inode finalize failure must abort the extent truncate");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+
+        let data = read_file(&mut jbd2_dev, &mut fs, "/extent-truncate-tail").unwrap();
+        assert_eq!(data.len(), original.len());
+        let first_changed = data.iter().zip(&original).position(|(now, was)| now != was);
+        assert_eq!(
+            first_changed, None,
+            "a failed truncate must leave every byte of the file as it was"
+        );
+    }
+
+    #[cfg(not(feature = "USE_MULTILEVEL_CACHE"))]
+    #[test]
+    fn failed_tail_zeroing_write_leaves_the_shrink_to_orphan_recovery() {
+        let (device, fail_after_write_sector) =
+            MockBlockDevice::with_write_failure_handle(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/tail-zeroing-write", None, None)
+            .expect("file creation failed");
+        let original: Vec<u8> = (0..2 * BLOCK_SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        write_file(&mut jbd2_dev, &mut fs, "/tail-zeroing-write", 0, &original).unwrap();
+        jbd2_dev.umount_commit().unwrap();
+        jbd2_dev.set_journal_use(false).unwrap();
+        let (inode_number, mut inode) =
+            dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/tail-zeroing-write")
+                .unwrap()
+                .unwrap();
+        let retained_block =
+            loopfile::resolve_inode_block(&fs, &mut jbd2_dev, inode_number, &mut inode, 0)
+                .unwrap()
+                .expect("retained block missing");
+
+        fail_after_write_sector.set(Some(retained_block.raw()));
+        let error = truncate(&mut jbd2_dev, &mut fs, "/tail-zeroing-write", 100)
+            .expect_err("a failed tail zeroing write must fail the truncate");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+        // The new size and the orphan record were published before the tail
+        // was zeroed, so the shrink is left to orphan recovery.
+        let inode = fs.get_inode_by_num(&mut jbd2_dev, inode_number).unwrap();
+        assert_eq!(inode.size(), 100);
+        assert_eq!(fs.superblock.s_last_orphan, inode_number.raw());
+
+        truncate(&mut jbd2_dev, &mut fs, "/tail-zeroing-write", 100)
+            .expect("the next truncate must finish the shrink");
+        assert_eq!(fs.superblock.s_last_orphan, 0);
+        let mut block = vec![0u8; BLOCK_SIZE];
+        jbd2_dev.read_blocks(&mut block, retained_block, 1).unwrap();
+        assert_eq!(block[..100], original[..100]);
+        assert_eq!(
+            block[100..].iter().position(|byte| *byte != 0),
+            None,
+            "recovery must zero the EOF block past the new size"
+        );
+    }
+
+    #[test]
     fn deleting_fast_symlink_does_not_treat_inline_bytes_as_indirect_blocks() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);

@@ -69,6 +69,17 @@ const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePro
     features: &["host-test"],
 }];
 
+// Without the default USE_MULTILEVEL_CACHE feature the data block cache writes
+// through, and the tests of that mode compile only in this second profile.
+const RSEXT4_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    HOST_TEST_FEATURE_PROFILES[0],
+    PackageFeatureProfile {
+        name: "host-test+no-default-features",
+        no_default_features: true,
+        features: &["host-test"],
+    },
+];
+
 const AXVM_FEATURE_PROFILES: &[PackageFeatureProfile] = &[HOST_TEST_FEATURE_PROFILES[0]];
 
 const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
@@ -399,7 +410,6 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "x86_vlapic"
         | "axdevice"
         | "axfs-ng-vfs"
-        | "rsext4"
         | "scope-local"
         | "ax-sync"
         | "ax-display"
@@ -415,6 +425,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "dma-api"
         | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
         "axvm" => Some(AXVM_FEATURE_PROFILES),
+        "rsext4" => Some(RSEXT4_FEATURE_PROFILES),
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-block" => Some(AX_BLOCK_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),

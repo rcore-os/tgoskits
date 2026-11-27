@@ -12,6 +12,7 @@ mod inode_load;
 #[cfg(feature = "USE_MULTILEVEL_CACHE")]
 mod inode_writeback;
 mod metadata;
+mod pending_shrink;
 mod read;
 mod write;
 
@@ -80,6 +81,7 @@ impl BlockIo for MemoryDevice {
 
     fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
         write::observe_write(buffer.len())?;
+        pending_shrink::observe_write(sector, count)?;
         let range = Self::transfer_range(sector, count, buffer.len())?;
         self.bytes
             .lock()

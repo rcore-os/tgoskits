@@ -39,13 +39,18 @@ pub fn preallocate_inode<B: BlockIo>(
         return Err(Ext4Error::file_too_large());
     }
 
-    let mut inode = fs.get_inode_by_num(device, inode_num)?;
+    let inode = fs.get_inode_by_num(device, inode_num)?;
     if !inode.is_file() {
         return Err(Ext4Error::invalid_input().with_operation("fallocate:not_regular"));
     }
     if !inode.uses_extents() {
         return Err(Ext4Error::unsupported().with_operation("fallocate:legacy_indirect"));
     }
+    // Allocation skips blocks that are already mapped and may grow the size
+    // over them, so an unfinished shrink must unmap the blocks it left past
+    // the current size first.
+    finish_pending_truncate(device, fs, inode_num)?;
+    let mut inode = fs.get_inode_by_num(device, inode_num)?;
     let huge_file_feature = fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
