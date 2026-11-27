@@ -140,12 +140,54 @@ mod tests {
 
     #[test]
     fn extra_timestamp_roundtrip_works_when_extra_fields_fit() {
-        let mut inode = Ext4Inode::empty_for_reuse(32);
-        let ts = Ext4Timestamp::new((1_i64 << 33) + 17, 123_456_789);
-
-        inode.set_mtime_ts(Ext4Inode::LARGE_INODE_SIZE, ts);
-
-        assert_eq!(inode.mtime_ts(Ext4Inode::LARGE_INODE_SIZE), ts);
+        let minimum = i64::from(i32::MIN);
+        let maximum = i64::from(i32::MAX) + (3_i64 << 32);
+        let fractional = 123_456_789;
+        let cases = [
+            (
+                Ext4Timestamp::new((1_i64 << 33) + 7, fractional),
+                Ext4Timestamp::new((1_i64 << 33) + 7, fractional),
+            ),
+            (
+                Ext4Timestamp::new(-1, fractional),
+                Ext4Timestamp::new(-1, fractional),
+            ),
+            (
+                Ext4Timestamp::new(minimum, fractional),
+                Ext4Timestamp::new(minimum, 0),
+            ),
+            (
+                Ext4Timestamp::new(maximum, fractional),
+                Ext4Timestamp::new(maximum, 0),
+            ),
+            (
+                Ext4Timestamp::new(minimum - 1, fractional),
+                Ext4Timestamp::new(minimum, 0),
+            ),
+            (
+                Ext4Timestamp::new(maximum + 1, fractional),
+                Ext4Timestamp::new(maximum, 0),
+            ),
+            (
+                Ext4Timestamp::new(i64::MIN, fractional),
+                Ext4Timestamp::new(minimum, 0),
+            ),
+            (
+                Ext4Timestamp::new(i64::MAX, fractional),
+                Ext4Timestamp::new(maximum, 0),
+            ),
+        ];
+        for (requested, expected) in cases {
+            let mut inode = Ext4Inode::empty_for_reuse(256);
+            inode.set_atime_ts(Ext4Inode::LARGE_INODE_SIZE, requested);
+            inode.set_mtime_ts(Ext4Inode::LARGE_INODE_SIZE, requested);
+            inode.set_ctime_ts(Ext4Inode::LARGE_INODE_SIZE, requested);
+            inode.set_crtime_ts(Ext4Inode::LARGE_INODE_SIZE, requested);
+            assert_eq!(inode.atime_ts(Ext4Inode::LARGE_INODE_SIZE), expected);
+            assert_eq!(inode.mtime_ts(Ext4Inode::LARGE_INODE_SIZE), expected);
+            assert_eq!(inode.ctime_ts(Ext4Inode::LARGE_INODE_SIZE), expected);
+            assert_eq!(inode.crtime_ts(Ext4Inode::LARGE_INODE_SIZE), Some(expected));
+        }
     }
 
     #[test]
