@@ -266,6 +266,32 @@ int main(void)
                  "beneath.txt", RESOLVE_BENEATH,
                  O_TMPFILE | O_RDWR | O_CLOEXEC, EOPNOTSUPP);
 
+    /* The "unsupported" answer comes only after the caller's input is valid:
+     * Linux copies the pathname and resolves the dirfd first, so a bad
+     * pointer is EFAULT and a bad dirfd is EBADF. */
+    {
+        const struct open_how tmp_how = {
+            .flags = O_TMPFILE | O_RDWR | O_CLOEXEC,
+            .mode = 0600,
+            .resolve = RESOLVE_NO_XDEV,
+        };
+        errno = 0;
+        long bad_path =
+            syscall(SYS_openat2, rootfd, (const char *)1, &tmp_how, sizeof(tmp_how));
+        CHECK(bad_path < 0 && errno == EFAULT,
+              "constrained O_TMPFILE keeps EFAULT for an invalid pathname");
+        errno = 0;
+        long bad_fd =
+            syscall(SYS_openat2, -1, "sub", &tmp_how, sizeof(tmp_how));
+        CHECK(bad_fd < 0 && errno == EBADF,
+              "constrained O_TMPFILE keeps EBADF for an invalid dirfd");
+        errno = 0;
+        long bad_empty =
+            syscall(SYS_openat2, rootfd, "", &tmp_how, sizeof(tmp_how));
+        CHECK(bad_empty < 0 && errno == ENOENT,
+              "constrained O_TMPFILE keeps ENOENT for an empty pathname");
+    }
+
     /* Creation authorization runs inside the create path: an entry that a
      * concurrent unlink removed between the existence probe and the VFS
      * lookup must not be created without the parent's write permission. User
