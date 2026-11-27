@@ -22,5 +22,7 @@ pub use ranges::{
 };
 pub use read::{read_file, read_inode_data_into};
 pub use resize::{InodeResize, truncate, truncate_inode};
-pub(crate) use resize::{recover_linked_truncate_inode, truncate_inode_for_reap};
+pub(crate) use resize::{
+    finish_pending_truncate, recover_linked_truncate_inode, truncate_inode_for_reap,
+};
 pub use shift::{collapse_range_inode, insert_range_inode};

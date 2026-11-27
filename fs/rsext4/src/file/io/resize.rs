@@ -12,7 +12,9 @@ use super::{
     transaction::{
         MetadataTransactionStart, MetadataTransactionStep, finalize_restarted_inode_update,
     },
-    zero::zero_mapped_inode_tail,
+    zero::{
+        ZeroedTail, restore_tail_on_error, zero_mapped_inode_tail, zero_mapped_inode_tail_with_undo,
+    },
     *,
 };
 
@@ -66,7 +68,7 @@ impl InodeResize {
                 self.target_size,
                 TruncatePurpose::OrphanRecovery,
             )?;
-            if inode.i_links_count != 0 && fs.orphan_contains(device, self.inode)? {
+            if fs.orphan_contains(device, self.inode)? {
                 finish_orphaned_truncate(device, fs, self.inode)?;
             }
         } else {
@@ -83,13 +85,9 @@ pub fn truncate_inode<B: BlockIo>(
     inode_num: InodeNumber,
     truncate_size: u64,
 ) -> Ext4Result<()> {
-    let inode = fs.get_inode_by_num(device, inode_num)?;
-    if inode.i_links_count != 0 && fs.orphan_contains(device, inode_num)? {
-        // A prior bounded truncate may have published its new size before
-        // yielding for journal space. Finish that exact orphan intent before
-        // interpreting another resize; size equality alone is not completion.
-        recover_linked_truncate_inode(device, fs, inode_num, inode.size())?;
-    }
+    // Size equality alone is not completion: finish an earlier shrink before
+    // interpreting another resize.
+    finish_pending_truncate(device, fs, inode_num)?;
     truncate_inode_mapping(
         device,
         fs,
@@ -97,6 +95,31 @@ pub fn truncate_inode<B: BlockIo>(
         truncate_size,
         TruncatePurpose::UserResize,
     )
+}
+
+/// Finishes a shrink whose new size and orphan record are already on disk
+/// but whose zeroing or block removal has not completed.
+///
+/// A restarted shrink can stop there: it may yield for journal space, or
+/// zeroing its EOF tail or a later removal step may fail. The file then has
+/// its new size but may still map blocks past it, and its EOF block may
+/// still hold old bytes past it if the zeroing never reached the device.
+/// The inode stays in `pending_shrinks` until the shrink finishes, whether
+/// it is still linked or only held open. Orphan recovery finishes it at the
+/// next mount. On a mounted filesystem, truncate, writes that grow the file
+/// and preallocation call this first, so those bytes are zero or unmapped
+/// before they can become part of the file.
+pub(crate) fn finish_pending_truncate<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+) -> Ext4Result<()> {
+    if !fs.pending_shrinks.contains(&inode_num) {
+        return Ok(());
+    }
+    let size = fs.get_inode_by_num(device, inode_num)?.size();
+    truncate_inode_mapping(device, fs, inode_num, size, TruncatePurpose::OrphanRecovery)?;
+    finish_orphaned_truncate(device, fs, inode_num)
 }
 
 pub(crate) fn recover_linked_truncate_inode<B: BlockIo>(
@@ -212,11 +235,23 @@ fn truncate_inode_mapping<B: BlockIo>(
                 u64::from(u32::MAX) + 1,
                 &removal,
             )?;
-            zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
             if let Some(credit_limit) = restart_limit {
+                // A restarted shrink commits in several transactions, so it
+                // cannot roll the tail back with them. For a user truncate
+                // the tail is zeroed only after the new size and the orphan
+                // record have committed: before that, a failure or a crash
+                // leaves the old size with its tail intact, and after it,
+                // the old bytes past the new size must never come back: a
+                // failed zeroing is not undone, orphan recovery zeroes the
+                // tail after a crash, and on a mounted filesystem a later
+                // truncate, growing write or preallocation finishes the
+                // shrink first, even after the inode loses its last name.
+                // Recovery and reap shrink an inode whose size is already
+                // published.
                 if purpose == TruncatePurpose::UserResize {
                     begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
                 }
+                zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
                 remove_extent_mapping_with_restarts(
                     device,
                     fs,
@@ -240,7 +275,17 @@ fn truncate_inode_mapping<B: BlockIo>(
                     )
                 };
             } else {
-                return commit_extent_mapping_removal(
+                // One transaction carries the whole shrink and rolls back on
+                // failure, so a user shrink puts the zeroed tail back with it.
+                let zeroed_tail = zero_single_transaction_tail(
+                    device,
+                    fs,
+                    inode_num,
+                    &mut inode,
+                    truncate_size,
+                    purpose,
+                )?;
+                let result = commit_extent_mapping_removal(
                     device,
                     fs,
                     inode_num,
@@ -252,6 +297,7 @@ fn truncate_inode_mapping<B: BlockIo>(
                         payload: removal,
                     },
                 );
+                return restore_tail_on_error(device, fs, zeroed_tail, result);
             }
         }
 
@@ -280,11 +326,13 @@ fn truncate_inode_mapping<B: BlockIo>(
     // Linux zeros the retained partial EOF block before detaching later
     // mappings. A corrupt hidden branch therefore still fails during the plan
     // preflight before any data or metadata is changed.
-    zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
     if let Some(credit_limit) = restart_limit {
+        // As for extents: a user truncate zeroes the tail only after the new
+        // size and the orphan record have committed.
         if purpose == TruncatePurpose::UserResize {
             begin_restarted_truncate(device, fs, inode_num, &mut inode, truncate_size)?;
         }
+        zero_mapped_inode_tail(device, fs, inode_num, &mut inode, truncate_size)?;
         remove_legacy_mapping_with_restarts(
             device,
             fs,
@@ -308,7 +356,15 @@ fn truncate_inode_mapping<B: BlockIo>(
             )
         }
     } else {
-        commit_legacy_mapping_removal(
+        let zeroed_tail = zero_single_transaction_tail(
+            device,
+            fs,
+            inode_num,
+            &mut inode,
+            truncate_size,
+            purpose,
+        )?;
+        let result = commit_legacy_mapping_removal(
             device,
             fs,
             inode_num,
@@ -319,7 +375,8 @@ fn truncate_inode_mapping<B: BlockIo>(
                 start: MetadataTransactionStart::Join,
                 payload: transaction,
             },
-        )
+        );
+        restore_tail_on_error(device, fs, zeroed_tail, result)
     }
 }
 
@@ -340,6 +397,15 @@ pub fn truncate<B: BlockIo>(
     truncate_inode(device, fs, inode_num, truncate_size)
 }
 
+/// Publishes the new size and the orphan record of a restarted shrink and
+/// commits them.
+///
+/// The caller zeroes the retained EOF tail only after this returns. Without
+/// the commit, these updates would stay in the running transaction for the
+/// first removal step to join, and a failure or a crash before that
+/// transaction committed would bring back the old size over a zeroed tail.
+/// Once this succeeds, orphan recovery finishes the shrink and zeroes the
+/// tail after a crash.
 fn begin_restarted_truncate<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -349,6 +415,9 @@ fn begin_restarted_truncate<B: BlockIo>(
 ) -> Ext4Result<()> {
     let original_inode = *inode;
     let updated = fs.with_metadata_transaction(device, 2, |fs, device| {
+        // A failure in this transaction restores the set with the rest of
+        // the in-memory state, so the shrink is pending only once published.
+        fs.pending_shrinks.insert(inode_num);
         let mut updated = original_inode;
         updated.i_size_lo = truncate_size as u32;
         updated.i_size_high = (truncate_size >> 32) as u32;
@@ -365,7 +434,28 @@ fn begin_restarted_truncate<B: BlockIo>(
         Ok(updated)
     })?;
     *inode = updated;
-    Ok(())
+    device.commit()
+}
+
+/// Zeroes the retained EOF tail of a shrink that commits in one transaction,
+/// and returns the bytes to put back if that transaction fails.
+///
+/// Only a user shrink can be rolled back to its old size. Orphan recovery
+/// and the final reap shrink an inode whose new size is already on disk, so
+/// a failure there must leave the tail zeroed rather than bring it back.
+fn zero_single_transaction_tail<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    truncate_size: u64,
+    purpose: TruncatePurpose,
+) -> Ext4Result<Option<ZeroedTail>> {
+    if purpose == TruncatePurpose::UserResize {
+        return zero_mapped_inode_tail_with_undo(device, fs, inode_num, inode, truncate_size);
+    }
+    zero_mapped_inode_tail(device, fs, inode_num, inode, truncate_size)?;
+    Ok(None)
 }
 
 fn finish_orphaned_truncate<B: BlockIo>(
@@ -375,7 +465,9 @@ fn finish_orphaned_truncate<B: BlockIo>(
 ) -> Ext4Result<()> {
     // An unlinked inode still needs the on-disk orphan chain until its final
     // open reference is reaped, even when this resize freed every data block.
+    // Its shrink is done, though, so a later write need not finish it again.
     if fs.get_inode_by_num(device, inode_num)?.i_links_count == 0 {
+        fs.pending_shrinks.remove(&inode_num);
         return Ok(());
     }
     // Removing a non-head orphan can dirty the predecessor inode-table block,

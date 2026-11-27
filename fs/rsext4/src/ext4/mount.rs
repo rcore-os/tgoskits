@@ -1,3 +1,5 @@
+use ::alloc::collections::BTreeSet;
+
 use super::{mkfs::read_superblock, *};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -582,6 +584,7 @@ impl Ext4FileSystem {
             mmp: super::mmp::MmpState::Disabled,
             journal_sb_block_start: None,
             system_zones,
+            pending_shrinks: BTreeSet::new(),
         };
 
         if !options.readonly {

@@ -122,6 +122,8 @@ impl Ext4FileSystem {
                     self.mark_superblock_dirty();
                 }
                 self.modify_inode(block_dev, target, |inode| inode.i_dtime = 0)?;
+                // Leaving the chain means the inode's shrink, if any, is done.
+                self.pending_shrinks.remove(&target);
                 return Ok(previous);
             }
             previous = Some(inode_num);
