@@ -324,6 +324,7 @@ pub trait FileLike: Pollable + DowncastSync {
         None
     }
 
+    /// Reports the live append state of this description.
     fn append(&self) -> bool {
         false
     }

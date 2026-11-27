@@ -1,14 +1,109 @@
 #include "test_framework.h"
 #include "test_helpers.h"
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/sendfile.h>
+#include <sys/syscall.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
 #ifndef F_DUPFD_CLOEXEC
 #define F_DUPFD_CLOEXEC 1030
 #endif
+
+static int check_sendfile_to_fifo_with_append(void)
+{
+    int fail = 0;
+    char directory[] = "/tmp/dup-fcntl-fifo-XXXXXX";
+    CHECK(mkdtemp(directory) != NULL, "创建 FIFO 测试目录");
+    if (fail) return fail;
+
+    int dir = open(directory, O_RDONLY | O_DIRECTORY);
+    CHECK(dir >= 0, "打开 FIFO 测试目录");
+    if (dir >= 0) {
+        CHECK_RET(mkfifoat(dir, "out", 0600), 0, "创建命名 FIFO");
+        int reader = openat(dir, "out", O_RDONLY | O_NONBLOCK);
+        int writer = openat(dir, "out", O_WRONLY | O_NONBLOCK);
+        int input = open(TMPFILE, O_RDONLY);
+        CHECK(reader >= 0 && writer >= 0 && input >= 0, "打开 FIFO 和输入文件");
+        if (reader >= 0 && writer >= 0 && input >= 0) {
+            CHECK_RET(fcntl(writer, F_SETFL, O_APPEND | O_NONBLOCK), 0,
+                      "为命名 FIFO 设置 O_APPEND");
+            CHECK_RET(syscall(SYS_sendfile, writer, input, NULL, 5), 5,
+                      "sendfile 允许写入带 O_APPEND 的命名 FIFO");
+            char data[5] = {0};
+            CHECK_RET(read(reader, data, sizeof(data)), 5, "从 FIFO 读出完整数据");
+            CHECK(memcmp(data, "start", sizeof(data)) == 0, "FIFO 收到原始文件内容");
+        }
+        if (input >= 0) close(input);
+        if (writer >= 0) close(writer);
+        if (reader >= 0) close(reader);
+        unlinkat(dir, "out", 0);
+        close(dir);
+    }
+    rmdir(directory);
+    return fail;
+}
+
+static int check_memfd_append(int input)
+{
+    int fail = 0;
+    int fd = (int)syscall(SYS_memfd_create, "dup-fcntl-append", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "创建追加测试的 memfd");
+    if (fd < 0) return fail;
+
+    CHECK_RET(syscall(SYS_fcntl, fd, F_SETFL, O_APPEND), 0, "为 memfd 设置 O_APPEND");
+    long flags = syscall(SYS_fcntl, fd, F_GETFL, 0);
+    CHECK(flags >= 0 && (flags & O_APPEND) != 0, "memfd 报告当前 O_APPEND");
+
+    off_t offset = 0;
+    CHECK_ERR(syscall(SYS_sendfile, fd, input, &offset, 1), EINVAL,
+              "sendfile 拒绝带 O_APPEND 的 memfd");
+    CHECK_RET(offset, 0, "sendfile 拒绝后保留输入偏移");
+    CHECK_RET(lseek(fd, 0, SEEK_END), 0, "sendfile 拒绝后 memfd 长度不变");
+
+    CHECK_RET(syscall(SYS_fcntl, fd, F_SETFL, 0), 0, "清除 memfd 的 O_APPEND");
+    flags = syscall(SYS_fcntl, fd, F_GETFL, 0);
+    CHECK(flags >= 0 && (flags & O_APPEND) == 0, "memfd 报告清除后的状态");
+    CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "回到 memfd 开头");
+    offset = 0;
+    CHECK_RET(syscall(SYS_sendfile, fd, input, &offset, 1), 1,
+              "sendfile 接受清除 O_APPEND 的 memfd");
+
+    CHECK_RET(syscall(SYS_fcntl, fd, F_SETFL, O_APPEND), 0, "重新设置 memfd 的 O_APPEND");
+    CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "追加写入前将 memfd 偏移归零");
+    CHECK_RET(syscall(SYS_write, fd, "x", 1), 1, "memfd 追加写入成功");
+    CHECK_RET(lseek(fd, 0, SEEK_CUR), 2, "memfd 追加写入推进到文件末尾");
+    offset = 0;
+    off_t dest_offset = 2;
+    CHECK_ERR(syscall(SYS_copy_file_range, fd, &offset, fd, &dest_offset, 1, 0), EBADF,
+              "copy_file_range 拒绝带 O_APPEND 的 memfd");
+
+    int pipefds[2];
+    int pipe_result = pipe2(pipefds, O_NONBLOCK);
+    CHECK_RET(pipe_result, 0, "为 splice 创建非阻塞管道");
+    if (pipe_result == 0) {
+        CHECK_RET(write(pipefds[1], "p", 1), 1, "准备 splice 输入");
+        CHECK_ERR(syscall(SYS_splice, pipefds[0], NULL, fd, NULL, 1, 0), EINVAL,
+                  "splice 拒绝带 O_APPEND 的 memfd");
+        char byte = 0;
+        CHECK_RET(read(pipefds[0], &byte, 1), 1, "splice 拒绝后管道数据仍可读");
+        CHECK(byte == 'p', "splice 拒绝后管道内容不变");
+        close(pipefds[1]);
+        close(pipefds[0]);
+    }
+
+    CHECK_RET(syscall(SYS_fcntl, fd, F_ADD_SEALS, F_SEAL_GROW), 0, "为 memfd 禁止扩容");
+    CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "封印后将 memfd 偏移归零");
+    CHECK_ERR(syscall(SYS_write, fd, "y", 1), EPERM, "禁止扩容的 memfd 拒绝追加写入");
+    CHECK_RET(lseek(fd, 0, SEEK_CUR), 0, "追加写入被拒绝后保留 memfd 偏移");
+
+    close(fd);
+    return fail;
+}
 
 int parts_dup_dup3_fcntl(void)
 {
@@ -141,7 +236,44 @@ int parts_dup_dup3_fcntl(void)
 
     CHECK_RET(fcntl(fd, F_SETFL, O_APPEND), 0, "F_SETFL -> O_APPEND: 设置成功");
 
-    write(fd, "_middle", 7);
+    CHECK_ERR(syscall(SYS_sendfile, fd, -1, NULL, 1), EBADF,
+              "sendfile 先拒绝无效输入 fd");
+    CHECK_ERR(syscall(SYS_sendfile, fd, -1, (void *)1, 1), EFAULT,
+              "sendfile 先读取用户偏移");
+
+    int write_only_input = open(TMPFILE, O_WRONLY);
+    CHECK(write_only_input >= 0, "打开只写 sendfile 输入文件");
+    if (write_only_input >= 0) {
+        CHECK_ERR(syscall(SYS_sendfile, fd, write_only_input, NULL, 1), EBADF,
+                  "sendfile 先拒绝只写输入 fd");
+        close(write_only_input);
+    }
+
+    int read_only_output = open(TMPFILE, O_RDONLY | O_APPEND);
+    CHECK(read_only_output >= 0, "打开只读 sendfile 输出文件");
+    if (read_only_output >= 0) {
+        CHECK_ERR(syscall(SYS_sendfile, read_only_output, fd, NULL, 1), EBADF,
+                  "sendfile 先拒绝只读输出 fd");
+        close(read_only_output);
+    }
+
+    CHECK_RET(lseek(fd, 1, SEEK_SET), 1, "设置追加写入前的偏移");
+    CHECK_RET(write(fd, "", 0), 0, "空追加写入成功");
+    CHECK_RET(lseek(fd, 0, SEEK_CUR), 1, "空追加写入保留偏移");
+
+    int input = openat(AT_FDCWD, TMPFILE, O_RDONLY);
+    CHECK(input >= 0, "打开 sendfile 输入文件");
+    if (input >= 0) {
+        errno = 0;
+        CHECK_ERR(sendfile(fd, input, NULL, 0), EINVAL,
+                  "sendfile 拒绝通过 F_SETFL 启用的 O_APPEND");
+        fail += check_memfd_append(input);
+        close(input);
+    }
+
+    fail += check_sendfile_to_fifo_with_append();
+
+    CHECK_RET(write(fd, "_middle", 7), 7, "非空追加写入成功");
     off_t pos = lseek(fd, 0, SEEK_CUR);
     CHECK_RET(pos, 12, "O_APPEND: write 后 offset 在末尾");
 
@@ -160,6 +292,14 @@ int parts_dup_dup3_fcntl(void)
     int fl_after = fcntl(fd, F_GETFL);
     CHECK(fl_after >= 0, "清除后 F_GETFL 成功");
     CHECK((fl_after & O_APPEND) == 0, "O_APPEND 已被清除");
+
+    input = openat(AT_FDCWD, TMPFILE, O_RDONLY);
+    CHECK(input >= 0, "重新打开 sendfile 输入文件");
+    if (input >= 0) {
+        CHECK_RET(sendfile(fd, input, NULL, 0), 0,
+                  "sendfile 接受已通过 F_SETFL 清除的 O_APPEND");
+        close(input);
+    }
 
     lseek(fd, 0, SEEK_SET);
     write(fd, "X", 1);
@@ -182,6 +322,25 @@ int parts_dup_dup3_fcntl(void)
     CHECK((fl_complete & O_NONBLOCK) != 0, "F_GETFL: O_NONBLOCK 已设置");
 
     close(fd);
+
+    int directory = open("/tmp", O_RDONLY | O_DIRECTORY | O_APPEND);
+    CHECK(directory >= 0, "以 O_APPEND 打开目录");
+    if (directory >= 0) {
+        int other = dup(directory);
+        CHECK(other >= 0, "复制目录描述符");
+        int flags = fcntl(directory, F_GETFL);
+        CHECK(flags >= 0 && (flags & O_APPEND) != 0, "目录报告初始 O_APPEND");
+        if (other >= 0) {
+            CHECK_RET(fcntl(other, F_SETFL, 0), 0, "通过副本清除目录 O_APPEND");
+            flags = fcntl(directory, F_GETFL);
+            CHECK(flags >= 0 && (flags & O_APPEND) == 0, "目录报告清除后的状态");
+            CHECK_RET(fcntl(directory, F_SETFL, O_APPEND), 0, "重新设置目录 O_APPEND");
+            flags = fcntl(other, F_GETFL);
+            CHECK(flags >= 0 && (flags & O_APPEND) != 0, "副本共享目录追加状态");
+            close(other);
+        }
+        close(directory);
+    }
 
     /* PART 18: fcntl F_GETFL 基础验证 */
 

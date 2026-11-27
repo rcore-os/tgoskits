@@ -532,6 +532,11 @@ impl FileLike for Memfd {
         if seals & F_SEAL_GROW == 0 {
             return self.inner.write(src);
         }
+        // A nonempty append would grow the file. Otherwise the bounded
+        // write_at below uses the cursor regardless of later flag changes.
+        if self.append() {
+            return Err(StarryError::OperationNotPermitted);
+        }
         // F_SEAL_GROW Linux semantics, verified against
         // memfd_create + F_ADD_SEALS(F_SEAL_GROW) on a stock host:
         //   - cross-EOF write/writev short-writes the bytes that fit
@@ -601,6 +606,14 @@ impl FileLike for Memfd {
 
     fn open_flags(&self) -> u32 {
         self.inner.open_flags()
+    }
+
+    fn append(&self) -> bool {
+        self.inner.append()
+    }
+
+    fn set_append(&self, append: bool) -> StarryResult {
+        self.inner.set_append(append)
     }
 
     fn nonblocking(&self) -> bool {
