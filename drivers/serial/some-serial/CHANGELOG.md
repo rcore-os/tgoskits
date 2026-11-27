@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.8...some-serial-v0.7.9) - 2026-11-27
+
+### Added
+
+- *(axvisor)* boot Linux with Web management on Loongson 3A6000 ([#2799](https://github.com/rcore-os/tgoskits/pull/2799))
+
+### Fixed
+
+- *(some-serial)* drain PL011 TX before disabling UART ([#2670](https://github.com/rcore-os/tgoskits/pull/2670))
+
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.7...some-serial-v0.7.8) - 2026-09-18
 
 ### Other

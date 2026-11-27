@@ -1,6 +1,6 @@
 [package]
 name = "ranges-ext"
-version = "0.6.4"
+version = "0.6.5"
 authors.workspace = true
 categories.workspace = true
 description = "Extensions for core::ops::Range and related types."

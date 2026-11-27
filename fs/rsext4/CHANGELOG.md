@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.9.2...rsext4-v0.10.0) - 2026-11-27
+
+### Added
+
+- *(ax-fs-ng)* support boot-time root growth with exclusive block access ([#2706](https://github.com/rcore-os/tgoskits/pull/2706))
+
+### Fixed
+
+- *(rsext4)* reserve a revoke for folding the extent root in a restarted removal ([#2885](https://github.com/rcore-os/tgoskits/pull/2885))
+- *(rsext4)* [**breaking**] report whole inode times in InodeInfo ([#2840](https://github.com/rcore-os/tgoskits/pull/2840))
+- *(rsext4)* take hardware CRC32C availability from the environment ([#2831](https://github.com/rcore-os/tgoskits/pull/2831))
+- *(rsext4)* [**breaking**] decode group descriptors instead of casting ([#2833](https://github.com/rcore-os/tgoskits/pull/2833))
+- *(rsext4)* report why mount refused the superblock ([#2839](https://github.com/rcore-os/tgoskits/pull/2839))
+- *(rsext4)* free an emptied extent index node instead of writing it back ([#2827](https://github.com/rcore-os/tgoskits/pull/2827))
+- *(rsext4)* set the inode bitmap padding when initializing an uninit group ([#2825](https://github.com/rcore-os/tgoskits/pull/2825))
+- *(rsext4)* avoid dirtying unsuccessful allocation searches ([#2718](https://github.com/rcore-os/tgoskits/pull/2718))
+
+### Other
+
+- *(rsext4)* add Kani harnesses for the on-disk parsers and CRC32C ([#2846](https://github.com/rcore-os/tgoskits/pull/2846))
+- *(rsext4)* add fuzz targets for the on-disk parsers, mount and journal replay ([#2835](https://github.com/rcore-os/tgoskits/pull/2835))
+- *(rsext4)* separate owned IO and journal commit phases ([#2525](https://github.com/rcore-os/tgoskits/pull/2525))
+
 ## [0.9.2](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.9.1...rsext4-v0.9.2) - 2026-09-21
 
 ### Other
