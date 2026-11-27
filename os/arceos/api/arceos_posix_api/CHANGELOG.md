@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.9](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.6.8...ax-posix-api-v0.6.9) - 2026-11-27
+
+### Added
+
+- *(starry)* enable the venus 3D face on card0 ([#2630](https://github.com/rcore-os/tgoskits/pull/2630))
+
+### Other
+
+- *(toolchain)* bump Rust nightly to nightly-2026-11-13 ([#2807](https://github.com/rcore-os/tgoskits/pull/2807))
+- *(ax-config)* unify build inputs and runtime configuration ([#2780](https://github.com/rcore-os/tgoskits/pull/2780))
+
 ## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.6.7...ax-posix-api-v0.6.8) - 2026-09-22
 
 ### Other

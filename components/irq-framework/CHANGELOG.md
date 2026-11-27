@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.5.0...irq-framework-v0.6.0) - 2026-11-27
+
+### Added
+
+- *(axvisor)* boot Linux with Web management on Loongson 3A6000 ([#2799](https://github.com/rcore-os/tgoskits/pull/2799))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.4.0...irq-framework-v0.5.0) - 2026-09-09
 
 ### Other

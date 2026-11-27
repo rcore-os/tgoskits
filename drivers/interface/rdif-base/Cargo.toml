@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-base"
 repository.workspace = true
-version = "0.9.1"
+version = "0.9.2"
 
 [features]
 

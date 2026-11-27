@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.25.0...rdrive-v0.26.0) - 2026-11-27
+
+### Added
+
+- *(axvisor)* boot Linux with Web management on Loongson 3A6000 ([#2799](https://github.com/rcore-os/tgoskits/pull/2799))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+
+### Fixed
+
+- *(somehal)* publish the IOAPIC handle before interrupt delivery ([#2795](https://github.com/rcore-os/tgoskits/pull/2795))
+- *(benchmarks)* stabilize Starry board performance checks ([#2645](https://github.com/rcore-os/tgoskits/pull/2645))
+
+### Other
+
+- *(toolchain)* bump Rust nightly to nightly-2026-11-13 ([#2807](https://github.com/rcore-os/tgoskits/pull/2807))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.25.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.24.3...rdrive-v0.25.0) - 2026-09-13
 
 ### Other
