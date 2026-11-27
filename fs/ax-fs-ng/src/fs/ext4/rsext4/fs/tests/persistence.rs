@@ -25,8 +25,9 @@ fn metadata_owner_and_times_remain_durable_after_explicit_sync() {
     let update = MetadataUpdate {
         mode: Some(NodePermission::from_bits_truncate(0o640)),
         owner: Some((123_456, 234_567)),
-        atime: Some(Duration::from_secs(123)),
-        mtime: Some(Duration::from_secs(456)),
+        // Nanoseconds, and a time past 2106 that needs the extra epoch bits.
+        atime: Some(Duration::new(123, 456_789_012)),
+        mtime: Some(Duration::new(5_000_000_000, 999_999_999)),
         ..Default::default()
     };
 

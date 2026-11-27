@@ -87,10 +87,15 @@ pub struct InodeInfo {
     pub links: u16,
     pub size: u64,
     pub blocks: u64,
-    pub atime: u32,
-    pub ctime: u32,
-    pub mtime: u32,
-    pub btime: u32,
+    /// Access time, with its nanoseconds and the epoch bits of the extra
+    /// field when the inode has room for them.
+    pub atime: Ext4Timestamp,
+    /// Status change time, decoded as `atime` is.
+    pub ctime: Ext4Timestamp,
+    /// Modification time, decoded as `atime` is.
+    pub mtime: Ext4Timestamp,
+    /// Creation time, or `None` when the inode is too small to hold one.
+    pub btime: Option<Ext4Timestamp>,
     /// Persistent ext4 change attribute used to invalidate directory state.
     pub change_attribute: u64,
     pub project_id: u32,

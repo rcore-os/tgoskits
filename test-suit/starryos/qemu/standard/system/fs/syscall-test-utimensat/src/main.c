@@ -1,9 +1,12 @@
 #define _GNU_SOURCE
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
@@ -15,12 +18,54 @@
 #define TMPLINK  "/tmp/test-utimensat-link"
 #define NONFILE  "/tmp/test-utimensat-noent"
 
+/* /tmp is a memory filesystem; /var/tmp lies on the ext4 root. */
+#define EXT4DIR  "/var/tmp"
+#define EXT4FILE "/var/tmp/test-utimensat-ext4-file"
+#define EXT4_SUPER_MAGIC 0xEF53
+
 #ifndef UTIME_NOW
 #define UTIME_NOW  ((1L << 30) - 1)
 #endif
 #ifndef UTIME_OMIT
 #define UTIME_OMIT ((1L << 30) - 2)
 #endif
+#ifndef STATX_ATIME
+#define STATX_ATIME 0x00000020U
+#endif
+#ifndef STATX_MTIME
+#define STATX_MTIME 0x00000040U
+#endif
+
+struct statx_timestamp_abi {
+	int64_t tv_sec;
+	uint32_t tv_nsec;
+	int32_t reserved;
+};
+
+struct statx_abi {
+	uint32_t stx_mask;
+	uint32_t stx_blksize;
+	uint64_t stx_attributes;
+	uint32_t stx_nlink;
+	uint32_t stx_uid;
+	uint32_t stx_gid;
+	uint16_t stx_mode;
+	uint16_t pad0;
+	uint64_t stx_ino;
+	uint64_t stx_size;
+	uint64_t stx_blocks;
+	uint64_t stx_attributes_mask;
+	struct statx_timestamp_abi stx_atime;
+	struct statx_timestamp_abi stx_btime;
+	struct statx_timestamp_abi stx_ctime;
+	struct statx_timestamp_abi stx_mtime;
+	uint32_t stx_rdev_major;
+	uint32_t stx_rdev_minor;
+	uint32_t stx_dev_major;
+	uint32_t stx_dev_minor;
+	uint64_t stx_mnt_id;
+	uint64_t spare[13];
+};
 
 static int create_tmpfile(const char *path)
 {
@@ -33,6 +78,18 @@ static int create_tmpfile(const char *path)
 	close(fd);
 	return fd;
 }
+
+/* Record a failed call. The caller must not read the call's output afterwards.
+ * Pass the return value and errno saved right after the call, since fprintf
+ * may change errno. */
+#define FAIL_CALL(name, ret, saved_errno)                                      \
+	do {                                                                   \
+		fprintf(stderr,                                                \
+			"FAIL:%s: %s returned %ld, errno=%d:%s\n",             \
+			_current_test, name, (long)(ret), saved_errno,         \
+			strerror(saved_errno));                                \
+		_test_fail_count++;                                            \
+	} while (0)
 
 /* ================================================================ */
 
@@ -58,6 +115,81 @@ void test_set_specific_times(void)
 	CHECK(st.st_mtim.tv_nsec == 987654321, "mtime nsec mismatch");
 
 	unlink(TMPFILE);
+	TEST_DONE();
+}
+
+void test_ext4_whole_times(void)
+{
+	TEST_START("ext4_whole_times");
+	if (mkdir(EXT4DIR, 01777) != 0 && errno != EEXIST) {
+		perror("mkdir " EXT4DIR);
+		exit(1);
+	}
+	unlink(EXT4FILE);
+	create_tmpfile(EXT4FILE);
+
+	/* Read an output only after its call succeeded. On failure record the
+	 * call, its return value and errno, then remove the file and fail. */
+	struct statfs fs;
+	long ret = statfs(EXT4FILE, &fs);
+	int saved_errno = errno;
+	if (ret != 0) {
+		FAIL_CALL("statfs ext4 file", ret, saved_errno);
+		goto cleanup;
+	}
+	CHECK(fs.f_type == EXT4_SUPER_MAGIC, "test file is not on ext4");
+
+	/* The mtime lies past 2106, beyond an unsigned 32-bit seconds field,
+	 * so ext4 keeps part of it in the inode's extra time field. */
+	struct timespec ts[2];
+	ts[0].tv_sec  = 1700000000;
+	ts[0].tv_nsec = 123456789;
+	ts[1].tv_sec  = 5000000000LL;
+	ts[1].tv_nsec = 999999999;
+	ret = utimensat(AT_FDCWD, EXT4FILE, ts, 0);
+	saved_errno = errno;
+	if (ret != 0) {
+		FAIL_CALL("utimensat ext4 file", ret, saved_errno);
+		goto cleanup;
+	}
+
+	struct stat st;
+	ret = stat(EXT4FILE, &st);
+	saved_errno = errno;
+	if (ret != 0) {
+		FAIL_CALL("stat ext4 file", ret, saved_errno);
+		goto cleanup;
+	}
+	printf("  stat  atime %lld.%09ld mtime %lld.%09ld\n",
+	       (long long)st.st_atim.tv_sec, (long)st.st_atim.tv_nsec,
+	       (long long)st.st_mtim.tv_sec, (long)st.st_mtim.tv_nsec);
+	CHECK(st.st_atim.tv_sec == 1700000000, "stat atime sec mismatch");
+	CHECK(st.st_atim.tv_nsec == 123456789, "stat atime nsec mismatch");
+	CHECK(st.st_mtim.tv_sec == 5000000000LL, "stat mtime sec mismatch");
+	CHECK(st.st_mtim.tv_nsec == 999999999, "stat mtime nsec mismatch");
+
+	struct statx_abi stx;
+	memset(&stx, 0, sizeof(stx));
+	ret = syscall(SYS_statx, AT_FDCWD, EXT4FILE, 0,
+		      STATX_ATIME | STATX_MTIME, &stx);
+	saved_errno = errno;
+	if (ret != 0) {
+		FAIL_CALL("statx ext4 file", ret, saved_errno);
+		goto cleanup;
+	}
+	printf("  statx atime %lld.%09u mtime %lld.%09u\n",
+	       (long long)stx.stx_atime.tv_sec, stx.stx_atime.tv_nsec,
+	       (long long)stx.stx_mtime.tv_sec, stx.stx_mtime.tv_nsec);
+	CHECK((stx.stx_mask & (STATX_ATIME | STATX_MTIME)) ==
+		      (STATX_ATIME | STATX_MTIME),
+	      "statx mask lacks atime or mtime");
+	CHECK(stx.stx_atime.tv_sec == 1700000000, "statx atime sec mismatch");
+	CHECK(stx.stx_atime.tv_nsec == 123456789, "statx atime nsec mismatch");
+	CHECK(stx.stx_mtime.tv_sec == 5000000000LL, "statx mtime sec mismatch");
+	CHECK(stx.stx_mtime.tv_nsec == 999999999, "statx mtime nsec mismatch");
+
+cleanup:
+	unlink(EXT4FILE);
 	TEST_DONE();
 }
 
@@ -297,6 +429,7 @@ int main(void)
 	printf("STARRY_GROUPED_TEST_START\n");
 
 	test_set_specific_times();
+	test_ext4_whole_times();
 	test_utime_now();
 	test_utime_omit();
 	test_null_times();
