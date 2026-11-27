@@ -80,20 +80,26 @@ impl StateLock {
 
 #[must_use]
 /// Guard for a pending state transition.
+///
+/// The state is published when the guard drops: the new one after a successful
+/// [`transit`](Self::transit), the one it replaced otherwise. A path that takes
+/// the guard and then decides not to transition hands the socket back instead
+/// of leaving it `Busy`, where readiness reports nothing.
 pub struct StateGuard<'a>(&'a StateLock, u8);
 impl StateGuard<'_> {
     /// Runs a transition body and commits the new state only on success.
-    pub fn transit<R>(self, new: State, f: impl FnOnce() -> NetResult<R>) -> NetResult<R> {
-        match f() {
-            Ok(result) => {
-                self.0.0.store(new as u8, Ordering::Release);
-                Ok(result)
-            }
-            Err(err) => {
-                self.0.0.store(self.1, Ordering::Release);
-                Err(err)
-            }
+    pub fn transit<R>(mut self, new: State, f: impl FnOnce() -> NetResult<R>) -> NetResult<R> {
+        let result = f();
+        if result.is_ok() {
+            self.1 = new as u8;
         }
+        result
+    }
+}
+
+impl Drop for StateGuard<'_> {
+    fn drop(&mut self) {
+        self.0.0.store(self.1, Ordering::Release);
     }
 }
 
@@ -123,6 +129,17 @@ mod tests {
             Err(NetError::BadState)
         );
         assert_eq!(lock.get(), State::Idle);
+    }
+
+    #[test]
+    fn a_guard_dropped_without_a_transition_gives_the_state_back() {
+        let lock = StateLock::new(State::Connected);
+        let guard = lock.lock(State::Connected).unwrap();
+        assert_eq!(lock.get(), State::Busy);
+
+        drop(guard);
+        assert_eq!(lock.get(), State::Connected);
+        assert!(lock.lock(State::Connected).is_ok());
     }
 
     #[test]
