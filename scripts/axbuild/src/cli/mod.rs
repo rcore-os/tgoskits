@@ -29,12 +29,41 @@ pub(crate) struct ClippyArgs {
     /// Run clippy only for the named workspace package(s)
     #[arg(long = "package", value_name = "PACKAGE")]
     pub(crate) packages: Vec<String>,
-    /// Run clippy for workspace packages affected since the git ref
-    #[arg(long, value_name = "REF")]
+    /// Select checks affected since this Git reference.
+    #[arg(long, conflicts_with_all = ["all", "packages", "emit_plan", "execute_plan", "verify_results"])]
     pub(crate) since: Option<String>,
+    /// Print a selection as one JSON line without running Clippy.
+    #[arg(long, conflicts_with_all = ["packages", "emit_plan", "execute_plan", "verify_results", "jobs"])]
+    pub(crate) print_selection: bool,
+    /// Require the selection digest computed by the planning step.
+    #[arg(long, requires = "since", conflicts_with_all = ["print_selection", "all", "packages", "emit_plan", "execute_plan", "verify_results"])]
+    pub(crate) expected_selection: Option<String>,
+    /// Freeze the resolved comparison base used by the planning step.
+    #[arg(long, requires = "since")]
+    pub(crate) diff_base: Option<String>,
     /// Number of independent Cargo workers (default: serial execution)
     #[arg(long, default_value_t = 1)]
     pub(crate) jobs: usize,
+    /// Write a portable check plan instead of running Clippy.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) emit_plan: Option<std::path::PathBuf>,
+    /// Number of independent CI shards in an emitted plan.
+    #[arg(long, default_value_t = 4)]
+    pub(crate) shards: usize,
+    /// Execute only the selected shard of a previously emitted plan.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["emit_plan", "verify_results", "all", "packages"])]
+    pub(crate) execute_plan: Option<std::path::PathBuf>,
+    /// One-based shard number to execute.
+    #[arg(long, requires = "execute_plan")]
+    pub(crate) shard: Option<usize>,
+    /// Publish the selected shard's check results, including failures.
+    #[arg(long, requires = "execute_plan")]
+    pub(crate) result_file: Option<std::path::PathBuf>,
+    /// Verify that every check in a plan has a successful shard result.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["emit_plan", "execute_plan", "all", "packages"])]
+    pub(crate) verify_results: Option<std::path::PathBuf>,
+    #[arg(long, requires = "verify_results")]
+    pub(crate) results_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]

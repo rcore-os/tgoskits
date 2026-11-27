@@ -187,7 +187,17 @@ pub(super) fn args(all: bool, packages: &[&str]) -> crate::ClippyArgs {
             .map(|package| (*package).to_string())
             .collect(),
         since: None,
+        diff_base: None,
+        print_selection: false,
+        expected_selection: None,
         jobs: 1,
+        emit_plan: None,
+        shards: 4,
+        execute_plan: None,
+        shard: None,
+        result_file: None,
+        verify_results: None,
+        results_dir: None,
     }
 }
 

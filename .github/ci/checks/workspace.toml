@@ -3,14 +3,8 @@ phase = "test"
 group = "Workspace"
 default_runner = "qcs"
 
-[[check]]
-id = "run-clippy"
-name = "Incremental Clippy"
-fetch_depth = "100"
-download_xtask_bin_artifact = true
-command = '''
-cargo xtask clippy --since "$SINCE_REF"
-'''
+# Incremental/full Clippy is selected and verified by clippy_checks in ci.yml.
+# Incremental checks run in one job; only full validation uses independent shards.
 
 [[check]]
 id = "test-with-std"

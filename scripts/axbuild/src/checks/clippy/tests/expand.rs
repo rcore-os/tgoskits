@@ -203,7 +203,7 @@ fn clippy_preserves_target_and_dependency_compilation_boundaries() {
 }
 
 #[test]
-fn incremental_selection_checks_changed_packages_and_affected_os_roots_only() {
+fn incremental_selection_keeps_intermediate_and_final_consumers() {
     let selected = incremental_clippy_selections(
         vec!["shared".into()],
         vec![
@@ -217,7 +217,13 @@ fn incremental_selection_checks_changed_packages_and_affected_os_roots_only() {
 
     assert_eq!(
         selected,
-        vec!["shared".to_string(), "ax-std".into(), "starryos".into()]
+        vec![
+            "app".to_string(),
+            "ax-std".into(),
+            "intermediate".into(),
+            "shared".into(),
+            "starryos".into()
+        ]
     );
 }
 
@@ -228,7 +234,7 @@ fn incremental_selection_keeps_changed_unsupported_package_for_filtering() {
         vec!["axvisor".into(), "axvm".into()],
     );
 
-    assert_eq!(selected, vec!["axvisor"]);
+    assert_eq!(selected, vec!["axvisor", "axvm"]);
 }
 
 #[test]

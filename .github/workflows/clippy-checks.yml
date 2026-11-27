@@ -1,0 +1,269 @@
+name: Incremental or full Clippy checks
+
+on:
+  workflow_call:
+    inputs:
+      shards:
+        type: number
+        default: 4
+      since_ref:
+        type: string
+        default: ''
+      force_full:
+        type: boolean
+        default: false
+      incremental_timeout_minutes:
+        type: number
+        default: 120
+      checkout_ref:
+        type: string
+        default: ''
+      reuse_preflight_tool:
+        description: Require the current run's preflight tool instead of building another one.
+        type: boolean
+        default: false
+      preflight_matrix:
+        description: Existing CI plan containing the tool producer and its artifact name.
+        type: string
+        default: '{}'
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Select and run incremental Clippy, or prepare full plan
+    runs-on: ${{ github.repository_owner == 'rcore-os' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["self-hosted","linux","qcs"]') || 'ubuntu-latest' }}
+    container:
+      image: ${{ (github.repository_owner != 'rcore-os' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && format('ghcr.io/{0}-container:latest', github.repository) || '' }}
+      credentials:
+        username: anonymous
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: ${{ inputs.incremental_timeout_minutes }}
+    outputs:
+      mode: ${{ steps.selection.outputs.mode }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      revision: ${{ steps.plan.outputs.revision }}
+      batch: ${{ steps.artifacts.outputs.batch }}
+      plan_artifact: ${{ steps.artifacts.outputs.plan_name }}
+      tool_artifact: ${{ steps.artifacts.outputs.tool_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          fetch-depth: 100
+      - name: Validate preflight tool revision
+        id: preflight
+        if: inputs.reuse_preflight_tool
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+          PREFLIGHT_MATRIX: ${{ inputs.preflight_matrix }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION" || {
+            echo "error: preflight tool and checkout must use the same revision" >&2
+            exit 1
+          }
+          python3 scripts/test/ci_clippy.py preflight-tool --matrix "$PREFLIGHT_MATRIX" >> "$GITHUB_OUTPUT"
+      - name: Download the preflight tool
+        if: inputs.reuse_preflight_tool
+        uses: actions/download-artifact@v8
+        with:
+          # Same run, including its retained producer on partial reruns.
+          name: ${{ steps.preflight.outputs.artifact }}
+          path: ${{ runner.temp }}/xtask-bin
+      - name: Restore the preflight tool
+        if: inputs.reuse_preflight_tool
+        run: |
+          set -euo pipefail
+          python3 scripts/test/ci_clippy_tool.py unpack-preflight \
+            --archive "${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar" \
+            --destination target/debug/tg-xtask
+      - name: Build the tool for an independent call
+        if: ${{ !inputs.reuse_preflight_tool }}
+        run: |
+          set -euo pipefail
+          cargo build --locked -p tg-xtask
+      # Retained job outputs keep partial reruns on the original preparation.
+      - name: Identify artifact batch
+        id: artifacts
+        env:
+          RUN_ID: ${{ github.run_id }}
+          PREPARATION_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          batch="${RUN_ID}-${PREPARATION_ATTEMPT}"
+          echo "batch=${batch}" >> "$GITHUB_OUTPUT"
+          echo "plan_name=clippy-plan-${batch}" >> "$GITHUB_OUTPUT"
+          echo "tool_name=clippy-tool-${batch}" >> "$GITHUB_OUTPUT"
+      - name: Validate timeout and select checks
+        id: selection
+        env:
+          SINCE_REF: ${{ inputs.since_ref }}
+          FORCE_FULL: ${{ inputs.force_full }}
+          INCREMENTAL_TIMEOUT: ${{ inputs.incremental_timeout_minutes }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$INCREMENTAL_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || (( INCREMENTAL_TIMEOUT > 360 )); then
+            echo "error: incremental timeout must be an integer from 1 to 360" >&2
+            exit 1
+          fi
+          mkdir -p target/ci
+          if [ "$FORCE_FULL" != true ] && [ -n "$SINCE_REF" ] && ! git cat-file -e "${SINCE_REF}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=100 origin "$SINCE_REF" || true
+          fi
+          selection=(--all)
+          if [ "$FORCE_FULL" != true ] && [ -n "$SINCE_REF" ]; then
+            selection=(--since "$SINCE_REF")
+          fi
+          target/debug/tg-xtask clippy --print-selection "${selection[@]}" > target/ci/selection.json
+          python3 scripts/test/ci_clippy.py selection target/ci/selection.json --sha "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Run the frozen incremental selection
+        if: steps.selection.outputs.mode == 'incremental'
+        env:
+          SINCE_REF: ${{ inputs.since_ref }}
+          DIFF_BASE: ${{ steps.selection.outputs.base }}
+          SELECTION_DIGEST: ${{ steps.selection.outputs.digest }}
+        run: |
+          set -euo pipefail
+          target/debug/tg-xtask clippy --since "$SINCE_REF" --diff-base "$DIFF_BASE" --expected-selection "$SELECTION_DIGEST"
+      - name: Emit the full matrix and package the tool
+        id: plan
+        if: steps.selection.outputs.mode == 'full'
+        env:
+          CLIPPY_SHARDS: ${{ inputs.shards }}
+        run: |
+          set -euo pipefail
+          target/debug/tg-xtask clippy --all --emit-plan target/ci/clippy-plan.json --shards "$CLIPPY_SHARDS"
+          python3 scripts/test/ci_clippy.py matrix target/ci/clippy-plan.json >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python3 scripts/test/ci_clippy_tool.py pack --binary target/debug/tg-xtask --output-dir target/ci/tool
+      - uses: actions/upload-artifact@v7
+        if: steps.selection.outputs.mode == 'full'
+        with:
+          name: ${{ steps.artifacts.outputs.plan_name }}
+          path: target/ci/clippy-plan.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: steps.selection.outputs.mode == 'full'
+        with:
+          name: ${{ steps.artifacts.outputs.tool_name }}
+          path: target/ci/tool/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  checks:
+    name: Clippy shard ${{ matrix.shard }}
+    needs: plan
+    if: needs.plan.outputs.mode == 'full'
+    runs-on: ${{ github.repository_owner == 'rcore-os' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["self-hosted","linux","qcs"]') || 'ubuntu-latest' }}
+    container:
+      image: ${{ (github.repository_owner != 'rcore-os' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && format('ghcr.io/{0}-container:latest', github.repository) || '' }}
+      credentials:
+        username: anonymous
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision }}
+          fetch-depth: 1
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.plan.outputs.plan_artifact }}
+          path: target/ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.plan.outputs.tool_artifact }}
+          path: target/ci/tool
+      - name: Verify and restore the exact tool
+        run: |
+          set -euo pipefail
+          python3 scripts/test/ci_clippy_tool.py unpack --input-dir target/ci/tool --destination target/debug/tg-xtask
+          test -x target/debug/tg-xtask
+      - name: Show effective resources
+        run: |
+          nproc
+          free -m
+          grep Cpus_allowed_list /proc/self/status
+          for f in /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max; do
+            if [ -f "$f" ]; then echo "$f"; cat "$f"; fi
+          done
+      - name: Run this shard
+        env:
+          CLIPPY_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          target/debug/tg-xtask clippy --execute-plan target/ci/clippy-plan.json \
+            --shard "$CLIPPY_SHARD" --result-file "target/ci/results/shard-${CLIPPY_SHARD}.json"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          # A rerun replaces only this shard; untouched shards keep their results.
+          name: clippy-result-${{ needs.plan.outputs.batch }}-${{ matrix.shard }}
+          path: target/ci/results/shard-${{ matrix.shard }}.json
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+
+  result:
+    name: Clippy result
+    needs: [plan, checks]
+    if: always()
+    runs-on: ${{ github.repository_owner == 'rcore-os' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["self-hosted","linux","qcs"]') || 'ubuntu-latest' }}
+    container:
+      image: ${{ (github.repository_owner != 'rcore-os' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && format('ghcr.io/{0}-container:latest', github.repository) || '' }}
+      credentials:
+        username: anonymous
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          fetch-depth: 1
+      - name: Require the selected validation path to succeed
+        env:
+          SELECTION_MODE: ${{ needs.plan.outputs.mode }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+        run: |
+          python3 scripts/test/ci_clippy.py result --selection-mode "$SELECTION_MODE" --prepare "$PLAN_RESULT" --checks "$CHECKS_RESULT"
+      - uses: actions/checkout@v6
+        if: needs.plan.outputs.mode == 'full'
+        with:
+          ref: ${{ needs.plan.outputs.revision }}
+          fetch-depth: 1
+      - uses: actions/download-artifact@v8
+        if: needs.plan.outputs.mode == 'full'
+        with:
+          name: ${{ needs.plan.outputs.plan_artifact }}
+          path: target/ci
+      - uses: actions/download-artifact@v8
+        if: needs.plan.outputs.mode == 'full'
+        with:
+          pattern: clippy-result-${{ needs.plan.outputs.batch }}-*
+          path: target/ci/results
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        if: needs.plan.outputs.mode == 'full'
+        with:
+          name: ${{ needs.plan.outputs.tool_artifact }}
+          path: target/ci/tool
+      - name: Verify every planned check and shard result
+        if: needs.plan.outputs.mode == 'full'
+        run: |
+          set -euo pipefail
+          python3 scripts/test/ci_clippy_tool.py unpack --input-dir target/ci/tool --destination target/debug/tg-xtask
+          target/debug/tg-xtask clippy --verify-results target/ci/clippy-plan.json --results-dir target/ci/results
