@@ -116,11 +116,26 @@ impl GuestSerialFirmwareIdentity {
     }
 }
 
-/// Owned host-firmware serial snapshot used before the device graph is built.
+/// Guest serial profile and identity derived from owned host-firmware data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostSerialSnapshot {
     pub profile: GuestSerialProfile,
     pub identity: GuestSerialFirmwareIdentity,
+}
+
+#[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
+pub(crate) fn spcr_16550_mmio_fields(
+    register_shift: u8,
+    register_width: AccessWidth,
+) -> Option<(u8, u8)> {
+    let stride = 1_usize.checked_shl(u32::from(register_shift))?;
+    let width = register_width.size();
+    // Linux SPCR earlycon derives regshift solely from the access width. GAS
+    // Bit Width cannot describe an independent stride to that consumer.
+    if !matches!(width, 1 | 2 | 4) || stride != width {
+        return None;
+    }
+    Some(((stride * 8) as u8, 1 + width.ilog2() as u8))
 }
 
 #[cfg(any(
@@ -142,17 +157,12 @@ pub(crate) fn host_serial_from_acpi(
         AcpiSerialInterface::Uart16550 => GuestSerialModel::Uart16550,
         AcpiSerialInterface::Pl011 => GuestSerialModel::Pl011,
     };
-    let register_width = match serial.access_size {
-        0 | 1 => AccessWidth::Byte,
-        2 => AccessWidth::Word,
-        3 => AccessWidth::Dword,
-        4 => AccessWidth::Qword,
-        value => {
-            return Err(AxVmError::invalid_config(std::format!(
-                "host SPCR serial access size {value} is invalid"
-            )));
-        }
-    };
+    if serial.access_size > 4 {
+        return Err(AxVmError::invalid_config(std::format!(
+            "host SPCR serial access size {} is invalid",
+            serial.access_size
+        )));
+    }
     let transport = match serial.address_space {
         AcpiSerialAddressSpace::Memory => GuestSerialTransport::Mmio {
             base: usize::try_from(serial.registers.base).map_err(|_| {
@@ -161,11 +171,14 @@ pub(crate) fn host_serial_from_acpi(
             length: usize::try_from(serial.registers.size).map_err(|_| {
                 AxVmError::invalid_config("host SPCR serial range exceeds the target width")
             })?,
+            // This device is emulated, not passed through. PNP0501 in the guest
+            // DSDT describes consecutive byte registers, regardless of the
+            // physical UART layout used by the host console backend.
             register_shift: 0,
             register_width: if model == GuestSerialModel::Pl011 {
                 AccessWidth::Dword
             } else {
-                register_width
+                AccessWidth::Byte
             },
         },
         AcpiSerialAddressSpace::Io => GuestSerialTransport::Port {

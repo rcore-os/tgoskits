@@ -3,12 +3,19 @@ pub(crate) use capacity::{CPU_CAPACITY_SCALE, CpuCapacities};
 mod earlycon;
 mod memory;
 
-pub use earlycon::setup_earlycon;
+pub(crate) use earlycon::setup_earlycon_with_selection;
 use kernutil::StaticCell;
 #[allow(unused)]
 pub use memory::{init_memory_map, memories};
 
+#[cfg(not(test))]
 use crate::mem::phys_to_virt;
+
+#[cfg(test)]
+fn phys_to_virt(paddr: usize) -> *mut u8 {
+    // Unit tests supply host pointers and do not install kernel page tables.
+    paddr as *mut u8
+}
 
 pub(crate) static mut FDT_ADDR: usize = 0;
 static FDT: StaticCell<fdt_edit::Fdt> = StaticCell::uninit();
@@ -221,6 +228,8 @@ mod tests {
 
     #[test]
     fn save_fdt_copies_validated_slice_length() {
+        // RAM allocator diagnostics use the global boot console.
+        let _console = crate::console::CONSOLE_TEST_LOCK.lock().unwrap();
         let fdt = minimal_cpu_fdt();
         let mut fdt_data = fdt.encode().as_ref().to_vec();
         let fdt_size = fdt_data.len();

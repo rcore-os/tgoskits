@@ -1,22 +1,28 @@
-use core::ptr::NonNull;
-
-use acpi::{AcpiError, Handler, PhysicalMapping, address::AddressSpace, sdt::spcr::Spcr};
+use acpi::{AcpiError, address::AddressSpace, sdt::spcr::SpcrInterfaceType};
+use kernutil::acpi::{Spcr, spcr_mappings};
+#[cfg(target_arch = "x86_64")]
 use some_serial::ns16550::Ns16550;
+use some_serial::ns16550::{MmioLayout, UartVariant};
 
-use crate::{
-    console::{EarlySerial, EarlySerialRaw},
-    mem::_fixmap_io,
-};
+#[cfg(target_arch = "x86_64")]
+use crate::console::{EarlySerial, EarlySerialRaw};
+use crate::{console::EarlyconInput, mem::_fixmap_io};
 
-pub(crate) fn acpi_setup_earlycon() -> Result<bool, AcpiError> {
-    setup_earlycon_from_spcr()
-}
+pub(crate) fn acpi_setup_earlycon(explicit_console_selected: bool) -> Result<bool, AcpiError> {
+    // An explicit RISC-V console may name an XScale UART that SPCR describes
+    // as a generic 16550, or select a different UART altogether.
+    if cfg!(target_arch = "riscv64") && explicit_console_selected {
+        return Ok(false);
+    }
 
-pub(crate) fn setup_earlycon_from_spcr() -> Result<bool, AcpiError> {
     let tb = crate::acpi::tables()?;
 
-    for spsr in tb.find_tables::<Spcr>() {
-        if deal_with_spsr(&spsr).is_some() {
+    // SAFETY: the directory retains valid table headers. The platform checks
+    // each complete SPCR extent against retained firmware memory before mapping.
+    for mapping in unsafe { spcr_mappings(&tb, super::AcpiHandle, super::spcr_memory_contains) } {
+        if let Some(spcr) = mapping.parse()
+            && deal_with_spsr(&spcr).is_some()
+        {
             println!("Early console setup complete.");
             return Ok(true);
         }
@@ -25,7 +31,7 @@ pub(crate) fn setup_earlycon_from_spcr() -> Result<bool, AcpiError> {
     Ok(false)
 }
 
-fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
+fn deal_with_spsr(spsr: &Spcr<'_>) -> Option<()> {
     println!("Found {:?}", spsr.interface_type());
 
     let base_address = match spsr.base_address()? {
@@ -39,23 +45,22 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
     println!("  Baud rate: {:?}", spsr.baud_rate());
     println!("  Clock frequency: {:?}", spsr.uart_clock_frequency());
 
-    let mut clock = 0;
-    if let Some(freq) = spsr.uart_clock_frequency() {
-        clock = freq.into();
-    }
+    let clock = spsr.uart_clock_frequency().unwrap_or(0);
 
-    let (vaddr, is_mmio) = match spsr.interface_type() {
-        acpi::sdt::spcr::SpcrInterfaceType::Full16550
-        | acpi::sdt::spcr::SpcrInterfaceType::Generic16550 => match base_address.address_space {
+    let vaddr = match spsr.interface_type() {
+        SpcrInterfaceType::Full16550
+        | SpcrInterfaceType::Full16450
+        | SpcrInterfaceType::Generic16550 => match base_address.address_space {
             AddressSpace::SystemIo => {
                 #[cfg(target_arch = "x86_64")]
                 {
-                    let mut uart = Ns16550::new_port(base_address.address as u16, clock);
+                    let port = spsr.ns16550_io_port()?;
+                    let mut uart = Ns16550::new_port(port, clock);
                     uart.open();
                     crate::console::set_earlycon_serial(EarlySerial::new(
                         EarlySerialRaw::Ns16550Port(uart),
                     ));
-                    (None, false)
+                    None
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
@@ -64,17 +69,24 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
                 }
             }
             AddressSpace::SystemMemory => {
-                let mapped = _fixmap_io(base_address.address as _);
-                let mut uart = Ns16550::new_mmio(
-                    NonNull::new(mapped).unwrap(),
-                    clock,
-                    base_address.access_size as _,
-                );
-                uart.open();
-                crate::console::set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(
-                    uart,
-                )));
-                (Some(mapped), true)
+                let (stride, width) = spsr.ns16550_mmio_layout()?;
+                let layout = MmioLayout::new(stride, width).ok()?;
+                // SPCR identifies a 16550 but provides no resource size.
+                let paddr = usize::try_from(base_address.address).ok()?;
+                // SAFETY: the firmware SPCR names the console UART and
+                // specifies the access width of its mapped registers.
+                unsafe {
+                    crate::console::bind_earlycon_ns16550(
+                        paddr,
+                        None,
+                        clock,
+                        layout,
+                        UartVariant::Standard,
+                        EarlyconInput::ArchFirst,
+                    )
+                }
+                .ok()?;
+                Some(_fixmap_io(paddr))
             }
             space => {
                 println!("Unsupported SPCR address space `{space:?}` for early console.");
@@ -86,11 +98,6 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
             return None;
         }
     };
-
-    unsafe {
-        crate::console::DEBUG_BASE = base_address.address as usize;
-        crate::console::DEBUG_IS_MMIO = is_mmio;
-    }
 
     if let Some(vaddr) = vaddr {
         println!("Early console initialized at vaddr {:#x}", vaddr as usize);

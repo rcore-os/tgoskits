@@ -395,6 +395,65 @@ mod tests {
     }
 
     #[test]
+    fn serial_graph_rejects_16550_widths_unsupported_by_guest_drivers() {
+        use crate::machine::{GuestSerialModel, GuestSerialProfile, GuestSerialTransport};
+
+        for (inherited_width, requested_width) in [
+            (axdevice_base::AccessWidth::Byte, Some(1)),
+            (axdevice_base::AccessWidth::Byte, Some(2)),
+            (axdevice_base::AccessWidth::Byte, Some(4)),
+            (axdevice_base::AccessWidth::Byte, Some(8)),
+            (axdevice_base::AccessWidth::Qword, None),
+            (axdevice_base::AccessWidth::Qword, Some(4)),
+        ] {
+            let mut config = AxVMConfig::new(AxVMConfigParams {
+                phys_cpu_ls: PhysCpuList::new(1, None, None),
+                virtual_device_catalog: registered_catalog(),
+                virtual_device_requests: vec![VirtualDeviceRequest {
+                    id: "console0".into(),
+                    model: "uart16550-mmio".into(),
+                    options: requested_width
+                        .map(|width| ("register_width".into(), toml::Value::Integer(width)))
+                        .into_iter()
+                        .collect(),
+                }],
+                ..Default::default()
+            });
+            config
+                .replace_machine_serial(
+                    GuestSerialProfile {
+                        model: GuestSerialModel::Uart16550,
+                        transport: GuestSerialTransport::Mmio {
+                            base: 0x1000_0000,
+                            length: 0x100,
+                            register_shift: 3,
+                            register_width: inherited_width,
+                        },
+                        irq: 4,
+                        clock_hz: 1_843_200,
+                    },
+                    None,
+                )
+                .unwrap();
+            let controller = DeviceNodeId::new("controller").unwrap();
+            let result = append_configured_devices(
+                &config,
+                &mut Vec::new(),
+                &controller,
+                InterruptControllerId::new(0),
+                None,
+            );
+            let width = requested_width.unwrap_or(inherited_width.size() as i64);
+            if width == 8 {
+                assert!(matches!(result, Err(AxVmError::InvalidConfig { detail })
+                        if detail.contains("16550 register_width must be one of 1, 2 or 4 bytes")));
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn host_selected_console_keeps_identity_and_irq_until_address_is_overridden() {
         use crate::machine::{
             GuestSerialFdtIdentity, GuestSerialModel, GuestSerialProfile, GuestSerialTransport,

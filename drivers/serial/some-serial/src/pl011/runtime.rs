@@ -41,16 +41,55 @@ impl Pl011ConfigSnapshot {
 }
 
 impl UartPort for Pl011 {
+    fn framing(&self) -> Option<Framing> {
+        let lcr = self.registers().uartlcr_h.extract();
+        let data_bits = match lcr.read_as_enum(UARTLCR_H::WLEN) {
+            Some(UARTLCR_H::WLEN::Value::FiveBit) => DataBits::Five,
+            Some(UARTLCR_H::WLEN::Value::SixBit) => DataBits::Six,
+            Some(UARTLCR_H::WLEN::Value::SevenBit) => DataBits::Seven,
+            _ => DataBits::Eight,
+        };
+        let stop_bits = if lcr.is_set(UARTLCR_H::STP2) {
+            StopBits::Two
+        } else {
+            StopBits::One
+        };
+        let parity = crate::line_parity(
+            lcr.is_set(UARTLCR_H::PEN),
+            lcr.is_set(UARTLCR_H::EPS),
+            lcr.is_set(UARTLCR_H::SPS),
+        );
+        Some(Framing {
+            data_bits,
+            stop_bits,
+            parity,
+        })
+    }
+
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
         let snapshot = Pl011ConfigSnapshot::capture(self.registers());
         // `open` performs its fallible drain before touching any register, so a
         // timeout must not trigger a snapshot rewrite on a busy, enabled UART.
         self.open()?;
-        if let Err(error) = self.set_config_after_drain(config) {
+        if let Err(error) = self.set_config_after_drain(config, true) {
             snapshot.restore(self.registers());
             return Err(error);
         }
         self.mask_all();
+        Ok(())
+    }
+
+    fn startup_preserving_fifos(&mut self, config: &Config) -> Result<(), ConfigError> {
+        if changes_line_config(config) {
+            self.wait_until_not_busy_with(|| {})?;
+            self.set_config_after_drain(config, false)?;
+        } else if let Some(outputs) = config.modem_outputs {
+            self.set_modem_outputs(outputs);
+        }
+        self.mask_all();
+        self.registers()
+            .uartcr
+            .modify(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
         Ok(())
     }
 
@@ -150,20 +189,32 @@ impl Pl011 {
         config: &Config,
         wait_step: impl FnMut(),
     ) -> Result<(), ConfigError> {
+        if let Some(outputs) = config.modem_outputs
+            && !changes_line_config(config)
+        {
+            self.set_modem_outputs(outputs);
+            return Ok(());
+        }
+
         // Let the enabled UART advance the original FIFO before changing any
         // configuration register. A timeout here has no state to roll back.
         self.wait_until_not_busy_with(wait_step)?;
-        self.set_config_after_drain(config)
+        self.set_config_after_drain(config, true)
     }
 
-    fn set_config_after_drain(&mut self, config: &Config) -> Result<(), ConfigError> {
-        // From this point the transaction disables the UART and changes FIFO
-        // and line settings, so any configuration error restores the snapshot.
+    fn set_config_after_drain(
+        &mut self,
+        config: &Config,
+        reset_fifos: bool,
+    ) -> Result<(), ConfigError> {
+        // Any configuration error restores the original line settings.
         let snapshot = Pl011ConfigSnapshot::capture(self.registers());
         let result = (|| {
             self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
 
-            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
+            if reset_fifos {
+                self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
+            }
             if let Some(baudrate) = config.baudrate {
                 self.set_baudrate_internal(baudrate)?;
             }
@@ -176,8 +227,16 @@ impl Pl011 {
             if let Some(parity) = config.parity {
                 self.set_parity_internal(parity)?;
             }
-            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
+            // PL011 commits IBRD and FBRD on an LCR_H write, including when
+            // only the baud rate changes and FIFO mode must stay as it was.
+            let fifo_enabled = reset_fifos || snapshot.lcr_h & UARTLCR_H::FEN::SET.value != 0;
+            self.registers()
+                .uartlcr_h
+                .modify(UARTLCR_H::FEN.val(u32::from(fifo_enabled)));
             self.registers().uartcr.set(snapshot.cr);
+            if let Some(outputs) = config.modem_outputs {
+                self.set_modem_outputs(outputs);
+            }
             Ok(())
         })();
 
@@ -186,6 +245,25 @@ impl Pl011 {
         }
         result
     }
+
+    fn set_modem_outputs(&mut self, outputs: rdif_serial::ModemOutputs) {
+        // Deassertion temporarily overrides automatic RTS. Restore the
+        // previous flow-control mode when RTS is asserted again.
+        let auto_rts = self.restore_auto_rts || self.registers().uartcr.is_set(UARTCR::RTSEN);
+        self.restore_auto_rts = auto_rts && !outputs.rts;
+        self.registers().uartcr.modify(
+            UARTCR::DTR.val(u32::from(outputs.dtr))
+                + UARTCR::RTS.val(u32::from(outputs.rts))
+                + UARTCR::RTSEN.val(u32::from(auto_rts && outputs.rts)),
+        );
+    }
+}
+
+fn changes_line_config(config: &Config) -> bool {
+    config.baudrate.is_some()
+        || config.data_bits.is_some()
+        || config.stop_bits.is_some()
+        || config.parity.is_some()
 }
 
 impl SplitUart for Pl011 {

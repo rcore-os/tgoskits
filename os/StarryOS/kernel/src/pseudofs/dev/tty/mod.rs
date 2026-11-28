@@ -48,6 +48,23 @@ const TCIFLUSH: usize = 0;
 const TCOFLUSH: usize = 1;
 const TCIOFLUSH: usize = 2;
 
+enum TermiosUpdate {
+    Immediate,
+    Drain,
+    DrainAndFlush,
+}
+
+impl TermiosUpdate {
+    fn from_ioctl(cmd: u32) -> Self {
+        use linux_raw_sys::ioctl::*;
+        match cmd {
+            TCSETSF | TCSETSF2 => Self::DrainAndFlush,
+            TCSETSW | TCSETSW2 => Self::Drain,
+            _ => Self::Immediate,
+        }
+    }
+}
+
 pub(crate) enum TerminalDevice {
     Location(Location),
     Path(String),
@@ -88,14 +105,22 @@ pub struct Tty<R, W> {
     terminal: Arc<Terminal>,
     ldisc: Mutex<LineDiscipline<R, W>>,
     writer: W,
-    termios_update: Mutex<()>,
     is_ptm: bool,
+    termios_target: Option<Arc<Self>>,
     open_count: AtomicUsize,
     binding: RawSpinLock<Option<Weak<dyn Any + Send + Sync>>>,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
     fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
+        Self::new_with_termios_target(terminal, config, None)
+    }
+
+    fn new_with_termios_target(
+        terminal: Arc<Terminal>,
+        config: TtyConfig<R, W>,
+        termios_target: Option<Arc<Self>>,
+    ) -> Arc<Self> {
         let writer = config.writer.clone();
         let is_ptm = matches!(&config.process_mode, ProcessMode::Passive(_));
         let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));
@@ -104,8 +129,8 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             terminal,
             ldisc,
             writer,
-            termios_update: Mutex::new(()),
             is_ptm,
+            termios_target,
             open_count: AtomicUsize::new(0),
             binding: RawSpinLock::new(None),
         })
@@ -113,6 +138,50 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
+    fn termios_update_lock(&self) -> &Mutex<()> {
+        &self.terminal.termios_update
+    }
+
+    fn set_termios(&self, termios: Termios2, update: TermiosUpdate) -> StarryResult<()> {
+        // Linux applies a PTY master's termios requests to the slave.
+        let tty = self.termios_target.as_deref().unwrap_or(self);
+        let old = tty.terminal.load_termios();
+        let leaving_canonical_mode = old.canonical() && !termios.canonical();
+        tty.writer.update_termios(
+            &old,
+            &termios,
+            !matches!(update, TermiosUpdate::Immediate),
+            &mut || {
+                if matches!(update, TermiosUpdate::DrainAndFlush) {
+                    tty.ldisc.lock().drain_input()?;
+                }
+                Ok(())
+            },
+            &mut |applied| {
+                // Publish the mode and its pending input together, after the TX wait.
+                let ldisc = leaving_canonical_mode.then(|| tty.ldisc.lock());
+                *tty.terminal.termios.lock_irqsave() = Arc::new(*applied);
+                if let Some(ldisc) = ldisc {
+                    ldisc.release_canonical_input();
+                }
+            },
+        )
+    }
+
+    fn flush_queues(&self, queues: usize) -> StarryResult<()> {
+        let mut ldisc = self.ldisc.lock();
+        match queues {
+            TCIFLUSH => return ldisc.drain_input(),
+            TCIOFLUSH => ldisc.drain_input()?,
+            TCOFLUSH => {}
+            _ => return Err(StarryError::InvalidInput),
+        }
+        ldisc.discard_echo();
+        // A termios update may already hold the output lock during input flush.
+        drop(ldisc);
+        self.writer.discard_output()
+    }
+
     pub fn bind_to(self: &Arc<Self>, proc: &Process) -> StarryResult<()> {
         self.bind_to_at(proc, None)
     }
@@ -270,31 +339,18 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     // Note: vm_read() must complete before acquiring the terminal lock.
                     // Faultable user memory access inside an atomic context (preemption
                     // disabled) will call might_sleep() in handle_page_fault and panic.
-                    let termios =
-                        Arc::new(Termios2::new((arg as *const Termios).vm_read(current)?));
-                    let _update = self.termios_update.lock();
-                    apply_termios_update(
-                        &self.writer,
-                        &self.terminal,
-                        termios,
-                        matches!(cmd, TCSETSF | TCSETSW),
-                    )?;
-                    if cmd == TCSETSF {
-                        self.ldisc.lock().drain_input()?;
-                    }
+                    let legacy_termios = (arg as *const Termios).vm_read(current)?;
+                    let _update = self.termios_update_lock().lock();
+                    // The legacy ABI has no numeric speed fields for BOTHER.
+                    let mut termios = self.terminal.load_termios().with_legacy(legacy_termios);
+                    termios.normalize_baudrates();
+                    self.set_termios(termios, TermiosUpdate::from_ioctl(cmd))?;
                 }
                 TCSETS2 | TCSETSF2 | TCSETSW2 => {
-                    let termios = Arc::new((arg as *const Termios2).vm_read(current)?);
-                    let _update = self.termios_update.lock();
-                    apply_termios_update(
-                        &self.writer,
-                        &self.terminal,
-                        termios,
-                        matches!(cmd, TCSETSF2 | TCSETSW2),
-                    )?;
-                    if cmd == TCSETSF2 {
-                        self.ldisc.lock().drain_input()?;
-                    }
+                    let mut termios = (arg as *const Termios2).vm_read(current)?;
+                    termios.normalize_baudrates();
+                    let _update = self.termios_update_lock().lock();
+                    self.set_termios(termios, TermiosUpdate::from_ioctl(cmd))?;
                 }
                 TIOCGPGRP => {
                     let foreground = self
@@ -349,16 +405,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     self.writer.drain()?;
                     return Err(StarryError::Unsupported);
                 }
-                TCFLSH => match arg {
-                    TCIFLUSH => self.ldisc.lock().drain_input()?,
-                    TCOFLUSH => self.ldisc.lock().discard_output(&self.writer)?,
-                    TCIOFLUSH => {
-                        let mut ldisc = self.ldisc.lock();
-                        ldisc.discard_output(&self.writer)?;
-                        ldisc.drain_input()?;
-                    }
-                    _ => return Err(StarryError::InvalidInput),
-                },
+                TCFLSH => self.flush_queues(arg)?,
                 TIOCSPTLCK => {}
                 TIOCGPTN => {
                     (arg as *mut u32).vm_write(current, self.pty_number())?;
@@ -425,18 +472,6 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
-}
-
-fn apply_termios_update<W: TtyWrite>(
-    writer: &W,
-    terminal: &Terminal,
-    termios: Arc<Termios2>,
-    drain: bool,
-) -> StarryResult<()> {
-    let old = terminal.load_termios();
-    writer.update_termios(old.as_ref(), termios.as_ref(), drain, &mut || {
-        *terminal.termios.lock_irqsave() = termios.clone();
-    })
 }
 
 impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
@@ -513,9 +548,12 @@ mod tests {
     use alloc::{sync::Arc, vec, vec::Vec};
     use std::sync::Mutex;
 
-    use super::{Terminal, Termios2, TtyWrite, apply_termios_update};
+    use super::{
+        ProcessMode, Terminal, Termios2, TermiosUpdate, Tty, TtyConfig, TtyRead, TtyWrite,
+    };
     use crate::StarryResult;
 
+    #[derive(Clone)]
     struct TermiosOrderWriter {
         terminal: Arc<Terminal>,
         events: Arc<Mutex<Vec<&'static str>>>,
@@ -550,6 +588,48 @@ mod tests {
         }
     }
 
+    struct IdleReader;
+
+    impl TtyRead for IdleReader {
+        fn read(&mut self, _buf: &mut [u8]) -> usize {
+            0
+        }
+
+        fn discard_input(&mut self) -> StarryResult<()> {
+            Ok(())
+        }
+    }
+
+    impl TermiosOrderWriter {
+        fn endpoint(&self) -> Arc<Tty<IdleReader, Self>> {
+            Tty::new(
+                self.terminal.clone(),
+                TtyConfig {
+                    reader: IdleReader,
+                    writer: self.clone(),
+                    process_mode: ProcessMode::Passive(Arc::new(axpoll_set::PollSet::new())),
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn tty_endpoints_serialize_updates_to_shared_termios() {
+        let terminal = Arc::new(Terminal::default());
+        let writer = TermiosOrderWriter {
+            terminal: terminal.clone(),
+            events: Arc::new(Mutex::new(Vec::new())),
+            fail_configuration: false,
+        };
+        let left = writer.endpoint();
+        let right = writer.endpoint();
+
+        assert!(core::ptr::eq(
+            left.termios_update_lock(),
+            right.termios_update_lock(),
+        ));
+    }
+
     #[test]
     fn termios_hardware_update_precedes_publication() {
         let terminal = Arc::new(Terminal::default());
@@ -560,13 +640,10 @@ mod tests {
             fail_configuration: false,
         };
 
-        apply_termios_update(
-            &writer,
-            &terminal,
-            Arc::new(Termios2::default_b115200()),
-            true,
-        )
-        .unwrap();
+        writer
+            .endpoint()
+            .set_termios(Termios2::default_b115200(), TermiosUpdate::Drain)
+            .unwrap();
 
         assert_eq!(
             *events.lock().unwrap_or_else(|error| error.into_inner()),
@@ -587,14 +664,116 @@ mod tests {
         };
 
         assert!(
-            apply_termios_update(
-                &writer,
-                &terminal,
-                Arc::new(Termios2::default_b115200()),
-                false,
-            )
-            .is_err()
+            writer
+                .endpoint()
+                .set_termios(Termios2::default_b115200(), TermiosUpdate::Immediate)
+                .is_err()
         );
         assert_eq!(terminal.load_termios().baudrate(), old_baudrate);
     }
+}
+
+#[cfg(all(test, axtest))]
+#[axtest::axtest]
+fn termios_flush_preserves_input_arriving_during_uart_drain() -> axtest::AxTestResult {
+    axtest::ax_assert!(
+        ax_runtime::serial::input_arriving_during_uart_drain_survives_flush_for_test()
+    );
+    axtest::AxTestResult::Ok
+}
+
+#[cfg(all(test, axtest))]
+#[axtest::axtest]
+fn termios_flush_precedes_configuration() -> axtest::AxTestResult {
+    use alloc::vec::Vec;
+
+    use axtest::{ax_assert, ax_assert_eq};
+
+    #[derive(Clone)]
+    struct Output {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        endpoint: Arc<Mutex<Weak<Tty<Input, Output>>>>,
+    }
+
+    impl TtyWrite for Output {
+        fn write(&self, _buf: &[u8]) {}
+
+        fn drain(&self) -> StarryResult<()> {
+            // Probe a real input read while output is draining. Using try_lock
+            // makes a regression fail deterministically instead of hanging.
+            let tty = self.endpoint.lock().upgrade().unwrap();
+            let mut input = tty.ldisc.try_lock().ok_or(StarryError::WouldBlock)?;
+            let mut byte = [0];
+            if input.read(&mut byte)? != 1 || byte != [b'A'] {
+                return Err(StarryError::Io);
+            }
+            self.events.lock().push("drain");
+            Ok(())
+        }
+
+        fn termios_changed(&self, _old: &Termios2, _new: &Termios2) -> StarryResult<()> {
+            self.events.lock().push("configure");
+            Ok(())
+        }
+    }
+
+    struct Input {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        fail: bool,
+        byte: Option<u8>,
+    }
+
+    impl TtyRead for Input {
+        fn read(&mut self, buf: &mut [u8]) -> usize {
+            if let Some(byte) = self.byte.take() {
+                buf[0] = byte;
+                1
+            } else {
+                0
+            }
+        }
+
+        fn discard_input(&mut self) -> StarryResult<()> {
+            self.events.lock().push("flush");
+            if self.fail {
+                return Err(StarryError::Io);
+            }
+            Ok(())
+        }
+    }
+
+    for fail in [false, true] {
+        let terminal = Arc::new(Terminal::default());
+        let old_baud = terminal.load_termios().baudrate();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let endpoint = Arc::new(Mutex::new(Weak::new()));
+        let tty = Tty::new(
+            terminal.clone(),
+            TtyConfig {
+                reader: Input {
+                    events: events.clone(),
+                    fail,
+                    byte: Some(b'A'),
+                },
+                writer: Output {
+                    events: events.clone(),
+                    endpoint: endpoint.clone(),
+                },
+                process_mode: ProcessMode::Passive(Arc::new(axpoll_set::PollSet::new())),
+            },
+        );
+        *endpoint.lock() = Arc::downgrade(&tty);
+        let _update = tty.termios_update_lock().lock();
+        let result = tty.set_termios(Termios2::default_b115200(), TermiosUpdate::DrainAndFlush);
+        if fail {
+            ax_assert!(matches!(result, Err(StarryError::Io)));
+            ax_assert_eq!(events.lock().as_slice(), &["drain", "flush"]);
+            ax_assert_eq!(terminal.load_termios().baudrate(), old_baud);
+        } else {
+            ax_assert!(result.is_ok());
+            ax_assert_eq!(events.lock().as_slice(), &["drain", "flush", "configure"]);
+            ax_assert_eq!(terminal.load_termios().baudrate(), Some(115_200));
+        }
+    }
+    axtest::AxTestResult::Ok
 }

@@ -200,15 +200,17 @@ pub(super) fn build_spcr(plan: &X86FirmwarePlan) -> Vec<u8> {
         OEM_REVISION,
     );
     spcr.write_u8(36, serial.interface_type);
-    let (address_space, address) = match serial.registers {
-        X86SerialRegisters::Port { base, .. } => (1, u64::from(base)),
-        X86SerialRegisters::Mmio { base, .. } => (0, u64::from(base)),
-    };
-    spcr.write_u8(40, address_space);
-    spcr.write_u8(41, 8);
-    spcr.write_u8(42, 0);
-    spcr.write_u8(43, 1);
-    spcr.write_u64(44, address);
+    // A zero GAS disables redirection for UART layouts SPCR cannot describe.
+    if let Some((bit_width, access_size)) = serial.spcr_gas_layout {
+        let (address_space, address) = match serial.registers {
+            X86SerialRegisters::Port { base, .. } => (1, u64::from(base)),
+            X86SerialRegisters::Mmio { base, .. } => (0, u64::from(base)),
+        };
+        spcr.write_u8(40, address_space);
+        spcr.write_u8(41, bit_width);
+        spcr.write_u8(43, access_size);
+        spcr.write_u64(44, address);
+    }
     spcr.write_u8(52, 2); // I/O APIC interrupt.
     spcr.write_u8(53, serial.irq as u8);
     spcr.write_u32(54, serial.irq);
@@ -222,7 +224,7 @@ pub(super) fn build_spcr(plan: &X86FirmwarePlan) -> Vec<u8> {
     spcr.write_u32(76, serial.clock_hz);
     spcr.write_u32(80, 115_200);
     spcr.write_u16(84, namespace_length as u16);
-    spcr.write_u16(86, INFO_SIZE as u16);
+    spcr.write_u16(86, (HEADER_SIZE + INFO_SIZE) as u16);
     spcr.write_bytes(88, namespace.as_bytes());
     spcr.write_u8(88 + namespace.len(), 0);
     spcr.as_slice().to_vec()
@@ -244,6 +246,39 @@ pub(super) const fn oem_revision() -> u32 {
 mod tests {
     use super::*;
     use crate::arch::x86_64::boot::mptable;
+
+    #[test]
+    fn spcr_preserves_namespace_and_disables_unrepresentable_layouts() {
+        let mut plan = super::super::config::test_plan(1);
+        let uart = &mut plan.resources.serials[0];
+        uart.namespace_path = Some("\\_SB_.COM1".into());
+        uart.interface_type = 0x12;
+        uart.registers = X86SerialRegisters::Mmio {
+            base: 0xfedc_0000,
+            size: 64,
+        };
+        uart.spcr_gas_layout =
+            crate::machine::spcr_16550_mmio_fields(2, axdevice_base::AccessWidth::Dword);
+        let spcr = build_spcr(&plan);
+
+        let offset = usize::from(u16::from_le_bytes(spcr[86..88].try_into().unwrap()));
+        let length = usize::from(u16::from_le_bytes(spcr[84..86].try_into().unwrap()));
+        assert_eq!(&spcr[offset..offset + length], b"\\_SB_.COM1\0");
+        assert_eq!(&spcr[40..44], &[0, 32, 0, 3]);
+
+        // Linux derives the MMIO register shift from Access Size, not Bit Width.
+        // Independent strides must disable SPCR redirection instead of describing
+        // a different register map to the guest.
+        for (shift, width) in [
+            (3, axdevice_base::AccessWidth::Dword),
+            (3, axdevice_base::AccessWidth::Qword),
+        ] {
+            plan.resources.serials[0].spcr_gas_layout =
+                crate::machine::spcr_16550_mmio_fields(shift, width);
+            let spcr = build_spcr(&plan);
+            assert_eq!(&spcr[40..52], &[0; 12]);
+        }
+    }
 
     #[test]
     fn acpi_prt_and_mp_table_publish_the_same_pci_route() {

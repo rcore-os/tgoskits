@@ -1,5 +1,9 @@
+#[cfg(axtest)]
+use alloc::boxed::Box;
 use alloc::{collections::VecDeque, sync::Arc};
 
+#[cfg(axtest)]
+use ax_lazyinit::OnceLock;
 use rdif_serial::Config;
 
 use crate::{
@@ -11,7 +15,7 @@ pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
 
 pub(super) enum ControlOp {
     Start(Config),
-    AdoptFirmwareConsole,
+    StartHandoffConsole,
     Shutdown,
     SetConfig(Config),
     DiscardRx,
@@ -31,6 +35,7 @@ impl ControlCommand {
 
 pub(super) struct DrainCompletion {
     completion: Arc<CommandCompletion>,
+    pub(super) wait_for_hardware: bool,
 }
 
 impl DrainCompletion {
@@ -46,12 +51,30 @@ pub(super) enum ControlRequest {
 
 pub(super) struct ControlQueue {
     requests: RawSpinLock<VecDeque<ControlRequest>>,
+    #[cfg(axtest)]
+    service_for_test: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl ControlQueue {
     pub(super) fn new() -> Self {
         Self {
             requests: RawSpinLock::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
+            #[cfg(axtest)]
+            service_for_test: OnceLock::new(),
+        }
+    }
+
+    /// Drives a fixture's worker synchronously once a request is queued.
+    #[cfg(axtest)]
+    pub(super) fn set_test_service(&self, service: impl Fn() + Send + Sync + 'static) {
+        self.service_for_test.call_once(|| Box::new(service));
+    }
+
+    fn notify_worker(&self, notify: impl FnOnce()) {
+        notify();
+        #[cfg(axtest)]
+        if let Some(service) = self.service_for_test.get() {
+            service();
         }
     }
 
@@ -67,11 +90,15 @@ impl ControlQueue {
                 completion: completion.clone(),
             }));
         }
-        notify();
+        self.notify_worker(notify);
         completion.wait()
     }
 
-    pub(super) fn submit_drain(&self, notify: impl FnOnce()) -> RuntimeResult {
+    pub(super) fn submit_drain(
+        &self,
+        wait_for_hardware: bool,
+        notify: impl FnOnce(),
+    ) -> RuntimeResult {
         let completion = Arc::new(CommandCompletion::new());
         {
             let mut requests = self.requests.lock_irqsave();
@@ -80,9 +107,10 @@ impl ControlQueue {
             }
             requests.push_back(ControlRequest::DrainTx(DrainCompletion {
                 completion: completion.clone(),
+                wait_for_hardware,
             }));
         }
-        notify();
+        self.notify_worker(notify);
         completion.wait()
     }
 

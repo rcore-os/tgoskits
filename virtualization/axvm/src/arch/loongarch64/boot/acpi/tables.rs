@@ -168,9 +168,19 @@ fn push_srat_memory(tables: &mut Vec<u8>, base: u64, length: u64) {
 
 pub(super) fn build_spcr(tables: &mut Vec<u8>, serial: &LoongArchFwCfgSerialConfig) {
     let start = begin_acpi_table(tables, b"SPCR", 2);
-    push_le(tables, 0, 1);
+    let interface_type = if serial.spcr_gas_layout == Some((8, 1)) {
+        0
+    } else {
+        0x12
+    };
+    push_le(tables, interface_type, 1);
     push_le(tables, 0, 3);
-    push_gas(tables, 0, 8, 0, 1, serial.base);
+    // A zero GAS disables redirection for UART layouts SPCR cannot describe.
+    if let Some((bit_width, access_size)) = serial.spcr_gas_layout {
+        push_gas(tables, 0, bit_width, 0, access_size, serial.base);
+    } else {
+        push_gas(tables, 0, 0, 0, 0, 0);
+    }
     push_le(tables, 0, 1);
     push_le(tables, 0, 1);
     push_le(tables, serial.irq as u64, 4);

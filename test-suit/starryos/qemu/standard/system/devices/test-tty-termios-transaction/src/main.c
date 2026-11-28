@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -13,6 +14,8 @@
 #define KERNEL_NCCS 19
 #define KERNEL_CBAUD 0010017U
 #define KERNEL_BOTHER 0010000U
+#define KERNEL_IBSHIFT 16U
+#define KERNEL_CIBAUD (KERNEL_CBAUD << KERNEL_IBSHIFT)
 
 struct kernel_termios2 {
     unsigned int c_iflag;
@@ -118,6 +121,185 @@ static void close_pty(struct pty_pair *pty)
         close(pty->slave);
 }
 
+static void check_format_only_updates(int fd, struct kernel_termios2 initial)
+{
+    static const unsigned long requests[] = {
+        TCSETS, TCSETSW, TCSETSF,
+        STARRY_TCSETS2, STARRY_TCSETSW2, STARRY_TCSETSF2,
+    };
+    struct kernel_termios2 format = initial;
+
+    for (size_t i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
+        struct kernel_termios2 observed;
+        format.c_cflag ^= CSTOPB;
+        if (syscall(SYS_ioctl, fd, requests[i], &format) != 0
+            || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0) {
+            fprintf(stderr, "format-only ioctl request: %#lx\n", requests[i]);
+            fail("apply and read back format-only termios update");
+            return;
+        }
+        if (observed.c_cflag != format.c_cflag
+            || observed.c_ispeed != initial.c_ispeed
+            || observed.c_ospeed != initial.c_ospeed) {
+            fprintf(stderr, "format-only ioctl request: %#lx\n", requests[i]);
+            fail("update line format while preserving baudrate");
+            return;
+        }
+    }
+}
+
+static int is_expected_invalid_baudrate_error(int error)
+{
+#ifdef __riscv
+    /* QEMU virt declares a programmable NS16550 input clock. */
+    return error == EINVAL;
+#else
+    /* Some other firmware describes the divisor but omits the input clock. */
+    return error == EINVAL || error == EOPNOTSUPP;
+#endif
+}
+
+static void check_serial_hangup_and_restore(
+    int fd, const struct kernel_termios2 *initial)
+{
+    static const unsigned long requests[] = {
+        TCSETS, TCSETSW, TCSETSF,
+        STARRY_TCSETS2, STARRY_TCSETSW2, STARRY_TCSETSF2,
+    };
+    struct kernel_termios2 hangup = *initial;
+    hangup.c_cflag &= ~(KERNEL_CBAUD | KERNEL_CIBAUD);
+    hangup.c_ispeed = 0;
+    hangup.c_ospeed = 0;
+
+    for (size_t i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
+        struct kernel_termios2 observed;
+        if (syscall(SYS_ioctl, fd, requests[i], &hangup) != 0
+            || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0) {
+            fprintf(stderr, "hangup ioctl request: %#lx\n", requests[i]);
+            fail("apply and read back physical serial B0");
+            return;
+        }
+        if (memcmp(&observed, &hangup, sizeof(observed)) != 0) {
+            fail("physical serial reports B0 and zero speeds");
+        }
+
+        struct kernel_termios2 unavailable = *initial;
+        unavailable.c_cflag = (unavailable.c_cflag & ~KERNEL_CBAUD) | KERNEL_BOTHER;
+        unavailable.c_ospeed = 250000000U;
+        errno = 0;
+        if (syscall(SYS_ioctl, fd, STARRY_TCSETS2, &unavailable) != -1
+            || !is_expected_invalid_baudrate_error(errno)
+            || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0
+            || memcmp(&observed, &hangup, sizeof(observed)) != 0)
+            fail("failed physical serial reconfiguration preserves B0");
+
+        /* Legacy TCSETS requests cannot encode a custom numeric baud rate. */
+        unsigned long restore_request = (initial->c_cflag & KERNEL_CBAUD) == KERNEL_BOTHER
+            ? STARRY_TCSETS2 : requests[i];
+        if (syscall(SYS_ioctl, fd, restore_request, initial) != 0
+            || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0
+            || memcmp(&observed, initial, sizeof(observed)) != 0) {
+            fail("restore physical serial speed after B0");
+            return;
+        }
+    }
+}
+
+static void check_baudrate_normalization(void)
+{
+    struct pty_pair pty = {.master = -1, .slave = -1};
+    struct kernel_termios2 raw;
+    struct kernel_termios2 observed;
+
+    if (open_raw_pty(&pty, &raw) != 0) {
+        fail("open raw PTY for custom baudrate");
+        goto out;
+    }
+    raw.c_cflag = (raw.c_cflag & ~(KERNEL_CBAUD | KERNEL_CIBAUD))
+        | KERNEL_BOTHER | (KERNEL_BOTHER << KERNEL_IBSHIFT);
+    raw.c_ispeed = 654321U;
+    raw.c_ospeed = 123456U;
+    if (syscall(SYS_ioctl, pty.slave, STARRY_TCSETS2, &raw) != 0) {
+        fail("set a custom baudrate before legacy format update");
+        goto out;
+    }
+    check_format_only_updates(pty.slave, raw);
+
+    raw.c_cflag = (raw.c_cflag & ~(KERNEL_CBAUD | KERNEL_CIBAUD))
+        | B9600 | (B4800 << KERNEL_IBSHIFT);
+    if (syscall(SYS_ioctl, pty.slave, TCSETS, &raw) != 0
+        || syscall(SYS_ioctl, pty.slave, STARRY_TCGETS2, &observed) != 0
+        || observed.c_ispeed != 4800U || observed.c_ospeed != 9600U)
+        fail("TCSETS decodes independent encoded rates over previous BOTHER values");
+
+    raw.c_cflag = (raw.c_cflag & ~(KERNEL_CBAUD | KERNEL_CIBAUD)) | B19200;
+    if (syscall(SYS_ioctl, pty.slave, STARRY_TCSETS2, &raw) != 0
+        || syscall(SYS_ioctl, pty.slave, STARRY_TCGETS2, &observed) != 0
+        || observed.c_ispeed != 19200U || observed.c_ospeed != 19200U)
+        fail("TCSETS2 ignores numeric rates for fixed encodings and inherits output speed");
+
+    raw.c_cflag = (raw.c_cflag & ~KERNEL_CBAUD) | KERNEL_BOTHER;
+    raw.c_ospeed = 0;
+    if (syscall(SYS_ioctl, pty.slave, STARRY_TCSETS2, &raw) != 0
+        || syscall(SYS_ioctl, pty.slave, STARRY_TCGETS2, &observed) != 0
+        || observed.c_ispeed != 0 || observed.c_ospeed != 0)
+        fail("TCSETS2 keeps zero BOTHER output and inherits it for input");
+
+out:
+    close_pty(&pty);
+}
+
+static void check_serial_reports_common_baudrate(int fd,
+                                                 const struct kernel_termios2 *valid)
+{
+    struct kernel_termios2 request = *valid;
+    struct kernel_termios2 observed = {0};
+
+    unsigned int expected_baudrate = valid->c_ospeed;
+#ifdef __riscv
+    /* Neither rate is exactly representable by the QEMU virt NS16550 divisor.
+     * TCGETS2 returns the accepted nominal speed for both directions. */
+    expected_baudrate = valid->c_ospeed == 100000U ? 100001U : 100000U;
+    request.c_cflag = (request.c_cflag & ~KERNEL_CBAUD) | KERNEL_BOTHER;
+    request.c_ospeed = expected_baudrate;
+#endif
+    /* A directly booted PL011 can have an unset divisor. Keep its unknown
+     * output rate when normalizing an input-only baudrate request. */
+    unsigned int output_encoding = request.c_cflag & KERNEL_CBAUD;
+    request.c_cflag = (request.c_cflag & ~KERNEL_CIBAUD)
+        | (KERNEL_BOTHER << KERNEL_IBSHIFT);
+    request.c_ispeed = expected_baudrate == 4800U ? 9600U : 4800U;
+    if (syscall(SYS_ioctl, fd, STARRY_TCSETSW2, &request) != 0
+        || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0
+        || (expected_baudrate == 0 && output_encoding != KERNEL_BOTHER)
+        || observed.c_ospeed != expected_baudrate
+        || observed.c_ispeed != expected_baudrate
+        || (observed.c_cflag & KERNEL_CBAUD) != output_encoding
+        || (observed.c_cflag & KERNEL_CIBAUD) != (output_encoding << KERNEL_IBSHIFT)) {
+        fprintf(stderr, "UART baudrate mismatch: expected %u (encoding 0x%x), "
+                "observed input %u output %u (c_cflag=0x%x)\n",
+                expected_baudrate, output_encoding, observed.c_ispeed,
+                observed.c_ospeed, observed.c_cflag);
+        fail("physical UART reports a common nominal input and output baudrate");
+    }
+    if (expected_baudrate != 0) {
+        request = observed;
+        request.c_cflag = (request.c_cflag & ~(KERNEL_CBAUD | KERNEL_CIBAUD))
+            | KERNEL_BOTHER;
+        request.c_ispeed = 0;
+        request.c_ospeed = 0;
+        if (syscall(SYS_ioctl, fd, STARRY_TCSETS2, &request) != 0
+            || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0
+            || memcmp(&observed, &request, sizeof(observed)) != 0)
+            fail("physical UART accepts and reports zero BOTHER");
+    }
+
+    if (syscall(SYS_ioctl, fd, STARRY_TCSETSW2, valid) != 0
+        || syscall(SYS_ioctl, fd, STARRY_TCGETS2, &observed) != 0
+        || memcmp(&observed, valid, sizeof(observed)) != 0)
+        fail("restore serial termios after baudrate test");
+}
+
 static void check_failed_serial_config_is_not_published(int fd,
                                                         struct kernel_termios2 *valid)
 {
@@ -129,8 +311,9 @@ static void check_failed_serial_config_is_not_published(int fd,
     invalid.c_ospeed = 250000000U;
 
     errno = 0;
-    if (ioctl(fd, STARRY_TCSETS2, &invalid) != -1 || errno != EINVAL)
-        fail("TCSETS2 propagates invalid UART configuration as EINVAL");
+    if (ioctl(fd, STARRY_TCSETS2, &invalid) != -1
+        || !is_expected_invalid_baudrate_error(errno))
+        fail("TCSETS2 rejects an invalid or unavailable baudrate");
     if (ioctl(fd, STARRY_TCGETS2, &observed) != 0) {
         fail("TCGETS2 after rejected configuration");
     } else if (memcmp(&observed, valid, sizeof(observed)) != 0) {
@@ -189,36 +372,97 @@ static void check_serial_writes_with_waiting_updates(int fd,
     close(ready[0]);
 }
 
-static void check_tcsetsf_clears_input_after_update(void)
+static void check_tcsetsf_discards_pending_input(unsigned long request, int on_master)
 {
     struct pty_pair pty = {.master = -1, .slave = -1};
     struct kernel_termios2 raw;
     const unsigned char stale = 'S';
-    const unsigned char fresh = 'F';
+    const unsigned char fresh = '\r';
     unsigned char observed = 0;
 
     if (open_raw_pty(&pty, &raw) != 0) {
-        fail("open raw PTY for TCSETSF2");
+        fail("open raw PTY for a termios update with input flush");
         goto out;
     }
     if (write_all(pty.master, &stale, 1) != 0 || !wait_readable(pty.slave)) {
-        fail("queue stale input before TCSETSF2");
+        fail("queue stale input before changing termios");
         goto out;
     }
-    if (ioctl(pty.slave, STARRY_TCSETSF2, &raw) != 0) {
-        fail("TCSETSF2 updates termios before flushing input");
+    raw.c_iflag |= ICRNL;
+    if (syscall(SYS_ioctl, on_master ? pty.master : pty.slave, request, &raw) != 0) {
+        fail("apply termios with input flush");
         goto out;
     }
 
     errno = 0;
     if (read(pty.slave, &observed, 1) != -1
         || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-        fail("TCSETSF2 discards stale input");
+        fail("the termios update discards stale input");
         goto out;
     }
     if (write_all(pty.master, &fresh, 1) != 0 || !wait_readable(pty.slave)
-        || read(pty.slave, &observed, 1) != 1 || observed != fresh)
-        fail("fresh input remains visible after TCSETSF2");
+        || read(pty.slave, &observed, 1) != 1 || observed != '\n')
+        fail("fresh input uses the new ICRNL setting");
+
+out:
+    close_pty(&pty);
+}
+
+static void check_noncanonical_update_preserves_pending_input(unsigned long request, int on_master)
+{
+    struct pty_pair pty = {.master = -1, .slave = -1};
+    struct kernel_termios2 raw;
+    const unsigned char queued = 'A';
+    const unsigned char fresh = 'B';
+    unsigned char observed = 0;
+    int setting_fd;
+
+    if (open_raw_pty(&pty, &raw) != 0) {
+        fail("open PTY for canonical mode transition");
+        goto out;
+    }
+    setting_fd = on_master ? pty.master : pty.slave;
+    struct kernel_termios2 canonical = raw;
+    canonical.c_lflag |= ICANON | ECHO;
+    if (syscall(SYS_ioctl, pty.slave, request, &canonical) != 0
+        || write_all(pty.master, &queued, 1) != 0
+        || !wait_readable(pty.master)
+        || syscall(SYS_read, pty.master, &observed, 1) != 1
+        || observed != queued) {
+        fail("queue and echo a byte without completing the canonical line");
+        goto out;
+    }
+
+    errno = 0;
+    if (syscall(SYS_read, pty.slave, &observed, 1) != -1
+        || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+        fail("an incomplete canonical line is not readable");
+        goto out;
+    }
+    if (syscall(SYS_ioctl, setting_fd, request, &raw) != 0
+        || syscall(SYS_ioctl, pty.slave, request, &canonical) != 0
+        || syscall(SYS_read, pty.slave, &observed, 1) != 1
+        || observed != queued) {
+        fail("pending input is immediately readable after disabling and re-enabling ICANON");
+        goto out;
+    }
+    if (write_all(pty.master, &queued, 1) != 0
+        || !wait_readable(pty.master)
+        || syscall(SYS_read, pty.master, &observed, 1) != 1
+        || observed != queued) {
+        fail("queue another incomplete line for the input order check");
+        goto out;
+    }
+
+    /* Wait until both bytes are readable before checking the order. */
+    raw.c_cc[VMIN] = 2;
+    unsigned char pair[2];
+    if (syscall(SYS_ioctl, setting_fd, request, &raw) != 0
+        || write_all(pty.master, &fresh, 1) != 0
+        || !wait_readable(pty.slave)
+        || syscall(SYS_read, pty.slave, pair, sizeof(pair)) != (long)sizeof(pair)
+        || pair[0] != queued || pair[1] != fresh)
+        fail("noncanonical reads deliver the pending byte before fresh input");
 
 out:
     close_pty(&pty);
@@ -232,12 +476,19 @@ int main(void)
     if (serial < 0 || ioctl(serial, STARRY_TCGETS2, &valid) != 0) {
         fail("open serial TTY and read termios2");
     } else {
+        check_format_only_updates(serial, valid);
+        check_serial_reports_common_baudrate(serial, &valid);
         check_failed_serial_config_is_not_published(serial, &valid);
         check_serial_writes_with_waiting_updates(serial, &valid);
+        check_serial_hangup_and_restore(serial, &valid);
     }
     if (serial >= 0)
         close(serial);
-    check_tcsetsf_clears_input_after_update();
+    check_baudrate_normalization();
+    check_tcsetsf_discards_pending_input(TCSETSF, 0);
+    check_tcsetsf_discards_pending_input(STARRY_TCSETSF2, 1);
+    check_noncanonical_update_preserves_pending_input(TCSETS, 0);
+    check_noncanonical_update_preserves_pending_input(STARRY_TCSETS2, 1);
 
     if (failures != 0) {
         fprintf(stderr, "test-tty-termios-transaction: %d failure(s)\n",

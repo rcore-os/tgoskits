@@ -307,8 +307,16 @@ pub fn acpi_resource_address_to_device_id(
     probe::acpi::try_system().and_then(|system| system.resource_address_to_device_id(address))
 }
 
+/// Resolves an enabled ACPI SPCR console without falling back to another UART.
 pub fn acpi_spcr_console_device_id() -> Option<DeviceId> {
-    probe::acpi::spcr_console_device_id()
+    acpi_spcr_console_device_id_result().ok().flatten()
+}
+
+/// Resolves the ACPI SPCR console and reports an invalid or unavailable
+/// firmware selection without falling back to another UART.
+pub fn acpi_spcr_console_device_id_result()
+-> Result<Option<DeviceId>, probe::acpi::SpcrConsoleNotFound> {
+    probe::acpi::spcr_console_device_id_result()
 }
 
 pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {

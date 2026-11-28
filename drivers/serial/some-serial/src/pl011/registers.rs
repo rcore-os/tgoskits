@@ -104,6 +104,11 @@ register_bitfields! [
     ]
 ];
 
+#[cfg(not(test))]
+type LineControl = ReadWrite<u32, UARTLCR_H::Register>;
+#[cfg(test)]
+use super::tests::LineControl;
+
 register_structs! {
     pub Pl011Registers {
         (0x000 => pub(super) uartdr: ReadWrite<u32, UARTDR::Register>),        // 数据寄存器（收发数据/错误标志）
@@ -114,7 +119,7 @@ register_structs! {
         (0x020 => pub(super) uartilpr: ReadWrite<u32>),                        // 红外低功耗波特率寄存器（很少用）
         (0x024 => pub(super) uartibrd: ReadWrite<u32, UARTIBRD::Register>),    // 整数波特率分频寄存器
         (0x028 => pub(super) uartfbrd: ReadWrite<u32, UARTFBRD::Register>),    // 小数波特率分频寄存器
-        (0x02c => pub(super) uartlcr_h: ReadWrite<u32, UARTLCR_H::Register>),  // 线路控制寄存器（数据位、停止位、校验等）
+        (0x02c => pub(super) uartlcr_h: LineControl),                          // 线路控制寄存器（数据位、停止位、校验等）
         (0x030 => pub(super) uartcr: ReadWrite<u32, UARTCR::Register>),        // 控制寄存器（UART使能、收发使能等）
         (0x034 => pub(super) uartifls: ReadWrite<u32, UARTIFLS::Register>),    // FIFO中断触发级别选择寄存器
         (0x038 => pub(super) uartimsc: ReadWrite<u32, UARTIS::Register>),      // 中断屏蔽设置/清除寄存器

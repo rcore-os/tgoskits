@@ -16,6 +16,10 @@ pub use self::{raw::*, types::*};
 pub enum ConfigError {
     #[error("invalid baud rate")]
     InvalidBaudrate,
+    #[error("UART input clock rate is unavailable")]
+    BaudrateUnavailable,
+    #[error("UART cannot start while preserving its FIFOs")]
+    FifoPreservationUnavailable,
     #[error("unsupported data bits")]
     UnsupportedDataBits,
     #[error("unsupported stop bits")]
@@ -53,12 +57,30 @@ pub enum Parity {
     Space,
 }
 
+/// Data bits, stop bits and parity currently configured on a UART.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Framing {
+    pub data_bits: DataBits,
+    pub stop_bits: StopBits,
+    pub parity: Parity,
+}
+
+/// Requested DTR and RTS assertion. Deasserting RTS overrides automatic
+/// RTS control until RTS is asserted again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModemOutputs {
+    pub dtr: bool,
+    pub rts: bool,
+}
+
+/// Partial UART configuration. Runtime updates retain omitted settings.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub baudrate: Option<u32>,
     pub data_bits: Option<DataBits>,
     pub stop_bits: Option<StopBits>,
     pub parity: Option<Parity>,
+    pub modem_outputs: Option<ModemOutputs>,
 }
 
 impl Config {
@@ -68,6 +90,7 @@ impl Config {
             data_bits: None,
             stop_bits: None,
             parity: None,
+            modem_outputs: None,
         }
     }
 

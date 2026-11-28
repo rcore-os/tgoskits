@@ -5,7 +5,7 @@ use core::sync::atomic::AtomicU32;
 
 use bytemuck::AnyBitPattern;
 
-use crate::sync::RawSpinLock;
+use crate::sync::{Mutex, RawSpinLock};
 
 pub mod job;
 #[cfg(all(test, axtest))]
@@ -26,10 +26,18 @@ pub struct Terminal {
     pub job_control: job::JobControl,
     pub window_size: RawSpinLock<WindowSize>,
     pub termios: RawSpinLock<Arc<termios::Termios2>>,
+    // PTY endpoints share termios and must serialize complete updates.
+    pub(super) termios_update: Mutex<()>,
     pub pty_number: AtomicU32,
 }
 impl Default for Terminal {
     fn default() -> Self {
+        Self::with_termios(termios::Termios2::default())
+    }
+}
+
+impl Terminal {
+    pub fn with_termios(termios: termios::Termios2) -> Self {
         Self {
             job_control: job::JobControl::new(),
             window_size: RawSpinLock::new(WindowSize {
@@ -40,12 +48,12 @@ impl Default for Terminal {
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             }),
-            termios: RawSpinLock::new(Arc::new(termios::Termios2::default())),
+            termios: RawSpinLock::new(Arc::new(termios)),
+            termios_update: Mutex::new(()),
             pty_number: AtomicU32::new(0),
         }
     }
-}
-impl Terminal {
+
     pub fn load_termios(&self) -> Arc<termios::Termios2> {
         self.termios.lock_irqsave().clone()
     }

@@ -165,7 +165,7 @@ ax-gpu = { version = "0.1", path = "os/arceos/modules/axgpu" }
 ax-drm = { version = "0.1", path = "os/arceos/modules/axdrm" }
 kdrm-core = { version = "0.1", path = "components/kdrm-core" }
 drm-kapi = { version = "0.1", path = "components/drm-kapi" }
-ax-driver = { version = "0.18", path = "drivers/ax-driver" }
+ax-driver = { version = "0.18.1", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 virtio-gpu = { version = "0.1", path = "drivers/gpu/virtio-gpu" }
 ax-block = { version = "0.1", path = "fs/ax-block" }
@@ -295,7 +295,7 @@ httpboot-protocol = { version = "0.6.0", default-features = false, features = ["
 x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.9", path = "memory/page-table-generic" }
 someboot = { version = "0.7.2", path = "platforms/someboot" }
-some-serial = { version = "0.7", path = "drivers/serial/some-serial" }
+some-serial = { version = "0.7.8", path = "drivers/serial/some-serial" }
 kernutil = { path = "components/kernutil", version = "0.3" }
 ranges-ext = { version = "0.6", path = "memory/ranges-ext" }
 somehal-macros = { path = "platforms/somehal-macros", version = "0.1" }

@@ -1,9 +1,9 @@
 use core::ptr::NonNull;
 
 use rdif_serial::{
-    Config, ConfigError, DataBits, IRQ_RX_BATCH_CAPACITY, IrqRxBatch, Parity, RxErrorFlags, RxFlag,
-    RxSample, SerialEventSet, SerialIrqEvent, SerialIrqReport, SerialParts, SplitUart, StopBits,
-    UartEmergencyTx, UartInfo, UartIrq, UartPort,
+    Config, ConfigError, DataBits, Framing, IRQ_RX_BATCH_CAPACITY, IrqRxBatch, Parity,
+    RxErrorFlags, RxFlag, RxSample, SerialEventSet, SerialIrqEvent, SerialIrqReport, SerialParts,
+    SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq, UartPort,
 };
 use tock_registers::{
     LocalRegisterCopy, interfaces::*, register_bitfields, register_structs, registers::*,

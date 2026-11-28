@@ -5,6 +5,7 @@ pub struct Pl011 {
     pub(super) base: Reg,
     clock_freq: u32,
     pub(super) saved_rx_status: Pl011RxStatus,
+    pub(super) restore_auto_rts: bool,
 }
 
 impl Pl011 {
@@ -25,6 +26,7 @@ impl Pl011 {
             base,
             clock_freq,
             saved_rx_status: Pl011RxStatus::empty(),
+            restore_auto_rts: false,
         }
     }
 

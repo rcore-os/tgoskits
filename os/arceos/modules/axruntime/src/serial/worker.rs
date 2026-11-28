@@ -1,13 +1,18 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
+use ax_driver::serial::SerialRegisterAddress;
+#[cfg(any(not(test), axtest))]
+use ax_hal::console::{early_console_reserves_io_port, early_console_uses_io_port};
 use axpoll::IoEvents;
-#[cfg(test)]
-use rdif_serial::ConfigError;
-use rdif_serial::{Config, RxErrorFlags, RxFlag, RxSample, SerialEventSet};
+use rdif_serial::{
+    Config, ConfigError, DataBits, Parity, RxErrorFlags, RxFlag, RxSample, SerialEventSet, StopBits,
+};
 
+#[cfg(all(test, not(axtest)))]
+use self::handoff_tests::{early_console_reserves_io_port, early_console_uses_io_port};
 use super::{
-    RuntimeIrqBridge, RuntimeShared, RxItem,
+    InitialLineSettings, RuntimeIrqBridge, RuntimeShared, RxItem,
     control::{CONTROL_QUEUE_CAPACITY, ControlCommand, ControlOp, ControlRequest, DrainCompletion},
     deactivate_console,
     ingress::TxFrameCursor,
@@ -18,6 +23,7 @@ use crate::{RuntimeError, RuntimeResult};
 
 const RX_BUDGET: usize = 256;
 const TX_BUDGET: usize = 64;
+const DEFAULT_CONSOLE_BAUDRATE: u32 = 115_200;
 
 pub(super) struct SerialWorker {
     shared: Arc<RuntimeShared>,
@@ -236,12 +242,12 @@ impl SerialWorker {
         let mut force_service = false;
         let result = match &command.op {
             ControlOp::Start(config) => {
-                let result = self.start_port(PortStart::Configure(config));
+                let result = self.start_unreserved_port(config);
                 force_service |= result.is_ok();
                 result
             }
-            ControlOp::AdoptFirmwareConsole => {
-                let result = self.start_port(PortStart::AdoptFirmwareConsole);
+            ControlOp::StartHandoffConsole => {
+                let result = self.start_handoff_console();
                 force_service |= result.is_ok();
                 result
             }
@@ -264,12 +270,85 @@ impl SerialWorker {
         force_service
     }
 
+    fn start_unreserved_port(&mut self, config: &Config) -> RuntimeResult {
+        if self.shared.started() {
+            return Ok(());
+        }
+        let reserved = match self.shared.info.address {
+            SerialRegisterAddress::Mmio(paddr) => {
+                ax_hal::console::early_console_reserves_mmio(paddr)
+                    || ax_hal::console::early_console_has_unknown_mmio()
+            }
+            SerialRegisterAddress::IoPort(port) => early_console_reserves_io_port(port),
+        };
+        if reserved {
+            return Err(RuntimeError::SerialConsoleBusy);
+        }
+        self.start_port(PortStart::Configure {
+            config,
+            preserve_fifos: false,
+        })
+    }
+
+    fn start_handoff_console(&mut self) -> RuntimeResult {
+        // Early accesses have drained. A reservation may protect an input
+        // backend without identifying the configured output UART.
+        let (same_uart, preserve_fifos) = match self.shared.info.address {
+            SerialRegisterAddress::Mmio(paddr) => (
+                ax_hal::console::early_console_uses_mmio(paddr),
+                ax_hal::console::early_console_reserves_mmio(paddr)
+                    || ax_hal::console::early_console_has_unknown_mmio(),
+            ),
+            SerialRegisterAddress::IoPort(port) => (
+                early_console_uses_io_port(port),
+                early_console_reserves_io_port(port),
+            ),
+        };
+        if same_uart {
+            return self.start_port(PortStart::AdoptFirmwareConsole);
+        }
+
+        let mut config = Config::new();
+        if self.shared.info.initial_baudrate == 0 {
+            config = config
+                .data_bits(DataBits::Eight)
+                .parity(Parity::None)
+                .stop_bits(StopBits::One)
+                .baudrate(DEFAULT_CONSOLE_BAUDRATE);
+        }
+        match self.start_port(PortStart::Configure {
+            config: &config,
+            preserve_fifos,
+        }) {
+            Err(RuntimeError::SerialConfig(ConfigError::BaudrateUnavailable))
+                if config.baudrate.is_some() =>
+            {
+                if preserve_fifos {
+                    // Without a clock rate we cannot distinguish an unknown
+                    // divisor from an initialized firmware UART.
+                    config = Config::new();
+                } else {
+                    config.baudrate = None;
+                }
+                self.start_port(PortStart::Configure {
+                    config: &config,
+                    preserve_fifos,
+                })
+            }
+            result => result,
+        }
+    }
+
     fn start_port(&mut self, start: PortStart<'_>) -> RuntimeResult {
         if self.shared.started() {
             return Ok(());
         }
-        self.shared
-            .with_port(|port| prepare_port_for_start(port, start))
+        let framing = self
+            .shared
+            .with_port(|port| {
+                prepare_port_for_start(port, start)?;
+                Ok::<_, rdif_serial::ConfigError>(port.framing())
+            })
             .ok_or(RuntimeError::SerialNotStarted)??;
         if let Err(err) = self.shared.enable_irq() {
             self.shared.disable_irq();
@@ -277,6 +356,14 @@ impl SerialWorker {
                 .with_port(|port| cleanup_failed_port_start(port, start));
             return Err(err);
         }
+        let baudrate = match start {
+            PortStart::Configure { config, .. } => config.baudrate,
+            PortStart::AdoptFirmwareConsole => None,
+        }
+        .unwrap_or(self.shared.info.initial_baudrate);
+        self.shared
+            .initial_line
+            .call_once(|| InitialLineSettings { baudrate, framing });
         self.shared.ingress.start_accepting();
         self.shared.set_started(true);
         self.pending_rearm = SerialEventSet::RX;
@@ -284,6 +371,9 @@ impl SerialWorker {
     }
 
     fn shutdown_port(&mut self) {
+        if !self.shared.started() {
+            return;
+        }
         self.shared.disable_irq();
         self.shared.set_started(false);
         self.shared.ingress.stop_and_discard();
@@ -336,14 +426,11 @@ impl SerialWorker {
     }
 
     fn discard_tx(&mut self) -> RuntimeResult {
+        // A port without independent TX discard leaves bytes already in
+        // hardware alone. Still discard all output queued in software.
         self.shared
-            .with_port(|port| {
-                if !port.discard_tx() {
-                    return Err(RuntimeError::OperationNotSupported);
-                }
-                Ok(())
-            })
-            .ok_or(RuntimeError::SerialNotStarted)??;
+            .with_port(|port| port.discard_tx())
+            .ok_or(RuntimeError::SerialNotStarted)?;
         self.shared.ingress.discard_pending();
         self.pending_frame = None;
         self.pending_rearm.remove(SerialEventSet::TX_SPACE);
@@ -646,25 +733,33 @@ impl SerialWorker {
     }
 
     fn progress_tx_drain(&mut self) -> bool {
-        if self.pending_drain.is_none() {
+        let Some(drain) = self.pending_drain.as_ref() else {
             return false;
-        }
-
-        let result = if !self.shared.started() {
-            Err(RuntimeError::SerialNotStarted)
-        } else if self.tx_bytes_pending() {
-            return false;
-        } else {
-            match self.shared.with_port(|port| port.tx_idle()) {
-                Some(true) => Ok(()),
-                Some(false) => return true,
-                None => Err(RuntimeError::SerialNotStarted),
-            }
+        };
+        let Some(result) = self.tx_drain_result(drain.wait_for_hardware) else {
+            return !self.tx_bytes_pending();
         };
         if let Some(completion) = self.pending_drain.take() {
             completion.complete(result);
         }
         false
+    }
+
+    fn tx_drain_result(&self, wait_for_hardware: bool) -> Option<RuntimeResult> {
+        let result = if !self.shared.started() {
+            Err(RuntimeError::SerialNotStarted)
+        } else if self.tx_bytes_pending() {
+            return None;
+        } else if !wait_for_hardware {
+            Ok(())
+        } else {
+            match self.shared.with_port(|port| port.tx_idle()) {
+                Some(true) => Ok(()),
+                Some(false) => return None,
+                None => Err(RuntimeError::SerialNotStarted),
+            }
+        };
+        Some(result)
     }
 
     fn tx_bytes_pending(&self) -> bool {
@@ -701,7 +796,10 @@ impl SerialWorker {
 
 #[derive(Clone, Copy)]
 enum PortStart<'a> {
-    Configure(&'a Config),
+    Configure {
+        config: &'a Config,
+        preserve_fifos: bool,
+    },
     AdoptFirmwareConsole,
 }
 
@@ -710,7 +808,14 @@ fn prepare_port_for_start(
     start: PortStart<'_>,
 ) -> Result<(), rdif_serial::ConfigError> {
     match start {
-        PortStart::Configure(config) => port.startup(config)?,
+        PortStart::Configure {
+            config,
+            preserve_fifos: true,
+        } => port.startup_preserving_fifos(config)?,
+        PortStart::Configure {
+            config,
+            preserve_fifos: false,
+        } => port.startup(config)?,
         PortStart::AdoptFirmwareConsole => {}
     }
     port.mask_all();
@@ -718,7 +823,13 @@ fn prepare_port_for_start(
 }
 
 fn cleanup_failed_port_start(port: &mut dyn rdif_serial::UartPort, start: PortStart<'_>) {
-    if matches!(start, PortStart::Configure(_)) {
+    if matches!(
+        start,
+        PortStart::Configure {
+            preserve_fifos: false,
+            ..
+        }
+    ) {
         port.mask_all();
         port.shutdown();
     }
@@ -1046,7 +1157,14 @@ mod tests {
         let mut port = FirmwareConsolePort::default();
         let config = Config::new().baudrate(230_400);
 
-        prepare_port_for_start(&mut port, PortStart::Configure(&config)).unwrap();
+        prepare_port_for_start(
+            &mut port,
+            PortStart::Configure {
+                config: &config,
+                preserve_fifos: false,
+            },
+        )
+        .unwrap();
 
         assert!(port.startup_called);
         assert!(port.mask_all_called);
@@ -1067,7 +1185,13 @@ mod tests {
         let mut port = FirmwareConsolePort::default();
         let config = Config::new();
 
-        cleanup_failed_port_start(&mut port, PortStart::Configure(&config));
+        cleanup_failed_port_start(
+            &mut port,
+            PortStart::Configure {
+                config: &config,
+                preserve_fifos: false,
+            },
+        );
 
         assert!(port.mask_all_called);
         assert!(port.shutdown_called);
@@ -1255,5 +1379,5 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod handoff_tests;
+#[cfg(any(test, axtest))]
+pub(super) mod handoff_tests;

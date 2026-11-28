@@ -767,6 +767,7 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
                     base: 0x3f8,
                     size: 8,
                 },
+                spcr_gas_layout: Some((8, 1)),
                 irq: 4,
                 clock_hz: 1_843_200,
             }],

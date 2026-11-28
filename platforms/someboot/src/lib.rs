@@ -289,8 +289,9 @@ cfg_select! {
 
         /// Entry point after enabling MMU
         fn prime_entry() -> ! {
-            fdt::setup_earlycon();
-            let _ = acpi::earlycon::acpi_setup_earlycon();
+            if !console::rebind_earlycon_mmio() {
+                let _ = acpi::earlycon::acpi_setup_earlycon(fdt::setup_earlycon_with_selection());
+            }
 
             println!("Trap vector at {:#x}", arch::Arch::trap_addr());
 

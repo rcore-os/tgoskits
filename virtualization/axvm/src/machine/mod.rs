@@ -38,6 +38,8 @@ pub(crate) use serial::ResolvedSerialDevice;
 ))]
 pub(crate) use serial::host_serial_from_acpi;
 pub(crate) use serial::resolved_serial_devices;
+#[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
+pub(crate) use serial::spcr_16550_mmio_fields;
 pub use serial::{
     GuestClockReference, GuestSerialAcpiIdentity, GuestSerialFdtIdentity, GuestSerialFdtInterrupt,
     GuestSerialFirmwareIdentity, GuestSerialModel, GuestSerialProfile, GuestSerialTransport,

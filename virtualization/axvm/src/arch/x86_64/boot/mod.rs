@@ -628,15 +628,46 @@ mod tests {
     }
 
     #[cfg(feature = "host-fs")]
-    #[test]
-    fn host_fs_passthrough_route_reaches_the_final_firmware_tables() {
-        use crate::vm::prepare::device_plan::ArchitectureVmPlan;
+    fn host_fs_firmware_plan(
+        requests: Vec<axvmconfig::VirtualDeviceRequest>,
+        host_serial: Option<crate::machine::HostSerialSnapshot>,
+    ) -> AxVmResult<acpi::X86FirmwarePlan> {
+        use crate::{
+            arch::x86_64::vm::test_plan_devices,
+            config::{AxVMConfig, AxVMConfigParams, PhysCpuList, VmMemConfig},
+            vm::prepare::device_plan::ArchitectureVmPlan,
+        };
 
-        let config = AxVMConfig::default_for_test(0, "host-fs-firmware-route");
-        let device_plan = super::vm::test_plan_devices(&config).unwrap();
+        let mut catalog = crate::ConfiguredDeviceCatalog::new();
+        crate::machine::register_devices(&mut catalog).unwrap();
+        let mut config = AxVMConfig::new(AxVMConfigParams {
+            name: "host-fs-firmware-route".into(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            memory_regions: vec![VmMemConfig {
+                gpa: 0,
+                size: 0x2000_0000,
+                flags: 0x7,
+                map_type: VmMemMappingType::MapAlloc,
+            }],
+            virtual_device_requests: requests,
+            virtual_device_catalog: Arc::new(catalog),
+            ..Default::default()
+        });
+        if let Some(serial) = host_serial {
+            config.replace_machine_serial(serial.profile, Some(serial.identity))?;
+        }
+        let device_plan = test_plan_devices(&config).unwrap();
         let graph = ArchitectureVmPlan::devices(&device_plan).graph();
         let routes = x86_passthrough_intx_routes().unwrap();
-        let firmware = acpi::X86FirmwarePlan::from_graph(graph, 1, &routes).unwrap();
+        acpi::X86FirmwarePlan::from_graph(graph, 1, &routes)
+            .map_err(|error| AxVmError::invalid_config(error.to_string()))
+    }
+
+    #[cfg(feature = "host-fs")]
+    #[test]
+    fn host_fs_passthrough_route_reaches_the_final_firmware_tables() {
+        let firmware = host_fs_firmware_plan(Vec::new(), None).unwrap();
+        let routes = x86_passthrough_intx_routes().unwrap();
         let route = routes[0];
 
         let dsdt = acpi::build_dsdt(&firmware).unwrap();
@@ -657,5 +688,80 @@ mod tests {
                 && entry[5] == route.mp_source_irq()
                 && entry[7] == route.gsi
         }));
+    }
+
+    #[cfg(feature = "host-fs")]
+    #[test]
+    fn x86_firmware_keeps_a_uart_with_a_layout_spcr_cannot_encode() {
+        let request = axvmconfig::VirtualDeviceRequest {
+            id: "console0".into(),
+            model: "uart16550-mmio".into(),
+            options: [("register_shift".into(), toml::Value::Integer(4))]
+                .into_iter()
+                .collect(),
+        };
+        let firmware = host_fs_firmware_plan(vec![request], None).unwrap();
+        let dsdt = acpi::build_dsdt(&firmware).unwrap();
+        assert!(dsdt.windows(4).any(|window| window == b"COM1"));
+
+        let image = acpi::build_direct_image(&firmware).unwrap();
+        let spcr = image.tables().find(*b"SPCR").unwrap();
+        let offset = (spcr.address() - image.load_gpa()) as usize;
+        assert_eq!(&image.bytes()[offset + 40..offset + 52], &[0; 12]);
+    }
+
+    #[cfg(feature = "host-fs")]
+    #[test]
+    fn host_acpi_serial_uses_the_layout_described_to_the_guest() {
+        use ax_driver::probe::acpi::{
+            AcpiResourceRange, AcpiSerialAddressSpace, AcpiSerialConsole, AcpiSerialInterface,
+        };
+
+        use crate::machine::{GuestSerialModel, GuestSerialProfile, GuestSerialTransport};
+
+        let host = AcpiSerialConsole {
+            interface: AcpiSerialInterface::Uart16550,
+            address_space: AcpiSerialAddressSpace::Memory,
+            registers: AcpiResourceRange {
+                base: 0x3000_0000,
+                size: 32,
+            },
+            access_size: 1,
+            irq: Some(4),
+            baud_rate: Some(115_200),
+            clock_hz: Some(1_843_200),
+            namespace_path: Some("\\_SB_.COM1".into()),
+        };
+        let fallback = GuestSerialProfile {
+            model: GuestSerialModel::Uart16550,
+            transport: GuestSerialTransport::Port {
+                base: 0x3f8,
+                length: 8,
+            },
+            irq: 4,
+            clock_hz: 1_843_200,
+        };
+        let serial = crate::machine::host_serial_from_acpi(host, fallback).unwrap();
+        // PNP0501 without register properties describes consecutive byte registers.
+        assert!(matches!(
+            serial.profile.transport,
+            GuestSerialTransport::Mmio {
+                register_shift: 0,
+                register_width: axdevice_base::AccessWidth::Byte,
+                ..
+            }
+        ));
+        let firmware = host_fs_firmware_plan(Vec::new(), Some(serial)).unwrap();
+        let dsdt = acpi::build_dsdt(&firmware).unwrap();
+        assert!(dsdt.windows(7).any(|window| window == b"PNP0501"));
+
+        let image = acpi::build_direct_image(&firmware).unwrap();
+        let spcr = image.tables().find(*b"SPCR").unwrap();
+        let offset = (spcr.address() - image.load_gpa()) as usize;
+        assert_eq!(&image.bytes()[offset + 40..offset + 44], &[0, 8, 0, 1]);
+        assert_eq!(
+            &image.bytes()[offset + 44..offset + 52],
+            &0x3000_0000_u64.to_le_bytes()
+        );
     }
 }

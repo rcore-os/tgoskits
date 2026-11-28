@@ -9,7 +9,8 @@ pub fn rdrive_setup() {
         .unwrap();
     } else if let Some(rsdp) = someboot::rsdp_addr_phys() {
         info!("Initializing rdrive with ACPI RSDP at {:#x}", rsdp);
-        let root = rdrive::probe::acpi::AcpiRoot::new(rsdp, someboot::mem::phys_to_virt);
+        let root = rdrive::probe::acpi::AcpiRoot::new(rsdp, someboot::mem::phys_to_virt)
+            .with_firmware_memory(someboot::mem::memory_map());
         let platform = if option_env!("RDRIVE_ACPI_LOAD_AML") == Some("0") {
             info!("Initializing rdrive ACPI without AML loading");
             rdrive::Platform::AcpiWithoutAml(root)
@@ -21,6 +22,10 @@ pub fn rdrive_setup() {
                 "failed to initialize rdrive with ACPI RSDP {:#x}: {:?}",
                 rsdp, err
             );
+        } else if let Some(address) =
+            crate::boot_console::explicit_acpi_serial_address(someboot::cmdline())
+        {
+            let _ = rdrive::probe::acpi::with_acpi(|system| system.prefer_serial_console(address));
         }
     } else {
         warn!("No FDT or ACPI RSDP found; skip rdrive initialization");

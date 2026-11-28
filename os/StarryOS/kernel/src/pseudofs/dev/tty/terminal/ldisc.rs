@@ -118,21 +118,23 @@ pub trait TtyWrite: Send + Sync + 'static {
 
     /// Applies an output-side termios transaction and publishes it last.
     ///
-    /// Serial backends override this to hold their shared output lock across
-    /// drain, hardware configuration, and publication. The callback must only
-    /// publish the already-validated terminal state.
+    /// Serial backends hold their shared output lock across drain, input flush,
+    /// hardware configuration, and publication. `before_configure` runs after
+    /// drain and can abort the update. `publish` only commits the applied state.
     fn update_termios(
         &self,
         old: &Termios2,
         new: &Termios2,
         drain: bool,
-        publish: &mut dyn FnMut(),
+        before_configure: &mut dyn FnMut() -> StarryResult<()>,
+        publish: &mut dyn FnMut(&Termios2),
     ) -> StarryResult<()> {
         if drain {
             self.drain()?;
         }
+        before_configure()?;
         self.termios_changed(old, new)?;
-        publish();
+        publish(new);
         Ok(())
     }
 }
@@ -187,6 +189,25 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         Ok(())
     }
 
+    fn complete_pending_line(&mut self) {
+        if self.line_read.is_none() && !self.line_buf.is_empty() {
+            self.line_read = Some(0);
+        }
+    }
+
+    fn publish_completed_line(&mut self) -> usize {
+        let Some(offset) = &mut self.line_read else {
+            return 0;
+        };
+        let written = self.buf_tx.push_slice(&self.line_buf[*offset..]);
+        *offset += written;
+        if *offset == self.line_buf.len() {
+            self.line_read = None;
+            self.line_buf.clear();
+        }
+        written
+    }
+
     pub fn drain_source_into_line_buffer(&mut self) -> bool {
         let mut progressed = false;
         if self.read_range.is_empty() {
@@ -195,21 +216,18 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
             progressed |= read > 0;
         }
         let term = self.terminal.load_termios();
+        if !term.canonical() {
+            // The worker may see the update before the ioctl takes the input lock.
+            self.complete_pending_line();
+        }
         let mut sent = 0;
         let mut echo = Vec::new();
         loop {
-            if let Some(offset) = &mut self.line_read {
-                let read = self.buf_tx.push_slice(&self.line_buf[*offset..]);
-                if read == 0 {
+            if self.line_read.is_some() {
+                sent += self.publish_completed_line();
+                if self.line_read.is_some() {
                     break;
                 }
-                sent += read;
-                *offset += read;
-                if *offset == self.line_buf.len() {
-                    self.line_read = None;
-                    self.line_buf.clear();
-                }
-                continue;
             }
             if self.buf_tx.is_full() || self.read_range.is_empty() {
                 break;
@@ -579,13 +597,12 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         Ok(())
     }
 
-    pub fn discard_output(&self, writer: &W) -> StarryResult<()> {
+    pub fn discard_echo(&self) {
         if let Processor::InterruptDriven(reader) = &self.processor {
             // Synchronize with the input worker so echo generated before this
             // flush is either pending here or already queued in the backend.
             reader.lock().echo.discard_pending();
         }
-        writer.discard_output()
     }
 
     pub fn poll_read(&mut self) -> bool {
@@ -603,6 +620,12 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             return true;
         }
         let term = self.terminal.termios.lock_irqsave().clone();
+        let minimum = if term.canonical() {
+            1
+        } else {
+            usize::from(term.special_char(VMIN)).max(1)
+        };
+        self.refill_read_queue(minimum);
         if term.canonical() {
             return self.eof_ready.load(Ordering::Acquire) || !self.buf_rx.is_empty();
         }
@@ -610,14 +633,38 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         // poll() should still only report POLLIN when actual data is present.
         // This matches Linux n_tty behavior: minimum_chars_to_read() treats
         // VMIN=0 as requiring at least 1 byte to wake poll().
-        let vmin = term.special_char(VMIN) as usize;
-        !self.buf_rx.is_empty() && (vmin == 0 || self.buf_rx.occupied_len() >= vmin)
+        self.buf_rx.occupied_len() >= minimum
     }
 
     pub fn rx_poll_source(&self) -> Arc<PollSet> {
         match &self.processor {
             Processor::InterruptDriven(_) => Arc::clone(&self.input_ready),
             Processor::Passive(_, set) => Arc::clone(set),
+        }
+    }
+
+    pub fn release_canonical_input(&self) {
+        let Processor::InterruptDriven(reader) = &self.processor else {
+            return;
+        };
+        let written = {
+            let mut reader = reader.lock();
+            reader.complete_pending_line();
+            reader.publish_completed_line()
+        };
+        if written != 0 {
+            // SAFETY: The ioctl runs in task context and published input before waking readers.
+            unsafe { self.input_ready.wake(IoEvents::IN) };
+        }
+    }
+
+    fn refill_read_queue(&self, minimum: usize) {
+        // A completed line may have outgrown the available ring space during
+        // publication. Consume its remainder in order without waiting for the worker.
+        if self.buf_rx.occupied_len() < minimum
+            && let Processor::InterruptDriven(reader) = &self.processor
+        {
+            reader.lock().publish_completed_line();
         }
     }
 
@@ -656,6 +703,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             return Err(StarryError::WouldBlock);
         }
 
+        self.refill_read_queue(vmin.max(1));
         let available = self.buf_rx.occupied_len();
         if available == 0 {
             if term.canonical() && self.eof_ready.swap(false, Ordering::AcqRel) {
